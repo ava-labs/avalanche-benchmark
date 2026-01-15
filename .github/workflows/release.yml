@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up QEMU
+        if: matrix.arch == 'arm64'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Build in Docker (native arch)
+        run: |
+          docker run --rm \
+            --platform linux/${{ matrix.arch }} \
+            -v "$PWD":/app \
+            -w /app \
+            -e GOTOOLCHAIN=auto \
+            golang:1.24rc2 \
+            sh -c "
+              apt-get update && apt-get install -y git gcc libc-dev &&
+              go build -ldflags='-s -w' -o benchmark-linux-${{ matrix.arch }} ./cmd/benchmark &&
+              go build -ldflags='-s -w' -o bombard-linux-${{ matrix.arch }} ./cmd/bombard
+            "
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-linux-${{ matrix.arch }}
+          path: |
+            benchmark-linux-${{ matrix.arch }}
+            bombard-linux-${{ matrix.arch }}
+
+  build-darwin:
+    name: Build macOS
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        env:
+          GOOS: darwin
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 1
+        run: |
+          go build -ldflags="-s -w" -o benchmark-darwin-${{ matrix.arch }} ./cmd/benchmark
+          go build -ldflags="-s -w" -o bombard-darwin-${{ matrix.arch }} ./cmd/bombard
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-darwin-${{ matrix.arch }}
+          path: |
+            benchmark-darwin-${{ matrix.arch }}
+            bombard-darwin-${{ matrix.arch }}
+
+  release:
+    name: Create Release
+    needs: [build-linux, build-darwin]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+
+          for dir in artifacts/binaries-*; do
+            suffix=$(basename "$dir" | sed 's/binaries-//')
+
+            # Create directory for this platform
+            mkdir -p "release/avalanche-benchmark-$suffix"
+            cp "$dir"/* "release/avalanche-benchmark-$suffix/"
+            cp README.md "release/avalanche-benchmark-$suffix/" 2>/dev/null || true
+            cp -r staking "release/avalanche-benchmark-$suffix/" 2>/dev/null || true
+            cp -r scripts "release/avalanche-benchmark-$suffix/" 2>/dev/null || true
+
+            # Rename binaries
+            mv "release/avalanche-benchmark-$suffix/benchmark-$suffix" "release/avalanche-benchmark-$suffix/benchmark"
+            mv "release/avalanche-benchmark-$suffix/bombard-$suffix" "release/avalanche-benchmark-$suffix/bombard"
+            chmod +x "release/avalanche-benchmark-$suffix/benchmark" "release/avalanche-benchmark-$suffix/bombard"
+
+            # Create tarball
+            cd release
+            tar -czf "avalanche-benchmark-$suffix.tar.gz" "avalanche-benchmark-$suffix"
+            cd ..
+          done
+
+          ls -la release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.tar.gz
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
