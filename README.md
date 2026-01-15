@@ -5,30 +5,45 @@ Benchmark Avalanche L1 (subnet-evm) throughput. Creates isolated networks, flood
 ## Quick Start
 
 ```bash
-make build
-./bin/benchmark start
-./bin/benchmark flood
-./bin/benchmark monitor
-./bin/benchmark shutdown
+# Download latest release
+wget https://github.com/ava-labs/avalanche-benchmark/releases/latest/download/avalanche-benchmark-linux-amd64.tar.gz
+tar -xzf avalanche-benchmark-linux-amd64.tar.gz
+cd avalanche-benchmark-linux-amd64
+
+# Setup dependencies
+bash scripts/setup-all.sh
+source ~/.benchmark-env
+
+# Run
+./benchmark start
+./benchmark flood
+./benchmark monitor
+./benchmark shutdown
 ```
 
-## Deployment
+## Installation
 
-Zero build dependencies on target - just copy binaries and run.
+Download from [Releases](https://github.com/ava-labs/avalanche-benchmark/releases):
+
+| Platform | Download |
+|----------|----------|
+| Linux amd64 | `avalanche-benchmark-linux-amd64.tar.gz` |
+| Linux arm64 | `avalanche-benchmark-linux-arm64.tar.gz` |
+| macOS amd64 | `avalanche-benchmark-darwin-amd64.tar.gz` |
+| macOS arm64 | `avalanche-benchmark-darwin-arm64.tar.gz` |
+
+Each release includes:
+- `benchmark` - main CLI
+- `bombard` - transaction flooder
+- `staking/` - pre-generated staking keys
+- `scripts/` - setup scripts
+
+### Setup Dependencies
 
 ```bash
-# Build for Linux
-GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o benchmark-linux ./cmd/benchmark
-GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o bombard-linux ./cmd/bombard
-
-# Copy to server
-scp benchmark-linux bombard-linux ubuntu@server:~/
-scp -r staking scripts ubuntu@server:~/
-
-# On server
-bash ~/scripts/setup-all.sh   # Downloads avalanchego + subnet-evm
+# Downloads avalanchego + subnet-evm plugin
+bash scripts/setup-all.sh
 source ~/.benchmark-env
-./benchmark start --l1-validators 5
 ```
 
 For offline servers, pre-download [avalanchego](https://github.com/ava-labs/avalanchego/releases) and [subnet-evm](https://github.com/ava-labs/subnet-evm/releases).
@@ -50,7 +65,7 @@ For offline servers, pre-download [avalanchego](https://github.com/ava-labs/aval
 ### Config File
 
 ```bash
-benchmark start --config config.json
+./benchmark start --config config.json
 ```
 
 ```json
@@ -74,7 +89,7 @@ benchmark start --config config.json
 ### Custom Genesis
 
 ```bash
-benchmark start --genesis custom-genesis.json
+./benchmark start --genesis custom-genesis.json
 ```
 
 Default genesis is optimized for max throughput:
@@ -114,7 +129,7 @@ Default genesis is optimized for max throughput:
 ### Custom Chain Config
 
 ```bash
-benchmark start --chain-config custom-chain.json
+./benchmark start --chain-config custom-chain.json
 ```
 
 Default chain config auto-scales based on system RAM. Key settings:
@@ -165,13 +180,13 @@ Chain config caches auto-scale based on detected RAM:
 
 ```bash
 # Network topology
-benchmark start --primary-nodes 2 --l1-validators 5 --l1-rpcs 2
+./benchmark start --primary-nodes 2 --l1-validators 5 --l1-rpcs 2
 
 # Custom configs
-benchmark start --genesis genesis.json --chain-config chain.json --config config.json
+./benchmark start --genesis genesis.json --chain-config chain.json --config config.json
 
 # Flood tuning
-benchmark flood --keys 600 --batch 50
+./benchmark flood --keys 600 --batch 50
 ```
 
 ## Performance
@@ -190,13 +205,22 @@ Block time: 1 second
 | `AVALANCHEGO_PLUGIN_DIR` | Path to plugins directory |
 | `EVMBOMBARD_PATH` | Path to bombard binary |
 
+## Building from Source
+
+```bash
+git clone https://github.com/ava-labs/avalanche-benchmark.git
+cd avalanche-benchmark
+make build
+./bin/benchmark start
+```
+
 ## Troubleshooting
 
 | Error | Fix |
 |-------|-----|
 | `avalanchego not found` | Run `scripts/setup-all.sh` or set `AVALANCHEGO_PATH` |
 | `bombard not found` | Set `EVMBOMBARD_PATH` |
-| Ports in use | `benchmark shutdown` or reboot |
+| Ports in use | `./benchmark shutdown` or reboot |
 | Low TPS | Increase `--keys`, check RAM/config |
 
 ## License
