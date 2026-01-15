@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -23,8 +24,6 @@ import (
 )
 
 const (
-	stateFileName = "benchmark-state.json"
-
 	// Port allocation
 	baseHTTPPort  = 9650
 	portIncrement = 100
@@ -46,21 +45,6 @@ type Config struct {
 	NodeFlags            map[string]string // Additional flags to pass to nodes
 }
 
-// State holds the state of a running network
-type State struct {
-	DataDir       string   `json:"dataDir"`
-	NodeURIs      []string `json:"nodeUris"`      // All L1 node URIs (validators + RPC)
-	ValidatorURIs []string `json:"validatorUris"` // L1 validator node URIs
-	RPCNodeURIs   []string `json:"rpcNodeUris"`   // L1 RPC-only node URIs (used for load balancing)
-	NodeURI       string   `json:"nodeUri"`       // Primary RPC node URI (for backwards compat)
-	ChainID       string   `json:"chainId"`
-	SubnetID      string   `json:"subnetId"`
-	RPCURL        string   `json:"rpcUrl"`  // Single RPC URL (for backwards compat)
-	RPCURLs       []string `json:"rpcUrls"` // All RPC URLs for load balancing
-	NetworkID     uint32   `json:"networkId"`
-	PIDs          []int    `json:"pids"` // Process IDs for cleanup
-}
-
 // Result holds the result of starting a network
 type Result struct {
 	DataDir       string
@@ -72,6 +56,7 @@ type Result struct {
 	SubnetID      string
 	RPCURL        string   // Single RPC URL (first RPC node)
 	RPCURLs       []string // All RPC URLs for load balancing
+	PIDs          []int    // Process IDs for cleanup
 }
 
 // NodeInfo holds information about a running node
@@ -89,29 +74,23 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 	// Determine data directory
 	dataDir := cfg.DataDir
 	if dataDir == "" {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get home directory: %w", err)
-		}
-		dataDir = filepath.Join(homeDir, ".avalanche-benchmark")
+		dataDir = "./network_data"
 	}
-
-	// Check if a network is already running
-	if existingState, err := LoadState(dataDir); err == nil {
-		// Check if processes are still running
-		for _, pid := range existingState.PIDs {
-			if isProcessRunning(pid) {
-				return nil, fmt.Errorf("network already running (PID %d). Use 'benchmark shutdown' first", pid)
-			}
-		}
-		// PIDs not running, clean up stale state file
-		os.Remove(filepath.Join(dataDir, stateFileName))
+	if err := os.MkdirAll(dataDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create data directory: %w", err)
+	}
+	dataDirAbs, err := filepath.Abs(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve data directory: %w", err)
 	}
 
 	// Create unique network directory
-	networkDir := filepath.Join(dataDir, fmt.Sprintf("network-%d", time.Now().Unix()))
+	networkDir := filepath.Join(dataDirAbs, fmt.Sprintf("network-%d", time.Now().Unix()))
 	if err := os.MkdirAll(networkDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create network directory: %w", err)
+	}
+	if err := ensureStakingKeys(networkDir); err != nil {
+		return nil, err
 	}
 
 	// Find avalanchego binary
@@ -129,6 +108,7 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 	fmt.Printf("Using avalanchego: %s\n", avalanchegoPath)
 	fmt.Printf("Using plugin dir: %s\n", pluginDir)
 	fmt.Printf("Network directory: %s\n", networkDir)
+	fmt.Printf("Logs directory: %s (per-node logs in node-*/logs)\n", networkDir)
 
 	// Determine node counts
 	primaryNodeCount := cfg.PrimaryNodeCount
@@ -414,25 +394,6 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 	}
 	rpcURL := fmt.Sprintf("%s/ext/bc/%s/rpc", primaryRPCNodeURI, chainID)
 
-	// Save state
-	state := &State{
-		DataDir:       networkDir,
-		NodeURI:       primaryRPCNodeURI,
-		NodeURIs:      allL1NodeURIs,
-		ValidatorURIs: validatorURIs,
-		RPCNodeURIs:   rpcNodeURIs,
-		ChainID:       chainID.String(),
-		SubnetID:      subnetID.String(),
-		RPCURL:        rpcURL,
-		RPCURLs:       rpcURLs,
-		NetworkID:     12345, // Local network ID
-		PIDs:          allPIDs,
-	}
-
-	if err := saveState(dataDir, state); err != nil {
-		return nil, fmt.Errorf("failed to save state: %w", err)
-	}
-
 	return &Result{
 		DataDir:       networkDir,
 		NodeURI:       primaryRPCNodeURI,
@@ -443,7 +404,40 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 		SubnetID:      subnetID.String(),
 		RPCURL:        rpcURL,
 		RPCURLs:       rpcURLs,
+		PIDs:          allPIDs,
 	}, nil
+}
+
+// StartAndMonitor starts the network, prints metrics, and shuts down on Ctrl+C.
+func StartAndMonitor(ctx context.Context, cfg Config) error {
+	// Kill any existing avalanchego processes (best-effort).
+	_ = exec.Command("pkill", "-f", "avalanchego").Run()
+	time.Sleep(1 * time.Second)
+
+	result, err := Start(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
+	if len(result.RPCURLs) == 0 {
+		return fmt.Errorf("no RPC URLs available for monitoring")
+	}
+
+	fmt.Printf("RPC endpoint: %s\n", result.RPCURLs[0])
+	fmt.Println("Metrics (Ctrl+C to stop):")
+
+	metricsCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go printMetrics(metricsCtx, result.RPCURLs[0])
+
+	<-ctx.Done()
+	fmt.Println("\nShutting down...")
+
+	for _, pid := range result.PIDs {
+		killProcess(pid)
+	}
+
+	return nil
 }
 
 // startNode starts a primary network validator node
@@ -463,13 +457,7 @@ func startNode(ctx context.Context, avalanchego, networkDir string, nodeIndex in
 	args := buildNodeArgs(httpPort, stakingPort, nodeDir, pluginDir, extraFlags)
 
 	// Add staking keys for validators (up to 5 pre-configured)
-	// Look for keys relative to the executable location
-	execPath, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get executable path: %w", err)
-	}
-	execDir := filepath.Dir(execPath)
-	stakingKeysDir := filepath.Join(execDir, "staking", "local")
+	stakingKeysDir := filepath.Join(networkDir, "staking", "local")
 
 	if stakerNum >= 1 && stakerNum <= 5 {
 		args = append(args,
@@ -500,6 +488,7 @@ func startNode(ctx context.Context, avalanchego, networkDir string, nodeIndex in
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true, // Create new process group so it survives CLI exit
 	}
+	setupNodeLogging(cmd, nodeDir, fmt.Sprintf("node-%d", nodeIndex))
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start avalanchego: %w", err)
@@ -507,7 +496,7 @@ func startNode(ctx context.Context, avalanchego, networkDir string, nodeIndex in
 
 	// Wait for node to become healthy
 	uri := fmt.Sprintf("http://127.0.0.1:%d", httpPort)
-	nodeID, err := waitForNodeHealth(ctx, uri, nodeStartupTimeout)
+	nodeID, err := waitForNodeHealth(ctx, uri, cmd.Process.Pid, nodeStartupTimeout)
 	if err != nil {
 		cmd.Process.Kill()
 		return nil, fmt.Errorf("node failed to become healthy: %w", err)
@@ -561,6 +550,7 @@ func startL1Node(ctx context.Context, avalanchego, networkDir string, nodeIndex 
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}
+	setupNodeLogging(cmd, nodeDir, fmt.Sprintf("l1-%s-%d", nodeType, nodeIndex))
 
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("failed to start avalanchego: %w", err)
@@ -568,7 +558,7 @@ func startL1Node(ctx context.Context, avalanchego, networkDir string, nodeIndex 
 
 	// Wait for node to become healthy
 	uri := fmt.Sprintf("http://127.0.0.1:%d", httpPort)
-	nodeID, err := waitForNodeHealth(ctx, uri, nodeStartupTimeout)
+	nodeID, err := waitForNodeHealth(ctx, uri, cmd.Process.Pid, nodeStartupTimeout)
 	if err != nil {
 		cmd.Process.Kill()
 		return nil, fmt.Errorf("L1 node failed to become healthy: %w", err)
@@ -606,7 +596,7 @@ func buildNodeArgs(httpPort, stakingPort int, nodeDir, pluginDir string, extraFl
 }
 
 // waitForNodeHealth waits for a node to become healthy and returns its node ID
-func waitForNodeHealth(ctx context.Context, uri string, timeout time.Duration) (string, error) {
+func waitForNodeHealth(ctx context.Context, uri string, pid int, timeout time.Duration) (string, error) {
 	deadline := time.Now().Add(timeout)
 
 	for time.Now().Before(deadline) {
@@ -614,6 +604,10 @@ func waitForNodeHealth(ctx context.Context, uri string, timeout time.Duration) (
 		case <-ctx.Done():
 			return "", ctx.Err()
 		default:
+		}
+
+		if !isProcessRunning(pid) {
+			return "", fmt.Errorf("process exited before becoming healthy")
 		}
 
 		nodeID, err := checkNodeHealth(uri)
@@ -625,6 +619,20 @@ func waitForNodeHealth(ctx context.Context, uri string, timeout time.Duration) (
 	}
 
 	return "", fmt.Errorf("timeout waiting for node to become healthy")
+}
+
+func isProcessRunning(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+
+	err = proc.Signal(syscall.Signal(0))
+	return err == nil
 }
 
 // checkNodeHealth checks if a node is healthy and returns its node ID
@@ -677,71 +685,6 @@ func killProcess(pid int) {
 	// Wait briefly then force kill if needed
 	time.Sleep(500 * time.Millisecond)
 	proc.Kill()
-}
-
-// isProcessRunning checks if a process is still running
-func isProcessRunning(pid int) bool {
-	if pid <= 0 {
-		return false
-	}
-
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-
-	// Send signal 0 to check if process exists
-	err = proc.Signal(syscall.Signal(0))
-	return err == nil
-}
-
-// Stop stops the network
-func Stop(dataDir string) error {
-	state, err := LoadState(dataDir)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("Stopping %d processes...\n", len(state.PIDs))
-	for _, pid := range state.PIDs {
-		killProcess(pid)
-	}
-
-	fmt.Println("Network stopped.")
-	return nil
-}
-
-// LoadState loads the network state from disk
-func LoadState(dataDir string) (*State, error) {
-	if dataDir == "" {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("failed to get home directory: %w", err)
-		}
-		dataDir = filepath.Join(homeDir, ".avalanche-benchmark")
-	}
-
-	statePath := filepath.Join(dataDir, stateFileName)
-	data, err := os.ReadFile(statePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read state file: %w", err)
-	}
-
-	var state State
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("failed to parse state file: %w", err)
-	}
-
-	return &state, nil
-}
-
-func saveState(dataDir string, state *State) error {
-	statePath := filepath.Join(dataDir, stateFileName)
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(statePath, data, 0644)
 }
 
 func findAvalanchego() (string, error) {
@@ -827,124 +770,170 @@ func loadChainConfig(chainConfigPath string) ([]byte, error) {
 	return os.ReadFile(chainConfigPath)
 }
 
+func printMetrics(ctx context.Context, rpcURL string) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
 
-// NodeHealthStatus contains health information about a node
-type NodeHealthStatus struct {
-	URI            string
-	Healthy        bool
-	Reachable      bool
-	L1Healthy      bool
-	L1Height       uint64
-	DiskPercent    int
-	ConnectedPeers int
+	var lastBlock uint64
+	var lastBlockTime time.Time
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			block, txCount, gasUsed, gasLimit, err := getLatestBlockInfo(ctx, rpcURL)
+			if err != nil {
+				fmt.Printf("metrics error: %v\n", err)
+				continue
+			}
+
+			var tps float64
+			if block != lastBlock {
+				if !lastBlockTime.IsZero() {
+					elapsed := time.Since(lastBlockTime).Seconds()
+					if elapsed > 0 {
+						tps = float64(txCount) / elapsed
+					}
+				}
+				lastBlock = block
+				lastBlockTime = time.Now()
+			}
+
+			gasPercent := float64(0)
+			if gasLimit > 0 {
+				gasPercent = float64(gasUsed) / float64(gasLimit) * 100
+			}
+
+			fmt.Printf("Block %d | TPS: %.0f | Gas: %d/%d (%.1f%%)\n",
+				block, tps, gasUsed/1e6, gasLimit/1e6, gasPercent)
+		}
+	}
 }
 
-// CheckNodeHealth checks the health of a specific node
-func CheckNodeHealth(nodeURI, chainID string) NodeHealthStatus {
-	status := NodeHealthStatus{
-		URI:       nodeURI,
-		Reachable: true,
+func getLatestBlockInfo(ctx context.Context, rpcURL string) (uint64, int, uint64, uint64, error) {
+	reqBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "eth_getBlockByNumber",
+		"params":  []interface{}{"latest", false},
 	}
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", rpcURL, strings.NewReader(string(body)))
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: 2 * time.Second}
-
-	req := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"method":  "health.health",
-		"params":  map[string]interface{}{},
-		"id":      1,
-	}
-
-	body, _ := json.Marshal(req)
-	resp, err := client.Post(nodeURI+"/ext/health", "application/json", strings.NewReader(string(body)))
+	resp, err := client.Do(req)
 	if err != nil {
-		status.Reachable = false
-		return status
+		return 0, 0, 0, 0, err
 	}
 	defer resp.Body.Close()
 
-	data, err := readAllBytes(resp.Body)
-	if err != nil {
-		status.Reachable = false
-		return status
-	}
-
 	var result struct {
-		Result struct {
-			Healthy bool                   `json:"healthy"`
-			Checks  map[string]interface{} `json:"checks"`
+		Result *struct {
+			Number       string   `json:"number"`
+			Transactions []string `json:"transactions"`
+			GasUsed      string   `json:"gasUsed"`
+			GasLimit     string   `json:"gasLimit"`
 		} `json:"result"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 
-	if err := json.Unmarshal(data, &result); err != nil {
-		status.Reachable = false
-		return status
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, 0, 0, 0, err
+	}
+	if result.Error != nil {
+		return 0, 0, 0, 0, fmt.Errorf(result.Error.Message)
+	}
+	if result.Result == nil {
+		return 0, 0, 0, 0, fmt.Errorf("no block result")
 	}
 
-	status.Healthy = result.Result.Healthy
-
-	// Parse individual checks
-	for name, checkData := range result.Result.Checks {
-		checkMap, ok := checkData.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		switch name {
-		case "diskspace":
-			if msg, ok := checkMap["message"].(map[string]interface{}); ok {
-				if pct, ok := msg["availableDiskPercentage"].(float64); ok {
-					status.DiskPercent = int(pct)
-				}
-			}
-
-		case "network":
-			if msg, ok := checkMap["message"].(map[string]interface{}); ok {
-				if peers, ok := msg["connectedPeers"].(float64); ok {
-					status.ConnectedPeers = int(peers)
-				}
-			}
-
-		default:
-			// Check if this is the L1 chain
-			if name == chainID {
-				status.L1Healthy = true
-				if msg, ok := checkMap["message"].(map[string]interface{}); ok {
-					if engine, ok := msg["engine"].(map[string]interface{}); ok {
-						if consensus, ok := engine["consensus"].(map[string]interface{}); ok {
-							if height, ok := consensus["lastAcceptedHeight"].(float64); ok {
-								status.L1Height = uint64(height)
-							}
-						}
-					}
-				}
-				// Check if L1 has errors
-				if _, hasError := checkMap["error"]; hasError {
-					status.L1Healthy = false
-				}
-			}
-		}
+	blockNum, err := parseHexUint64(result.Result.Number)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	gasUsed, err := parseHexUint64(result.Result.GasUsed)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	gasLimit, err := parseHexUint64(result.Result.GasLimit)
+	if err != nil {
+		return 0, 0, 0, 0, err
 	}
 
-	return status
+	return blockNum, len(result.Result.Transactions), gasUsed, gasLimit, nil
 }
 
-func readAllBytes(r interface{ Read([]byte) (int, error) }) ([]byte, error) {
-	var buf []byte
-	tmp := make([]byte, 4096)
-	for {
-		n, err := r.Read(tmp)
-		if n > 0 {
-			buf = append(buf, tmp[:n]...)
+func parseHexUint64(value string) (uint64, error) {
+	value = strings.TrimPrefix(value, "0x")
+	if value == "" {
+		return 0, nil
+	}
+	return strconv.ParseUint(value, 16, 64)
+}
+
+func setupNodeLogging(cmd *exec.Cmd, nodeDir, name string) {
+	logDir := filepath.Join(nodeDir, "logs")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		fmt.Printf("log setup failed for %s: %v\n", name, err)
+		return
+	}
+
+	logPath := filepath.Join(logDir, "process.log")
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		fmt.Printf("log setup failed for %s: %v\n", name, err)
+		return
+	}
+
+	// Leave file open so the process can keep writing.
+	cmd.Stdout = f
+	cmd.Stderr = f
+}
+
+func ensureStakingKeys(networkDir string) error {
+	srcDir := filepath.Join(".", "staking", "local")
+	if _, err := os.Stat(srcDir); err != nil {
+		return fmt.Errorf("staking keys not found at %s", srcDir)
+	}
+
+	dstDir := filepath.Join(networkDir, "staking", "local")
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		return fmt.Errorf("failed to create staking dir: %w", err)
+	}
+
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return fmt.Errorf("failed to read staking dir: %w", err)
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
 		}
+		srcPath := filepath.Join(srcDir, entry.Name())
+		dstPath := filepath.Join(dstDir, entry.Name())
+
+		data, err := os.ReadFile(srcPath)
 		if err != nil {
-			if err.Error() == "EOF" {
-				break
-			}
-			return buf, err
+			return fmt.Errorf("failed to read staking key %s: %w", srcPath, err)
+		}
+		if err := os.WriteFile(dstPath, data, 0644); err != nil {
+			return fmt.Errorf("failed to write staking key %s: %w", dstPath, err)
 		}
 	}
-	return buf, nil
+
+	return nil
 }
 
 // writeChainConfig writes the chain config to a node's config directory

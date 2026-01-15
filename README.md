@@ -1,6 +1,6 @@
 # Avalanche Benchmark CLI
 
-Benchmark Avalanche L1 (subnet-evm) throughput. Creates isolated networks, floods transactions, displays real-time metrics.
+Benchmark Avalanche L1 (subnet-evm) throughput. Starts a local network and prints metrics every second.
 
 ## Quick Start
 
@@ -15,10 +15,11 @@ bash scripts/setup-all.sh
 source ~/.benchmark-env
 
 # Run
-./benchmark start
-./benchmark flood
-./benchmark monitor
-./benchmark shutdown
+./benchmark
+# Data directory defaults to ./network_data
+
+# In another terminal (optional):
+./bombard -rpc http://127.0.0.1:9650/ext/bc/CHAINID/rpc -keys 600 -batch 50
 ```
 
 ## Installation
@@ -52,39 +53,10 @@ For offline servers, pre-download [avalanchego](https://github.com/ava-labs/aval
 
 | Command | Description |
 |---------|-------------|
-| `start` | Start network + create L1 |
-| `flood` | Start flooding transactions |
-| `stop-flood` | Stop flooding |
-| `monitor` | Show live TPS metrics |
-| `shutdown` | Stop everything |
-| `status` | Show node health |
-| `logs` | View node logs |
+| `benchmark` | Start network and print metrics |
+| `bombard` | Flood transactions (run separately) |
 
 ## Configuration
-
-### Config File
-
-```bash
-./benchmark start --config config.json
-```
-
-```json
-{
-  "primaryNodeCount": 2,
-  "l1ValidatorNodeCount": 5,
-  "l1RpcNodeCount": 2,
-  "nodeFlags": {
-    "log-level": "warn"
-  }
-}
-```
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `primaryNodeCount` | 2 | Primary network nodes (min: 2) |
-| `l1ValidatorNodeCount` | 2 | L1 validator nodes (consensus) |
-| `l1RpcNodeCount` | 1 | L1 RPC nodes (load balancing, no consensus) |
-| `nodeFlags` | `{}` | Flags passed to avalanchego |
 
 ### Custom Genesis
 
@@ -167,13 +139,16 @@ Default chain config is optimized for maximum throughput. Key settings:
 
 ```bash
 # Network topology
-./benchmark start --primary-nodes 2 --l1-validators 5 --l1-rpcs 2
+./benchmark --primary-nodes 2 --l1-validators 5 --l1-rpcs 2
+
+# Data directory
+./benchmark --data-dir ./network_data
 
 # Custom configs
-./benchmark start --genesis genesis.json --chain-config chain.json --config config.json
+./benchmark --genesis genesis.json --chain-config chain.json
 
-# Flood tuning
-./benchmark flood --keys 600 --batch 50
+# Flood tuning (separate tool)
+./bombard -rpc http://127.0.0.1:9650/ext/bc/CHAINID/rpc -keys 600 -batch 50
 ```
 
 ## Performance
@@ -198,7 +173,7 @@ Block time: 1 second
 git clone https://github.com/ava-labs/avalanche-benchmark.git
 cd avalanche-benchmark
 make build
-./bin/benchmark start
+./bin/benchmark
 ```
 
 ## Troubleshooting
@@ -207,5 +182,5 @@ make build
 |-------|-----|
 | `avalanchego not found` | Run `scripts/setup-all.sh` or set `AVALANCHEGO_PATH` |
 | `bombard not found` | Set `EVMBOMBARD_PATH` |
-| Ports in use | `./benchmark shutdown` or reboot |
+| Ports in use | `pkill -f avalanchego` |
 | Low TPS | Increase `--keys`, check RAM/config |

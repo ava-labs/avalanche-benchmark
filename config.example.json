@@ -1,8 +1,0 @@
-{
-  "primaryNodeCount": 2,
-  "l1ValidatorNodeCount": 2,
-  "l1RpcNodeCount": 1,
-  "nodeFlags": {
-    "log-level": "warn"
-  }
-}
