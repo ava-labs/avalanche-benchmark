@@ -1,25 +1,71 @@
 # Avalanche Benchmark CLI
 
-A CLI tool for benchmarking Avalanche L1 (subnet-evm) throughput. Creates an isolated local network, floods transactions, and displays real-time metrics.
+Benchmark Avalanche L1 (subnet-evm) throughput. Zero build dependencies on target.
 
-## Quick Start
+## Deploy to Server
+
+**Requirements:** 4 binaries, no build tools needed.
+
+### 1. Build (on dev machine)
 
 ```bash
-make build
-./bin/benchmark start
-./bin/benchmark flood
-./bin/benchmark monitor
-./bin/benchmark shutdown
+git clone https://github.com/ava-labs/avalanche-benchmark.git
+cd avalanche-benchmark
+GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o benchmark-linux ./cmd/benchmark
+GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o bombard-linux ./cmd/bombard
 ```
 
-## Prerequisites
+### 2. Copy to server
 
-| Binary | Description | Location |
-|--------|-------------|----------|
-| `avalanchego` | Avalanche node | `AVALANCHEGO_PATH` or `./bin/avalanchego` |
-| `subnet-evm` | EVM plugin | `AVALANCHEGO_PLUGIN_DIR` or `./plugins/srEXi...` |
+```bash
+scp benchmark-linux bombard-linux ubuntu@server:~/
+scp -r staking scripts ubuntu@server:~/
+```
 
-The `bombard` flooder is built automatically with `make build`.
+### 3. Setup
+
+```bash
+ssh ubuntu@server
+mv benchmark-linux benchmark && mv bombard-linux bombard && chmod +x benchmark bombard
+bash ~/scripts/setup-all.sh
+source ~/.benchmark-env
+```
+
+### 4. Run
+
+```bash
+./benchmark start --l1-validators 5 --l1-rpcs 2
+./benchmark flood
+./benchmark monitor
+./benchmark shutdown
+```
+
+## Offline Deployment
+
+For servers without internet, pre-download avalanchego and subnet-evm:
+
+```bash
+# On dev machine
+wget https://github.com/ava-labs/avalanchego/releases/download/v1.14.1/avalanchego-linux-amd64-v1.14.1.tar.gz
+wget https://github.com/ava-labs/subnet-evm/releases/download/v0.8.0/subnet-evm_0.8.0_linux_amd64.tar.gz
+tar -xzf avalanchego-linux-amd64-v1.14.1.tar.gz
+tar -xzf subnet-evm_0.8.0_linux_amd64.tar.gz
+
+# Copy all to server
+scp benchmark-linux bombard-linux ubuntu@server:~/
+scp avalanchego-v1.14.1/avalanchego ubuntu@server:~/
+scp subnet-evm ubuntu@server:~/
+scp -r staking ubuntu@server:~/
+
+# On server
+mkdir -p ~/.avalanchego/plugins
+mv ~/avalanchego ~/.avalanchego/
+mv ~/subnet-evm ~/.avalanchego/plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
+echo 'export AVALANCHEGO_PATH=~/.avalanchego/avalanchego' >> ~/.bashrc
+echo 'export AVALANCHEGO_PLUGIN_DIR=~/.avalanchego/plugins' >> ~/.bashrc
+echo 'export EVMBOMBARD_PATH=~/bombard' >> ~/.bashrc
+source ~/.bashrc
+```
 
 ## Commands
 
@@ -30,144 +76,46 @@ The `bombard` flooder is built automatically with `make build`.
 | `stop-flood` | Stop flooding |
 | `monitor` | Show live TPS metrics |
 | `shutdown` | Stop everything |
-| `status` | Show node health and endpoints |
-| `logs` | View node logs (`logs validator 1 -f`) |
-| `flood-status` | Show flooding process status |
+| `status` | Show node health |
+| `logs` | View node logs |
 
-### Start Options
-
-```bash
-benchmark start [flags]
-  --primary-nodes N     Primary network validators (default: 2, min: 2)
-  --l1-validators N     L1 validator nodes (default: 2)
-  --l1-rpcs N           L1 RPC-only nodes (default: 1)
-  --genesis PATH        Custom subnet-evm genesis file
-  --chain-config PATH   Custom subnet-evm chain config file
-  --config PATH         Config file (see config.example.json)
-  --data-dir PATH       Data directory (default: ~/.avalanche-benchmark)
-```
-
-### Flood Options
+### Options
 
 ```bash
-benchmark flood [flags]
-  --keys N    Parallel sender accounts (default: 600)
-  --batch N   Transactions per batch (default: 50)
+benchmark start --l1-validators 5 --l1-rpcs 2    # Scale validators/RPC nodes
+benchmark flood --keys 600 --batch 50            # Tune flooding
 ```
 
-## Configuration
-
-### config.example.json
+## Config File
 
 ```json
 {
   "primaryNodeCount": 2,
-  "l1ValidatorNodeCount": 2,
-  "l1RpcNodeCount": 1,
-  "nodeFlags": {
-    "log-level": "warn"
-  }
+  "l1ValidatorNodeCount": 5,
+  "l1RpcNodeCount": 2,
+  "nodeFlags": { "log-level": "warn" }
 }
 ```
 
-### Default Genesis (feeConfig)
-
-| Setting | Value | Purpose |
-|---------|-------|---------|
-| `gasLimit` | 500M | ~23,800 transfers/block max |
-| `targetBlockRate` | 1 | 1-second blocks |
-| `minBaseFee` | 1 wei | Lowest possible fee |
-| `targetGas` | MaxUint64 | Fees never increase |
-
-### Default Chain Config
-
-| Setting | Value | Purpose |
-|---------|-------|---------|
-| `trie-clean-cache` | 100GB | Large state cache |
-| `tx-pool-global-slots` | 262K | Large pending pool |
-| `skip-tx-indexing` | true | Faster execution |
-| `push-gossip-frequency` | 50ms | Fast tx propagation |
-
-## Theoretical Limits
-
-```
-Gas limit:      500M per block
-Transfer cost:  21,000 gas
-Block size:     1.8MB max
-
-Max by gas:     ~23,800 TPS
-Max by size:    ~16,000 TPS (actual limit)
-```
-
-## Directory Structure
-
-```
-avalanche-benchmark/
-├── cmd/
-│   ├── benchmark/       # CLI (start, flood, monitor, shutdown, status, logs)
-│   └── bombard/         # Standalone transaction flooder
-├── internal/
-│   ├── config/          # Configuration loading
-│   ├── network/         # Node lifecycle, L1 creation
-│   ├── flood/           # Bombard process management
-│   ├── bombard/         # Transaction flooding library
-│   └── monitor/         # Real-time TPS metrics display
-├── scripts/             # Deployment scripts for remote servers
-├── staking/local/       # Pre-generated staking keys
-├── config.example.json  # Example configuration
-└── Makefile
-```
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `AVALANCHEGO_PATH` | Path to avalanchego binary |
-| `AVALANCHEGO_PLUGIN_DIR` | Path to plugins directory |
-| `EVMBOMBARD_PATH` | Path to bombard binary |
-
-## Remote Deployment
-
-For deploying to remote servers:
-
 ```bash
-# Build for Linux
-GOOS=linux GOARCH=amd64 make build
-
-# Copy to server
-scp bin/benchmark bin/bombard ubuntu@server:~/
-scp -r staking scripts ubuntu@server:~/
-
-# On server: run setup scripts
-bash ~/scripts/setup-all.sh
-source ~/.benchmark-env
-./benchmark start --l1-validators 5 --l1-rpcs 2
+benchmark start --config config.json
 ```
 
-The `scripts/` directory contains:
-- `setup-all.sh` - Master setup script
-- `setup-avalanchego.sh` - Downloads AvalancheGo + subnet-evm
-- `setup-env.sh` - Configures environment variables
+## Performance
 
-## Make Targets
-
-```bash
-make build      # Build benchmark + bombard
-make clean      # Remove build artifacts
-make test       # Run tests
-make package    # Create distribution tarball
+```
+Max TPS: ~16,000 (limited by 1.8MB block size)
+Gas limit: 500M per block
+Block time: 1 second
 ```
 
 ## Troubleshooting
 
-| Error | Solution |
-|-------|----------|
-| `avalanchego not found` | Set `AVALANCHEGO_PATH` or copy to `./bin/` |
-| `subnet-evm plugin not found` | Set `AVALANCHEGO_PLUGIN_DIR` |
-| `bombard not found` | Run `make build` |
-| Ports in use | Kill processes on 9650+ |
-| Low TPS | Increase `--keys`, check genesis config |
-| Network already running | Run `benchmark shutdown` first |
+| Error | Fix |
+|-------|-----|
+| `avalanchego not found` | Run `scripts/setup-all.sh` |
+| `bombard not found` | Set `EVMBOMBARD_PATH=~/bombard` |
+| Ports in use | `benchmark shutdown` or reboot |
 
 ## License
 
