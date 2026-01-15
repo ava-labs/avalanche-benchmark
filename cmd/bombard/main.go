@@ -21,7 +21,7 @@ func main() {
 		both      bool
 	)
 
-	flag.StringVar(&rpcURLs, "rpc", "", "Comma-separated RPC URLs")
+	flag.StringVar(&rpcURLs, "rpc", "", "Comma-separated RPC URLs (default: read from ./network_data/rpcs.txt)")
 	flag.IntVar(&batchSize, "batch", 50, "Transactions per batch")
 	flag.IntVar(&keyCount, "keys", 600, "Number of parallel sender keys")
 	flag.IntVar(&timeout, "timeout", 10, "Transaction confirmation timeout (seconds)")
@@ -30,9 +30,18 @@ func main() {
 	flag.Parse()
 
 	if rpcURLs == "" {
-		fmt.Fprintln(os.Stderr, "Error: -rpc flag is required")
-		flag.Usage()
-		os.Exit(1)
+		// Try to read from default location
+		data, err := os.ReadFile("./network_data/rpcs.txt")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "Error: -rpc flag is required or ./network_data/rpcs.txt must exist")
+			flag.Usage()
+			os.Exit(1)
+		}
+		rpcURLs = strings.TrimSpace(string(data))
+		if rpcURLs == "" {
+			fmt.Fprintln(os.Stderr, "Error: ./network_data/rpcs.txt is empty")
+			os.Exit(1)
+		}
 	}
 
 	if erc20 && both {
