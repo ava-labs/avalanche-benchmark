@@ -38,7 +38,6 @@ type Config struct {
 	PrimaryNodeCount     int               // Number of primary network nodes (default: 2)
 	L1ValidatorNodeCount int               // Number of L1 validator nodes (default: 2)
 	L1RPCNodeCount       int               // Number of L1 RPC-only nodes (default: 1, not validators)
-	NodeFlags            map[string]string // Additional flags to pass to nodes
 }
 
 // Result holds the result of starting a network
@@ -133,7 +132,7 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 
 	// Start bootstrap node first (node 0)
 	fmt.Println("  Starting bootstrap node...")
-	bootstrapNode, err := startNode(ctx, avalanchegoPath, networkDir, 0, pluginDir, "", cfg.NodeFlags)
+	bootstrapNode, err := startNode(ctx, avalanchegoPath, networkDir, 0, pluginDir, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to start bootstrap node: %w", err)
 	}
@@ -144,7 +143,7 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 	// Start remaining primary nodes
 	for i := 1; i < primaryNodeCount; i++ {
 		fmt.Printf("  Starting primary node %d...\n", i+1)
-		node, err := startNode(ctx, avalanchegoPath, networkDir, i, pluginDir, bootstrapNode.NodeID, cfg.NodeFlags)
+		node, err := startNode(ctx, avalanchegoPath, networkDir, i, pluginDir, bootstrapNode.NodeID)
 		if err != nil {
 			// Kill already started nodes
 			for _, n := range primaryNodes {
@@ -268,7 +267,7 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 		}
 
 		l1Node, err := startL1Node(ctx, avalanchegoPath, networkDir, nodeIndex, pluginDir,
-			bootstrapNode.NodeID, subnetID.String(), "validator", cfg.NodeFlags)
+			bootstrapNode.NodeID, subnetID.String(), "validator")
 		if err != nil {
 			for _, pid := range allPIDs {
 				killProcess(pid)
@@ -345,7 +344,7 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 			}
 
 			rpcNode, err := startL1Node(ctx, avalanchegoPath, networkDir, nodeIndex, pluginDir,
-				bootstrapNode.NodeID, subnetID.String(), "rpc", cfg.NodeFlags)
+				bootstrapNode.NodeID, subnetID.String(), "rpc")
 			if err != nil {
 				for _, pid := range allPIDs {
 					killProcess(pid)

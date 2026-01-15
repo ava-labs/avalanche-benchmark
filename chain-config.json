@@ -1,8 +1,11 @@
 {
-  "min-delay-target": 580,
-  "tx-pool-account-slots": 256,
+  "min-delay-target": 1500,
+  "tx-pool-account-slots": 2048,
   "tx-pool-global-slots": 262144,
-  "tx-pool-account-queue": 1024,
-  "tx-pool-global-queue": 131072,
-  "tx-pool-lifetime": "10s"
+  "tx-pool-account-queue": 2048,
+  "tx-pool-global-queue": 512000,
+  "tx-pool-lifetime": "1m",
+  "trie-clean-cache": 10240,
+  "trie-dirty-cache": 10240,
+  "snapshot-cache": 10240
 }

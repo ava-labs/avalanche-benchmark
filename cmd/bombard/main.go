@@ -6,7 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/ava-labs/avalanche-benchmark/internal/bombard"
 )
@@ -22,8 +24,8 @@ func main() {
 	)
 
 	flag.StringVar(&rpcURLs, "rpc", "", "Comma-separated RPC URLs (default: read from ./network_data/rpcs.txt)")
-	flag.IntVar(&batchSize, "batch", 50, "Transactions per batch")
-	flag.IntVar(&keyCount, "keys", 600, "Number of parallel sender keys")
+	flag.IntVar(&batchSize, "batch", 500, "Transactions per batch")
+	flag.IntVar(&keyCount, "keys", 500, "Number of parallel sender keys")
 	flag.IntVar(&timeout, "timeout", 10, "Transaction confirmation timeout (seconds)")
 	flag.BoolVar(&erc20, "erc20", false, "Send ERC20 token transfers instead of native transfers")
 	flag.BoolVar(&both, "both", false, "Send both native and ERC20 transfers (alternating batches)")
@@ -70,8 +72,23 @@ func main() {
 		Mode:           mode,
 	}
 
-	if err := bombard.Run(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+	// Handle Ctrl+C to exit immediately
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	errChan := make(chan error, 1)
+	go func() {
+		errChan <- bombard.Run(cfg)
+	}()
+
+	select {
+	case sig := <-sigChan:
+		_ = sig
+		os.Exit(0)
+	case err := <-errChan:
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 }

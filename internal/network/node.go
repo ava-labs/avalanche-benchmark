@@ -10,7 +10,7 @@ import (
 )
 
 // startNode starts a primary network validator node
-func startNode(ctx context.Context, avalanchego, networkDir string, nodeIndex int, pluginDir, bootstrapNodeID string, extraFlags map[string]string) (*NodeInfo, error) {
+func startNode(ctx context.Context, avalanchego, networkDir string, nodeIndex int, pluginDir, bootstrapNodeID string) (*NodeInfo, error) {
 	httpPort := baseHTTPPort + nodeIndex*portIncrement
 	stakingPort := httpPort + 1
 	stakerNum := nodeIndex + 1
@@ -23,7 +23,12 @@ func startNode(ctx context.Context, avalanchego, networkDir string, nodeIndex in
 		return nil, err
 	}
 
-	args := buildNodeArgs(httpPort, stakingPort, nodeDir, pluginDir, extraFlags)
+	configPath, err := ensureSharedNodeConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	args := buildNodeArgs(httpPort, stakingPort, nodeDir, pluginDir, configPath)
 
 	// Add staking keys for validators (up to 5 pre-configured)
 	stakingKeysDir := filepath.Join(networkDir, "staking", "local")
@@ -81,7 +86,7 @@ func startNode(ctx context.Context, avalanchego, networkDir string, nodeIndex in
 
 // startL1Node starts an L1 node with subnet tracking
 // nodeType can be "validator" or "rpc" to control directory naming
-func startL1Node(ctx context.Context, avalanchego, networkDir string, nodeIndex int, pluginDir, bootstrapNodeID, subnetID, nodeType string, extraFlags map[string]string) (*NodeInfo, error) {
+func startL1Node(ctx context.Context, avalanchego, networkDir string, nodeIndex int, pluginDir, bootstrapNodeID, subnetID, nodeType string) (*NodeInfo, error) {
 	httpPort := baseHTTPPort + nodeIndex*portIncrement
 	stakingPort := httpPort + 1
 
@@ -96,7 +101,12 @@ func startL1Node(ctx context.Context, avalanchego, networkDir string, nodeIndex 
 		return nil, err
 	}
 
-	args := buildNodeArgs(httpPort, stakingPort, nodeDir, pluginDir, extraFlags)
+	configPath, err := ensureSharedNodeConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	args := buildNodeArgs(httpPort, stakingPort, nodeDir, pluginDir, configPath)
 
 	// L1 nodes use ephemeral keys (avalanchego will generate and store them)
 	args = append(args,
@@ -142,7 +152,7 @@ func startL1Node(ctx context.Context, avalanchego, networkDir string, nodeIndex 
 }
 
 // buildNodeArgs builds common avalanchego arguments
-func buildNodeArgs(httpPort, stakingPort int, nodeDir, pluginDir string, extraFlags map[string]string) []string {
+func buildNodeArgs(httpPort, stakingPort int, nodeDir, pluginDir, configPath string) []string {
 	args := []string{
 		fmt.Sprintf("--http-port=%d", httpPort),
 		fmt.Sprintf("--staking-port=%d", stakingPort),
@@ -154,12 +164,20 @@ func buildNodeArgs(httpPort, stakingPort int, nodeDir, pluginDir string, extraFl
 		"--http-host=127.0.0.1",
 		"--sybil-protection-enabled=false",
 		fmt.Sprintf("--plugin-dir=%s", pluginDir),
-	}
-
-	// Add extra flags
-	for k, v := range extraFlags {
-		args = append(args, fmt.Sprintf("--%s=%s", k, v))
+		fmt.Sprintf("--config-file=%s", configPath),
 	}
 
 	return args
+}
+
+func ensureSharedNodeConfig() (string, error) {
+	configPath := "./node-config.json"
+	if _, err := os.Stat(configPath); err != nil {
+		return "", fmt.Errorf("node config not found: %s", configPath)
+	}
+	absPath, err := filepath.Abs(configPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve node config path: %w", err)
+	}
+	return absPath, nil
 }

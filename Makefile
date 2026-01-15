@@ -1,4 +1,4 @@
-.PHONY: all clean
+.PHONY: all clean pack
 
 .DEFAULT_GOAL := all
 
@@ -9,9 +9,16 @@ SUBNET_EVM_BASE_URL=https://github.com/ava-labs/subnet-evm/releases/download/$(S
 
 all: bin/benchmark bin/bombard bin/avalanchego plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
 
-build: 
+clean:
 	rm -rf bin/benchmark bin/bombard
+
+build: 
+	make clean
 	make bin/benchmark bin/bombard
+
+pack: build bin/avalanchego plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
+	rm -f avalanche-benchmark.tar.gz
+	tar -czvf avalanche-benchmark.tar.gz *.json bin/ plugins/ staking/
 
 bin/benchmark:
 	go build -o bin/benchmark ./cmd/benchmark
