@@ -33,12 +33,12 @@ func startErrorReporter() {
 
 	go func() {
 		for {
+			time.Sleep(30 * time.Second)
 			if errorCount > 0 {
-				fmt.Printf("Errors: %d, Last error: %s\n", errorCount, lastError)
+				fmt.Printf("Errors: %d, Last: %s\n", errorCount, lastError)
 				errorCount = 0
 				lastError = ""
 			}
-			time.Sleep(3 * time.Second)
 			if hadTransactionUnderpricedErrors {
 				fmt.Println("Had transaction underpriced errors!")
 				hadTransactionUnderpricedErrors = false
@@ -47,9 +47,8 @@ func startErrorReporter() {
 	}()
 }
 
-const GWEI = 1000000000
-
-var gasPrice = int64(GWEI * 1)
+// Gas price set to 25 wei (genesis minBaseFee is 1 wei, so this gives 25x margin)
+var gasPrice = int64(25)
 
 var hadTransactionUnderpricedErrors = false
 
@@ -140,14 +139,8 @@ func bombardWithTransactions(ctx context.Context, client *ethclient.Client, key 
 
 		// Wait for all transactions to be mined
 		for _, hash := range txHashes {
-			if err := listener.AwaitTxMined(hash, timeoutSeconds); err != nil {
-				lastError = err.Error()
-				errorCount++
+			if listener.AwaitTxMined(hash, timeoutSeconds) != nil {
 				shouldRefetchNonce = true
-				if isTransactionUnderpriced(err) {
-					hadTransactionUnderpricedErrors = true
-				}
-				time.Sleep(1 * time.Second)
 			}
 		}
 	}
@@ -248,14 +241,8 @@ func bombardWithERC20Transactions(ctx context.Context, client *ethclient.Client,
 
 		// Wait for all transactions to be mined
 		for _, hash := range txHashes {
-			if err := listener.AwaitTxMined(hash, timeoutSeconds); err != nil {
-				lastError = err.Error()
-				errorCount++
+			if listener.AwaitTxMined(hash, timeoutSeconds) != nil {
 				shouldRefetchNonce = true
-				if isTransactionUnderpriced(err) {
-					hadTransactionUnderpricedErrors = true
-				}
-				time.Sleep(1 * time.Second)
 			}
 		}
 	}
@@ -359,14 +346,8 @@ func bombardWithBothTransactions(ctx context.Context, client *ethclient.Client, 
 
 		// Wait for all transactions to be mined
 		for _, hash := range txHashes {
-			if err := listener.AwaitTxMined(hash, timeoutSeconds); err != nil {
-				lastError = err.Error()
-				errorCount++
+			if listener.AwaitTxMined(hash, timeoutSeconds) != nil {
 				shouldRefetchNonce = true
-				if isTransactionUnderpriced(err) {
-					hadTransactionUnderpricedErrors = true
-				}
-				time.Sleep(1 * time.Second)
 			}
 		}
 	}

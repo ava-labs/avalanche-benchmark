@@ -1,24 +1,4 @@
-# Binaries
+plugins/
 bin/
-dist/
-*.exe
-benchmark-*
-bombard-*
-
-# Dependencies
-vendor/
-
-# IDE
-.idea/
-.vscode/
-*.swp
-
-# OS
-.DS_Store
-
-# Runtime data
-*.log
-*.pid
-
-# Local settings (not project-specific)
-.claude/
+network_data/
+avalanche-benchmark.tar.gz

@@ -1,0 +1,30 @@
+{
+  "config": {
+    "chainId": 99999,
+    "feeConfig": {
+      "gasLimit": 200000000,
+      "targetBlockRate": 1,
+      "minBaseFee": 1,
+      "targetGas": 18446744073709551615,
+      "baseFeeChangeDenominator": 9223372036854775807,
+      "minBlockGasCost": 0,
+      "maxBlockGasCost": 0,
+      "blockGasCostStep": 0
+    }
+  },
+  "alloc": {
+    "8db97C7cEcE249c2b98bDC0226Cc4C2A57BF52FC": {
+      "balance": "0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+    }
+  },
+  "nonce": "0x0",
+  "timestamp": "0x0",
+  "extraData": "0x00",
+  "gasLimit": "0xbebc200",
+  "difficulty": "0x0",
+  "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "coinbase": "0x0000000000000000000000000000000000000000",
+  "number": "0x0",
+  "gasUsed": "0x0",
+  "parentHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+}
