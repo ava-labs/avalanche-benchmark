@@ -49,8 +49,8 @@ func main() {
 		RunE:  runStart,
 	}
 	startCmd.Flags().StringVar(&configPath, "config", "", "Path to config.json file")
-	startCmd.Flags().StringVar(&genesisPath, "genesis", "", "Path to subnet-evm genesis file (uses optimized default)")
-	startCmd.Flags().StringVar(&chainConfigPath, "chain-config", "", "Path to subnet-evm chain config file (uses optimized default)")
+	startCmd.Flags().StringVar(&genesisPath, "genesis", "./genesis.json", "Path to subnet-evm genesis file (default: ./genesis.json)")
+	startCmd.Flags().StringVar(&chainConfigPath, "chain-config", "./chain-config.json", "Path to subnet-evm chain config file (default: ./chain-config.json)")
 	startCmd.Flags().IntVar(&primaryNodeCount, "primary-nodes", 2, "Number of primary network nodes (min: 2)")
 	startCmd.Flags().IntVar(&l1ValidatorNodeCount, "l1-validators", 2, "Number of L1 validator nodes (participate in consensus)")
 	startCmd.Flags().IntVar(&l1RPCNodeCount, "l1-rpcs", 1, "Number of L1 RPC-only nodes (for load balancing, not validators)")

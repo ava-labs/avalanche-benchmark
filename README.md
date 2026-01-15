@@ -132,7 +132,7 @@ Default genesis is optimized for max throughput:
 ./benchmark start --chain-config custom-chain.json
 ```
 
-Default chain config auto-scales based on system RAM. Key settings:
+Default chain config is optimized for maximum throughput. Key settings:
 
 ```json
 {
@@ -162,19 +162,6 @@ Default chain config auto-scales based on system RAM. Key settings:
 | `tx-pool-global-slots` | Max pending transactions |
 | `push-gossip-frequency` | TX propagation interval |
 | `skip-tx-indexing` | Disable indexing for speed |
-
-### RAM-Based Auto-Scaling
-
-Chain config caches auto-scale based on detected RAM:
-
-| System RAM | trie-clean | trie-dirty | tx-pool-slots |
-|------------|------------|------------|---------------|
-| < 32 GB | 4.5 GB | 4.5 GB | 32K |
-| 32-64 GB | 9 GB | 9 GB | 64K |
-| 64-128 GB | 18 GB | 18 GB | 128K |
-| 128-256 GB | 36 GB | 36 GB | 256K |
-| 256-512 GB | 72 GB | 72 GB | 512K |
-| 512+ GB | 144 GB | 144 GB | 1M |
 
 ## CLI Options
 
@@ -222,7 +209,3 @@ make build
 | `bombard not found` | Set `EVMBOMBARD_PATH` |
 | Ports in use | `./benchmark shutdown` or reboot |
 | Low TPS | Increase `--keys`, check RAM/config |
-
-## License
-
-Apache 2.0

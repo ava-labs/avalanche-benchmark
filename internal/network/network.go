@@ -55,8 +55,8 @@ type State struct {
 	NodeURI       string   `json:"nodeUri"`       // Primary RPC node URI (for backwards compat)
 	ChainID       string   `json:"chainId"`
 	SubnetID      string   `json:"subnetId"`
-	RPCURL        string   `json:"rpcUrl"`    // Single RPC URL (for backwards compat)
-	RPCURLs       []string `json:"rpcUrls"`   // All RPC URLs for load balancing
+	RPCURL        string   `json:"rpcUrl"`  // Single RPC URL (for backwards compat)
+	RPCURLs       []string `json:"rpcUrls"` // All RPC URLs for load balancing
 	NetworkID     uint32   `json:"networkId"`
 	PIDs          []int    `json:"pids"` // Process IDs for cleanup
 }
@@ -76,12 +76,12 @@ type Result struct {
 
 // NodeInfo holds information about a running node
 type NodeInfo struct {
-	NodeID          string
-	URI             string
-	StakingAddress  string
-	PID             int
-	BLSPublicKey    string
-	BLSProofOfPoss  string
+	NodeID         string
+	URI            string
+	StakingAddress string
+	PID            int
+	BLSPublicKey   string
+	BLSProofOfPoss string
 }
 
 // Start starts a new benchmark network with an L1
@@ -814,141 +814,19 @@ func findPluginDir() (string, error) {
 }
 
 func loadGenesis(genesisPath string) ([]byte, error) {
-	if genesisPath != "" {
-		return os.ReadFile(genesisPath)
+	if genesisPath == "" {
+		genesisPath = "./genesis.json"
 	}
-
-	// Use default genesis
-	return []byte(defaultGenesis), nil
+	return os.ReadFile(genesisPath)
 }
 
 func loadChainConfig(chainConfigPath string) ([]byte, error) {
-	if chainConfigPath != "" {
-		return os.ReadFile(chainConfigPath)
+	if chainConfigPath == "" {
+		chainConfigPath = "./chain-config.json"
 	}
-
-	// Auto-detect RAM and generate optimized config
-	totalRAM, err := DetectRAM()
-	if err != nil {
-		fmt.Printf("Warning: Could not detect RAM (%v), using conservative defaults\n", err)
-		totalRAM = 16 * 1024 * 1024 * 1024 // 16GB fallback
-	}
-
-	ramCfg := CalculateRAMConfig(totalRAM)
-	fmt.Printf("\n%s\n\n", ramCfg.String())
-
-	return GenerateChainConfig(ramCfg)
+	return os.ReadFile(chainConfigPath)
 }
 
-// Default subnet-evm genesis optimized for maximum throughput benchmarking
-// Based on verified source code analysis of subnet-evm
-//
-// Key optimizations:
-// - gasLimit: 500M (500,000,000) - ~23,809 simple transfers per block
-// - targetBlockRate: 1 second blocks
-// - targetGas: MaxUint64 - ensures base fee can NEVER increase
-// - baseFeeChangeDenominator: MaxInt64 - fees essentially frozen at minBaseFee
-// - minBaseFee: 1 wei - lowest possible
-// - All block gas costs zeroed - no block production overhead
-//
-// Theoretical max TPS: ~16,000 (limited by 1.8MB tx size per block in miner/worker.go:64)
-//
-// EWOQ key pre-funded with max balance for benchmarking
-var defaultGenesis = `{
-  "config": {
-    "chainId": 99999,
-    "feeConfig": {
-      "gasLimit": 500000000,
-      "targetBlockRate": 1,
-      "minBaseFee": 1,
-      "targetGas": 18446744073709551615,
-      "baseFeeChangeDenominator": 9223372036854775807,
-      "minBlockGasCost": 0,
-      "maxBlockGasCost": 0,
-      "blockGasCostStep": 0
-    }
-  },
-  "alloc": {
-    "8db97C7cEcE249c2b98bDC0226Cc4C2A57BF52FC": {
-      "balance": "0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
-    }
-  },
-  "nonce": "0x0",
-  "timestamp": "0x0",
-  "extraData": "0x00",
-  "gasLimit": "0x1DCD6500",
-  "difficulty": "0x0",
-  "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
-  "coinbase": "0x0000000000000000000000000000000000000000",
-  "number": "0x0",
-  "gasUsed": "0x0",
-  "parentHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
-}`
-
-// Default chain config optimized for maximum throughput benchmarking
-// Based on verified source code analysis of subnet-evm
-//
-// Key optimizations:
-// - min-delay-target: 0 - removes ACP-226 minimum block delay
-// - Massive caches for high-memory systems (100GB+ trie caches)
-// - Large tx pool for sustained high throughput
-// - Aggressive gossip settings for fast tx propagation
-// - Disabled tx indexing for benchmark speed
-var defaultChainConfig = `{
-  "min-delay-target": 200000000,
-
-  "pruning-enabled": false,
-  "commit-interval": 16384,
-  "accepted-queue-limit": 256,
-
-  "trie-clean-cache": 102400,
-  "trie-dirty-cache": 102400,
-  "trie-dirty-commit-target": 2048,
-  "trie-prefetcher-parallelism": 64,
-  "snapshot-cache": 51200,
-  "accepted-cache-size": 256,
-  "state-sync-server-trie-cache": 10240,
-
-  "tx-pool-price-limit": 1,
-  "tx-pool-price-bump": 1,
-  "tx-pool-account-slots": 256,
-  "tx-pool-global-slots": 262144,
-  "tx-pool-account-queue": 1024,
-  "tx-pool-global-queue": 131072,
-  "tx-pool-lifetime": "1h",
-
-  "push-gossip-frequency": "50ms",
-  "pull-gossip-frequency": "500ms",
-  "regossip-frequency": "10s",
-  "push-gossip-num-validators": 200,
-  "push-regossip-num-validators": 50,
-  "push-gossip-percent-stake": 0.5,
-
-  "rpc-gas-cap": 500000000,
-  "rpc-tx-fee-cap": 1000000,
-  "batch-request-limit": 10000,
-  "batch-response-max-size": 104857600,
-
-  "max-outbound-active-requests": 64,
-
-  "skip-tx-indexing": true,
-  "transaction-history": 0,
-
-  "metrics-expensive-enabled": false,
-  "allow-unfinalized-queries": true,
-  "allow-unprotected-txs": true,
-  "local-txs-enabled": true,
-
-  "snapshot-wait": false,
-  "snapshot-verification-enabled": false,
-
-  "populate-missing-tries": null,
-  "populate-missing-tries-parallelism": 4096,
-
-  "state-sync-enabled": false,
-
-  "log-level": "warn"
-}`
 
 // NodeHealthStatus contains health information about a node
 type NodeHealthStatus struct {
@@ -1080,7 +958,7 @@ func writeChainConfig(nodeDir, chainID string, customConfig []byte) error {
 
 	configData := customConfig
 	if configData == nil {
-		configData = []byte(defaultChainConfig)
+		return fmt.Errorf("chain config data is nil")
 	}
 
 	if err := os.WriteFile(configPath, configData, 0644); err != nil {

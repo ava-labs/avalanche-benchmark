@@ -1,85 +1,74 @@
-.PHONY: build clean test package help
+.PHONY: all clean
 
-# Binary names
-BENCHMARK_BINARY=benchmark
-BOMBARD_BINARY=bombard
+.DEFAULT_GOAL := all
 
-# Build directories
-BUILD_DIR=bin
-DIST_DIR=dist
+AVALANCHEGO_VERSION=v1.14.1
+SUBNET_EVM_VERSION=v0.8.0
+AVALANCHEGO_BASE_URL=https://github.com/ava-labs/avalanchego/releases/download/$(AVALANCHEGO_VERSION)
+SUBNET_EVM_BASE_URL=https://github.com/ava-labs/subnet-evm/releases/download/$(SUBNET_EVM_VERSION)
 
-# Go build flags
-LDFLAGS=-s -w
+all: bin/benchmark bin/bombard bin/avalanchego plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
 
-help:
-	@echo "Avalanche Benchmark CLI"
-	@echo ""
-	@echo "Usage:"
-	@echo "  make build          Build benchmark CLI and bombard"
-	@echo "  make clean          Remove build artifacts"
-	@echo "  make test           Run tests"
-	@echo "  make package        Create distribution package"
-	@echo "  make deps           Download and build dependencies"
-	@echo ""
-	@echo "Environment variables:"
-	@echo "  AVALANCHEGO_PATH    Path to avalanchego binary"
-	@echo "  AVALANCHEGO_PLUGIN_DIR  Path to plugins directory"
+build: 
+	rm -rf bin/benchmark bin/bombard
+	make bin/benchmark bin/bombard
 
-build:
-	@echo "Building benchmark CLI and bombard..."
-	@mkdir -p $(BUILD_DIR)
-	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BENCHMARK_BINARY) ./cmd/benchmark
-	go build -ldflags "$(LDFLAGS)" -o $(BUILD_DIR)/$(BOMBARD_BINARY) ./cmd/bombard
-	@echo "Built: $(BUILD_DIR)/$(BENCHMARK_BINARY), $(BUILD_DIR)/$(BOMBARD_BINARY)"
+bin/benchmark:
+	go build -o bin/benchmark ./cmd/benchmark
 
-clean:
-	@echo "Cleaning..."
-	rm -rf $(BUILD_DIR) $(DIST_DIR)
+bin/bombard:
+	go build -o bin/bombard ./cmd/bombard
 
-test:
-	go test -v ./...
-
-deps:
-	@echo "Downloading dependencies..."
-	go mod tidy
-
-# Create a distribution package with all required binaries
-package: build
-	@echo "Creating distribution package..."
-	@mkdir -p $(DIST_DIR)/avalanche-benchmark
-	@cp $(BUILD_DIR)/$(BENCHMARK_BINARY) $(DIST_DIR)/avalanche-benchmark/
-	@cp $(BUILD_DIR)/$(BOMBARD_BINARY) $(DIST_DIR)/avalanche-benchmark/
-	@mkdir -p $(DIST_DIR)/avalanche-benchmark/plugins
-
-	@# Copy avalanchego if available
-	@if [ -n "$(AVALANCHEGO_PATH)" ] && [ -f "$(AVALANCHEGO_PATH)" ]; then \
-		cp $(AVALANCHEGO_PATH) $(DIST_DIR)/avalanche-benchmark/; \
-	elif [ -f "../avalanchego/build/avalanchego" ]; then \
-		cp ../avalanchego/build/avalanchego $(DIST_DIR)/avalanche-benchmark/; \
+bin/avalanchego:
+	@mkdir -p bin
+	@OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
+	ARCH=$$(uname -m); \
+	if [ "$$ARCH" = "x86_64" ]; then \
+		ARCH_SUFFIX=amd64; \
+	elif [ "$$ARCH" = "aarch64" ] || [ "$$ARCH" = "arm64" ]; then \
+		ARCH_SUFFIX=arm64; \
 	else \
-		echo "Warning: avalanchego binary not found. Add it manually."; \
-	fi
-
-	@# Copy subnet-evm plugin if available
-	@if [ -n "$(AVALANCHEGO_PLUGIN_DIR)" ] && [ -f "$(AVALANCHEGO_PLUGIN_DIR)/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy" ]; then \
-		cp $(AVALANCHEGO_PLUGIN_DIR)/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy $(DIST_DIR)/avalanche-benchmark/plugins/; \
-	elif [ -f "../avalanchego/build/plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy" ]; then \
-		cp ../avalanchego/build/plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy $(DIST_DIR)/avalanche-benchmark/plugins/; \
+		echo "Unsupported architecture: $$ARCH"; \
+		exit 1; \
+	fi; \
+	if [ "$$OS" = "darwin" ]; then \
+		URL="$(AVALANCHEGO_BASE_URL)/avalanchego-macos-$(AVALANCHEGO_VERSION).zip"; \
+		echo "Downloading avalanchego from $$URL..."; \
+		curl -L -o /tmp/avalanchego.zip "$$URL"; \
+		unzip -q /tmp/avalanchego.zip -d /tmp; \
+		cp /tmp/avalanchego-$(AVALANCHEGO_VERSION)/avalanchego bin/avalanchego; \
+		rm -rf /tmp/avalanchego.zip /tmp/avalanchego-$(AVALANCHEGO_VERSION); \
 	else \
-		echo "Warning: subnet-evm plugin not found. Add it manually."; \
-	fi
+		URL="$(AVALANCHEGO_BASE_URL)/avalanchego-linux-$$ARCH_SUFFIX-$(AVALANCHEGO_VERSION).tar.gz"; \
+		echo "Downloading avalanchego from $$URL..."; \
+		curl -L -o /tmp/avalanchego.tar.gz "$$URL"; \
+		tar -xzf /tmp/avalanchego.tar.gz -C bin --strip-components=1 avalanchego-$(AVALANCHEGO_VERSION)/avalanchego; \
+		rm /tmp/avalanchego.tar.gz; \
+	fi; \
+	chmod +x bin/avalanchego
 
-	@# Copy README
-	@cp README.md $(DIST_DIR)/avalanche-benchmark/ 2>/dev/null || echo "No README.md found"
-
-	@# Create tarball
-	@cd $(DIST_DIR) && tar -czf avalanche-benchmark.tar.gz avalanche-benchmark
-	@echo "Package created: $(DIST_DIR)/avalanche-benchmark.tar.gz"
-
-# Install to GOPATH/bin
-install: build
-	@echo "Installing to $(GOPATH)/bin..."
-	@cp $(BUILD_DIR)/$(BENCHMARK_BINARY) $(GOPATH)/bin/
-	@cp $(BUILD_DIR)/$(BOMBARD_BINARY) $(GOPATH)/bin/
-
-.DEFAULT_GOAL := help
+plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy:
+	@mkdir -p plugins
+	@OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
+	ARCH=$$(uname -m); \
+	if [ "$$ARCH" = "x86_64" ]; then \
+		ARCH_SUFFIX=amd64; \
+	elif [ "$$ARCH" = "aarch64" ] || [ "$$ARCH" = "arm64" ]; then \
+		ARCH_SUFFIX=arm64; \
+	else \
+		echo "Unsupported architecture: $$ARCH"; \
+		exit 1; \
+	fi; \
+	if [ "$$OS" = "darwin" ]; then \
+		OS_SUFFIX=darwin; \
+	else \
+		OS_SUFFIX=linux; \
+	fi; \
+	VERSION_NO_V=$$(echo "$(SUBNET_EVM_VERSION)" | sed 's/^v//'); \
+	URL="$(SUBNET_EVM_BASE_URL)/subnet-evm_$${VERSION_NO_V}_$${OS_SUFFIX}_$${ARCH_SUFFIX}.tar.gz"; \
+	echo "Downloading subnet-evm from $$URL..."; \
+	curl -L -o /tmp/subnet-evm.tar.gz "$$URL"; \
+	tar -xzf /tmp/subnet-evm.tar.gz -C /tmp; \
+	cp /tmp/subnet-evm plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy; \
+	chmod +x plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy; \
+	rm -rf /tmp/subnet-evm.tar.gz /tmp/subnet-evm
