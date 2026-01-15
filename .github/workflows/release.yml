@@ -37,9 +37,9 @@ jobs:
             -e GOTOOLCHAIN=auto \
             golang:1.24rc2 \
             sh -c "
-              apt-get update && apt-get install -y git gcc libc-dev &&
-              go build -ldflags='-s -w' -o benchmark-linux-${{ matrix.arch }} ./cmd/benchmark &&
-              go build -ldflags='-s -w' -o bombard-linux-${{ matrix.arch }} ./cmd/bombard
+              apt-get update && apt-get install -y gcc libc-dev &&
+              go build -buildvcs=false -ldflags='-s -w' -o benchmark-linux-${{ matrix.arch }} ./cmd/benchmark &&
+              go build -buildvcs=false -ldflags='-s -w' -o bombard-linux-${{ matrix.arch }} ./cmd/bombard
             "
 
       - name: Upload artifacts
