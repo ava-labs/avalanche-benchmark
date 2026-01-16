@@ -1,34 +1,18 @@
 package bombard
 
 import (
-	"fmt"
 	"math/big"
-	"strings"
 
 	"github.com/ava-labs/libevm/common"
 )
 
-// ToWei converts a float amount to wei (18 decimals).
+// ToWei converts a whole token amount to wei (18 decimals).
+// E.g., ToWei(100) returns 100 * 10^18.
 func ToWei(amount float64) *big.Int {
-	const decimals = 18
-
-	wei := new(big.Int)
-
-	// Convert float to string with maximum precision
-	amountStr := fmt.Sprintf("%.18f", amount)
-
-	// Remove decimal point and trailing zeros
-	amountStr = strings.Replace(amountStr, ".", "", 1)
-	amountStr = strings.TrimRight(amountStr, "0")
-
-	// Parse string to big.Int
-	wei.SetString(amountStr, 10)
-
-	// Adjust for decimals
-	multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(decimals)), nil)
-	wei.Mul(wei, multiplier)
-
-	return wei
+	// For whole numbers, simply multiply by 10^18
+	multiplier := new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil)
+	result := new(big.Int).SetInt64(int64(amount))
+	return result.Mul(result, multiplier)
 }
 
 // ERC20TransferSelector is the function selector for transfer(address,uint256)

@@ -20,7 +20,7 @@ const EwoqAddress = "0x8db97C7cEcE249c2b98bDC0226Cc4C2A57BF52FC"
 
 // PredeployedTokenAddress is the address of the predeployed ERC20 "Benchmark Token" (BENCH)
 // in the default subnet-evm genesis. The ewoq address holds the entire 100M token supply.
-const PredeployedTokenAddress = "0x0200000000000000000000000000000000000001"
+const PredeployedTokenAddress = "0xB0B5B0B5B0B5B0B5B0B5B0B5B0B5B0B5B0B5B0B5"
 
 func fundAccounts(client *ethclient.Client, listener *TxListener, keys []*Key) error {
 	ewoqKey, err := crypto.HexToECDSA(ewoqPrivateKey)
