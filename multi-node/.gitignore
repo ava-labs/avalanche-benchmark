@@ -1,4 +1,1 @@
 network.env
-terraform-aws/.terraform/
-terraform-aws/*.tfstate*
-terraform-aws/config.yaml

@@ -11,11 +11,17 @@ provider "aws" {
   region = "ap-northeast-1"  # Tokyo
 }
 
+# Get the public IP of the machine running Terraform
+data "http" "my_ip" {
+  url = "https://checkip.amazonaws.com"
+}
+
 locals {
-  config   = yamldecode(file("${path.module}/config.yaml"))
-  prefix   = local.config.prefix
-  key_name = local.config.key_name
-  app_name = "benchmark"
+  config      = yamldecode(file("${path.module}/config.yaml"))
+  prefix      = local.config.prefix
+  key_name    = local.config.key_name
+  app_name    = "benchmark"
+  operator_ip = "${chomp(data.http.my_ip.response_body)}/32"
 }
 
 # IAM Role for EC2
@@ -37,64 +43,81 @@ resource "aws_iam_instance_profile" "ec2" {
   role = aws_iam_role.ec2.name
 }
 
-# Security Group
+# Security Group - only allows traffic from operator IP
 resource "aws_security_group" "app" {
   name        = "${local.prefix}-${local.app_name}"
-  description = "Benchmark nodes - SSH, Avalanche, Prometheus, Grafana"
+  description = "Benchmark nodes - isolated, operator access only"
 
-  # SSH
+  # SSH - operator only
   ingress {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [local.operator_ip]
   }
 
-  # Avalanche HTTP API
+  # Avalanche HTTP API - operator only
   ingress {
     from_port   = 9650
     to_port     = 9650
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [local.operator_ip]
   }
 
-  # Avalanche Staking
+  # Avalanche Staking - operator only
   ingress {
     from_port   = 9651
     to_port     = 9651
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [local.operator_ip]
   }
 
-  # Prometheus
+  # Prometheus - operator only
   ingress {
     from_port   = 9090
     to_port     = 9090
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [local.operator_ip]
   }
 
-  # Grafana
+  # Grafana - operator only
   ingress {
     from_port   = 3000
     to_port     = 3000
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [local.operator_ip]
   }
 
-  # ICMP
+  # ICMP - operator only
   ingress {
     from_port   = -1
     to_port     = -1
     protocol    = "icmp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [local.operator_ip]
   }
 
+  # Internal traffic between benchmark nodes
+  ingress {
+    from_port = 0
+    to_port   = 0
+    protocol  = "-1"
+    self      = true
+  }
+
+  # Egress - operator only (no internet access)
   egress {
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [local.operator_ip]
+  }
+
+  # Allow internal egress between nodes
+  egress {
+    from_port = 0
+    to_port   = 0
+    protocol  = "-1"
+    self      = true
   }
 
   tags = {
