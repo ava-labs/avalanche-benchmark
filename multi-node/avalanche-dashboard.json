@@ -976,7 +976,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "avg by (instance) (\n  increase(\n    avalanche_mDV3QWRXfwgKUWb9sggkv4vQxAQR4y2CyKrt5pLZ5SzQ7EHBv_vm_eth_chain_block_gas_used_processed{chain=~\".*\"}[5m]\n  )\n)/avg by (instance) (\n  increase(\n    avalanche_mDV3QWRXfwgKUWb9sggkv4vQxAQR4y2CyKrt5pLZ5SzQ7EHBv_vm_eth_chain_block_inserts_count{chain=~\".*\"}[5m]\n  )\n)",
+                    "expr": "avg by (instance) (\n  increase(\n    avalanche_subnetevm_vm_eth_chain_block_gas_used_processed{chain=~\".*\"}[5m]\n  )\n)/avg by (instance) (\n  increase(\n    avalanche_subnetevm_vm_eth_chain_block_inserts_count{chain=~\".*\"}[5m]\n  )\n)",
                     "legendFormat": "{{instance}}",
                     "range": true,
                     "rawQuery": false,
@@ -1076,7 +1076,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "sum by (instance) (\n  rate(avalanche_meterchainvm_verify_sum{chain=~\".*\"}[5m])/rate(avalanche_mDV3QWRXfwgKUWb9sggkv4vQxAQR4y2CyKrt5pLZ5SzQ7EHBv_vm_eth_chain_block_gas_used_processed{chain=~\".*\"}[5m])\n)",
+                    "expr": "sum by (instance) (\n  rate(avalanche_meterchainvm_verify_sum{chain=~\".*\"}[5m])/rate(avalanche_subnetevm_vm_eth_chain_block_gas_used_processed{chain=~\".*\"}[5m])\n)",
                     "legendFormat": "{{instance}}",
                     "range": true,
                     "rawQuery": false,
@@ -1177,7 +1177,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "sum by (instance) (\n  avg_over_time(\n    avalanche_mDV3QWRXfwgKUWb9sggkv4vQxAQR4y2CyKrt5pLZ5SzQ7EHBv_vm_eth_txpool_queued{chain=~\".*\"}[5m]\n  )\n)",
+                    "expr": "sum by (instance) (\n  avg_over_time(\n    avalanche_subnetevm_vm_eth_txpool_queued{chain=~\".*\"}[5m]\n  )\n)",
                     "legendFormat": "{{instance}}",
                     "rawQuery": false,
                     "refId": "A"

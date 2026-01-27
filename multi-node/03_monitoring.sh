@@ -42,6 +42,20 @@ fi
 
 echo "  Binaries found."
 
+# Helper: upload file only if remote differs (size check)
+upload_if_changed() {
+    local src="$1"
+    local dest_host="$2"
+    local dest_path="$3"
+    local local_size=$(stat -c%s "$src" 2>/dev/null || stat -f%z "$src" 2>/dev/null)
+    local remote_size=$(ssh "$dest_host" "stat -c%s '$dest_path' 2>/dev/null || echo 0")
+    if [ "$local_size" != "$remote_size" ]; then
+        scp -q "$src" "$dest_host:$dest_path"
+        return 0  # uploaded
+    fi
+    return 1  # skipped
+}
+
 # ------------------------------------------------------------------------------
 # Step 2: Generate prometheus.yml with actual IPs
 # ------------------------------------------------------------------------------
@@ -71,13 +85,23 @@ echo "[3/4] Uploading monitoring to $NODE1_IP..."
 
 ssh "$NODE1_IP" "mkdir -p $REMOTE_DIR/grafana/provisioning/datasources $REMOTE_DIR/grafana/provisioning/dashboards $REMOTE_DIR/grafana/dashboards"
 
-# Upload prometheus
-scp -q "$SCRIPT_DIR/bin/prometheus" "$NODE1_IP:$REMOTE_DIR/"
+# Upload prometheus binary (skip if same size)
+if upload_if_changed "$SCRIPT_DIR/bin/prometheus" "$NODE1_IP" "$REMOTE_DIR/prometheus"; then
+    echo "  Uploaded prometheus"
+else
+    echo "  Skipped prometheus (unchanged)"
+fi
+
 scp -q "$SCRIPT_DIR/prometheus.yml" "$NODE1_IP:$REMOTE_DIR/"
 
-# Upload grafana tarball and extract on remote (much faster than copying extracted dir)
-scp -q "$SCRIPT_DIR/bin/grafana.tar.gz" "$NODE1_IP:$REMOTE_DIR/"
-ssh "$NODE1_IP" "cd $REMOTE_DIR && rm -rf grafana-dist && tar -xzf grafana.tar.gz && mv grafana-v* grafana-dist && rm grafana.tar.gz"
+# Upload grafana tarball and extract on remote (only if needed)
+if upload_if_changed "$SCRIPT_DIR/bin/grafana.tar.gz" "$NODE1_IP" "$REMOTE_DIR/grafana.tar.gz"; then
+    echo "  Uploaded grafana.tar.gz, extracting..."
+    ssh "$NODE1_IP" "cd $REMOTE_DIR && rm -rf grafana-dist && tar -xzf grafana.tar.gz && mv grafana-v* grafana-dist && rm grafana.tar.gz"
+else
+    echo "  Skipped grafana (unchanged)"
+fi
+
 scp -q "$SCRIPT_DIR/grafana-datasources.yml" "$NODE1_IP:$REMOTE_DIR/grafana/provisioning/datasources/datasources.yml"
 scp -q "$SCRIPT_DIR/grafana-dashboards.yml" "$NODE1_IP:$REMOTE_DIR/grafana/provisioning/dashboards/dashboards.yml"
 scp -q "$SCRIPT_DIR/avalanche-dashboard.json" "$NODE1_IP:$REMOTE_DIR/grafana/dashboards/"
