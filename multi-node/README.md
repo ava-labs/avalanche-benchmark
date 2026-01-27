@@ -38,7 +38,7 @@ cp .env.example .env
 ./03_benchmark.sh
 
 # Cleanup
-./09_cleanup.sh
+./05_cleanup.sh
 ```
 
 ## Benchmark Options

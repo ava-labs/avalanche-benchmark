@@ -65,7 +65,7 @@ IPs passed as flags to each script/tool.
 |------|-------------|
 | `Makefile` | Downloads avalanchego v1.14.1 and subnet-evm v0.8.0 |
 | `01_bootstrap_primary_network.sh` | Uploads binaries via scp, starts 3-node network, waits for health, saves network-info.env |
-| `09_cleanup.sh` | Kills processes and cleans up files on all nodes |
+| `05_cleanup.sh` | Kills processes and cleans up files on all nodes |
 | `tmp/main.tf` | Terraform for 3 AWS instances in Tokyo (m6a.4xlarge) |
 | `node-config.json` | Basic node config |
 
