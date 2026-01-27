@@ -1,4 +1,5 @@
 plugins/
 bin/
 network_data/
-avalanche-benchmark.tar.gz
+avalanche-benchmark.tar.gztmp/
+tmp/
