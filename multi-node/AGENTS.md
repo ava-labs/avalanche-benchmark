@@ -17,6 +17,8 @@ Overall what are we doing here? We just putting everything so first we need to c
 - SSH key auth: handled by default terminal (bash), no special handling needed
 - Three IPs: passed as CLI flags
 - Avalanchego binary: needs to be copied, everything included in archive
+- No staking keys needed - avalanchego auto-generates certs if none exist
+- Use only default tools (scp, ssh, curl, nohup) - no tmux/rsync
 
 ---
 
@@ -32,15 +34,15 @@ Overall what are we doing here? We just putting everything so first we need to c
 IPs passed as flags to each script/tool.
 
 ### Step 1: Bootstrap Primary Network (bash)
-- SCP avalanchego binary, staking keys, configs to all 3 nodes
-- Start node1 first (bootstrap), wait healthy
+- SCP avalanchego binary, plugins, config to all 3 nodes
+- Start node1 first (bootstrap with empty --bootstrap-ips/ids), wait healthy
 - Start node2, node3 pointing to node1
-- Health check all 3
+- Health check all 3 via /ext/health (HTTP 200 = healthy)
+- Save network-info.env with IPs and NodeIDs
 
-### Step 2: Create L1 (Go executable, runs from laptop)
-- SSH tunnel to node1's P-chain RPC (9650)
+### Step 2: Create L1 (Go executable or bash)
 - Create subnet, create chain
-- Collect NodeIDs + BLS keys from all 3 via SSH tunnels
+- Collect NodeIDs + BLS keys from all 3 nodes
 - Issue convertSubnetToL1 TX
 
 ### Step 3: Deploy Monitoring (bash)
@@ -53,8 +55,27 @@ IPs passed as flags to each script/tool.
 - SSH tunnel to any node's EVM RPC
 - Run bombard through tunnel
 
-### Grafana Notes
-- Works completely offline/air-gapped
-- Anonymous access mode = no login required
-- Pre-provision dashboard JSON = shows only that dashboard
-- Access via `http://node1-ip:3000` (SSH tunnel or direct)
+---
+
+## Progress
+
+### Completed
+
+| File | Description |
+|------|-------------|
+| `Makefile` | Downloads avalanchego v1.14.1 and subnet-evm v0.8.0 |
+| `01_bootstrap_primary_network.sh` | Uploads binaries via scp, starts 3-node network, waits for health, saves network-info.env |
+| `09_cleanup.sh` | Kills processes and cleans up files on all nodes |
+| `tmp/main.tf` | Terraform for 3 AWS instances in Tokyo (m6a.4xlarge) |
+| `node-config.json` | Basic node config |
+
+### Next Step
+
+**Create `02_create_l1.sh`** - This script needs to:
+1. Read network-info.env (or accept IPs as args)
+2. Create subnet on P-chain
+3. Create chain with subnet-evm genesis
+4. Collect BLS public keys from all 3 nodes
+5. Convert subnet to L1 with all 3 as validators
+6. Wait for chain to be ready
+7. Save chain info (blockchain ID, RPC endpoint) for benchmark step

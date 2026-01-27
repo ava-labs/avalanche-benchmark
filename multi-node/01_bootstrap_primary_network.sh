@@ -1,23 +1,33 @@
 #!/bin/bash
 set -e
 
-# Multi-node primary network bootstrap script
-# Usage: ./01_bootstrap_primary_network.sh <node1_ip> <node2_ip> <node3_ip>
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$SCRIPT_DIR/.env"
+REMOTE_DIR="~/avalanche-benchmark"
 
-if [ "$#" -ne 3 ]; then
-    echo "Usage: $0 <node1_ip> <node2_ip> <node3_ip>"
-    echo "  node1 = bootstrap node (also runs Prometheus + Grafana later)"
-    echo "  node2 = validator"
-    echo "  node3 = validator"
+# ------------------------------------------------------------------------------
+# Load configuration
+# ------------------------------------------------------------------------------
+if [ ! -f "$ENV_FILE" ]; then
+    echo "ERROR: .env file not found"
+    echo ""
+    echo "Create .env with your node IPs:"
+    echo "  cp .env.example .env"
+    echo "  # Edit .env and fill in NODE1_IP, NODE2_IP, NODE3_IP"
     exit 1
 fi
 
-NODE1_IP=$1
-NODE2_IP=$2
-NODE3_IP=$3
+source "$ENV_FILE"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REMOTE_DIR="/tmp/avalanche-benchmark"
+if [ -z "$NODE1_IP" ] || [ -z "$NODE2_IP" ] || [ -z "$NODE3_IP" ]; then
+    echo "ERROR: Missing node IPs in .env"
+    echo ""
+    echo "Required variables:"
+    echo "  NODE1_IP=$NODE1_IP"
+    echo "  NODE2_IP=$NODE2_IP"
+    echo "  NODE3_IP=$NODE3_IP"
+    exit 1
+fi
 
 echo "=== Multi-Node Primary Network Bootstrap ==="
 echo "Node 1 (bootstrap): $NODE1_IP"
@@ -30,12 +40,15 @@ echo ""
 # ------------------------------------------------------------------------------
 echo "[1/4] Uploading files to all nodes..."
 
+SUBNET_EVM_ID="srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy"
+
 for NODE_IP in $NODE1_IP $NODE2_IP $NODE3_IP; do
     echo "  Uploading to $NODE_IP..."
     ssh "$NODE_IP" "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR/bin $REMOTE_DIR/plugins"
     scp -q "$SCRIPT_DIR/bin/avalanchego" "$NODE_IP:$REMOTE_DIR/bin/"
-    scp -q "$SCRIPT_DIR/plugins/"* "$NODE_IP:$REMOTE_DIR/plugins/"
+    scp -q "$SCRIPT_DIR/bin/$SUBNET_EVM_ID" "$NODE_IP:$REMOTE_DIR/plugins/"
     scp -q "$SCRIPT_DIR/node-config.json" "$NODE_IP:$REMOTE_DIR/"
+    scp -q "$SCRIPT_DIR/chain-config.json" "$NODE_IP:$REMOTE_DIR/"
 done
 
 echo "  Upload complete."
@@ -47,59 +60,50 @@ echo "[2/4] Starting bootstrap node on $NODE1_IP..."
 
 ssh "$NODE1_IP" bash << 'BOOTSTRAP_EOF'
 set -e
-cd /tmp/avalanche-benchmark
+cd ~/avalanche-benchmark
 
 pkill -f avalanchego || true
 sleep 1
 
 rm -rf data
-mkdir -p data/node-1/{db,logs}
-
-PLUGIN_DIR="$(pwd)/plugins"
+mkdir -p data/{db,logs}
 
 nohup ./bin/avalanchego \
     --http-port=9650 \
     --staking-port=9651 \
     --http-host=0.0.0.0 \
-    --db-dir=data/node-1/db \
-    --log-dir=data/node-1/logs \
-    --data-dir=data/node-1 \
+    --db-dir=data/db \
+    --log-dir=data/logs \
+    --data-dir=data \
     --network-id=local \
     --sybil-protection-enabled=false \
-    --plugin-dir="$PLUGIN_DIR" \
+    --plugin-dir="$(pwd)/plugins" \
     --config-file=node-config.json \
     --bootstrap-ips= \
     --bootstrap-ids= \
-    > data/node-1/logs/stdout.log 2>&1 &
+    >/dev/null 2>&1 &
 
-echo $! > data/node-1/pid
-echo "Bootstrap node started with PID $(cat data/node-1/pid)"
+echo $! > data/pid
 BOOTSTRAP_EOF
 
-echo "  Waiting for bootstrap node to be healthy..."
+echo "  Waiting for bootstrap node ID..."
 
+BOOTSTRAP_NODE_ID=""
 for i in {1..60}; do
-    if ssh "$NODE1_IP" "curl -sf http://127.0.0.1:9650/ext/health >/dev/null 2>&1"; then
+    RESULT=$(curl -s -X POST --data '{"jsonrpc":"2.0","id":1,"method":"info.getNodeID"}' -H 'Content-Type: application/json' "http://$NODE1_IP:9650/ext/info" 2>/dev/null || true)
+    BOOTSTRAP_NODE_ID=$(echo "$RESULT" | grep -o '"nodeID":"[^"]*"' | cut -d'"' -f4 || true)
+    if [ -n "$BOOTSTRAP_NODE_ID" ]; then
         break
     fi
     sleep 1
 done
-
-if ! ssh "$NODE1_IP" "curl -sf http://127.0.0.1:9650/ext/health >/dev/null 2>&1"; then
-    echo "ERROR: Bootstrap node failed to become healthy"
-    exit 1
-fi
-
-# Get NodeID
-RESULT=$(ssh "$NODE1_IP" "curl -s -X POST --data '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"info.getNodeID\"}' -H 'Content-Type: application/json' http://127.0.0.1:9650/ext/info")
-BOOTSTRAP_NODE_ID=$(echo "$RESULT" | grep -o '"nodeID":"[^"]*"' | cut -d'"' -f4)
 
 if [ -z "$BOOTSTRAP_NODE_ID" ]; then
     echo "ERROR: Could not get bootstrap node ID"
     exit 1
 fi
 
-echo "  Bootstrap node healthy: $BOOTSTRAP_NODE_ID"
+echo "  Bootstrap node ID: $BOOTSTRAP_NODE_ID"
 
 # ------------------------------------------------------------------------------
 # Step 3: Start validator nodes (node2, node3)
@@ -117,33 +121,30 @@ set -e
 BOOTSTRAP_NODE_ID=$1
 BOOTSTRAP_IP=$2
 
-cd /tmp/avalanche-benchmark
+cd ~/avalanche-benchmark
 
 pkill -f avalanchego || true
 sleep 1
 
 rm -rf data
-mkdir -p data/node-1/{db,logs}
-
-PLUGIN_DIR="$(pwd)/plugins"
+mkdir -p data/{db,logs}
 
 nohup ./bin/avalanchego \
     --http-port=9650 \
     --staking-port=9651 \
     --http-host=0.0.0.0 \
-    --db-dir=data/node-1/db \
-    --log-dir=data/node-1/logs \
-    --data-dir=data/node-1 \
+    --db-dir=data/db \
+    --log-dir=data/logs \
+    --data-dir=data \
     --network-id=local \
     --sybil-protection-enabled=false \
-    --plugin-dir="$PLUGIN_DIR" \
+    --plugin-dir="$(pwd)/plugins" \
     --config-file=node-config.json \
     --bootstrap-ips=${BOOTSTRAP_IP}:9651 \
     --bootstrap-ids=${BOOTSTRAP_NODE_ID} \
-    > data/node-1/logs/stdout.log 2>&1 &
+    >/dev/null 2>&1 &
 
-echo $! > data/node-1/pid
-echo "Validator node started with PID $(cat data/node-1/pid)"
+echo $! > data/pid
 VALIDATOR_EOF
 }
 
@@ -159,10 +160,9 @@ check_node_health() {
     local NODE_IP=$1
 
     for i in {1..60}; do
-        if ssh "$NODE_IP" "curl -sf http://127.0.0.1:9650/ext/health >/dev/null 2>&1"; then
-            # Get NodeID once healthy
-            RESULT=$(ssh "$NODE_IP" "curl -s -X POST --data '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"info.getNodeID\"}' -H 'Content-Type: application/json' http://127.0.0.1:9650/ext/info")
-            NODE_ID=$(echo "$RESULT" | grep -o '"nodeID":"[^"]*"' | cut -d'"' -f4)
+        if curl -sf "http://$NODE_IP:9650/ext/health" >/dev/null 2>&1; then
+            RESULT=$(curl -s -X POST --data '{"jsonrpc":"2.0","id":1,"method":"info.getNodeID"}' -H 'Content-Type: application/json' "http://$NODE_IP:9650/ext/info" || true)
+            NODE_ID=$(echo "$RESULT" | grep -o '"nodeID":"[^"]*"' | cut -d'"' -f4 || true)
             echo "$NODE_ID"
             return 0
         fi
@@ -185,27 +185,11 @@ if [ -z "$NODE3_ID" ]; then
 fi
 echo "  Node 3 healthy: $NODE3_ID"
 
-# ------------------------------------------------------------------------------
-# Save node info for next steps
-# ------------------------------------------------------------------------------
-cat > "$SCRIPT_DIR/network-info.env" << EOF
-NODE1_IP=$NODE1_IP
-NODE2_IP=$NODE2_IP
-NODE3_IP=$NODE3_IP
-NODE1_ID=$BOOTSTRAP_NODE_ID
-NODE2_ID=$NODE2_ID
-NODE3_ID=$NODE3_ID
-BOOTSTRAP_IP=$NODE1_IP
-BOOTSTRAP_ID=$BOOTSTRAP_NODE_ID
-EOF
-
 echo ""
 echo "=== Primary Network Bootstrap Complete ==="
 echo ""
 echo "Node 1: $NODE1_IP - $BOOTSTRAP_NODE_ID (bootstrap)"
 echo "Node 2: $NODE2_IP - $NODE2_ID"
 echo "Node 3: $NODE3_IP - $NODE3_ID"
-echo ""
-echo "Network info saved to: $SCRIPT_DIR/network-info.env"
 echo ""
 echo "Next step: ./02_create_l1.sh"

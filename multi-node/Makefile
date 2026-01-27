@@ -1,18 +1,34 @@
-.PHONY: all clean deps
+.PHONY: all clean deps build
 
-.DEFAULT_GOAL := deps
+.DEFAULT_GOAL := all
 
 AVALANCHEGO_VERSION=v1.14.1
 SUBNET_EVM_VERSION=v0.8.0
 AVALANCHEGO_BASE_URL=https://github.com/ava-labs/avalanchego/releases/download/$(AVALANCHEGO_VERSION)
 SUBNET_EVM_BASE_URL=https://github.com/ava-labs/subnet-evm/releases/download/$(SUBNET_EVM_VERSION)
 
-# Download all dependencies
-deps: bin/avalanchego plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
-	@echo "All dependencies ready."
+SUBNET_EVM_ID=srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
+
+all: deps build
+	@echo "All ready."
+
+# Build Go tools
+build: bin/create-l1 bin/bombard
+
+bin/create-l1:
+	@mkdir -p bin
+	go build -o bin/create-l1 ./cmd/create-l1
+
+bin/bombard:
+	@mkdir -p bin
+	cd ../single-node && go build -o ../multi-node/bin/bombard ./cmd/bombard
+
+# Download avalanchego and subnet-evm
+deps: bin/avalanchego bin/$(SUBNET_EVM_ID)
+	@echo "Dependencies ready."
 
 clean:
-	rm -rf bin/ plugins/
+	rm -rf bin/
 
 bin/avalanchego:
 	@mkdir -p bin
@@ -42,8 +58,8 @@ bin/avalanchego:
 	fi; \
 	chmod +x bin/avalanchego
 
-plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy:
-	@mkdir -p plugins
+bin/$(SUBNET_EVM_ID):
+	@mkdir -p bin
 	@OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
 	ARCH=$$(uname -m); \
 	if [ "$$ARCH" = "x86_64" ]; then \
@@ -64,6 +80,6 @@ plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy:
 	echo "Downloading subnet-evm from $$URL..."; \
 	curl -L -o /tmp/subnet-evm.tar.gz "$$URL"; \
 	tar -xzf /tmp/subnet-evm.tar.gz -C /tmp; \
-	cp /tmp/subnet-evm plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy; \
-	chmod +x plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy; \
+	cp /tmp/subnet-evm bin/$(SUBNET_EVM_ID); \
+	chmod +x bin/$(SUBNET_EVM_ID); \
 	rm -rf /tmp/subnet-evm.tar.gz /tmp/subnet-evm
