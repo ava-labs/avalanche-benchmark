@@ -4,8 +4,12 @@
 
 AVALANCHEGO_VERSION=v1.14.1
 SUBNET_EVM_VERSION=v0.8.0
+PROMETHEUS_VERSION=2.54.1
+GRAFANA_VERSION=11.2.2
 AVALANCHEGO_BASE_URL=https://github.com/ava-labs/avalanchego/releases/download/$(AVALANCHEGO_VERSION)
 SUBNET_EVM_BASE_URL=https://github.com/ava-labs/subnet-evm/releases/download/$(SUBNET_EVM_VERSION)
+PROMETHEUS_BASE_URL=https://github.com/prometheus/prometheus/releases/download/v$(PROMETHEUS_VERSION)
+GRAFANA_BASE_URL=https://dl.grafana.com/oss/release
 
 SUBNET_EVM_ID=srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
 
@@ -23,8 +27,8 @@ bin/bombard:
 	@mkdir -p bin
 	cd ../single-node && go build -o ../multi-node/bin/bombard ./cmd/bombard
 
-# Download avalanchego and subnet-evm
-deps: bin/avalanchego bin/$(SUBNET_EVM_ID)
+# Download avalanchego, subnet-evm, prometheus, grafana
+deps: bin/avalanchego bin/$(SUBNET_EVM_ID) bin/prometheus bin/grafana
 	@echo "Dependencies ready."
 
 clean:
@@ -83,3 +87,24 @@ bin/$(SUBNET_EVM_ID):
 	cp /tmp/subnet-evm bin/$(SUBNET_EVM_ID); \
 	chmod +x bin/$(SUBNET_EVM_ID); \
 	rm -rf /tmp/subnet-evm.tar.gz /tmp/subnet-evm
+
+# Download prometheus (linux-amd64 for remote nodes)
+bin/prometheus:
+	@mkdir -p bin
+	@URL="$(PROMETHEUS_BASE_URL)/prometheus-$(PROMETHEUS_VERSION).linux-amd64.tar.gz"; \
+	echo "Downloading prometheus from $$URL..."; \
+	curl -L -o /tmp/prometheus.tar.gz "$$URL"; \
+	tar -xzf /tmp/prometheus.tar.gz -C /tmp; \
+	cp /tmp/prometheus-$(PROMETHEUS_VERSION).linux-amd64/prometheus bin/prometheus; \
+	chmod +x bin/prometheus; \
+	rm -rf /tmp/prometheus.tar.gz /tmp/prometheus-$(PROMETHEUS_VERSION).linux-amd64
+
+# Download grafana (linux-amd64 for remote nodes)
+bin/grafana:
+	@mkdir -p bin
+	@URL="$(GRAFANA_BASE_URL)/grafana-$(GRAFANA_VERSION).linux-amd64.tar.gz"; \
+	echo "Downloading grafana from $$URL..."; \
+	curl -L -o /tmp/grafana.tar.gz "$$URL"; \
+	tar -xzf /tmp/grafana.tar.gz -C bin; \
+	mv bin/grafana-v$(GRAFANA_VERSION) bin/grafana-dist; \
+	rm -rf /tmp/grafana.tar.gz

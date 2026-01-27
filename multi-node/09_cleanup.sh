@@ -52,8 +52,9 @@ cleanup_node "$NODE1_IP" "node1"
 cleanup_node "$NODE2_IP" "node2"
 cleanup_node "$NODE3_IP" "node3"
 
-# Remove local state file
+# Remove local state files
 rm -f "$SCRIPT_DIR/network.env"
+rm -f "$SCRIPT_DIR/prometheus.yml"
 
 echo ""
 echo "=== Cleanup Complete ==="
