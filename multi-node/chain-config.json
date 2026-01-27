@@ -1,11 +1,11 @@
 {
-  "min-delay-target": 1500,
-  "tx-pool-account-slots": 2048,
-  "tx-pool-global-slots": 262144,
-  "tx-pool-account-queue": 2048,
-  "tx-pool-global-queue": 512000,
-  "tx-pool-lifetime": "1m",
-  "trie-clean-cache": 10240,
-  "trie-dirty-cache": 10240,
-  "snapshot-cache": 10240
+    "min-delay-target": 500,
+    "tx-pool-account-slots": 2048,
+    "tx-pool-global-slots": 262144,
+    "tx-pool-account-queue": 2048,
+    "tx-pool-global-queue": 512000,
+    "tx-pool-lifetime": "1m",
+    "trie-clean-cache": 10240,
+    "trie-dirty-cache": 10240,
+    "snapshot-cache": 10240
 }

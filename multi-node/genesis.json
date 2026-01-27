@@ -2,7 +2,7 @@
   "config": {
     "chainId": 99999,
     "feeConfig": {
-      "gasLimit": 200000000,
+      "gasLimit": 50000000,
       "targetBlockRate": 1,
       "minBaseFee": 1,
       "targetGas": 18446744073709551615,
@@ -28,7 +28,7 @@
   "nonce": "0x0",
   "timestamp": "0x0",
   "extraData": "0x00",
-  "gasLimit": "0xbebc200",
+  "gasLimit": "0x2faf080",
   "difficulty": "0x0",
   "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
   "coinbase": "0x0000000000000000000000000000000000000000",
