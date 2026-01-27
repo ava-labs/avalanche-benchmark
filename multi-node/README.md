@@ -2,6 +2,18 @@
 
 Benchmark tool for 3-node Avalanche L1 network.
 
+## Ports
+
+Open the following ports on your nodes:
+
+| Port | Service | Required | Notes |
+|------|---------|----------|-------|
+| 22 | SSH | Yes | Remote access |
+| 9650 | AvalancheGo HTTP API | Yes | RPC endpoint |
+| 9651 | AvalancheGo Staking | Yes | P2P communication between nodes |
+| 3000 | Grafana | Optional | Monitoring dashboard (node1 only) |
+| 9090 | Prometheus | No | Grafana queries locally; only needed for external access |
+
 ## Setup
 
 ```bash

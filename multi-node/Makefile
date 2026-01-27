@@ -28,7 +28,7 @@ bin/bombard:
 	cd ../single-node && go build -o ../multi-node/bin/bombard ./cmd/bombard
 
 # Download avalanchego, subnet-evm, prometheus, grafana
-deps: bin/avalanchego bin/$(SUBNET_EVM_ID) bin/prometheus bin/grafana
+deps: bin/avalanchego bin/$(SUBNET_EVM_ID) bin/prometheus bin/grafana.tar.gz
 	@echo "Dependencies ready."
 
 clean:
@@ -99,12 +99,9 @@ bin/prometheus:
 	chmod +x bin/prometheus; \
 	rm -rf /tmp/prometheus.tar.gz /tmp/prometheus-$(PROMETHEUS_VERSION).linux-amd64
 
-# Download grafana (linux-amd64 for remote nodes)
-bin/grafana:
+# Download grafana (linux-amd64 for remote nodes) - keep as tarball for fast copying
+bin/grafana.tar.gz:
 	@mkdir -p bin
 	@URL="$(GRAFANA_BASE_URL)/grafana-$(GRAFANA_VERSION).linux-amd64.tar.gz"; \
 	echo "Downloading grafana from $$URL..."; \
-	curl -L -o /tmp/grafana.tar.gz "$$URL"; \
-	tar -xzf /tmp/grafana.tar.gz -C bin; \
-	mv bin/grafana-v$(GRAFANA_VERSION) bin/grafana-dist; \
-	rm -rf /tmp/grafana.tar.gz
+	curl -L -o bin/grafana.tar.gz "$$URL"

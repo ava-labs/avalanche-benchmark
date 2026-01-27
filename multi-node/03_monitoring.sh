@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -ex
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env"
@@ -35,8 +35,8 @@ if [ ! -f "$SCRIPT_DIR/bin/prometheus" ]; then
     exit 1
 fi
 
-if [ ! -d "$SCRIPT_DIR/bin/grafana-dist" ]; then
-    echo "ERROR: bin/grafana-dist not found. Run 'make deps' first."
+if [ ! -f "$SCRIPT_DIR/bin/grafana.tar.gz" ]; then
+    echo "ERROR: bin/grafana.tar.gz not found. Run 'make deps' first."
     exit 1
 fi
 
@@ -75,8 +75,9 @@ ssh "$NODE1_IP" "mkdir -p $REMOTE_DIR/grafana/provisioning/datasources $REMOTE_D
 scp -q "$SCRIPT_DIR/bin/prometheus" "$NODE1_IP:$REMOTE_DIR/"
 scp -q "$SCRIPT_DIR/prometheus.yml" "$NODE1_IP:$REMOTE_DIR/"
 
-# Upload grafana
-scp -rq "$SCRIPT_DIR/bin/grafana-dist" "$NODE1_IP:$REMOTE_DIR/grafana-dist"
+# Upload grafana tarball and extract on remote (much faster than copying extracted dir)
+scp -q "$SCRIPT_DIR/bin/grafana.tar.gz" "$NODE1_IP:$REMOTE_DIR/"
+ssh "$NODE1_IP" "cd $REMOTE_DIR && rm -rf grafana-dist && tar -xzf grafana.tar.gz && mv grafana-v* grafana-dist && rm grafana.tar.gz"
 scp -q "$SCRIPT_DIR/grafana-datasources.yml" "$NODE1_IP:$REMOTE_DIR/grafana/provisioning/datasources/datasources.yml"
 scp -q "$SCRIPT_DIR/grafana-dashboards.yml" "$NODE1_IP:$REMOTE_DIR/grafana/provisioning/dashboards/dashboards.yml"
 scp -q "$SCRIPT_DIR/avalanche-dashboard.json" "$NODE1_IP:$REMOTE_DIR/grafana/dashboards/"
