@@ -5,6 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env"
 NETWORK_ENV="$SCRIPT_DIR/network.env"
 
+# RPC nodes are on port 9654
+
 # ------------------------------------------------------------------------------
 # Load configuration
 # ------------------------------------------------------------------------------
@@ -32,15 +34,16 @@ if [ -z "$CHAIN_ID" ]; then
     exit 1
 fi
 
-# Build RPC URLs
-RPC1="http://$NODE1_IP:9650/ext/bc/$CHAIN_ID/rpc"
-RPC2="http://$NODE2_IP:9650/ext/bc/$CHAIN_ID/rpc"
-RPC3="http://$NODE3_IP:9650/ext/bc/$CHAIN_ID/rpc"
+# Build RPC URLs (using RPC nodes on port 9654)
+RPC1="http://$NODE1_IP:9654/ext/bc/$CHAIN_ID/rpc"
+RPC2="http://$NODE2_IP:9654/ext/bc/$CHAIN_ID/rpc"
+RPC3="http://$NODE3_IP:9654/ext/bc/$CHAIN_ID/rpc"
 RPC_URLS="$RPC1,$RPC2,$RPC3"
 
 echo "=== Benchmark ==="
 echo "Chain ID: $CHAIN_ID"
-echo "RPC URLs:"
+echo ""
+echo "RPC URLs (dedicated RPC nodes on port 9654):"
 echo "  $RPC1"
 echo "  $RPC2"
 echo "  $RPC3"

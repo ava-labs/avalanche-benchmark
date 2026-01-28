@@ -1,9 +1,14 @@
 #!/bin/bash
-set -ex
+set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$SCRIPT_DIR/.env"
 REMOTE_DIR="~/avalanche-benchmark"
+
+# Port layout per machine:
+#   Primary:   HTTP 9650
+#   Validator: HTTP 9652
+#   RPC:       HTTP 9654
 
 # ------------------------------------------------------------------------------
 # Load configuration
@@ -22,7 +27,7 @@ fi
 
 echo "=== Deploying Monitoring to Node 1 ==="
 echo "Prometheus + Grafana will run on: $NODE1_IP"
-echo "Scraping metrics from: $NODE1_IP, $NODE2_IP, $NODE3_IP"
+echo "Scraping metrics from all 9 nodes (3 machines x 3 node types)"
 echo ""
 
 # ------------------------------------------------------------------------------
@@ -57,7 +62,7 @@ upload_if_changed() {
 }
 
 # ------------------------------------------------------------------------------
-# Step 2: Generate prometheus.yml with actual IPs
+# Step 2: Generate prometheus.yml with all 9 nodes
 # ------------------------------------------------------------------------------
 echo "[2/4] Generating prometheus.yml..."
 
@@ -67,16 +72,41 @@ global:
   evaluation_interval: 5s
 
 scrape_configs:
-  - job_name: 'avalanchego'
+  # Primary network nodes (port 9650)
+  - job_name: 'avalanchego-primary'
     metrics_path: /ext/metrics
     static_configs:
       - targets:
           - '${NODE1_IP}:9650'
           - '${NODE2_IP}:9650'
           - '${NODE3_IP}:9650'
+        labels:
+          role: 'primary'
+
+  # Validator nodes (port 9652)
+  - job_name: 'avalanchego-validator'
+    metrics_path: /ext/metrics
+    static_configs:
+      - targets:
+          - '${NODE1_IP}:9652'
+          - '${NODE2_IP}:9652'
+          - '${NODE3_IP}:9652'
+        labels:
+          role: 'validator'
+
+  # RPC nodes (port 9654)
+  - job_name: 'avalanchego-rpc'
+    metrics_path: /ext/metrics
+    static_configs:
+      - targets:
+          - '${NODE1_IP}:9654'
+          - '${NODE2_IP}:9654'
+          - '${NODE3_IP}:9654'
+        labels:
+          role: 'rpc'
 EOF
 
-echo "  prometheus.yml generated."
+echo "  prometheus.yml generated (9 targets)."
 
 # ------------------------------------------------------------------------------
 # Step 3: Upload to node1
@@ -160,6 +190,11 @@ echo ""
 echo "=== Monitoring Ready ==="
 echo ""
 echo "Prometheus: http://$NODE1_IP:9090"
-echo "Grafana:    http://$NODE1_IP:3000"
+echo "Grafana:    http://$NODE1_IP:3000/d/avalanche-benchmark/avalanche-benchmark?orgId=1&refresh=5s&from=now-5m&to=now"
+echo ""
+echo "Scraping 9 nodes:"
+echo "  Primary (9650):   $NODE1_IP, $NODE2_IP, $NODE3_IP"
+echo "  Validator (9652): $NODE1_IP, $NODE2_IP, $NODE3_IP"
+echo "  RPC (9654):       $NODE1_IP, $NODE2_IP, $NODE3_IP"
 echo ""
 echo "Grafana has anonymous admin access enabled (no login required)."

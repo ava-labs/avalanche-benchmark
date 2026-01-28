@@ -43,7 +43,7 @@ resource "aws_iam_instance_profile" "ec2" {
   role = aws_iam_role.ec2.name
 }
 
-# Security Group - only allows traffic from operator IP
+# Security Group - isolated benchmark nodes
 resource "aws_security_group" "app" {
   name        = "${local.prefix}-${local.app_name}"
   description = "Benchmark nodes - isolated, operator access only"
@@ -56,18 +56,11 @@ resource "aws_security_group" "app" {
     cidr_blocks = [local.operator_ip]
   }
 
-  # Avalanche HTTP API - operator only
+  # Avalanche HTTP APIs (9650-9655) - operator only
+  # Primary: 9650, Validator: 9652, RPC: 9654
   ingress {
     from_port   = 9650
-    to_port     = 9650
-    protocol    = "tcp"
-    cidr_blocks = [local.operator_ip]
-  }
-
-  # Avalanche Staking - operator only
-  ingress {
-    from_port   = 9651
-    to_port     = 9651
+    to_port     = 9655
     protocol    = "tcp"
     cidr_blocks = [local.operator_ip]
   }
@@ -80,31 +73,7 @@ resource "aws_security_group" "app" {
     cidr_blocks = [local.operator_ip]
   }
 
-  # Grafana - operator only
-  ingress {
-    from_port   = 3000
-    to_port     = 3000
-    protocol    = "tcp"
-    cidr_blocks = [local.operator_ip]
-  }
-
-  # ICMP - operator only
-  ingress {
-    from_port   = -1
-    to_port     = -1
-    protocol    = "icmp"
-    cidr_blocks = [local.operator_ip]
-  }
-
-  # Internal traffic between benchmark nodes (private IPs)
-  ingress {
-    from_port = 0
-    to_port   = 0
-    protocol  = "-1"
-    self      = true
-  }
-
-  # Egress - operator only (no internet access)
+  # Egress to operator (for responses)
   egress {
     from_port   = 0
     to_port     = 0
@@ -112,40 +81,53 @@ resource "aws_security_group" "app" {
     cidr_blocks = [local.operator_ip]
   }
 
-  # Allow internal egress between nodes (private IPs)
-  egress {
-    from_port = 0
-    to_port   = 0
-    protocol  = "-1"
-    self      = true
-  }
+  # Note: Inter-node rules and Grafana added via aws_security_group_rule below
 
   tags = {
     Name = "${local.prefix}-${local.app_name}"
   }
 }
 
-# Allow inter-node traffic via public IPs (created after instances exist)
-resource "aws_security_group_rule" "node_ingress" {
+# Inter-node: 9650-9655 (HTTP APIs) ingress from other nodes
+# Primary: 9650, Validator: 9652, RPC: 9654
+resource "aws_security_group_rule" "node_http_ingress" {
   count             = 3
   type              = "ingress"
-  from_port         = 0
-  to_port           = 0
-  protocol          = "-1"
+  from_port         = 9650
+  to_port           = 9655
+  protocol          = "tcp"
   security_group_id = aws_security_group.app.id
   cidr_blocks       = ["${aws_instance.node[count.index].public_ip}/32"]
-  description       = "Allow ingress from node ${count.index + 1} public IP"
+  description       = "Allow 9650-9655 ingress from node ${count.index + 1}"
 }
 
+# Inter-node: egress to other nodes (9650-9655)
 resource "aws_security_group_rule" "node_egress" {
   count             = 3
   type              = "egress"
-  from_port         = 0
-  to_port           = 0
-  protocol          = "-1"
+  from_port         = 9650
+  to_port           = 9655
+  protocol          = "tcp"
   security_group_id = aws_security_group.app.id
   cidr_blocks       = ["${aws_instance.node[count.index].public_ip}/32"]
-  description       = "Allow egress to node ${count.index + 1} public IP"
+  description       = "Allow egress to node ${count.index + 1}"
+}
+
+# Grafana - public access (node 1 only, applied via separate security group)
+resource "aws_security_group" "grafana" {
+  name        = "${local.prefix}-${local.app_name}-grafana"
+  description = "Grafana public access for node 1"
+
+  ingress {
+    from_port   = 3000
+    to_port     = 3000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${local.prefix}-${local.app_name}-grafana"
+  }
 }
 
 # Ubuntu 24.04 AMI
@@ -172,7 +154,7 @@ resource "aws_instance" "node" {
   instance_type        = "m6a.4xlarge" # 16 vCPU, 64GB RAM, AMD EPYC
   key_name             = local.key_name
   iam_instance_profile = aws_iam_instance_profile.ec2.name
-  security_groups      = [aws_security_group.app.name]
+  security_groups      = count.index == 0 ? [aws_security_group.app.name, aws_security_group.grafana.name] : [aws_security_group.app.name]
 
   metadata_options {
     http_endpoint               = "enabled"
