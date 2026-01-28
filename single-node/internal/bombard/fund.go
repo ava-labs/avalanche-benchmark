@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"sync"
 
+	ethereum "github.com/ava-labs/libevm"
 	"github.com/ava-labs/libevm/core/types"
 	"github.com/ava-labs/libevm/crypto"
 	"github.com/ava-labs/libevm/ethclient"
@@ -88,6 +89,32 @@ func fundAccounts(client *ethclient.Client, listener *TxListener, keys []*Key) e
 		return fmt.Errorf("encountered %d funding errors", len(fundingErrors))
 	}
 
+	// Verify all accounts actually received funds
+	if err := verifyBalances(client, keys, fundAmount); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// verifyBalances checks that all keys have at least the expected balance.
+func verifyBalances(client *ethclient.Client, keys []*Key, expectedMin *big.Int) error {
+	var unfundedKeys []int
+	for i, key := range keys {
+		balance, err := client.BalanceAt(context.Background(), key.Address, nil)
+		if err != nil {
+			return fmt.Errorf("failed to check balance for key %d: %w", i, err)
+		}
+		if balance.Cmp(expectedMin) < 0 {
+			unfundedKeys = append(unfundedKeys, i)
+			log.Printf("Key %d (%s) has insufficient balance: %s (expected %s)",
+				i, key.Address.Hex(), balance.String(), expectedMin.String())
+		}
+	}
+	if len(unfundedKeys) > 0 {
+		return fmt.Errorf("%d keys have insufficient balance: %v", len(unfundedKeys), unfundedKeys)
+	}
+	fmt.Printf("verified all %d accounts have sufficient balance\n", len(keys))
 	return nil
 }
 
@@ -161,5 +188,44 @@ func fundAccountsWithERC20(client *ethclient.Client, listener *TxListener, keys 
 		return fmt.Errorf("encountered %d ERC20 funding errors", len(fundingErrors))
 	}
 
+	// Verify all accounts actually received ERC20 tokens
+	if err := verifyERC20Balances(client, keys, fundAmount); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// verifyERC20Balances checks that all keys have at least the expected ERC20 token balance.
+func verifyERC20Balances(client *ethclient.Client, keys []*Key, expectedMin *big.Int) error {
+	// ERC20 balanceOf(address) selector: keccak256("balanceOf(address)")[:4] = 0x70a08231
+	balanceOfSelector := []byte{0x70, 0xa0, 0x82, 0x31}
+
+	var unfundedKeys []int
+	for i, key := range keys {
+		// Encode balanceOf call
+		callData := make([]byte, 36)
+		copy(callData[0:4], balanceOfSelector)
+		copy(callData[16:36], key.Address.Bytes())
+
+		result, err := client.CallContract(context.Background(), ethereum.CallMsg{
+			To:   &PredeployedTokenAddr,
+			Data: callData,
+		}, nil)
+		if err != nil {
+			return fmt.Errorf("failed to check ERC20 balance for key %d: %w", i, err)
+		}
+
+		balance := new(big.Int).SetBytes(result)
+		if balance.Cmp(expectedMin) < 0 {
+			unfundedKeys = append(unfundedKeys, i)
+			log.Printf("Key %d (%s) has insufficient ERC20 balance: %s (expected %s)",
+				i, key.Address.Hex(), balance.String(), expectedMin.String())
+		}
+	}
+	if len(unfundedKeys) > 0 {
+		return fmt.Errorf("%d keys have insufficient ERC20 balance: %v", len(unfundedKeys), unfundedKeys)
+	}
+	fmt.Printf("verified all %d accounts have sufficient ERC20 balance\n", len(keys))
 	return nil
 }
