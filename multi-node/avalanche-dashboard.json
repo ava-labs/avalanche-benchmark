@@ -1070,6 +1070,7 @@
                     "sort": "none"
                 }
             },
+            "description": "Execution efficiency: nanoseconds of block verification time per unit of gas processed. Lower is better. Calculated as rate(verify_time) / rate(gas_processed). High values indicate slow block execution.",
             "pluginVersion": "12.4.0",
             "targets": [
                 {
@@ -1382,7 +1383,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "max by (instance) (\n  (300 / increase(avalanche_snowman_blks_accepted_count{chain=~\".*\"}[5m])) * 1000\n)",
+                    "expr": "(60 / (increase(avalanche_snowman_blks_accepted_count{chain=~\".*\"}[1m]) > 0)) * 1000",
                     "legendFormat": "{{instance}}",
                     "range": true,
                     "rawQuery": false,
