@@ -20,6 +20,11 @@ fi
 
 source "$ENV_FILE"
 
+if [ -z "$SSH_USER" ]; then
+    echo "ERROR: SSH_USER not set in .env"
+    exit 1
+fi
+
 if [ -z "$NODE1_IP" ] || [ -z "$NODE2_IP" ] || [ -z "$NODE3_IP" ]; then
     echo "ERROR: Missing node IPs in .env"
     exit 1
@@ -53,9 +58,9 @@ upload_if_changed() {
     local dest_host="$2"
     local dest_path="$3"
     local local_size=$(stat -c%s "$src" 2>/dev/null || stat -f%z "$src" 2>/dev/null)
-    local remote_size=$(ssh "$dest_host" "stat -c%s '$dest_path' 2>/dev/null || echo 0")
+    local remote_size=$(ssh "$SSH_USER@$dest_host" "stat -c%s '$dest_path' 2>/dev/null || echo 0")
     if [ "$local_size" != "$remote_size" ]; then
-        scp -q "$src" "$dest_host:$dest_path"
+        scp -q "$src" "$SSH_USER@$dest_host:$dest_path"
         return 0  # uploaded
     fi
     return 1  # skipped
@@ -88,7 +93,7 @@ echo "  prometheus.yml generated (3 validator targets)."
 # ------------------------------------------------------------------------------
 echo "[3/4] Uploading monitoring to $NODE1_IP..."
 
-ssh "$NODE1_IP" "mkdir -p $REMOTE_DIR/grafana/provisioning/datasources $REMOTE_DIR/grafana/provisioning/dashboards $REMOTE_DIR/grafana/dashboards"
+ssh "$SSH_USER@$NODE1_IP" "mkdir -p $REMOTE_DIR/grafana/provisioning/datasources $REMOTE_DIR/grafana/provisioning/dashboards $REMOTE_DIR/grafana/dashboards"
 
 # Upload prometheus binary (skip if same size)
 if upload_if_changed "$SCRIPT_DIR/bin/prometheus" "$NODE1_IP" "$REMOTE_DIR/prometheus"; then
@@ -97,20 +102,20 @@ else
     echo "  Skipped prometheus (unchanged)"
 fi
 
-scp -q "$SCRIPT_DIR/prometheus.yml" "$NODE1_IP:$REMOTE_DIR/"
+scp -q "$SCRIPT_DIR/prometheus.yml" "$SSH_USER@$NODE1_IP:$REMOTE_DIR/"
 
 # Upload grafana tarball and extract on remote (only if needed)
 if upload_if_changed "$SCRIPT_DIR/bin/grafana.tar.gz" "$NODE1_IP" "$REMOTE_DIR/grafana.tar.gz"; then
     echo "  Uploaded grafana.tar.gz, extracting..."
-    ssh "$NODE1_IP" "cd $REMOTE_DIR && rm -rf grafana-dist && tar -xzf grafana.tar.gz && mv grafana-v* grafana-dist && rm grafana.tar.gz"
+    ssh "$SSH_USER@$NODE1_IP" "cd $REMOTE_DIR && rm -rf grafana-dist && tar -xzf grafana.tar.gz && mv grafana-v* grafana-dist && rm grafana.tar.gz"
 else
     echo "  Skipped grafana (unchanged)"
 fi
 
-scp -q "$SCRIPT_DIR/grafana-datasources.yml" "$NODE1_IP:$REMOTE_DIR/grafana/provisioning/datasources/datasources.yml"
-scp -q "$SCRIPT_DIR/grafana-dashboards.yml" "$NODE1_IP:$REMOTE_DIR/grafana/provisioning/dashboards/dashboards.yml"
-scp -q "$SCRIPT_DIR/avalanche-dashboard.json" "$NODE1_IP:$REMOTE_DIR/grafana/dashboards/"
-scp -q "$SCRIPT_DIR/start-grafana.sh" "$NODE1_IP:$REMOTE_DIR/"
+scp -q "$SCRIPT_DIR/grafana-datasources.yml" "$SSH_USER@$NODE1_IP:$REMOTE_DIR/grafana/provisioning/datasources/datasources.yml"
+scp -q "$SCRIPT_DIR/grafana-dashboards.yml" "$SSH_USER@$NODE1_IP:$REMOTE_DIR/grafana/provisioning/dashboards/dashboards.yml"
+scp -q "$SCRIPT_DIR/avalanche-dashboard.json" "$SSH_USER@$NODE1_IP:$REMOTE_DIR/grafana/dashboards/"
+scp -q "$SCRIPT_DIR/start-grafana.sh" "$SSH_USER@$NODE1_IP:$REMOTE_DIR/"
 
 echo "  Upload complete."
 
@@ -119,7 +124,7 @@ echo "  Upload complete."
 # ------------------------------------------------------------------------------
 echo "[4/4] Starting Prometheus and Grafana..."
 
-ssh "$NODE1_IP" bash << 'START_EOF'
+ssh "$SSH_USER@$NODE1_IP" bash << 'START_EOF'
 set -e
 cd ~/avalanche-benchmark
 

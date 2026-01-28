@@ -1,4 +1,4 @@
-.PHONY: all clean deps build
+.PHONY: all clean deps build pack
 
 .DEFAULT_GOAL := all
 
@@ -105,3 +105,19 @@ bin/grafana.tar.gz:
 	@URL="$(GRAFANA_BASE_URL)/grafana-$(GRAFANA_VERSION).linux-amd64.tar.gz"; \
 	echo "Downloading grafana from $$URL..."; \
 	curl -L -o bin/grafana.tar.gz "$$URL"
+
+# Create offline package for deployment to another machine
+pack: deps build
+	rm -f avalanche-benchmark-multi.tar.gz
+	tar -czvf avalanche-benchmark-multi.tar.gz \
+		bin/ \
+		0[1-5]_*.sh \
+		start-grafana.sh \
+		node-config.json \
+		chain-config.json \
+		genesis.json \
+		grafana-datasources.yml \
+		grafana-dashboards.yml \
+		avalanche-dashboard.json \
+		.env.example \
+		README.md

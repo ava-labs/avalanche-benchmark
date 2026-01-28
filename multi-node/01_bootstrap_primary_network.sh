@@ -24,6 +24,11 @@ fi
 
 source "$ENV_FILE"
 
+if [ -z "$SSH_USER" ]; then
+    echo "ERROR: SSH_USER not set in .env"
+    exit 1
+fi
+
 if [ -z "$NODE1_IP" ] || [ -z "$NODE2_IP" ] || [ -z "$NODE3_IP" ]; then
     echo "ERROR: Missing node IPs in .env"
     echo ""
@@ -51,11 +56,11 @@ SUBNET_EVM_ID="srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy"
 
 for NODE_IP in $NODE1_IP $NODE2_IP $NODE3_IP; do
     echo "  Uploading to $NODE_IP..."
-    ssh "$NODE_IP" "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR/bin $REMOTE_DIR/plugins"
-    scp -q "$SCRIPT_DIR/bin/avalanchego" "$NODE_IP:$REMOTE_DIR/bin/"
-    scp -q "$SCRIPT_DIR/bin/$SUBNET_EVM_ID" "$NODE_IP:$REMOTE_DIR/plugins/"
-    scp -q "$SCRIPT_DIR/node-config.json" "$NODE_IP:$REMOTE_DIR/"
-    scp -q "$SCRIPT_DIR/chain-config.json" "$NODE_IP:$REMOTE_DIR/"
+    ssh "$SSH_USER@$NODE_IP" "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR/bin $REMOTE_DIR/plugins"
+    scp -q "$SCRIPT_DIR/bin/avalanchego" "$SSH_USER@$NODE_IP:$REMOTE_DIR/bin/"
+    scp -q "$SCRIPT_DIR/bin/$SUBNET_EVM_ID" "$SSH_USER@$NODE_IP:$REMOTE_DIR/plugins/"
+    scp -q "$SCRIPT_DIR/node-config.json" "$SSH_USER@$NODE_IP:$REMOTE_DIR/"
+    scp -q "$SCRIPT_DIR/chain-config.json" "$SSH_USER@$NODE_IP:$REMOTE_DIR/"
 done
 
 echo "  Upload complete."
@@ -65,7 +70,7 @@ echo "  Upload complete."
 # ------------------------------------------------------------------------------
 echo "[2/4] Starting bootstrap primary node on $NODE1_IP..."
 
-ssh "$NODE1_IP" bash -s "$NODE1_IP" << 'BOOTSTRAP_EOF'
+ssh "$SSH_USER@$NODE1_IP" bash -s "$NODE1_IP" << 'BOOTSTRAP_EOF'
 set -e
 PUBLIC_IP=$1
 cd ~/avalanche-benchmark
@@ -131,7 +136,7 @@ start_primary_node() {
 
     echo "  Starting primary node $NODE_NUM on $NODE_IP..."
 
-    ssh "$NODE_IP" bash -s "$BOOTSTRAP_NODE_ID" "$NODE1_IP" "$NODE_IP" << 'PRIMARY_EOF'
+    ssh "$SSH_USER@$NODE_IP" bash -s "$BOOTSTRAP_NODE_ID" "$NODE1_IP" "$NODE_IP" << 'PRIMARY_EOF'
 set -e
 BOOTSTRAP_NODE_ID=$1
 BOOTSTRAP_IP=$2

@@ -24,6 +24,11 @@ fi
 
 source "$ENV_FILE"
 
+if [ -z "$SSH_USER" ]; then
+    echo "ERROR: SSH_USER not set in .env"
+    exit 1
+fi
+
 if [ -z "$NODE1_IP" ] || [ -z "$NODE2_IP" ] || [ -z "$NODE3_IP" ]; then
     echo "ERROR: Missing node IPs in .env"
     exit 1
@@ -142,8 +147,8 @@ echo "  Validator and RPC nodes started on $NODE_IP"
 EOF
 
     # Copy and execute
-    scp -q /tmp/start-l1-nodes-${NODE_NUM}.sh "$NODE_IP:~/avalanche-benchmark/start-l1-nodes.sh"
-    ssh "$NODE_IP" "chmod +x ~/avalanche-benchmark/start-l1-nodes.sh && ~/avalanche-benchmark/start-l1-nodes.sh"
+    scp -q /tmp/start-l1-nodes-${NODE_NUM}.sh "$SSH_USER@$NODE_IP:~/avalanche-benchmark/start-l1-nodes.sh"
+    ssh "$SSH_USER@$NODE_IP" "chmod +x ~/avalanche-benchmark/start-l1-nodes.sh && ~/avalanche-benchmark/start-l1-nodes.sh"
 }
 
 # Start on all three machines

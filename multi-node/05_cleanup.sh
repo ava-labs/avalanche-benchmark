@@ -14,6 +14,11 @@ fi
 
 source "$ENV_FILE"
 
+if [ -z "$SSH_USER" ]; then
+    echo "ERROR: SSH_USER not set in .env"
+    exit 1
+fi
+
 if [ -z "$NODE1_IP" ] || [ -z "$NODE2_IP" ] || [ -z "$NODE3_IP" ]; then
     echo "ERROR: Missing node IPs in .env"
     exit 1
@@ -31,7 +36,7 @@ cleanup_node() {
 
     echo "Cleaning up $NODE_NAME ($NODE_IP)..."
 
-    ssh "$NODE_IP" bash << 'CLEANUP_EOF'
+    ssh "$SSH_USER@$NODE_IP" bash << 'CLEANUP_EOF'
 # Kill all avalanchego processes (primary, validator, rpc)
 pkill -f "data-dir=data/primary" 2>/dev/null || true
 pkill -f "data-dir=data/validator" 2>/dev/null || true
