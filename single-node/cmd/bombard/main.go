@@ -25,7 +25,7 @@ func main() {
 
 	flag.StringVar(&rpcURLs, "rpc", "", "Comma-separated RPC URLs (default: read from ./network_data/rpcs.txt)")
 	flag.IntVar(&batchSize, "batch", 500, "Transactions per batch")
-	flag.IntVar(&keyCount, "keys", 500, "Number of parallel sender keys")
+	flag.IntVar(&keyCount, "keys", 50, "Number of parallel sender keys")
 	flag.IntVar(&timeout, "timeout", 10, "Transaction confirmation timeout (seconds)")
 	flag.BoolVar(&erc20, "erc20", false, "Send ERC20 token transfers instead of native transfers")
 	flag.BoolVar(&both, "both", false, "Send both native and ERC20 transfers (alternating batches)")
