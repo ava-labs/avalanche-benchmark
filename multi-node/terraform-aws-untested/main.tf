@@ -8,7 +8,7 @@ terraform {
 }
 
 provider "aws" {
-  region = "ap-northeast-1"  # Tokyo
+  region = "ap-northeast-1" # Tokyo
 }
 
 # Get the public IP of the machine running Terraform
@@ -96,7 +96,7 @@ resource "aws_security_group" "app" {
     cidr_blocks = [local.operator_ip]
   }
 
-  # Internal traffic between benchmark nodes
+  # Internal traffic between benchmark nodes (private IPs)
   ingress {
     from_port = 0
     to_port   = 0
@@ -112,7 +112,7 @@ resource "aws_security_group" "app" {
     cidr_blocks = [local.operator_ip]
   }
 
-  # Allow internal egress between nodes
+  # Allow internal egress between nodes (private IPs)
   egress {
     from_port = 0
     to_port   = 0
@@ -125,10 +125,33 @@ resource "aws_security_group" "app" {
   }
 }
 
+# Allow inter-node traffic via public IPs (created after instances exist)
+resource "aws_security_group_rule" "node_ingress" {
+  count             = 3
+  type              = "ingress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  security_group_id = aws_security_group.app.id
+  cidr_blocks       = ["${aws_instance.node[count.index].public_ip}/32"]
+  description       = "Allow ingress from node ${count.index + 1} public IP"
+}
+
+resource "aws_security_group_rule" "node_egress" {
+  count             = 3
+  type              = "egress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  security_group_id = aws_security_group.app.id
+  cidr_blocks       = ["${aws_instance.node[count.index].public_ip}/32"]
+  description       = "Allow egress to node ${count.index + 1} public IP"
+}
+
 # Ubuntu 24.04 AMI
 data "aws_ami" "ubuntu" {
   most_recent = true
-  owners      = ["099720109477"]  # Canonical
+  owners      = ["099720109477"] # Canonical
 
   filter {
     name   = "name"
@@ -146,7 +169,7 @@ resource "aws_instance" "node" {
   count = 3
 
   ami                  = data.aws_ami.ubuntu.id
-  instance_type        = "m6a.4xlarge"  # 16 vCPU, 64GB RAM, AMD EPYC
+  instance_type        = "m6a.4xlarge" # 16 vCPU, 64GB RAM, AMD EPYC
   key_name             = local.key_name
   iam_instance_profile = aws_iam_instance_profile.ec2.name
   security_groups      = [aws_security_group.app.name]
@@ -169,6 +192,7 @@ resource "aws_instance" "node" {
   }
 }
 
+# Public IPs - for operator access (SSH, API)
 output "node1_ip" {
   value = aws_instance.node[0].public_ip
 }
