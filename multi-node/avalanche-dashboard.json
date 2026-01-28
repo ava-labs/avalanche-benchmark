@@ -106,6 +106,7 @@
                     "sort": "none"
                 }
             },
+            "description": "FIXED: Previous metric used avalanche_handler_messages{op=\"query_failed\"} which does not exist. Now uses avalanche_snowman_polls_successful and avalanche_snowman_polls_failed.",
             "pluginVersion": "12.4.0",
             "targets": [
                 {
@@ -114,13 +115,13 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "(\n    (\n        max by (instance) (\n          increase(\n            avalanche_handler_messages{chain=~\".*\",op=\"chits\"}[5m]\n          )\n        )\n      +\n        1\n    )\n  /\n    (\n        (\n            max by (instance) (\n              increase(\n                avalanche_handler_messages{chain=~\".*\",op=\"chits\"}[5m]\n              )\n            )\n          +\n            max by (instance) (\n              increase(\n                avalanche_handler_messages{chain=~\".*\",op=\"query_failed\"}[5m]\n              )\n            )\n        )\n      +\n        1\n    )\n)\n*\n100",
+                    "expr": "(\n  max by (instance) (\n    increase(avalanche_snowman_polls_successful{chain=~\".*\"}[5m])\n  )\n  /\n  (\n    max by (instance) (\n      increase(avalanche_snowman_polls_successful{chain=~\".*\"}[5m])\n    )\n    +\n    max by (instance) (\n      increase(avalanche_snowman_polls_failed{chain=~\".*\"}[5m])\n    )\n  )\n) * 100",
                     "legendFormat": "{{instance}}",
                     "rawQuery": false,
                     "refId": "A"
                 }
             ],
-            "title": "Percentage of Successful Queries",
+            "title": "Percentage of Successful Polls",
             "type": "timeseries"
         },
         {
@@ -676,12 +677,13 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "max by (instance) (\n  increase(\n    avalanche_handler_messages{chain=~\".*\",op=\"query_failed\"}[5m]\n  )\n)",
-                    "legendFormat": "{{instance}}",
+                    "expr": "max by (instance) (\n  increase(\n    avalanche_snowman_polls_failed{chain=~\".*\"}[5m]\n  )\n)",
+                    "legendFormat": "polls_failed {{instance}}",
                     "rawQuery": false,
                     "refId": "query7"
                 }
             ],
+            "description": "FIXED query7: Previous metric used avalanche_handler_messages{op=\"query_failed\"} which does not exist. Now uses avalanche_snowman_polls_failed.",
             "title": "Requests Failed",
             "type": "timeseries"
         },
