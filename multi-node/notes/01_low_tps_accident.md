@@ -340,6 +340,58 @@ The system must NEVER end up in a state where:
 4. **Aggregated error reporting** - Categorize errors, report counts periodically
 5. **Keep `log.Fatalf` for truly fatal errors** - Sign failures, key gen failures
 
+## Root Cause Found: Sequential Timeout Bug
+
+### The Bug
+
+In `sender.go`, the code waited for **each transaction sequentially**:
+
+```go
+// OLD CODE - BUGGY
+for _, hash := range txHashes {
+    if listener.AwaitTxMined(hash, timeoutSeconds) != nil {
+        shouldRefetchNonce = true
+    }
+}
+```
+
+With `batchSize=500` and `timeoutSeconds=10`, if the WebSocket listener died:
+- Each of 500 transactions would timeout after 10 seconds
+- Total wait time: 500 × 10s = **5000 seconds = 83 minutes**
+
+This matches the incident duration (~70 minutes) almost exactly.
+
+### The Fix
+
+Wait for only the **last transaction** in the batch. Due to EVM nonce ordering, if the last tx (highest nonce) is mined, all previous ones must be too:
+
+```go
+// NEW CODE - FIXED
+// Wait for last transaction only - if it's mined, all previous ones are too
+// (same sender, sequential nonces, EVM enforces nonce ordering)
+if len(txHashes) > 0 {
+    if listener.AwaitTxMined(txHashes[len(txHashes)-1], timeoutSeconds) != nil {
+        shouldRefetchNonce = true
+    }
+}
+```
+
+### Changes Made
+
+1. **`sender.go`**: Changed all three bombardment functions to wait for last tx only
+   - `bombardWithTransactions()`
+   - `bombardWithERC20Transactions()`
+   - `bombardWithBothTransactions()`
+
+2. **`main.go`**: Increased default timeout from 10s to 30s
+   - With only one wait per batch, we can afford a longer timeout
+   - Provides more margin for temporary network issues
+
+### Impact
+
+- Before: Timeout scenario = 500 × 10s = 83 minutes of hanging
+- After: Timeout scenario = 1 × 30s = 30 seconds, then retry
+
 ## Open Questions
 
 1. How was Bombard started? What flags were used? (`-keys` value?)
