@@ -3,18 +3,6 @@ global:
   evaluation_interval: 5s
 
 scrape_configs:
-  # Primary network nodes (port 9650)
-  - job_name: 'avalanchego-primary'
-    metrics_path: /ext/metrics
-    static_configs:
-      - targets:
-          - '18.183.88.206:9650'
-          - '13.113.48.18:9650'
-          - '35.78.177.10:9650'
-        labels:
-          role: 'primary'
-
-  # Validator nodes (port 9652)
   - job_name: 'avalanchego-validator'
     metrics_path: /ext/metrics
     static_configs:
@@ -22,16 +10,3 @@ scrape_configs:
           - '18.183.88.206:9652'
           - '13.113.48.18:9652'
           - '35.78.177.10:9652'
-        labels:
-          role: 'validator'
-
-  # RPC nodes (port 9654)
-  - job_name: 'avalanchego-rpc'
-    metrics_path: /ext/metrics
-    static_configs:
-      - targets:
-          - '18.183.88.206:9654'
-          - '13.113.48.18:9654'
-          - '35.78.177.10:9654'
-        labels:
-          role: 'rpc'

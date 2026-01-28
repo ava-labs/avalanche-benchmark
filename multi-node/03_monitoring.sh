@@ -27,7 +27,7 @@ fi
 
 echo "=== Deploying Monitoring to Node 1 ==="
 echo "Prometheus + Grafana will run on: $NODE1_IP"
-echo "Scraping metrics from all 9 nodes (3 machines x 3 node types)"
+echo "Scraping metrics from 3 validator nodes (port 9652)"
 echo ""
 
 # ------------------------------------------------------------------------------
@@ -72,18 +72,6 @@ global:
   evaluation_interval: 5s
 
 scrape_configs:
-  # Primary network nodes (port 9650)
-  - job_name: 'avalanchego-primary'
-    metrics_path: /ext/metrics
-    static_configs:
-      - targets:
-          - '${NODE1_IP}:9650'
-          - '${NODE2_IP}:9650'
-          - '${NODE3_IP}:9650'
-        labels:
-          role: 'primary'
-
-  # Validator nodes (port 9652)
   - job_name: 'avalanchego-validator'
     metrics_path: /ext/metrics
     static_configs:
@@ -91,22 +79,9 @@ scrape_configs:
           - '${NODE1_IP}:9652'
           - '${NODE2_IP}:9652'
           - '${NODE3_IP}:9652'
-        labels:
-          role: 'validator'
-
-  # RPC nodes (port 9654)
-  - job_name: 'avalanchego-rpc'
-    metrics_path: /ext/metrics
-    static_configs:
-      - targets:
-          - '${NODE1_IP}:9654'
-          - '${NODE2_IP}:9654'
-          - '${NODE3_IP}:9654'
-        labels:
-          role: 'rpc'
 EOF
 
-echo "  prometheus.yml generated (9 targets)."
+echo "  prometheus.yml generated (3 validator targets)."
 
 # ------------------------------------------------------------------------------
 # Step 3: Upload to node1
@@ -192,9 +167,7 @@ echo ""
 echo "Prometheus: http://$NODE1_IP:9090"
 echo "Grafana:    http://$NODE1_IP:3000/d/avalanche-benchmark/avalanche-benchmark?orgId=1&refresh=5s&from=now-5m&to=now"
 echo ""
-echo "Scraping 9 nodes:"
-echo "  Primary (9650):   $NODE1_IP, $NODE2_IP, $NODE3_IP"
-echo "  Validator (9652): $NODE1_IP, $NODE2_IP, $NODE3_IP"
-echo "  RPC (9654):       $NODE1_IP, $NODE2_IP, $NODE3_IP"
+echo "Scraping 3 validator nodes (port 9652):"
+echo "  $NODE1_IP:9652, $NODE2_IP:9652, $NODE3_IP:9652"
 echo ""
 echo "Grafana has anonymous admin access enabled (no login required)."
