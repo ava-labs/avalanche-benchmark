@@ -118,6 +118,11 @@ func bombardWithTransactions(ctx context.Context, client *ethclient.Client, key 
 		for _, signedTx := range signedTxs {
 			err := client.SendTransaction(context.Background(), signedTx)
 			if err != nil {
+				// "already known" means tx is in mempool - not a real error
+				if isAlreadyKnown(err) {
+					txHashes = append(txHashes, signedTx.Hash().String())
+					continue
+				}
 				lastError = err.Error()
 				errorCount++
 				hasError = true
@@ -156,6 +161,12 @@ func isTransactionUnderpriced(err error) bool {
 	}
 
 	return false
+}
+
+// isAlreadyKnown returns true if the error indicates the tx is already in the mempool.
+// This is not a real error - the tx was accepted, just submitted twice.
+func isAlreadyKnown(err error) bool {
+	return strings.Contains(err.Error(), "already known")
 }
 
 // bombardWithERC20Transactions sends ERC20 token transfer transactions.
@@ -221,6 +232,11 @@ func bombardWithERC20Transactions(ctx context.Context, client *ethclient.Client,
 		for _, signedTx := range signedTxs {
 			err := client.SendTransaction(context.Background(), signedTx)
 			if err != nil {
+				// "already known" means tx is in mempool - not a real error
+				if isAlreadyKnown(err) {
+					txHashes = append(txHashes, signedTx.Hash().String())
+					continue
+				}
 				lastError = err.Error()
 				errorCount++
 				hasError = true
@@ -327,6 +343,11 @@ func bombardWithBothTransactions(ctx context.Context, client *ethclient.Client, 
 		for _, signedTx := range signedTxs {
 			err := client.SendTransaction(context.Background(), signedTx)
 			if err != nil {
+				// "already known" means tx is in mempool - not a real error
+				if isAlreadyKnown(err) {
+					txHashes = append(txHashes, signedTx.Hash().String())
+					continue
+				}
 				lastError = err.Error()
 				errorCount++
 				hasError = true
