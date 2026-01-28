@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -102,8 +103,12 @@ func Run(cfg Config) error {
 	}
 	defer client.Close()
 
-	// Create polling-based listener using all RPC URLs
-	listener, err := NewTxListener(cfg.RPCURLs)
+	// Create WebSocket URL from HTTP URL
+	wsURL := strings.Replace(rpcURL, "http://", "ws://", 1)
+	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
+	wsURL = strings.Replace(wsURL, "/rpc", "/ws", 1)
+
+	listener, err := NewTxListener(wsURL)
 	if err != nil {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}
@@ -236,8 +241,11 @@ func runWithContext(ctx context.Context, cfg Config) error {
 	}
 	defer client.Close()
 
-	// Create polling-based listener using all RPC URLs
-	listener, err := NewTxListener(cfg.RPCURLs)
+	wsURL := strings.Replace(rpcURL, "http://", "ws://", 1)
+	wsURL = strings.Replace(wsURL, "https://", "wss://", 1)
+	wsURL = strings.Replace(wsURL, "/rpc", "/ws", 1)
+
+	listener, err := NewTxListener(wsURL)
 	if err != nil {
 		return fmt.Errorf("failed to create listener: %w", err)
 	}

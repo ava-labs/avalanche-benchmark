@@ -118,11 +118,6 @@ func bombardWithTransactions(ctx context.Context, client *ethclient.Client, key 
 		for _, signedTx := range signedTxs {
 			err := client.SendTransaction(context.Background(), signedTx)
 			if err != nil {
-				// "already known" means tx is in mempool - not a real error
-				if isAlreadyKnown(err) {
-					txHashes = append(txHashes, signedTx.Hash().String())
-					continue
-				}
 				lastError = err.Error()
 				errorCount++
 				hasError = true
@@ -142,9 +137,9 @@ func bombardWithTransactions(ctx context.Context, client *ethclient.Client, key 
 			continue
 		}
 
-		// Wait for the last transaction to be mined (confirms the whole batch landed)
-		if len(txHashes) > 0 {
-			if listener.AwaitTxMined(txHashes[len(txHashes)-1], timeoutSeconds) != nil {
+		// Wait for all transactions to be mined
+		for _, hash := range txHashes {
+			if listener.AwaitTxMined(hash, timeoutSeconds) != nil {
 				shouldRefetchNonce = true
 			}
 		}
@@ -161,12 +156,6 @@ func isTransactionUnderpriced(err error) bool {
 	}
 
 	return false
-}
-
-// isAlreadyKnown returns true if the error indicates the tx is already in the mempool.
-// This is not a real error - the tx was accepted, just submitted twice.
-func isAlreadyKnown(err error) bool {
-	return strings.Contains(err.Error(), "already known")
 }
 
 // bombardWithERC20Transactions sends ERC20 token transfer transactions.
@@ -232,11 +221,6 @@ func bombardWithERC20Transactions(ctx context.Context, client *ethclient.Client,
 		for _, signedTx := range signedTxs {
 			err := client.SendTransaction(context.Background(), signedTx)
 			if err != nil {
-				// "already known" means tx is in mempool - not a real error
-				if isAlreadyKnown(err) {
-					txHashes = append(txHashes, signedTx.Hash().String())
-					continue
-				}
 				lastError = err.Error()
 				errorCount++
 				hasError = true
@@ -255,9 +239,9 @@ func bombardWithERC20Transactions(ctx context.Context, client *ethclient.Client,
 			continue
 		}
 
-		// Wait for the last transaction to be mined (confirms the whole batch landed)
-		if len(txHashes) > 0 {
-			if listener.AwaitTxMined(txHashes[len(txHashes)-1], timeoutSeconds) != nil {
+		// Wait for all transactions to be mined
+		for _, hash := range txHashes {
+			if listener.AwaitTxMined(hash, timeoutSeconds) != nil {
 				shouldRefetchNonce = true
 			}
 		}
@@ -343,11 +327,6 @@ func bombardWithBothTransactions(ctx context.Context, client *ethclient.Client, 
 		for _, signedTx := range signedTxs {
 			err := client.SendTransaction(context.Background(), signedTx)
 			if err != nil {
-				// "already known" means tx is in mempool - not a real error
-				if isAlreadyKnown(err) {
-					txHashes = append(txHashes, signedTx.Hash().String())
-					continue
-				}
 				lastError = err.Error()
 				errorCount++
 				hasError = true
@@ -365,9 +344,9 @@ func bombardWithBothTransactions(ctx context.Context, client *ethclient.Client, 
 			continue
 		}
 
-		// Wait for the last transaction to be mined (confirms the whole batch landed)
-		if len(txHashes) > 0 {
-			if listener.AwaitTxMined(txHashes[len(txHashes)-1], timeoutSeconds) != nil {
+		// Wait for all transactions to be mined
+		for _, hash := range txHashes {
+			if listener.AwaitTxMined(hash, timeoutSeconds) != nil {
 				shouldRefetchNonce = true
 			}
 		}

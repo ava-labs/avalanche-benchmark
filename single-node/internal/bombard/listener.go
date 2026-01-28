@@ -8,19 +8,15 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
+	"github.com/ava-labs/libevm/core/types"
 	"github.com/ava-labs/libevm/ethclient"
 )
 
-const pollInterval = 10 * time.Millisecond
-
-// TxListener tracks transactions in new blocks via HTTP polling across multiple nodes.
-// Each node gets its own polling goroutine. They coordinate via atomic CAS on currentBlock.
+// TxListener tracks transactions in new blocks via WebSocket subscription.
 type TxListener struct {
-	clients               []*ethclient.Client
-	currentBlock          uint64 // atomic - the block we're looking for
+	client                *ethclient.Client
 	minedTxs              map[string]bool
 	minedTxsMu            sync.RWMutex
 	pendingTxs            map[string]chan struct{}
@@ -28,123 +24,77 @@ type TxListener struct {
 	stopCh                chan struct{}
 	lastBlockTimestampMs  uint64
 	hasLastBlockTimestamp bool
-	timestampMu           sync.Mutex // protects timestamp fields
 }
 
-// NewTxListener creates a polling-based listener across multiple RPC endpoints.
-// Each endpoint gets its own polling goroutine for parallel block discovery.
-func NewTxListener(rpcURLs []string) (*TxListener, error) {
-	if len(rpcURLs) == 0 {
-		return nil, fmt.Errorf("no RPC URLs provided")
-	}
-
-	clients := make([]*ethclient.Client, len(rpcURLs))
-	for i, url := range rpcURLs {
-		client, err := ethclient.Dial(url)
-		if err != nil {
-			// Clean up already created clients
-			for j := 0; j < i; j++ {
-				clients[j].Close()
-			}
-			return nil, fmt.Errorf("failed to connect to RPC %s: %w", url, err)
-		}
-		clients[i] = client
+// NewTxListener creates a new transaction listener connected to the given WebSocket URL.
+func NewTxListener(wsURL string) (*TxListener, error) {
+	client, err := ethclient.Dial(wsURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to WebSocket: %w", err)
 	}
 
 	listener := &TxListener{
-		clients:    clients,
+		client:     client,
 		minedTxs:   make(map[string]bool),
 		pendingTxs: make(map[string]chan struct{}),
 		stopCh:     make(chan struct{}),
 	}
 
-	// Initialize currentBlock from first available node
-	var startBlock uint64
-	for i, client := range clients {
-		block, err := client.BlockNumber(context.Background())
-		if err == nil {
-			startBlock = block + 1 // Start looking for the next block
-			log.Printf("Listener initialized at block %d from node %d", block, i)
-			break
-		}
-	}
-	if startBlock == 0 {
-		startBlock = 1 // Fallback
-	}
-	atomic.StoreUint64(&listener.currentBlock, startBlock)
-
-	// Spawn one polling goroutine per node
-	for i, client := range clients {
-		go listener.pollNode(client, i)
-	}
-
-	log.Printf("TxListener started with %d nodes, polling every %v", len(clients), pollInterval)
+	go listener.subscribeToBlocks()
 
 	return listener, nil
 }
 
-// Close stops all polling goroutines and closes connections.
+// Close stops the listener and closes the connection.
 func (l *TxListener) Close() {
 	close(l.stopCh)
-	for _, client := range l.clients {
-		client.Close()
-	}
+	l.client.Close()
 }
 
-// pollNode continuously polls a single node for blocks.
-// Multiple goroutines run this concurrently, coordinating via atomic CAS.
-func (l *TxListener) pollNode(client *ethclient.Client, nodeIndex int) {
+func (l *TxListener) subscribeToBlocks() {
+	headers := make(chan *types.Header)
+	sub, err := l.client.SubscribeNewHead(context.Background(), headers)
+	if err != nil {
+		log.Printf("failed to subscribe to new heads: %v", err)
+		return
+	}
+	defer sub.Unsubscribe()
+
 	for {
 		select {
 		case <-l.stopCh:
 			return
-		default:
+		case err := <-sub.Err():
+			log.Printf("subscription error: %v", err)
+			return
+		case header := <-headers:
+			l.processBlock(header)
 		}
-
-		targetBlock := atomic.LoadUint64(&l.currentBlock)
-
-		// Try to fetch the target block
-		blockData, err := l.fetchBlock(client, targetBlock)
-		if err == nil && blockData != nil {
-			// Found the block! Try to claim it with CAS
-			if atomic.CompareAndSwapUint64(&l.currentBlock, targetBlock, targetBlock+1) {
-				// We won the race - process this block
-				l.processBlockData(targetBlock, blockData, nodeIndex)
-			}
-			// If CAS failed, another goroutine already processed it - that's fine
-		}
-
-		time.Sleep(pollInterval)
 	}
 }
 
-// fetchBlock attempts to fetch a block by number. Returns nil if not found.
-func (l *TxListener) fetchBlock(client *ethclient.Client, blockNum uint64) (map[string]interface{}, error) {
+func (l *TxListener) processBlock(header *types.Header) {
+	// Fetch block as raw JSON to get both transactions and timestampMilliseconds in one call
 	var raw json.RawMessage
-	err := client.Client().CallContext(
-		context.Background(),
-		&raw,
-		"eth_getBlockByNumber",
-		fmt.Sprintf("0x%x", blockNum),
-		true, // include full transactions
-	)
-	if err != nil {
-		return nil, err
+	var err error
+	for i := 0; i < 5; i++ {
+		err = l.client.Client().CallContext(context.Background(), &raw, "eth_getBlockByNumber", fmt.Sprintf("0x%x", header.Number.Uint64()), true)
+		if err == nil && len(raw) > 0 && string(raw) != "null" {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	if len(raw) == 0 || string(raw) == "null" {
-		return nil, nil // Block not found yet
+	if err != nil || len(raw) == 0 || string(raw) == "null" {
+		log.Printf("failed to get block %d: %v", header.Number.Uint64(), err)
+		return
 	}
 
 	var blockData map[string]interface{}
 	if err := json.Unmarshal(raw, &blockData); err != nil {
-		return nil, err
+		log.Printf("failed to parse block %d: %v", header.Number.Uint64(), err)
+		return
 	}
 
-	return blockData, nil
-}
-
-// processBlockData extracts transactions and notifies waiters.
-func (l *TxListener) processBlockData(blockNum uint64, blockData map[string]interface{}, nodeIndex int) {
 	// Extract transactions
 	var txHashes []string
 	if txs, ok := blockData["transactions"].([]interface{}); ok {
@@ -167,7 +117,6 @@ func (l *TxListener) processBlockData(blockNum uint64, blockData map[string]inte
 
 	// Extract timestampMilliseconds (Avalanche-specific)
 	delayLabel := "n/a"
-	l.timestampMu.Lock()
 	if tsMsHex, ok := blockData["timestampMilliseconds"].(string); ok {
 		if timestampMs, err := parseUint64String(tsMsHex); err == nil {
 			if l.hasLastBlockTimestamp && timestampMs >= l.lastBlockTimestampMs {
@@ -177,12 +126,10 @@ func (l *TxListener) processBlockData(blockNum uint64, blockData map[string]inte
 			l.hasLastBlockTimestamp = true
 		}
 	}
-	l.timestampMu.Unlock()
 
 	log.Printf(
-		"New block: %d (node %d), tx count: %d, gas used: %.2fM, delay_ms: %s",
-		blockNum,
-		nodeIndex,
+		"New block: %d, tx count: %d, gas used: %.2fM, delay_ms: %s",
+		header.Number.Uint64(),
 		txCount,
 		gasUsedMillions,
 		delayLabel,
@@ -208,7 +155,7 @@ func (l *TxListener) processBlockData(blockNum uint64, blockData map[string]inte
 
 func parseUint64String(value string) (uint64, error) {
 	if strings.HasPrefix(value, "0x") || strings.HasPrefix(value, "0X") {
-		return strconv.ParseUint(strings.TrimPrefix(strings.ToLower(value), "0x"), 16, 64)
+		return strconv.ParseUint(strings.TrimPrefix(value, "0x"), 16, 64)
 	}
 	return strconv.ParseUint(value, 10, 64)
 }
