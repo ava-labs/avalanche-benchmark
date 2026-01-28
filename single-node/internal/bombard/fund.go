@@ -110,8 +110,8 @@ func fundAccountsWithERC20(client *ethclient.Client, listener *TxListener, keys 
 		return fmt.Errorf("failed to get nonce: %w", err)
 	}
 
-	// Fund amount: 1000 tokens per account (with 18 decimals)
-	fundAmount := ToWei(1000)
+	// Fund amount: 100M tokens per account (with 18 decimals)
+	fundAmount := ToWei(100_000_000)
 	gasLimit := uint64(100000) // ERC20 transfers need more gas
 	gasPriceVal := big.NewInt(gasPrice)
 
