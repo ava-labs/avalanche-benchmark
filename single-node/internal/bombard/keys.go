@@ -2,6 +2,8 @@ package bombard
 
 import (
 	"crypto/ecdsa"
+	"crypto/sha256"
+	"encoding/binary"
 	"log"
 
 	"github.com/ava-labs/libevm/common"
@@ -21,12 +23,21 @@ var (
 	timeoutSeconds = 10
 )
 
+// Deterministic seed for key generation - same seed = same keys every run
+const keySeed = "avalanche-bombard-benchmark-seed-v1"
+
 func generateKeys(count int) []*Key {
 	keys := make([]*Key, count)
 	for i := 0; i < count; i++ {
-		privateKey, err := crypto.GenerateKey()
+		// Derive deterministic private key from seed + index
+		h := sha256.New()
+		h.Write([]byte(keySeed))
+		binary.Write(h, binary.BigEndian, uint64(i))
+		seed := h.Sum(nil)
+
+		privateKey, err := crypto.ToECDSA(seed)
 		if err != nil {
-			log.Fatalf("failed to generate key: %v", err)
+			log.Fatalf("failed to derive key %d: %v", i, err)
 		}
 		keys[i] = &Key{
 			PrivateKey: privateKey,

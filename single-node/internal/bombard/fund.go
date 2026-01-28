@@ -24,6 +24,32 @@ const EwoqAddress = "0x8db97C7cEcE249c2b98bDC0226Cc4C2A57BF52FC"
 const PredeployedTokenAddress = "0xB0B5B0B5B0B5B0B5B0B5B0B5B0B5B0B5B0B5B0B5"
 
 func fundAccounts(client *ethclient.Client, listener *TxListener, keys []*Key) error {
+	// Fund amount: 100 ETH per account
+	fundAmount := ToWei(100)
+	// Minimum balance to consider "funded" - accounts spend gas so balance decreases
+	minBalance := ToWei(1)
+
+	// Find keys that need funding
+	var unfundedKeys []*Key
+	var unfundedIndices []int
+	for i, key := range keys {
+		balance, err := client.BalanceAt(context.Background(), key.Address, nil)
+		if err != nil {
+			return fmt.Errorf("failed to check balance for key %d: %w", i, err)
+		}
+		if balance.Cmp(minBalance) < 0 {
+			unfundedKeys = append(unfundedKeys, key)
+			unfundedIndices = append(unfundedIndices, i)
+		}
+	}
+
+	if len(unfundedKeys) == 0 {
+		fmt.Println("all accounts already funded, skipping funding")
+		return nil
+	}
+
+	fmt.Printf("funding %d of %d accounts (others already funded)\n", len(unfundedKeys), len(keys))
+
 	ewoqKey, err := crypto.HexToECDSA(ewoqPrivateKey)
 	if err != nil {
 		return fmt.Errorf("failed to parse EWOQ key: %w", err)
@@ -41,37 +67,35 @@ func fundAccounts(client *ethclient.Client, listener *TxListener, keys []*Key) e
 		return fmt.Errorf("failed to get nonce: %w", err)
 	}
 
-	// Fund amount: 100 ETH per account
-	fundAmount := ToWei(100)
 	gasLimit := uint64(21000)
 	gasPriceVal := big.NewInt(gasPrice)
 
 	var wg sync.WaitGroup
-	errChan := make(chan error, len(keys))
+	errChan := make(chan error, len(unfundedKeys))
 
-	for i, key := range keys {
+	for i, key := range unfundedKeys {
 		wg.Add(1)
-		go func(idx int, k *Key, n uint64) {
+		go func(idx int, originalIdx int, k *Key, n uint64) {
 			defer wg.Done()
 
 			tx := types.NewTransaction(n, k.Address, fundAmount, gasLimit, gasPriceVal, nil)
 			signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), ewoqKey)
 			if err != nil {
-				errChan <- fmt.Errorf("failed to sign funding tx %d: %w", idx, err)
+				errChan <- fmt.Errorf("failed to sign funding tx %d: %w", originalIdx, err)
 				return
 			}
 
 			err = client.SendTransaction(context.Background(), signedTx)
 			if err != nil {
-				errChan <- fmt.Errorf("failed to send funding tx %d: %w", idx, err)
+				errChan <- fmt.Errorf("failed to send funding tx %d: %w", originalIdx, err)
 				return
 			}
 
 			if err := listener.AwaitTxMined(signedTx.Hash().String(), timeoutSeconds*3); err != nil {
-				errChan <- fmt.Errorf("funding tx %d not mined: %w", idx, err)
+				errChan <- fmt.Errorf("funding tx %d not mined: %w", originalIdx, err)
 				return
 			}
-		}(i, key, nonce+uint64(i))
+		}(i, unfundedIndices[i], key, nonce+uint64(i))
 	}
 
 	wg.Wait()
@@ -89,8 +113,8 @@ func fundAccounts(client *ethclient.Client, listener *TxListener, keys []*Key) e
 		return fmt.Errorf("encountered %d funding errors", len(fundingErrors))
 	}
 
-	// Verify all accounts actually received funds
-	if err := verifyBalances(client, keys, fundAmount); err != nil {
+	// Verify all accounts actually received funds (use minBalance threshold)
+	if err := verifyBalances(client, keys, minBalance); err != nil {
 		return err
 	}
 
@@ -120,6 +144,44 @@ func verifyBalances(client *ethclient.Client, keys []*Key, expectedMin *big.Int)
 
 // fundAccountsWithERC20 transfers ERC20 tokens from ewoq to all generated accounts.
 func fundAccountsWithERC20(client *ethclient.Client, listener *TxListener, keys []*Key) error {
+	// Fund amount: 100M tokens per account (with 18 decimals)
+	fundAmount := ToWei(100_000_000)
+	// Minimum balance to consider "funded" - accounts spend tokens so balance decreases
+	minBalance := ToWei(1_000_000)
+
+	// ERC20 balanceOf(address) selector
+	balanceOfSelector := []byte{0x70, 0xa0, 0x82, 0x31}
+
+	// Find keys that need ERC20 funding
+	var unfundedKeys []*Key
+	var unfundedIndices []int
+	for i, key := range keys {
+		callData := make([]byte, 36)
+		copy(callData[0:4], balanceOfSelector)
+		copy(callData[16:36], key.Address.Bytes())
+
+		result, err := client.CallContract(context.Background(), ethereum.CallMsg{
+			To:   &PredeployedTokenAddr,
+			Data: callData,
+		}, nil)
+		if err != nil {
+			return fmt.Errorf("failed to check ERC20 balance for key %d: %w", i, err)
+		}
+
+		balance := new(big.Int).SetBytes(result)
+		if balance.Cmp(minBalance) < 0 {
+			unfundedKeys = append(unfundedKeys, key)
+			unfundedIndices = append(unfundedIndices, i)
+		}
+	}
+
+	if len(unfundedKeys) == 0 {
+		fmt.Println("all accounts already have ERC20 tokens, skipping funding")
+		return nil
+	}
+
+	fmt.Printf("funding %d of %d accounts with ERC20 (others already funded)\n", len(unfundedKeys), len(keys))
+
 	ewoqKey, err := crypto.HexToECDSA(ewoqPrivateKey)
 	if err != nil {
 		return fmt.Errorf("failed to parse EWOQ key: %w", err)
@@ -137,17 +199,15 @@ func fundAccountsWithERC20(client *ethclient.Client, listener *TxListener, keys 
 		return fmt.Errorf("failed to get nonce: %w", err)
 	}
 
-	// Fund amount: 100M tokens per account (with 18 decimals)
-	fundAmount := ToWei(100_000_000)
 	gasLimit := uint64(100000) // ERC20 transfers need more gas
 	gasPriceVal := big.NewInt(gasPrice)
 
 	var wg sync.WaitGroup
-	errChan := make(chan error, len(keys))
+	errChan := make(chan error, len(unfundedKeys))
 
-	for i, key := range keys {
+	for i, key := range unfundedKeys {
 		wg.Add(1)
-		go func(idx int, k *Key, n uint64) {
+		go func(idx int, originalIdx int, k *Key, n uint64) {
 			defer wg.Done()
 
 			// Encode ERC20 transfer calldata
@@ -156,21 +216,21 @@ func fundAccountsWithERC20(client *ethclient.Client, listener *TxListener, keys 
 			tx := types.NewTransaction(n, PredeployedTokenAddr, big.NewInt(0), gasLimit, gasPriceVal, data)
 			signedTx, err := types.SignTx(tx, types.NewEIP155Signer(chainID), ewoqKey)
 			if err != nil {
-				errChan <- fmt.Errorf("failed to sign ERC20 funding tx %d: %w", idx, err)
+				errChan <- fmt.Errorf("failed to sign ERC20 funding tx %d: %w", originalIdx, err)
 				return
 			}
 
 			err = client.SendTransaction(context.Background(), signedTx)
 			if err != nil {
-				errChan <- fmt.Errorf("failed to send ERC20 funding tx %d: %w", idx, err)
+				errChan <- fmt.Errorf("failed to send ERC20 funding tx %d: %w", originalIdx, err)
 				return
 			}
 
 			if err := listener.AwaitTxMined(signedTx.Hash().String(), timeoutSeconds*3); err != nil {
-				errChan <- fmt.Errorf("ERC20 funding tx %d not mined: %w", idx, err)
+				errChan <- fmt.Errorf("ERC20 funding tx %d not mined: %w", originalIdx, err)
 				return
 			}
-		}(i, key, nonce+uint64(i))
+		}(i, unfundedIndices[i], key, nonce+uint64(i))
 	}
 
 	wg.Wait()
@@ -188,8 +248,8 @@ func fundAccountsWithERC20(client *ethclient.Client, listener *TxListener, keys 
 		return fmt.Errorf("encountered %d ERC20 funding errors", len(fundingErrors))
 	}
 
-	// Verify all accounts actually received ERC20 tokens
-	if err := verifyERC20Balances(client, keys, fundAmount); err != nil {
+	// Verify all accounts actually received ERC20 tokens (use minBalance threshold)
+	if err := verifyERC20Balances(client, keys, minBalance); err != nil {
 		return err
 	}
 
