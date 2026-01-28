@@ -137,9 +137,9 @@ func bombardWithTransactions(ctx context.Context, client *ethclient.Client, key 
 			continue
 		}
 
-		// Wait for all transactions to be mined
-		for _, hash := range txHashes {
-			if listener.AwaitTxMined(hash, timeoutSeconds) != nil {
+		// Wait for the last transaction to be mined (confirms the whole batch landed)
+		if len(txHashes) > 0 {
+			if listener.AwaitTxMined(txHashes[len(txHashes)-1], timeoutSeconds) != nil {
 				shouldRefetchNonce = true
 			}
 		}
@@ -239,9 +239,9 @@ func bombardWithERC20Transactions(ctx context.Context, client *ethclient.Client,
 			continue
 		}
 
-		// Wait for all transactions to be mined
-		for _, hash := range txHashes {
-			if listener.AwaitTxMined(hash, timeoutSeconds) != nil {
+		// Wait for the last transaction to be mined (confirms the whole batch landed)
+		if len(txHashes) > 0 {
+			if listener.AwaitTxMined(txHashes[len(txHashes)-1], timeoutSeconds) != nil {
 				shouldRefetchNonce = true
 			}
 		}
@@ -344,9 +344,9 @@ func bombardWithBothTransactions(ctx context.Context, client *ethclient.Client, 
 			continue
 		}
 
-		// Wait for all transactions to be mined
-		for _, hash := range txHashes {
-			if listener.AwaitTxMined(hash, timeoutSeconds) != nil {
+		// Wait for the last transaction to be mined (confirms the whole batch landed)
+		if len(txHashes) > 0 {
+			if listener.AwaitTxMined(txHashes[len(txHashes)-1], timeoutSeconds) != nil {
 				shouldRefetchNonce = true
 			}
 		}
