@@ -1,94 +1,80 @@
-// Command bombard is the transaction flooding tool for benchmarking.
-// This is bundled with the benchmark CLI for air-gapped deployments.
+// Command bombard is a stable EVM transaction flooding tool using pull-based workers.
+// Each worker maintains exactly 1 transaction in the mempool at all times.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
-
-	"github.com/ava-labs/avalanche-benchmark/internal/bombard"
 )
 
 func main() {
 	var (
-		rpcURLs   string
-		batchSize int
-		keyCount  int
-		timeout   int
-		erc20     bool
-		both      bool
+		rpcURLs string
+		workers int
 	)
 
-	flag.StringVar(&rpcURLs, "rpc", "", "Comma-separated RPC URLs (default: read from ./network_data/rpcs.txt)")
-	flag.IntVar(&batchSize, "batch", 500, "Transactions per batch")
-	flag.IntVar(&keyCount, "keys", 500, "Number of parallel sender keys")
-	flag.IntVar(&timeout, "timeout", 10, "Transaction confirmation timeout (seconds)")
-	flag.BoolVar(&erc20, "erc20", false, "Send ERC20 token transfers instead of native transfers")
-	flag.BoolVar(&both, "both", false, "Send both native and ERC20 transfers (alternating batches)")
+	flag.StringVar(&rpcURLs, "rpc", "", "Comma-separated RPC URLs (required, or reads from ./network_data/rpcs.txt)")
+	flag.IntVar(&workers, "workers", 1000, "Number of concurrent workers")
 	flag.Parse()
 
+	// Load RPC URLs
 	if rpcURLs == "" {
-		// Try to read from default location
 		data, err := os.ReadFile("./network_data/rpcs.txt")
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "Error: -rpc flag is required or ./network_data/rpcs.txt must exist")
+			fmt.Fprintln(os.Stderr, "Error: -rpc flag required or ./network_data/rpcs.txt must exist")
 			flag.Usage()
 			os.Exit(1)
 		}
 		rpcURLs = strings.TrimSpace(string(data))
-		if rpcURLs == "" {
-			fmt.Fprintln(os.Stderr, "Error: ./network_data/rpcs.txt is empty")
-			os.Exit(1)
-		}
 	}
 
-	if erc20 && both {
-		fmt.Fprintln(os.Stderr, "Error: cannot use both -erc20 and -both flags")
+	if rpcURLs == "" {
+		fmt.Fprintln(os.Stderr, "Error: no RPC URLs provided")
 		os.Exit(1)
 	}
 
-	urls := strings.Split(rpcURLs, ",")
-	for i := range urls {
-		urls[i] = strings.TrimSpace(urls[i])
+	urls := parseURLs(rpcURLs)
+	if len(urls) == 0 {
+		fmt.Fprintln(os.Stderr, "Error: no valid RPC URLs")
+		os.Exit(1)
 	}
 
-	// Determine transaction mode
-	mode := bombard.TxModeNative
-	if erc20 {
-		mode = bombard.TxModeERC20
-	} else if both {
-		mode = bombard.TxModeBoth
+	cfg := Config{
+		RPCURLs: urls,
+		Workers: workers,
 	}
 
-	cfg := bombard.Config{
-		RPCURLs:        urls,
-		BatchSize:      batchSize,
-		KeyCount:       keyCount,
-		TimeoutSeconds: timeout,
-		Mode:           mode,
-	}
-
-	// Handle Ctrl+C to exit immediately
+	// Setup immediate exit on Ctrl+C
+	ctx := context.Background()
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	errChan := make(chan error, 1)
 	go func() {
-		errChan <- bombard.Run(cfg)
+		<-sigChan
+		fmt.Println("\nExiting...")
+		os.Exit(0)
 	}()
 
-	select {
-	case sig := <-sigChan:
-		_ = sig
-		os.Exit(0)
-	case err := <-errChan:
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
+	// Run bombardment
+	if err := Run(ctx, cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func parseURLs(s string) []string {
+	parts := strings.Split(s, ",")
+	urls := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			urls = append(urls, p)
 		}
 	}
+	return urls
 }
