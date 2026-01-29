@@ -8,7 +8,6 @@ import (
 	"math/big"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/ava-labs/libevm/common"
@@ -23,17 +22,14 @@ const (
 	ewoqPrivateKey = "56289e99c94b6912bfc12adc093c9b51124f0dc54ac7a766b2bc5ccf558d8027"
 
 	// Transaction parameters
-	targetTps = 6000
-
+	defaultTps = 4000
 
 	tickerTime  = 90 * time.Second // Interval between sends (mempool expires in 60s, so 90s ensures clean slate)
 	workerDelay = 50 * time.Millisecond
 	numWorkers  = int(tickerTime / workerDelay)
 
-	batchSize = targetTps * int(workerDelay/time.Millisecond) / 1000
-
-	gasLimit    = 21000
-	gasPrice    = 25
+	gasLimit = 21000
+	gasPrice = 25
 )
 
 var httpClient = &http.Client{
@@ -47,25 +43,25 @@ var httpClient = &http.Client{
 
 func main() {
 	rpcURL := flag.String("rpc", "", "RPC URL")
+	targetTps := flag.Int("tps", defaultTps, "Target transactions per second")
 	flag.Parse()
 
 	if *rpcURL == "" {
-		fmt.Println("Usage: bombard --rpc=<url>")
+		fmt.Println("Usage: bombard --rpc=<url> [--tps=4000]")
 		os.Exit(1)
 	}
 
-	// Parse comma-delimited RPC list, use the first one
-	rpcList := strings.Split(*rpcURL, ",")
-	firstRPC := strings.TrimSpace(rpcList[0])
+	// Calculate batch size based on target TPS
+	batchSize := *targetTps * int(workerDelay/time.Millisecond) / 1000
 
 	// Connect
-	rpcClient, err := rpc.DialHTTPWithClient(firstRPC, httpClient)
+	rpcClient, err := rpc.DialHTTPWithClient(*rpcURL, httpClient)
 	if err != nil {
 		fmt.Printf("Failed to connect: %v\n", err)
 		os.Exit(1)
 	}
 	client := ethclient.NewClient(rpcClient)
-	fmt.Printf("Connected to %s\n", firstRPC)
+	fmt.Printf("Connected to %s\n", *rpcURL)
 
 	ctx := context.Background()
 
@@ -115,7 +111,7 @@ func main() {
 	// Start workers with staggered delays
 	for i := 0; i < numWorkers; i++ {
 		workerID := i + 1
-		go runWorker(ctx, client, workerKeys[i], signer, workerAddrs[i], workerID)
+		go runWorker(ctx, client, workerKeys[i], signer, workerAddrs[i], workerID, batchSize)
 		if i < numWorkers-1 {
 			time.Sleep(workerDelay)
 		}
@@ -132,6 +128,7 @@ func runWorker(
 	signer types.Signer,
 	address common.Address,
 	workerID int,
+	batchSize int,
 ) {
 	ticker := time.NewTicker(tickerTime)
 	defer ticker.Stop()
@@ -139,14 +136,14 @@ func runWorker(
 	round := 0
 
 	// Run immediately on start
-	runWorkerRound(ctx, client, privateKey, signer, address, workerID, &round)
+	runWorkerRound(ctx, client, privateKey, signer, address, workerID, &round, batchSize)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			runWorkerRound(ctx, client, privateKey, signer, address, workerID, &round)
+			runWorkerRound(ctx, client, privateKey, signer, address, workerID, &round, batchSize)
 		}
 	}
 }
@@ -159,6 +156,7 @@ func runWorkerRound(
 	address common.Address,
 	workerID int,
 	round *int,
+	batchSize int,
 ) {
 	*round++
 

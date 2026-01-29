@@ -56,10 +56,7 @@ To apply a new chain config without recreating the L1:
 ## Benchmark Options
 
 ```bash
-./05_benchmark.sh                         # default (500 keys, 500 batch)
-./05_benchmark.sh -batch 1000             # larger batches
-./05_benchmark.sh -keys 1000              # more parallel senders
-./05_benchmark.sh -erc20                  # ERC20 transfers
-./05_benchmark.sh -both                   # alternate native/ERC20
-./05_benchmark.sh -keys 1000 -batch 1000  # high throughput
+./05_benchmark.sh              # default 4000 TPS target
+./05_benchmark.sh -tps 6000    # higher TPS target
+./05_benchmark.sh -tps 2000    # lower TPS target
 ```
