@@ -1,139 +1,115 @@
 package main
 
 import (
+	"context"
 	"crypto/ecdsa"
-	"crypto/sha256"
-	"encoding/binary"
-	"sync"
+	"fmt"
+	"math/big"
 
 	"github.com/ava-labs/libevm/common"
+	"github.com/ava-labs/libevm/core/types"
 	"github.com/ava-labs/libevm/crypto"
+	"github.com/ava-labs/libevm/ethclient"
 )
 
-// Key represents a sender key with its state.
-type Key struct {
-	PrivateKey *ecdsa.PrivateKey
-	Address    common.Address
-	Nonce      uint64 // Local nonce counter
-	Active     bool   // Whether this key is sending
-	mu         sync.Mutex
-}
+const (
+	fundAmount    = 100  // Amount of native coin to fund each worker
+	fundThreshold = 50   // Fund if balance is below this
+	fundGasPrice  = 25e9 // 25 gwei
+)
 
-// KeyPool manages a pool of pre-generated keys.
-type KeyPool struct {
-	keys []*Key
-	mu   sync.RWMutex
-}
+// DeriveWorkerKeys derives deterministic keys for workers from a master key.
+// Keys are derived by hashing: keccak256(masterKey || "bombard-worker" || index)
+func DeriveWorkerKeys(masterKey *ecdsa.PrivateKey, count int) ([]*ecdsa.PrivateKey, []common.Address, error) {
+	keys := make([]*ecdsa.PrivateKey, count)
+	addrs := make([]common.Address, count)
 
-// Seed for deterministic key generation - same keys every run
-const keySeed = "bombard-benchmark-keys-v1"
-
-// NewKeyPool generates a pool of deterministic keys.
-// Keys are derived from a seed so they're the same across restarts.
-func NewKeyPool(count int) *KeyPool {
-	keys := make([]*Key, count)
 	for i := 0; i < count; i++ {
-		privKey := deriveKey(i)
-		keys[i] = &Key{
-			PrivateKey: privKey,
-			Address:    crypto.PubkeyToAddress(privKey.PublicKey),
-			Active:     false,
+		// Deterministic derivation: hash master key bytes with domain separator and index
+		seed := crypto.Keccak256(
+			masterKey.D.Bytes(),
+			[]byte("bombard-worker"),
+			big.NewInt(int64(i)).Bytes(),
+		)
+		key, err := crypto.ToECDSA(seed)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to derive key %d: %w", i, err)
 		}
+		keys[i] = key
+		addrs[i] = crypto.PubkeyToAddress(key.PublicKey)
 	}
-	return &KeyPool{keys: keys}
+
+	return keys, addrs, nil
 }
 
-// deriveKey generates a deterministic private key from index
-func deriveKey(index int) *ecdsa.PrivateKey {
-	// Hash seed + index to get deterministic 32 bytes
-	h := sha256.New()
-	h.Write([]byte(keySeed))
-	buf := make([]byte, 8)
-	binary.BigEndian.PutUint64(buf, uint64(index))
-	h.Write(buf)
-	seed := h.Sum(nil)
+// FundWorkers ensures each worker has at least fundAmount of native coin.
+// Only funds workers with balance below fundThreshold.
+func FundWorkers(
+	ctx context.Context,
+	client *ethclient.Client,
+	funderKey *ecdsa.PrivateKey,
+	signer types.Signer,
+	workerAddrs []common.Address,
+) error {
+	funderAddr := crypto.PubkeyToAddress(funderKey.PublicKey)
 
-	privKey, err := crypto.ToECDSA(seed)
+	// Check which workers need funding
+	toFund := make([]int, 0)
+	for i, addr := range workerAddrs {
+		balance, err := client.BalanceAt(ctx, addr, nil)
+		if err != nil {
+			return fmt.Errorf("failed to get balance for worker %d: %w", i+1, err)
+		}
+
+		threshold := new(big.Int).Mul(big.NewInt(fundThreshold), big.NewInt(1e18))
+		if balance.Cmp(threshold) < 0 {
+			toFund = append(toFund, i)
+			fmt.Printf("Worker %d needs funding (balance %.2f)\n", i+1, weiToEther(balance))
+		}
+	}
+
+	if len(toFund) == 0 {
+		fmt.Println("All workers have sufficient balance")
+		return nil
+	}
+
+	// Get funder nonce
+	nonce, err := client.PendingNonceAt(ctx, funderAddr)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("failed to get funder nonce: %w", err)
 	}
-	return privKey
-}
 
-// Get returns a key by index.
-func (p *KeyPool) Get(i int) *Key {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.keys[i]
-}
+	// Fund workers that need it
+	amount := new(big.Int).Mul(big.NewInt(fundAmount), big.NewInt(1e18))
+	gasPrice := big.NewInt(fundGasPrice)
 
-// Len returns the pool size.
-func (p *KeyPool) Len() int {
-	return len(p.keys)
-}
-
-// ActiveKeys returns all currently active keys.
-func (p *KeyPool) ActiveKeys() []*Key {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	active := make([]*Key, 0)
-	for _, k := range p.keys {
-		if k.Active {
-			active = append(active, k)
+	for i, workerIdx := range toFund {
+		tx := types.NewTransaction(
+			nonce+uint64(i),
+			workerAddrs[workerIdx],
+			amount,
+			21000,
+			gasPrice,
+			nil,
+		)
+		signed, err := types.SignTx(tx, signer, funderKey)
+		if err != nil {
+			return fmt.Errorf("failed to sign funding tx for worker %d: %w", workerIdx+1, err)
 		}
+		err = client.SendTransaction(ctx, signed)
+		if err != nil {
+			return fmt.Errorf("failed to send funding tx for worker %d: %w", workerIdx+1, err)
+		}
+		fmt.Printf("Funded worker %d with %d coins\n", workerIdx+1, fundAmount)
 	}
-	return active
+
+	fmt.Printf("Sent %d funding transactions\n", len(toFund))
+	return nil
 }
 
-// ActivateN activates the first N inactive keys, returns newly activated.
-func (p *KeyPool) ActivateN(n int) []*Key {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	activated := make([]*Key, 0, n)
-	for _, k := range p.keys {
-		if len(activated) >= n {
-			break
-		}
-		if !k.Active {
-			k.Active = true
-			activated = append(activated, k)
-		}
-	}
-	return activated
-}
-
-// RandomTarget returns a random inactive key's address for use as tx target.
-// Falls back to a deterministic address if all keys are active.
-func (p *KeyPool) RandomTarget(seed int) common.Address {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	// Simple approach: use seed to pick from pool
-	idx := seed % len(p.keys)
-	return p.keys[idx].Address
-}
-
-// IncrementNonce atomically increments and returns the nonce for a key.
-func (k *Key) IncrementNonce() uint64 {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	n := k.Nonce
-	k.Nonce++
-	return n
-}
-
-// SetNonce sets the nonce (used for recovery).
-func (k *Key) SetNonce(n uint64) {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	k.Nonce = n
-}
-
-// GetNonce returns current nonce.
-func (k *Key) GetNonce() uint64 {
-	k.mu.Lock()
-	defer k.mu.Unlock()
-	return k.Nonce
+func weiToEther(wei *big.Int) float64 {
+	f := new(big.Float).SetInt(wei)
+	e := new(big.Float).SetInt(big.NewInt(1e18))
+	result, _ := new(big.Float).Quo(f, e).Float64()
+	return result
 }

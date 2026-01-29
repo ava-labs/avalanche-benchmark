@@ -35,9 +35,10 @@ if [ -z "$CHAIN_ID" ]; then
 fi
 
 # Build RPC URLs (using RPC nodes on port 9654)
-RPC1="http://$NODE1_IP:9654/ext/bc/$CHAIN_ID/rpc"
-RPC2="http://$NODE2_IP:9654/ext/bc/$CHAIN_ID/rpc"
-RPC3="http://$NODE3_IP:9654/ext/bc/$CHAIN_ID/rpc"
+# TODO: changge to rpc nodes - 9654
+RPC1="http://$NODE1_IP:9652/ext/bc/$CHAIN_ID/rpc"
+RPC2="http://$NODE2_IP:9652/ext/bc/$CHAIN_ID/rpc"
+RPC3="http://$NODE3_IP:9652/ext/bc/$CHAIN_ID/rpc"
 RPC_URLS="$RPC1,$RPC2,$RPC3"
 
 echo "=== Benchmark ==="
@@ -50,4 +51,6 @@ echo "  $RPC3"
 echo ""
 
 # Pass through any additional flags to bombard
-exec "$SCRIPT_DIR/bin/bombard" -rpc "$RPC_URLS" "$@"
+# exec "$SCRIPT_DIR/bin/bombard" -rpc "$RPC_URLS" "$@"
+cd $SCRIPT_DIR/../single-node/;
+go run ./cmd/bombard/ -rpc "$RPC_URLS" "$@"

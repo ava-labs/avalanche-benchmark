@@ -31,26 +31,35 @@ cp .env.example .env
 # 1. Start 3-node primary network
 ./01_bootstrap_primary_network.sh
 
-# 2. Create L1 (subnet + chain + validators)
+# 2. Create L1 (subnet + chain) - saves SUBNET_ID/CHAIN_ID to network.env
 ./02_create_l1.sh
 
-# 3. Deploy monitoring (optional)
-./03_monitoring.sh
+# 3. Deploy chain config and start validator/RPC nodes
+./03_deploy_l1_config.sh
 
-# 4. Run benchmark
-./04_benchmark.sh
+# 4. Deploy monitoring (optional)
+./04_monitoring.sh
+
+# 5. Run benchmark
+./05_benchmark.sh
 
 # Cleanup
-./05_cleanup.sh
+./06_cleanup.sh
+```
+
+To apply a new chain config without recreating the L1:
+```bash
+# Edit chain-config.json, then:
+./03_deploy_l1_config.sh
 ```
 
 ## Benchmark Options
 
 ```bash
-./04_benchmark.sh                         # default (500 keys, 500 batch)
-./04_benchmark.sh -batch 1000             # larger batches
-./04_benchmark.sh -keys 1000              # more parallel senders
-./04_benchmark.sh -erc20                  # ERC20 transfers
-./04_benchmark.sh -both                   # alternate native/ERC20
-./04_benchmark.sh -keys 1000 -batch 1000  # high throughput
+./05_benchmark.sh                         # default (500 keys, 500 batch)
+./05_benchmark.sh -batch 1000             # larger batches
+./05_benchmark.sh -keys 1000              # more parallel senders
+./05_benchmark.sh -erc20                  # ERC20 transfers
+./05_benchmark.sh -both                   # alternate native/ERC20
+./05_benchmark.sh -keys 1000 -batch 1000  # high throughput
 ```
