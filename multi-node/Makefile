@@ -111,7 +111,7 @@ pack: deps build
 	rm -f avalanche-benchmark-multi.tar.gz
 	tar -czvf avalanche-benchmark-multi.tar.gz \
 		bin/ \
-		0[1-5]_*.sh \
+		0[1-6]_*.sh \
 		start-grafana.sh \
 		node-config.json \
 		chain-config.json \

@@ -43,5 +43,4 @@ echo ""
 echo "RPC URL: $RPC_URL"
 echo ""
 
-cd $SCRIPT_DIR/../single-node/;
 exec "$SCRIPT_DIR/bin/bombard" --rpc "$RPC_URL" "$@"
