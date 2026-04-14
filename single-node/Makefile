@@ -1,18 +1,23 @@
-.PHONY: all clean pack
+.PHONY: all clean pack kill run build
 
 .DEFAULT_GOAL := all
 
-AVALANCHEGO_VERSION=v1.14.1
-SUBNET_EVM_VERSION=v0.8.0
-AVALANCHEGO_BASE_URL=https://github.com/ava-labs/avalanchego/releases/download/$(AVALANCHEGO_VERSION)
-SUBNET_EVM_BASE_URL=https://github.com/ava-labs/subnet-evm/releases/download/$(SUBNET_EVM_VERSION)
+AVALANCHEGO_BRANCH=configure-genesis-acp226-excess
 
 all: bin/benchmark bin/bombard bin/avalanchego plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
 
 clean:
-	rm -rf bin/benchmark bin/bombard
+	rm -rf bin/ plugins/ network_data/
 
-build: 
+kill:
+	-pkill -9 -f avalanchego
+	-pkill -9 -f srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
+	rm -rf network_data/
+
+run: kill bin/benchmark bin/avalanchego plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
+	./bin/benchmark
+
+build:
 	make clean
 	make bin/benchmark bin/bombard
 
@@ -26,56 +31,12 @@ bin/benchmark:
 bin/bombard:
 	go build -o bin/bombard ./cmd/bombard
 
-bin/avalanchego:
-	@mkdir -p bin
-	@OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
-	ARCH=$$(uname -m); \
-	if [ "$$ARCH" = "x86_64" ]; then \
-		ARCH_SUFFIX=amd64; \
-	elif [ "$$ARCH" = "aarch64" ] || [ "$$ARCH" = "arm64" ]; then \
-		ARCH_SUFFIX=arm64; \
-	else \
-		echo "Unsupported architecture: $$ARCH"; \
-		exit 1; \
-	fi; \
-	if [ "$$OS" = "darwin" ]; then \
-		URL="$(AVALANCHEGO_BASE_URL)/avalanchego-macos-$(AVALANCHEGO_VERSION).zip"; \
-		echo "Downloading avalanchego from $$URL..."; \
-		curl -L -o /tmp/avalanchego.zip "$$URL"; \
-		unzip -q /tmp/avalanchego.zip -d /tmp; \
-		cp /tmp/avalanchego-$(AVALANCHEGO_VERSION)/avalanchego bin/avalanchego; \
-		rm -rf /tmp/avalanchego.zip /tmp/avalanchego-$(AVALANCHEGO_VERSION); \
-	else \
-		URL="$(AVALANCHEGO_BASE_URL)/avalanchego-linux-$$ARCH_SUFFIX-$(AVALANCHEGO_VERSION).tar.gz"; \
-		echo "Downloading avalanchego from $$URL..."; \
-		curl -L -o /tmp/avalanchego.tar.gz "$$URL"; \
-		tar -xzf /tmp/avalanchego.tar.gz -C bin --strip-components=1 avalanchego-$(AVALANCHEGO_VERSION)/avalanchego; \
-		rm /tmp/avalanchego.tar.gz; \
-	fi; \
-	chmod +x bin/avalanchego
-
-plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy:
-	@mkdir -p plugins
-	@OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
-	ARCH=$$(uname -m); \
-	if [ "$$ARCH" = "x86_64" ]; then \
-		ARCH_SUFFIX=amd64; \
-	elif [ "$$ARCH" = "aarch64" ] || [ "$$ARCH" = "arm64" ]; then \
-		ARCH_SUFFIX=arm64; \
-	else \
-		echo "Unsupported architecture: $$ARCH"; \
-		exit 1; \
-	fi; \
-	if [ "$$OS" = "darwin" ]; then \
-		OS_SUFFIX=darwin; \
-	else \
-		OS_SUFFIX=linux; \
-	fi; \
-	VERSION_NO_V=$$(echo "$(SUBNET_EVM_VERSION)" | sed 's/^v//'); \
-	URL="$(SUBNET_EVM_BASE_URL)/subnet-evm_$${VERSION_NO_V}_$${OS_SUFFIX}_$${ARCH_SUFFIX}.tar.gz"; \
-	echo "Downloading subnet-evm from $$URL..."; \
-	curl -L -o /tmp/subnet-evm.tar.gz "$$URL"; \
-	tar -xzf /tmp/subnet-evm.tar.gz -C /tmp; \
-	cp /tmp/subnet-evm plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy; \
-	chmod +x plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy; \
-	rm -rf /tmp/subnet-evm.tar.gz /tmp/subnet-evm
+bin/avalanchego plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy:
+	@mkdir -p bin plugins
+	rm -rf /tmp/avalanchego-build
+	git clone --depth 1 --branch $(AVALANCHEGO_BRANCH) https://github.com/ava-labs/avalanchego.git /tmp/avalanchego-build
+	cd /tmp/avalanchego-build && ./scripts/build.sh
+	cd /tmp/avalanchego-build && ./graft/subnet-evm/scripts/build.sh || true
+	cp /tmp/avalanchego-build/build/avalanchego bin/avalanchego
+	cp /tmp/avalanchego-build/build/subnet-evm plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
+	rm -rf /tmp/avalanchego-build

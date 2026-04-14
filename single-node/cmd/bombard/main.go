@@ -8,6 +8,8 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ava-labs/libevm/common"
@@ -45,14 +47,26 @@ var httpClient = &http.Client{
 }
 
 func main() {
-	rpcURL := flag.String("rpc", "", "RPC URL")
+	rpcURL := flag.String("rpc", "", "RPC URL (auto-detected from network_data/rpcs.txt if omitted)")
 	targetTps := flag.Int("tps", defaultTps, "Target transactions per second")
 	erc20Mode := flag.Bool("erc20", false, "Send ERC20 transfers instead of native transfers")
+	dataDir := flag.String("data-dir", "./network_data", "Network data directory (for auto-detecting RPC URL)")
 	flag.Parse()
 
 	if *rpcURL == "" {
-		fmt.Println("Usage: bombard --rpc=<url> [--tps=4000] [--erc20]")
-		os.Exit(1)
+		rpcsFile := filepath.Join(*dataDir, "rpcs.txt")
+		data, err := os.ReadFile(rpcsFile)
+		if err != nil {
+			fmt.Printf("No --rpc provided and failed to read %s: %v\n", rpcsFile, err)
+			os.Exit(1)
+		}
+		urls := strings.Split(strings.TrimSpace(string(data)), ",")
+		if len(urls) == 0 || urls[0] == "" {
+			fmt.Printf("No RPC URLs found in %s\n", rpcsFile)
+			os.Exit(1)
+		}
+		*rpcURL = urls[0]
+		fmt.Printf("Auto-detected RPC URL from %s\n", rpcsFile)
 	}
 
 	// Calculate batch size based on target TPS

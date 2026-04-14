@@ -1,6 +1,8 @@
 {
     "config": {
         "chainId": 99999,
+        "graniteTimestamp": 0,
+        "initialMinDelayMS": 5,
         "feeConfig": {
             "gasLimit": 200000000,
             "targetBlockRate": 1,
@@ -26,7 +28,7 @@
         }
     },
     "nonce": "0x0",
-    "timestamp": "0x0",
+    "timestamp": "0x69cd7b8d",
     "extraData": "0x00",
     "gasLimit": "0xbebc200",
     "difficulty": "0x0",

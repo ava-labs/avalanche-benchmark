@@ -4,3 +4,5 @@ network_data/
 avalanche-benchmark.tar.gz
 tmp/
 .env
+single-node/blockwatch
+single-node/bombard
