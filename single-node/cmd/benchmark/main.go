@@ -18,6 +18,7 @@ var (
 	genesisPath     string
 	chainConfigPath string
 	dataDir         string
+	exitOnSuccess   bool
 )
 
 type fileConfig struct {
@@ -37,6 +38,7 @@ func main() {
 	rootCmd.Flags().StringVar(&genesisPath, "genesis", "./genesis.json", "Genesis file")
 	rootCmd.Flags().StringVar(&chainConfigPath, "chain-config", "./chain-config.json", "Chain config file")
 	rootCmd.Flags().StringVar(&dataDir, "data-dir", "./network_data", "Data directory")
+	rootCmd.Flags().BoolVar(&exitOnSuccess, "exit-on-success", false, "Exit after the network is ready without shutting down nodes")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -96,7 +98,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	fmt.Printf("L1 validators: %d\n", cfg.L1ValidatorNodeCount)
 	fmt.Printf("L1 RPCs: %d\n", cfg.L1RPCNodeCount)
 
-	return network.StartAndMonitor(ctx, cfg)
+	return network.StartAndMonitor(ctx, cfg, exitOnSuccess)
 }
 
 func loadConfig() (fileConfig, string, error) {
