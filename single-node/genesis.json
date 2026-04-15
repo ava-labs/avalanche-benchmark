@@ -2,7 +2,7 @@
     "config": {
         "chainId": 99999,
         "graniteTimestamp": 0,
-        "initialMinDelayMS": 20,
+        "initialMinDelayMS": 100,
         "feeConfig": {
             "gasLimit": 200000000,
             "targetBlockRate": 1,

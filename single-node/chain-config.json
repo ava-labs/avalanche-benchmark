@@ -1,5 +1,5 @@
 {
-  "min-delay-target": 20,
+  "min-delay-target": 100,
   "tx-pool-account-slots": 2048,
   "tx-pool-global-slots": 262144,
   "tx-pool-account-queue": 2048,
