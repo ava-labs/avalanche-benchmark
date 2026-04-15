@@ -72,6 +72,7 @@ pack: deps build
 		chain-config.json \
 		genesis.json \
 		grafana-datasources.yml \
+		grafana-dashboards.yml \
 		avalanche-dashboard.json \
 		.env.example \
 		README.md
