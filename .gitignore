@@ -6,3 +6,4 @@ tmp/
 .env
 single-node/blockwatch
 single-node/bombard
+node_modules/
