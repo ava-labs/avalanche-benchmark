@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ava-labs/avalanchego/api/info"
@@ -42,24 +43,28 @@ func run() error {
 		return fmt.Errorf("failed to load .env: %w", err)
 	}
 
-	node1IP := os.Getenv("NODE1_IP")
-	node2IP := os.Getenv("NODE2_IP")
-	node3IP := os.Getenv("NODE3_IP")
-
-	if node1IP == "" || node2IP == "" || node3IP == "" {
-		return fmt.Errorf("missing node IPs in .env (NODE1_IP, NODE2_IP, NODE3_IP)")
+	nodeIPsRaw := os.Getenv("NODE_IPS")
+	if nodeIPsRaw == "" {
+		return fmt.Errorf("NODE_IPS not set in .env (comma-separated list of IPs)")
 	}
 
-	nodeIPs := []string{node1IP, node2IP, node3IP}
+	nodeIPs := strings.Split(nodeIPsRaw, ",")
+	for i := range nodeIPs {
+		nodeIPs[i] = strings.TrimSpace(nodeIPs[i])
+	}
+	if len(nodeIPs) == 0 || nodeIPs[0] == "" {
+		return fmt.Errorf("NODE_IPS must contain at least one IP")
+	}
+
 	nodeURIs := make([]string, len(nodeIPs))
 	for i, ip := range nodeIPs {
 		nodeURIs[i] = fmt.Sprintf("http://%s:9650", ip)
 	}
 
 	fmt.Println("=== Create L1 ===")
-	fmt.Printf("Node 1: %s\n", nodeURIs[0])
-	fmt.Printf("Node 2: %s\n", nodeURIs[1])
-	fmt.Printf("Node 3: %s\n", nodeURIs[2])
+	for i, uri := range nodeURIs {
+		fmt.Printf("  Node %d: %s\n", i+1, uri)
+	}
 	fmt.Println()
 
 	ctx := context.Background()

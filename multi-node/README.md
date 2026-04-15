@@ -1,6 +1,6 @@
 # Multi-Node Benchmark
 
-Benchmark tool for 3-node Avalanche L1 network.
+Benchmark tool for N-node Avalanche L1 networks. Supports 1 to N validator nodes.
 
 ## Ports
 
@@ -10,7 +10,7 @@ Open the following ports on your nodes:
 |------|---------|----------|-------|
 | 22 | SSH | Yes | Remote access |
 | 9650-9655 | AvalancheGo | Yes | HTTP API + Staking ports for primary/validator/RPC nodes |
-| 3000 | Grafana | Optional | Monitoring dashboard (node1 only) |
+| 3000 | Grafana | Optional | Monitoring dashboard (first node only) |
 | 9090 | Prometheus | No | Grafana queries locally; only needed for external access |
 
 ## Setup
@@ -19,25 +19,36 @@ Open the following ports on your nodes:
 # Configure SSH user and node IPs
 cp .env.example .env
 # Edit .env:
-#   SSH_USER=ubuntu        # SSH username for all nodes
-#   NODE1_IP=1.2.3.1
-#   NODE2_IP=1.2.3.2
-#   NODE3_IP=1.2.3.3
+#   SSH_USER=ubuntu
+#   NODE_IPS=1.2.3.1,1.2.3.2,1.2.3.3    # comma-separated, first = bootstrap
+```
+
+Single-node example:
+```bash
+NODE_IPS=1.2.3.1
+```
+
+## Build
+
+Binaries are built from source on a Linux machine (requires Go and git):
+
+```bash
+make          # builds avalanchego from configure-genesis-acp226-excess branch + tools
 ```
 
 ## Usage
 
 ```bash
-# 1. Start 3-node primary network
+# 1. Start N-node primary network
 ./01_bootstrap_primary_network.sh
 
-# 2. Create L1 (subnet + chain) - saves SUBNET_ID/CHAIN_ID to network.env
+# 2. Create L1 (subnet + chain) with all nodes as validators
 ./02_create_l1.sh
 
 # 3. Deploy chain config and start validator/RPC nodes
 ./03_deploy_l1_config.sh
 
-# 4. Deploy monitoring (optional)
+# 4. Deploy monitoring (optional, runs on first node)
 ./04_monitoring.sh
 
 # 5. Run benchmark
@@ -79,7 +90,7 @@ If you pushed too hard and need to restart, wait 60 seconds for the mempool to c
 
 ### Block Time
 
-When the chain starts, block time is 2000ms. Over 3-4 hours of continuous load, it will gradually decrease to 500ms. To go lower, edit `min-delay-target` in `chain-config.json` and run `./03_deploy_l1_config.sh` again.
+Genesis is configured with ACP-226 excess gas parameters (`graniteTimestamp: 0`, `initialMinDelayMS: 100`) for fast block production from the start. To tune further, edit `min-delay-target` in `chain-config.json` and run `./03_deploy_l1_config.sh` again.
 
 ### Reference Benchmark
 

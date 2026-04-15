@@ -2,25 +2,9 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/.env"
-NETWORK_ENV="$SCRIPT_DIR/network.env"
+source "$SCRIPT_DIR/_common.sh"
 
 # RPC nodes are on port 9654
-
-# ------------------------------------------------------------------------------
-# Load configuration
-# ------------------------------------------------------------------------------
-if [ ! -f "$ENV_FILE" ]; then
-    echo "ERROR: .env file not found"
-    exit 1
-fi
-
-source "$ENV_FILE"
-
-if [ -z "$NODE1_IP" ] || [ -z "$NODE2_IP" ] || [ -z "$NODE3_IP" ]; then
-    echo "ERROR: Missing node IPs in .env"
-    exit 1
-fi
 
 if [ ! -f "$NETWORK_ENV" ]; then
     echo "ERROR: network.env not found. Run 02_create_l1.sh first."
@@ -34,8 +18,8 @@ if [ -z "$CHAIN_ID" ]; then
     exit 1
 fi
 
-# Build RPC URL (using first node's validator port)
-RPC_URL="http://$NODE1_IP:9654/ext/bc/$CHAIN_ID/rpc"
+# Build RPC URL (using first node's RPC port)
+RPC_URL="http://$BOOTSTRAP_IP:9654/ext/bc/$CHAIN_ID/rpc"
 
 echo "=== Benchmark ==="
 echo "Chain ID: $CHAIN_ID"

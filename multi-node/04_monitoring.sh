@@ -2,37 +2,16 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/.env"
-REMOTE_DIR="~/avalanche-benchmark"
+source "$SCRIPT_DIR/_common.sh"
 
 # Port layout per machine:
 #   Primary:   HTTP 9650
 #   Validator: HTTP 9652
 #   RPC:       HTTP 9654
 
-# ------------------------------------------------------------------------------
-# Load configuration
-# ------------------------------------------------------------------------------
-if [ ! -f "$ENV_FILE" ]; then
-    echo "ERROR: .env file not found"
-    exit 1
-fi
-
-source "$ENV_FILE"
-
-if [ -z "$SSH_USER" ]; then
-    echo "ERROR: SSH_USER not set in .env"
-    exit 1
-fi
-
-if [ -z "$NODE1_IP" ] || [ -z "$NODE2_IP" ] || [ -z "$NODE3_IP" ]; then
-    echo "ERROR: Missing node IPs in .env"
-    exit 1
-fi
-
 echo "=== Deploying Monitoring to Node 1 ==="
-echo "Prometheus + Grafana will run on: $NODE1_IP"
-echo "Scraping metrics from 3 validator nodes (port 9652)"
+echo "Prometheus + Grafana will run on: $BOOTSTRAP_IP"
+echo "Scraping metrics from $NODE_COUNT validator node(s) (port 9652)"
 echo ""
 
 # ------------------------------------------------------------------------------
@@ -67,55 +46,72 @@ upload_if_changed() {
 }
 
 # ------------------------------------------------------------------------------
-# Step 2: Generate prometheus.yml with all 9 nodes
+# Step 2: Generate prometheus.yml with dynamic targets
 # ------------------------------------------------------------------------------
 echo "[2/4] Generating prometheus.yml..."
 
-cat > "$SCRIPT_DIR/prometheus.yml" << EOF
-global:
-  scrape_interval: 5s
-  evaluation_interval: 5s
+{
+    echo "global:"
+    echo "  scrape_interval: 5s"
+    echo "  evaluation_interval: 5s"
+    echo ""
+    echo "scrape_configs:"
+    echo "  - job_name: 'avalanchego-validator'"
+    echo "    metrics_path: /ext/metrics"
+    echo "    static_configs:"
+    echo "      - targets:"
+    for NODE_IP in "${NODE_IPS_ARRAY[@]}"; do
+        echo "          - '${NODE_IP}:9652'"
+    done
+} > "$SCRIPT_DIR/prometheus.yml"
 
-scrape_configs:
-  - job_name: 'avalanchego-validator'
-    metrics_path: /ext/metrics
-    static_configs:
-      - targets:
-          - '${NODE1_IP}:9652'
-          - '${NODE2_IP}:9652'
-          - '${NODE3_IP}:9652'
+echo "  prometheus.yml generated ($NODE_COUNT validator target(s))."
+
+# Generate grafana-dashboards.yml with correct user path
+cat > "$SCRIPT_DIR/grafana-dashboards.yml" << EOF
+apiVersion: 1
+
+providers:
+    - name: "default"
+      orgId: 1
+      folder: ""
+      type: file
+      disableDeletion: false
+      editable: true
+      options:
+          path: /home/$SSH_USER/avalanche-benchmark/grafana/dashboards
 EOF
 
-echo "  prometheus.yml generated (3 validator targets)."
+echo "  grafana-dashboards.yml generated (path: /home/$SSH_USER/...)."
 
 # ------------------------------------------------------------------------------
-# Step 3: Upload to node1
+# Step 3: Upload to bootstrap node
 # ------------------------------------------------------------------------------
-echo "[3/4] Uploading monitoring to $NODE1_IP..."
+echo "[3/4] Uploading monitoring to $BOOTSTRAP_IP..."
 
-ssh "$SSH_USER@$NODE1_IP" "mkdir -p $REMOTE_DIR/grafana/provisioning/datasources $REMOTE_DIR/grafana/provisioning/dashboards $REMOTE_DIR/grafana/dashboards"
+ssh "$SSH_USER@$BOOTSTRAP_IP" "mkdir -p $REMOTE_DIR/grafana/provisioning/datasources $REMOTE_DIR/grafana/provisioning/dashboards $REMOTE_DIR/grafana/dashboards"
 
 # Upload prometheus binary (skip if same size)
-if upload_if_changed "$SCRIPT_DIR/bin/prometheus" "$NODE1_IP" "$REMOTE_DIR/prometheus"; then
+if upload_if_changed "$SCRIPT_DIR/bin/prometheus" "$BOOTSTRAP_IP" "$REMOTE_DIR/prometheus"; then
     echo "  Uploaded prometheus"
 else
     echo "  Skipped prometheus (unchanged)"
 fi
 
-scp -q "$SCRIPT_DIR/prometheus.yml" "$SSH_USER@$NODE1_IP:$REMOTE_DIR/"
+scp -q "$SCRIPT_DIR/prometheus.yml" "$SSH_USER@$BOOTSTRAP_IP:$REMOTE_DIR/"
 
 # Upload grafana tarball and extract on remote (only if needed)
-if upload_if_changed "$SCRIPT_DIR/bin/grafana.tar.gz" "$NODE1_IP" "$REMOTE_DIR/grafana.tar.gz"; then
+if upload_if_changed "$SCRIPT_DIR/bin/grafana.tar.gz" "$BOOTSTRAP_IP" "$REMOTE_DIR/grafana.tar.gz"; then
     echo "  Uploaded grafana.tar.gz, extracting..."
-    ssh "$SSH_USER@$NODE1_IP" "cd $REMOTE_DIR && rm -rf grafana-dist && tar -xzf grafana.tar.gz && mv grafana-v* grafana-dist && rm grafana.tar.gz"
+    ssh "$SSH_USER@$BOOTSTRAP_IP" "cd $REMOTE_DIR && rm -rf grafana-dist && tar -xzf grafana.tar.gz && mv grafana-v* grafana-dist && rm grafana.tar.gz"
 else
     echo "  Skipped grafana (unchanged)"
 fi
 
-scp -q "$SCRIPT_DIR/grafana-datasources.yml" "$SSH_USER@$NODE1_IP:$REMOTE_DIR/grafana/provisioning/datasources/datasources.yml"
-scp -q "$SCRIPT_DIR/grafana-dashboards.yml" "$SSH_USER@$NODE1_IP:$REMOTE_DIR/grafana/provisioning/dashboards/dashboards.yml"
-scp -q "$SCRIPT_DIR/avalanche-dashboard.json" "$SSH_USER@$NODE1_IP:$REMOTE_DIR/grafana/dashboards/"
-scp -q "$SCRIPT_DIR/start-grafana.sh" "$SSH_USER@$NODE1_IP:$REMOTE_DIR/"
+scp -q "$SCRIPT_DIR/grafana-datasources.yml" "$SSH_USER@$BOOTSTRAP_IP:$REMOTE_DIR/grafana/provisioning/datasources/datasources.yml"
+scp -q "$SCRIPT_DIR/grafana-dashboards.yml" "$SSH_USER@$BOOTSTRAP_IP:$REMOTE_DIR/grafana/provisioning/dashboards/dashboards.yml"
+scp -q "$SCRIPT_DIR/avalanche-dashboard.json" "$SSH_USER@$BOOTSTRAP_IP:$REMOTE_DIR/grafana/dashboards/"
+scp -q "$SCRIPT_DIR/start-grafana.sh" "$SSH_USER@$BOOTSTRAP_IP:$REMOTE_DIR/"
 
 echo "  Upload complete."
 
@@ -124,7 +120,7 @@ echo "  Upload complete."
 # ------------------------------------------------------------------------------
 echo "[4/4] Starting Prometheus and Grafana..."
 
-ssh "$SSH_USER@$NODE1_IP" bash << 'START_EOF'
+ssh "$SSH_USER@$BOOTSTRAP_IP" bash << 'START_EOF'
 set -e
 cd ~/avalanche-benchmark
 
@@ -153,14 +149,14 @@ START_EOF
 # Wait for services to be ready
 echo "  Waiting for services..."
 for i in {1..30}; do
-    if curl -sf "http://$NODE1_IP:9090/-/ready" >/dev/null 2>&1; then
+    if curl -sf "http://$BOOTSTRAP_IP:9090/-/ready" >/dev/null 2>&1; then
         break
     fi
     sleep 1
 done
 
 for i in {1..30}; do
-    if curl -sf "http://$NODE1_IP:3000/api/health" >/dev/null 2>&1; then
+    if curl -sf "http://$BOOTSTRAP_IP:3000/api/health" >/dev/null 2>&1; then
         break
     fi
     sleep 1
@@ -169,10 +165,12 @@ done
 echo ""
 echo "=== Monitoring Ready ==="
 echo ""
-echo "Prometheus: http://$NODE1_IP:9090"
-echo "Grafana:    http://$NODE1_IP:3000/d/avalanche-benchmark/avalanche-benchmark?orgId=1&refresh=5s&from=now-5m&to=now"
+echo "Prometheus: http://$BOOTSTRAP_IP:9090"
+echo "Grafana:    http://$BOOTSTRAP_IP:3000/d/avalanche-benchmark/avalanche-benchmark?orgId=1&refresh=5s&from=now-5m&to=now"
 echo ""
-echo "Scraping 3 validator nodes (port 9652):"
-echo "  $NODE1_IP:9652, $NODE2_IP:9652, $NODE3_IP:9652"
+echo "Scraping $NODE_COUNT validator node(s) (port 9652):"
+for NODE_IP in "${NODE_IPS_ARRAY[@]}"; do
+    echo "  $NODE_IP:9652"
+done
 echo ""
 echo "Grafana has anonymous admin access enabled (no login required)."

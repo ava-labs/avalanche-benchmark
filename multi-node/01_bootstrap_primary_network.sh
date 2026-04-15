@@ -2,47 +2,15 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/.env"
-REMOTE_DIR="~/avalanche-benchmark"
+source "$SCRIPT_DIR/_common.sh"
 
 # Port layout per machine:
 #   Primary:   HTTP 9650, Staking 9651
 #   Validator: HTTP 9652, Staking 9653
 #   RPC:       HTTP 9654, Staking 9655
 
-# ------------------------------------------------------------------------------
-# Load configuration
-# ------------------------------------------------------------------------------
-if [ ! -f "$ENV_FILE" ]; then
-    echo "ERROR: .env file not found"
-    echo ""
-    echo "Create .env with your node IPs:"
-    echo "  cp .env.example .env"
-    echo "  # Edit .env and fill in NODE1_IP, NODE2_IP, NODE3_IP"
-    exit 1
-fi
-
-source "$ENV_FILE"
-
-if [ -z "$SSH_USER" ]; then
-    echo "ERROR: SSH_USER not set in .env"
-    exit 1
-fi
-
-if [ -z "$NODE1_IP" ] || [ -z "$NODE2_IP" ] || [ -z "$NODE3_IP" ]; then
-    echo "ERROR: Missing node IPs in .env"
-    echo ""
-    echo "Required variables:"
-    echo "  NODE1_IP=$NODE1_IP"
-    echo "  NODE2_IP=$NODE2_IP"
-    echo "  NODE3_IP=$NODE3_IP"
-    exit 1
-fi
-
 echo "=== Multi-Node Primary Network Bootstrap ==="
-echo "Node 1: $NODE1_IP"
-echo "Node 2: $NODE2_IP"
-echo "Node 3: $NODE3_IP"
+print_nodes
 echo ""
 echo "Starting PRIMARY NETWORK nodes only (port 9650/9651)"
 echo ""
@@ -52,9 +20,7 @@ echo ""
 # ------------------------------------------------------------------------------
 echo "[1/4] Uploading files to all nodes..."
 
-SUBNET_EVM_ID="srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy"
-
-for NODE_IP in $NODE1_IP $NODE2_IP $NODE3_IP; do
+for NODE_IP in "${NODE_IPS_ARRAY[@]}"; do
     echo "  Uploading to $NODE_IP..."
     ssh "$SSH_USER@$NODE_IP" "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR/bin $REMOTE_DIR/plugins"
     scp -q "$SCRIPT_DIR/bin/avalanchego" "$SSH_USER@$NODE_IP:$REMOTE_DIR/bin/"
@@ -66,11 +32,11 @@ done
 echo "  Upload complete."
 
 # ------------------------------------------------------------------------------
-# Step 2: Start bootstrap node (node1 - primary network)
+# Step 2: Start bootstrap node (first node - primary network)
 # ------------------------------------------------------------------------------
-echo "[2/4] Starting bootstrap primary node on $NODE1_IP..."
+echo "[2/4] Starting bootstrap primary node on $BOOTSTRAP_IP..."
 
-ssh "$SSH_USER@$NODE1_IP" bash -s "$NODE1_IP" << 'BOOTSTRAP_EOF'
+ssh "$SSH_USER@$BOOTSTRAP_IP" bash -s "$BOOTSTRAP_IP" << 'BOOTSTRAP_EOF'
 set -e
 PUBLIC_IP=$1
 cd ~/avalanche-benchmark
@@ -110,7 +76,7 @@ echo "  Waiting for bootstrap node ID..."
 
 BOOTSTRAP_NODE_ID=""
 for i in {1..60}; do
-    RESULT=$(curl -s -X POST --data '{"jsonrpc":"2.0","id":1,"method":"info.getNodeID"}' -H 'Content-Type: application/json' "http://$NODE1_IP:9650/ext/info" 2>/dev/null || true)
+    RESULT=$(curl -s -X POST --data '{"jsonrpc":"2.0","id":1,"method":"info.getNodeID"}' -H 'Content-Type: application/json' "http://$BOOTSTRAP_IP:9650/ext/info" 2>/dev/null || true)
     BOOTSTRAP_NODE_ID=$(echo "$RESULT" | grep -o '"nodeID":"[^"]*"' | cut -d'"' -f4 || true)
     if [ -n "$BOOTSTRAP_NODE_ID" ]; then
         break
@@ -126,9 +92,13 @@ fi
 echo "  Bootstrap node ID: $BOOTSTRAP_NODE_ID"
 
 # ------------------------------------------------------------------------------
-# Step 3: Start primary network nodes on node2 and node3
+# Step 3: Start primary network nodes on remaining machines
 # ------------------------------------------------------------------------------
-echo "[3/4] Starting primary network nodes on other machines..."
+if [ "$NODE_COUNT" -gt 1 ]; then
+    echo "[3/4] Starting primary network nodes on other machines..."
+else
+    echo "[3/4] Single-node mode, no additional primary nodes to start."
+fi
 
 start_primary_node() {
     local NODE_IP=$1
@@ -136,7 +106,7 @@ start_primary_node() {
 
     echo "  Starting primary node $NODE_NUM on $NODE_IP..."
 
-    ssh "$SSH_USER@$NODE_IP" bash -s "$BOOTSTRAP_NODE_ID" "$NODE1_IP" "$NODE_IP" << 'PRIMARY_EOF'
+    ssh "$SSH_USER@$NODE_IP" bash -s "$BOOTSTRAP_NODE_ID" "$BOOTSTRAP_IP" "$NODE_IP" << 'PRIMARY_EOF'
 set -e
 BOOTSTRAP_NODE_ID=$1
 BOOTSTRAP_IP=$2
@@ -176,8 +146,9 @@ sleep 2
 PRIMARY_EOF
 }
 
-start_primary_node "$NODE2_IP" 2
-start_primary_node "$NODE3_IP" 3
+for i in $(seq 1 $((NODE_COUNT - 1))); do
+    start_primary_node "${NODE_IPS_ARRAY[$i]}" $((i + 1))
+done
 
 # ------------------------------------------------------------------------------
 # Step 4: Wait for all primary nodes to be healthy
@@ -203,29 +174,31 @@ check_node_health() {
     return 1
 }
 
-NODE1_ID="$BOOTSTRAP_NODE_ID"
+# Collect all node IDs
+declare -a NODE_IDS
+NODE_IDS[0]="$BOOTSTRAP_NODE_ID"
 
-NODE2_ID=$(check_node_health "$NODE2_IP" "node 2")
-if [ -z "$NODE2_ID" ]; then
-    echo "ERROR: Node 2 failed to become healthy within 60s"
-    echo "  Check logs: ssh $NODE2_IP 'tail -50 ~/avalanche-benchmark/data/primary/logs/main.log'"
-    exit 1
-fi
-
-NODE3_ID=$(check_node_health "$NODE3_IP" "node 3")
-if [ -z "$NODE3_ID" ]; then
-    echo "ERROR: Node 3 failed to become healthy within 60s"
-    echo "  Check logs: ssh $NODE3_IP 'tail -50 ~/avalanche-benchmark/data/primary/logs/main.log'"
-    exit 1
-fi
+for i in $(seq 1 $((NODE_COUNT - 1))); do
+    local_n=$((i + 1))
+    NODE_ID=$(check_node_health "${NODE_IPS_ARRAY[$i]}" "node $local_n")
+    if [ -z "$NODE_ID" ]; then
+        echo "ERROR: Node $local_n failed to become healthy within 60s"
+        echo "  Check logs: ssh ${NODE_IPS_ARRAY[$i]} 'tail -50 ~/avalanche-benchmark/data/primary/logs/main.log'"
+        exit 1
+    fi
+    NODE_IDS[$i]="$NODE_ID"
+done
 
 echo ""
 echo "=== Primary Network Bootstrap Complete ==="
 echo ""
 echo "Primary Network Nodes (port 9650):"
-echo "  Node 1: $NODE1_IP - $NODE1_ID (bootstrap)"
-echo "  Node 2: $NODE2_IP - $NODE2_ID"
-echo "  Node 3: $NODE3_IP - $NODE3_ID"
+for i in "${!NODE_IPS_ARRAY[@]}"; do
+    local_n=$((i + 1))
+    label=""
+    if [ "$i" -eq 0 ]; then label=" (bootstrap)"; fi
+    echo "  Node $local_n: ${NODE_IPS_ARRAY[$i]} - ${NODE_IDS[$i]}$label"
+done
 echo ""
 echo "Next step: ./02_create_l1.sh"
 echo "  This will start validator (9652) and RPC (9654) nodes on each machine."
