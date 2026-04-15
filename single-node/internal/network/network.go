@@ -414,7 +414,8 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 }
 
 // StartAndMonitor starts the network, prints metrics, and shuts down on Ctrl+C.
-func StartAndMonitor(ctx context.Context, cfg Config) error {
+// If exitOnSuccess is true, it returns after the network is ready and leaves nodes running.
+func StartAndMonitor(ctx context.Context, cfg Config, exitOnSuccess bool) error {
 	// Kill any existing avalanchego processes (best-effort).
 	_ = exec.Command("pkill", "-f", "avalanchego").Run()
 	time.Sleep(1 * time.Second)
@@ -429,6 +430,12 @@ func StartAndMonitor(ctx context.Context, cfg Config) error {
 	}
 
 	fmt.Printf("RPC endpoint: %s\n", result.RPCURLs[0])
+
+	if exitOnSuccess {
+		fmt.Println("Network ready; exiting without shutting down nodes (--exit-on-success).")
+		return nil
+	}
+
 	fmt.Println("Metrics (Ctrl+C to stop):")
 
 	metricsCtx, cancel := context.WithCancel(ctx)
