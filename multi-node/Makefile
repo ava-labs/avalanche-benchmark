@@ -2,12 +2,9 @@
 
 .DEFAULT_GOAL := all
 
-AVALANCHEGO_VERSION=v1.14.1
-SUBNET_EVM_VERSION=v0.8.0
+AVALANCHEGO_BRANCH=configure-genesis-acp226-excess
 PROMETHEUS_VERSION=2.54.1
 GRAFANA_VERSION=11.2.2
-AVALANCHEGO_BASE_URL=https://github.com/ava-labs/avalanchego/releases/download/$(AVALANCHEGO_VERSION)
-SUBNET_EVM_BASE_URL=https://github.com/ava-labs/subnet-evm/releases/download/$(SUBNET_EVM_VERSION)
 PROMETHEUS_BASE_URL=https://github.com/prometheus/prometheus/releases/download/v$(PROMETHEUS_VERSION)
 GRAFANA_BASE_URL=https://dl.grafana.com/oss/release
 
@@ -27,66 +24,23 @@ bin/bombard:
 	@mkdir -p bin
 	cd ../single-node && go build -o ../multi-node/bin/bombard ./cmd/bombard
 
-# Download avalanchego, subnet-evm, prometheus, grafana
-deps: bin/avalanchego bin/$(SUBNET_EVM_ID) bin/prometheus bin/grafana.tar.gz
+# Download/build dependencies
+deps: bin/avalanchego bin/prometheus bin/grafana.tar.gz
 	@echo "Dependencies ready."
 
 clean:
 	rm -rf bin/
 
-bin/avalanchego:
+# Build avalanchego + subnet-evm from source (run on Linux)
+bin/avalanchego bin/$(SUBNET_EVM_ID):
 	@mkdir -p bin
-	@OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
-	ARCH=$$(uname -m); \
-	if [ "$$ARCH" = "x86_64" ]; then \
-		ARCH_SUFFIX=amd64; \
-	elif [ "$$ARCH" = "aarch64" ] || [ "$$ARCH" = "arm64" ]; then \
-		ARCH_SUFFIX=arm64; \
-	else \
-		echo "Unsupported architecture: $$ARCH"; \
-		exit 1; \
-	fi; \
-	if [ "$$OS" = "darwin" ]; then \
-		URL="$(AVALANCHEGO_BASE_URL)/avalanchego-macos-$(AVALANCHEGO_VERSION).zip"; \
-		echo "Downloading avalanchego from $$URL..."; \
-		curl -L -o /tmp/avalanchego.zip "$$URL"; \
-		unzip -q /tmp/avalanchego.zip -d /tmp; \
-		cp /tmp/avalanchego-$(AVALANCHEGO_VERSION)/avalanchego bin/avalanchego; \
-		rm -rf /tmp/avalanchego.zip /tmp/avalanchego-$(AVALANCHEGO_VERSION); \
-	else \
-		URL="$(AVALANCHEGO_BASE_URL)/avalanchego-linux-$$ARCH_SUFFIX-$(AVALANCHEGO_VERSION).tar.gz"; \
-		echo "Downloading avalanchego from $$URL..."; \
-		curl -L -o /tmp/avalanchego.tar.gz "$$URL"; \
-		tar -xzf /tmp/avalanchego.tar.gz -C bin --strip-components=1 avalanchego-$(AVALANCHEGO_VERSION)/avalanchego; \
-		rm /tmp/avalanchego.tar.gz; \
-	fi; \
-	chmod +x bin/avalanchego
-
-bin/$(SUBNET_EVM_ID):
-	@mkdir -p bin
-	@OS=$$(uname -s | tr '[:upper:]' '[:lower:]'); \
-	ARCH=$$(uname -m); \
-	if [ "$$ARCH" = "x86_64" ]; then \
-		ARCH_SUFFIX=amd64; \
-	elif [ "$$ARCH" = "aarch64" ] || [ "$$ARCH" = "arm64" ]; then \
-		ARCH_SUFFIX=arm64; \
-	else \
-		echo "Unsupported architecture: $$ARCH"; \
-		exit 1; \
-	fi; \
-	if [ "$$OS" = "darwin" ]; then \
-		OS_SUFFIX=darwin; \
-	else \
-		OS_SUFFIX=linux; \
-	fi; \
-	VERSION_NO_V=$$(echo "$(SUBNET_EVM_VERSION)" | sed 's/^v//'); \
-	URL="$(SUBNET_EVM_BASE_URL)/subnet-evm_$${VERSION_NO_V}_$${OS_SUFFIX}_$${ARCH_SUFFIX}.tar.gz"; \
-	echo "Downloading subnet-evm from $$URL..."; \
-	curl -L -o /tmp/subnet-evm.tar.gz "$$URL"; \
-	tar -xzf /tmp/subnet-evm.tar.gz -C /tmp; \
-	cp /tmp/subnet-evm bin/$(SUBNET_EVM_ID); \
-	chmod +x bin/$(SUBNET_EVM_ID); \
-	rm -rf /tmp/subnet-evm.tar.gz /tmp/subnet-evm
+	rm -rf /tmp/avalanchego-build
+	git clone --depth 1 --branch $(AVALANCHEGO_BRANCH) https://github.com/ava-labs/avalanchego.git /tmp/avalanchego-build
+	cd /tmp/avalanchego-build && ./scripts/build.sh
+	cd /tmp/avalanchego-build && ./graft/subnet-evm/scripts/build.sh || true
+	cp /tmp/avalanchego-build/build/avalanchego bin/avalanchego
+	cp /tmp/avalanchego-build/build/subnet-evm bin/$(SUBNET_EVM_ID)
+	rm -rf /tmp/avalanchego-build
 
 # Download prometheus (linux-amd64 for remote nodes)
 bin/prometheus:
@@ -111,6 +65,7 @@ pack: deps build
 	rm -f avalanche-benchmark-multi.tar.gz
 	tar -czvf avalanche-benchmark-multi.tar.gz \
 		bin/ \
+		_common.sh \
 		0[1-6]_*.sh \
 		start-grafana.sh \
 		node-config.json \

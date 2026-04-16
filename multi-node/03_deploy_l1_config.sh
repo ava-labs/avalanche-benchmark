@@ -5,34 +5,12 @@ set -e
 trap 'echo "ERROR: Script failed at line $LINENO. Command: $BASH_COMMAND"' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/.env"
-NETWORK_ENV="$SCRIPT_DIR/network.env"
-REMOTE_DIR="~/avalanche-benchmark"
+source "$SCRIPT_DIR/_common.sh"
 
 # Port layout per machine:
 #   Primary:   HTTP 9650, Staking 9651 (already running from 01_bootstrap)
 #   Validator: HTTP 9652, Staking 9653
 #   RPC:       HTTP 9654, Staking 9655
-
-# ------------------------------------------------------------------------------
-# Load configuration
-# ------------------------------------------------------------------------------
-if [ ! -f "$ENV_FILE" ]; then
-    echo "ERROR: .env file not found"
-    exit 1
-fi
-
-source "$ENV_FILE"
-
-if [ -z "$SSH_USER" ]; then
-    echo "ERROR: SSH_USER not set in .env"
-    exit 1
-fi
-
-if [ -z "$NODE1_IP" ] || [ -z "$NODE2_IP" ] || [ -z "$NODE3_IP" ]; then
-    echo "ERROR: Missing node IPs in .env"
-    exit 1
-fi
 
 # ------------------------------------------------------------------------------
 # Load L1 network info
@@ -65,11 +43,11 @@ echo ""
 echo "[1/4] Getting bootstrap node ID..."
 
 BOOTSTRAP_NODE_ID=$(curl -s -X POST --data '{"jsonrpc":"2.0","id":1,"method":"info.getNodeID"}' \
-    -H 'Content-Type: application/json' "http://$NODE1_IP:9650/ext/info" | \
+    -H 'Content-Type: application/json' "http://$BOOTSTRAP_IP:9650/ext/info" | \
     grep -o '"nodeID":"[^"]*"' | cut -d'"' -f4)
 
 if [ -z "$BOOTSTRAP_NODE_ID" ]; then
-    echo "ERROR: Could not get bootstrap node ID from $NODE1_IP:9650"
+    echo "ERROR: Could not get bootstrap node ID from $BOOTSTRAP_IP:9650"
     echo "Make sure 01_bootstrap_primary_network.sh has been run."
     exit 1
 fi
@@ -81,7 +59,7 @@ echo "  Bootstrap node ID: $BOOTSTRAP_NODE_ID"
 # ------------------------------------------------------------------------------
 echo "[2/4] Uploading chain-config.json to all nodes..."
 
-for NODE_IP in $NODE1_IP $NODE2_IP $NODE3_IP; do
+for NODE_IP in "${NODE_IPS_ARRAY[@]}"; do
     echo "  Uploading to $NODE_IP..."
     scp -q "$SCRIPT_DIR/chain-config.json" "$SSH_USER@$NODE_IP:$REMOTE_DIR/"
 done
@@ -97,7 +75,7 @@ start_l1_nodes() {
     local NODE_IP=$1
     local NODE_NUM=$2
     local BOOTSTRAP_ID=$3
-    local BOOTSTRAP_IP=$4
+    local BOOTSTRAP_NODE_IP=$4
 
     echo "  Starting validator + RPC on $NODE_IP..."
 
@@ -136,11 +114,11 @@ nohup ./bin/avalanchego \\
     --data-dir=data/validator \\
     --network-id=local \\
     --sybil-protection-enabled=false \\
-    --plugin-dir=/home/ubuntu/avalanche-benchmark/plugins \\
+    --plugin-dir=\$(pwd)/plugins \\
     --config-file=node-config.json \\
     --chain-config-dir=data/validator/configs/chains \\
     --track-subnets="$SUBNET_ID" \\
-    --bootstrap-ips=${BOOTSTRAP_IP}:9651 \\
+    --bootstrap-ips=${BOOTSTRAP_NODE_IP}:9651 \\
     --bootstrap-ids=${BOOTSTRAP_ID} \\
     >data/validator/logs/avalanchego.out 2>&1 &
 disown
@@ -156,11 +134,11 @@ nohup ./bin/avalanchego \\
     --data-dir=data/rpc \\
     --network-id=local \\
     --sybil-protection-enabled=false \\
-    --plugin-dir=/home/ubuntu/avalanche-benchmark/plugins \\
+    --plugin-dir=\$(pwd)/plugins \\
     --config-file=node-config.json \\
     --chain-config-dir=data/rpc/configs/chains \\
     --track-subnets="$SUBNET_ID" \\
-    --bootstrap-ips=${BOOTSTRAP_IP}:9651 \\
+    --bootstrap-ips=${BOOTSTRAP_NODE_IP}:9651 \\
     --bootstrap-ids=${BOOTSTRAP_ID} \\
     >data/rpc/logs/avalanchego.out 2>&1 &
 disown
@@ -174,13 +152,13 @@ EOF
     ssh "$SSH_USER@$NODE_IP" "chmod +x ~/avalanche-benchmark/start-l1-nodes.sh && ~/avalanche-benchmark/start-l1-nodes.sh"
 }
 
-# Start on all three machines
-start_l1_nodes "$NODE1_IP" 1 "$BOOTSTRAP_NODE_ID" "$NODE1_IP"
-start_l1_nodes "$NODE2_IP" 2 "$BOOTSTRAP_NODE_ID" "$NODE1_IP"
-start_l1_nodes "$NODE3_IP" 3 "$BOOTSTRAP_NODE_ID" "$NODE1_IP"
+# Start on all machines
+for i in "${!NODE_IPS_ARRAY[@]}"; do
+    start_l1_nodes "${NODE_IPS_ARRAY[$i]}" $((i + 1)) "$BOOTSTRAP_NODE_ID" "$BOOTSTRAP_IP"
+done
 
 # ------------------------------------------------------------------------------
-# Step 4: Verify RPC is working on all RPC nodes (port 9654)
+# Step 4: Verify RPC is working on all nodes
 # ------------------------------------------------------------------------------
 echo ""
 echo "[4/4] Verifying RPC endpoints on all nodes..."
@@ -234,14 +212,14 @@ verify_rpc() {
 FAILED=0
 
 # Verify validators (port 9652)
-verify_rpc "$NODE1_IP" 1 9652 "validator" || ((FAILED++))
-verify_rpc "$NODE2_IP" 2 9652 "validator" || ((FAILED++))
-verify_rpc "$NODE3_IP" 3 9652 "validator" || ((FAILED++))
+for i in "${!NODE_IPS_ARRAY[@]}"; do
+    verify_rpc "${NODE_IPS_ARRAY[$i]}" $((i + 1)) 9652 "validator" || FAILED=$((FAILED + 1))
+done
 
 # Verify RPC nodes (port 9654)
-verify_rpc "$NODE1_IP" 1 9654 "rpc" || ((FAILED++))
-verify_rpc "$NODE2_IP" 2 9654 "rpc" || ((FAILED++))
-verify_rpc "$NODE3_IP" 3 9654 "rpc" || ((FAILED++))
+for i in "${!NODE_IPS_ARRAY[@]}"; do
+    verify_rpc "${NODE_IPS_ARRAY[$i]}" $((i + 1)) 9654 "rpc" || FAILED=$((FAILED + 1))
+done
 
 if [ "$FAILED" -gt 0 ]; then
     echo ""
@@ -265,9 +243,9 @@ echo "  Validator (9652) - validates L1 transactions"
 echo "  RPC (9654)       - handles benchmark traffic"
 echo ""
 echo "RPC Endpoints (for benchmarking):"
-echo "  http://$NODE1_IP:9654/ext/bc/$CHAIN_ID/rpc"
-echo "  http://$NODE2_IP:9654/ext/bc/$CHAIN_ID/rpc"
-echo "  http://$NODE3_IP:9654/ext/bc/$CHAIN_ID/rpc"
+for NODE_IP in "${NODE_IPS_ARRAY[@]}"; do
+    echo "  http://$NODE_IP:9654/ext/bc/$CHAIN_ID/rpc"
+done
 echo ""
 echo "Next: Run ./04_monitoring.sh to deploy Prometheus + Grafana"
 echo "      Then ./05_benchmark.sh to start benchmarking"

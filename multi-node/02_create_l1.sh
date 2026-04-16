@@ -5,23 +5,7 @@ set -e
 trap 'echo "ERROR: Script failed at line $LINENO. Command: $BASH_COMMAND"' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/.env"
-NETWORK_ENV="$SCRIPT_DIR/network.env"
-
-# ------------------------------------------------------------------------------
-# Load configuration
-# ------------------------------------------------------------------------------
-if [ ! -f "$ENV_FILE" ]; then
-    echo "ERROR: .env file not found"
-    exit 1
-fi
-
-source "$ENV_FILE"
-
-if [ -z "$NODE1_IP" ]; then
-    echo "ERROR: NODE1_IP not set in .env"
-    exit 1
-fi
+source "$SCRIPT_DIR/_common.sh"
 
 # ------------------------------------------------------------------------------
 # Check if L1 already exists

@@ -2,32 +2,10 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/.env"
-
-# ------------------------------------------------------------------------------
-# Load configuration
-# ------------------------------------------------------------------------------
-if [ ! -f "$ENV_FILE" ]; then
-    echo "ERROR: .env file not found"
-    exit 1
-fi
-
-source "$ENV_FILE"
-
-if [ -z "$SSH_USER" ]; then
-    echo "ERROR: SSH_USER not set in .env"
-    exit 1
-fi
-
-if [ -z "$NODE1_IP" ] || [ -z "$NODE2_IP" ] || [ -z "$NODE3_IP" ]; then
-    echo "ERROR: Missing node IPs in .env"
-    exit 1
-fi
+source "$SCRIPT_DIR/_common.sh"
 
 echo "=== Multi-Node Cleanup ==="
-echo "Node 1: $NODE1_IP"
-echo "Node 2: $NODE2_IP"
-echo "Node 3: $NODE3_IP"
+print_nodes
 echo ""
 
 cleanup_node() {
@@ -58,13 +36,14 @@ echo "  Done"
 CLEANUP_EOF
 }
 
-cleanup_node "$NODE1_IP" "node1"
-cleanup_node "$NODE2_IP" "node2"
-cleanup_node "$NODE3_IP" "node3"
+for i in "${!NODE_IPS_ARRAY[@]}"; do
+    cleanup_node "${NODE_IPS_ARRAY[$i]}" "node$((i + 1))"
+done
 
 # Remove local state files
 rm -f "$SCRIPT_DIR/network.env"
 rm -f "$SCRIPT_DIR/prometheus.yml"
+rm -f "$SCRIPT_DIR/grafana-dashboards.yml"
 
 echo ""
 echo "=== Cleanup Complete ==="
