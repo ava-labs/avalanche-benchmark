@@ -1,0 +1,188 @@
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = "ap-northeast-1" # Tokyo
+}
+
+# Get the public IP of the machine running Terraform
+data "http" "my_ip" {
+  url = "https://checkip.amazonaws.com"
+}
+
+locals {
+  config      = yamldecode(file("${path.module}/config.yaml"))
+  prefix      = local.config.prefix
+  key_name    = local.config.key_name
+  app_name    = "benchmark"
+  operator_ip = "${chomp(data.http.my_ip.response_body)}/32"
+}
+
+# IAM Role for EC2
+resource "aws_iam_role" "ec2" {
+  name = "${local.prefix}-${local.app_name}-ec2"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
+      Principal = { Service = "ec2.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_instance_profile" "ec2" {
+  name = "${local.prefix}-${local.app_name}-ec2"
+  role = aws_iam_role.ec2.name
+}
+
+# Security Group - isolated benchmark nodes
+resource "aws_security_group" "app" {
+  name        = "${local.prefix}-${local.app_name}"
+  description = "Benchmark nodes - isolated, operator access only"
+
+  # SSH - operator only
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [local.operator_ip]
+  }
+
+  # Avalanche HTTP APIs (9650-9655) - operator only
+  # Primary: 9650, Validator: 9652, RPC: 9654
+  ingress {
+    from_port   = 9650
+    to_port     = 9655
+    protocol    = "tcp"
+    cidr_blocks = [local.operator_ip]
+  }
+
+  # Prometheus - operator only
+  ingress {
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = [local.operator_ip]
+  }
+
+  # Egress to operator (for responses)
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [local.operator_ip]
+  }
+
+  # Note: Inter-node rules and Grafana added via aws_security_group_rule below
+
+  tags = {
+    Name = "${local.prefix}-${local.app_name}"
+  }
+}
+
+# Inter-node: 9650-9655 (HTTP APIs) ingress from other nodes
+# Primary: 9650, Validator: 9652, RPC: 9654
+resource "aws_security_group_rule" "node_http_ingress" {
+  count             = 3
+  type              = "ingress"
+  from_port         = 9650
+  to_port           = 9655
+  protocol          = "tcp"
+  security_group_id = aws_security_group.app.id
+  cidr_blocks       = ["${aws_instance.node[count.index].public_ip}/32"]
+  description       = "Allow 9650-9655 ingress from node ${count.index + 1}"
+}
+
+# Inter-node: egress to other nodes (9650-9655)
+resource "aws_security_group_rule" "node_egress" {
+  count             = 3
+  type              = "egress"
+  from_port         = 9650
+  to_port           = 9655
+  protocol          = "tcp"
+  security_group_id = aws_security_group.app.id
+  cidr_blocks       = ["${aws_instance.node[count.index].public_ip}/32"]
+  description       = "Allow egress to node ${count.index + 1}"
+}
+
+# Grafana - public access (node 1 only, applied via separate security group)
+resource "aws_security_group" "grafana" {
+  name        = "${local.prefix}-${local.app_name}-grafana"
+  description = "Grafana public access for node 1"
+
+  ingress {
+    from_port   = 3000
+    to_port     = 3000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${local.prefix}-${local.app_name}-grafana"
+  }
+}
+
+# Ubuntu 24.04 AMI
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"] # Canonical
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
+# EC2 Instances - 3 nodes with 64GB RAM
+resource "aws_instance" "node" {
+  count = 3
+
+  ami                  = data.aws_ami.ubuntu.id
+  instance_type        = "m6a.4xlarge" # 16 vCPU, 64GB RAM, AMD EPYC
+  key_name             = local.key_name
+  iam_instance_profile = aws_iam_instance_profile.ec2.name
+  security_groups      = count.index == 0 ? [aws_security_group.app.name, aws_security_group.grafana.name] : [aws_security_group.app.name]
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+  }
+
+  root_block_device {
+    volume_size = 200
+    volume_type = "gp3"
+    iops        = 6000
+    throughput  = 500
+  }
+
+  tags = {
+    Name = "${local.prefix}-${local.app_name}-node-${count.index + 1}"
+  }
+}
+
+# Public IPs - for operator access (SSH, API)
+output "node1_ip" {
+  value = aws_instance.node[0].public_ip
+}
+
+output "node2_ip" {
+  value = aws_instance.node[1].public_ip
+}
+
+output "node3_ip" {
+  value = aws_instance.node[2].public_ip
+}
