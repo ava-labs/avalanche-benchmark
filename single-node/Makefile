@@ -23,7 +23,7 @@ build:
 
 pack: build bin/avalanchego plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
 	rm -f avalanche-benchmark.tar.gz
-	tar -czvf avalanche-benchmark.tar.gz *.json bin/ plugins/ staking/
+	tar -czvf avalanche-benchmark.tar.gz finality-bench-v2.js *.json bin/ plugins/ staking/
 
 bin/benchmark:
 	go build -o bin/benchmark ./cmd/benchmark

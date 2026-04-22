@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/rpc"
 )
 
@@ -78,6 +79,11 @@ func watchBlocks(ctx context.Context, rpcClient *rpc.Client) {
 			timestampMs := hexToUint64(b.TimestampMilliseconds)
 			delta := timestampMs - lastTimestampMs
 			lastTimestampMs = timestampMs
+
+			blockTime := time.UnixMilli(int64(timestampMs))
+			for _, hs := range b.Transactions {
+				tracker.markLanded(common.HexToHash(hs), blockTime)
+			}
 
 			// Update rolling window
 			if len(deltaMs) >= windowSize {
