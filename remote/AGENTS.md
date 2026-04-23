@@ -1,4 +1,4 @@
-# Multi-Node Benchmark - Conversation Log
+# Remote Benchmark - Conversation Log
 
 ## User Requirements
 

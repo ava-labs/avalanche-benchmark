@@ -1,4 +1,4 @@
-module github.com/ava-labs/avalanche-benchmark/multi-node
+module github.com/ava-labs/avalanche-benchmark/remote
 
 go 1.24.11
 

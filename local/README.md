@@ -14,14 +14,23 @@ Three things must be set for fast blocks:
 
 ## Build & Run
 
-`make pack` to build everything and pack into `avalanche-benchmark.tar.gz`.
+`make pack` to build everything and pack into `local-benchmark.tar.gz`.
 
 On the target machine:
 ```bash
-tar -xzf avalanche-benchmark.tar.gz
-./bin/benchmark --exit-on-success
+tar -xzf local-benchmark.tar.gz
+./bin/startnetwork --exit-on-success
 ./bin/bombard --tps 300
 ```
+
+## RPC URL
+
+Once the network is up, the RPC URL is available in two places:
+
+- **stdout** — `startnetwork` prints `RPC endpoint: <url>` right before exiting (with `--exit-on-success`) or before the metrics loop.
+- **`network_data/rpcs.txt`** — a comma-separated list of every L1 node's RPC URL (validators + any dedicated RPC nodes). `bombard` reads this file to spread load across nodes.
+
+Format: `http://<host>:<port>/ext/bc/<chainID>/rpc`.
 
 ## Notes
 

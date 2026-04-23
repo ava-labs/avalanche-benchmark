@@ -1,5 +1,5 @@
 #!/bin/bash
-# Common configuration loader for multi-node benchmark scripts.
+# Common configuration loader for remote benchmark scripts.
 # Source this from other scripts after setting SCRIPT_DIR:
 #
 #   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

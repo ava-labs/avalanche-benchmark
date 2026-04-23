@@ -22,7 +22,7 @@ bin/create-l1:
 
 bin/bombard:
 	@mkdir -p bin
-	cd ../single-node && go build -o ../multi-node/bin/bombard ./cmd/bombard
+	cd ../local && go build -o ../remote/bin/bombard ./cmd/bombard
 
 # Download/build dependencies
 deps: bin/avalanchego bin/prometheus bin/grafana.tar.gz
@@ -62,8 +62,8 @@ bin/grafana.tar.gz:
 
 # Create offline package for deployment to another machine
 pack: deps build
-	rm -f avalanche-benchmark-multi.tar.gz
-	tar -czvf avalanche-benchmark-multi.tar.gz \
+	rm -f remote-benchmark.tar.gz
+	tar -czvf remote-benchmark.tar.gz \
 		bin/ \
 		_common.sh \
 		0[1-6]_*.sh \

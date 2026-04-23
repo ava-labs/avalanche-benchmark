@@ -22,7 +22,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: go.mod
+          go-version-file: local/go.mod
 
       - name: Set up QEMU
         if: matrix.arch == 'arm64'
@@ -33,13 +33,13 @@ jobs:
           docker run --rm \
             --platform linux/${{ matrix.arch }} \
             -v "$PWD":/app \
-            -w /app \
+            -w /app/local \
             -e GOTOOLCHAIN=auto \
             golang:1.24rc2 \
             sh -c "
               apt-get update && apt-get install -y gcc libc-dev &&
-              go build -buildvcs=false -ldflags='-s -w' -o benchmark-linux-${{ matrix.arch }} ./cmd/benchmark &&
-              go build -buildvcs=false -ldflags='-s -w' -o bombard-linux-${{ matrix.arch }} ./cmd/bombard
+              go build -buildvcs=false -ldflags='-s -w' -o ../startnetwork-linux-${{ matrix.arch }} ./cmd/startnetwork &&
+              go build -buildvcs=false -ldflags='-s -w' -o ../bombard-linux-${{ matrix.arch }} ./cmd/bombard
             "
 
       - name: Upload artifacts
@@ -47,7 +47,7 @@ jobs:
         with:
           name: binaries-linux-${{ matrix.arch }}
           path: |
-            benchmark-linux-${{ matrix.arch }}
+            startnetwork-linux-${{ matrix.arch }}
             bombard-linux-${{ matrix.arch }}
 
   build-darwin:
@@ -63,23 +63,24 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: go.mod
+          go-version-file: local/go.mod
 
       - name: Build
         env:
           GOOS: darwin
           GOARCH: ${{ matrix.arch }}
           CGO_ENABLED: 1
+        working-directory: local
         run: |
-          go build -ldflags="-s -w" -o benchmark-darwin-${{ matrix.arch }} ./cmd/benchmark
-          go build -ldflags="-s -w" -o bombard-darwin-${{ matrix.arch }} ./cmd/bombard
+          go build -ldflags="-s -w" -o ../startnetwork-darwin-${{ matrix.arch }} ./cmd/startnetwork
+          go build -ldflags="-s -w" -o ../bombard-darwin-${{ matrix.arch }} ./cmd/bombard
 
       - name: Upload artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: binaries-darwin-${{ matrix.arch }}
           path: |
-            benchmark-darwin-${{ matrix.arch }}
+            startnetwork-darwin-${{ matrix.arch }}
             bombard-darwin-${{ matrix.arch }}
 
   release:
@@ -103,20 +104,19 @@ jobs:
             suffix=$(basename "$dir" | sed 's/binaries-//')
 
             # Create directory for this platform
-            mkdir -p "release/avalanche-benchmark-$suffix"
-            cp "$dir"/* "release/avalanche-benchmark-$suffix/"
-            cp README.md "release/avalanche-benchmark-$suffix/" 2>/dev/null || true
-            cp -r staking "release/avalanche-benchmark-$suffix/" 2>/dev/null || true
-            cp -r scripts "release/avalanche-benchmark-$suffix/" 2>/dev/null || true
+            mkdir -p "release/local-benchmark-$suffix"
+            cp "$dir"/* "release/local-benchmark-$suffix/"
+            cp local/README.md "release/local-benchmark-$suffix/" 2>/dev/null || true
+            cp -r local/staking "release/local-benchmark-$suffix/" 2>/dev/null || true
 
             # Rename binaries
-            mv "release/avalanche-benchmark-$suffix/benchmark-$suffix" "release/avalanche-benchmark-$suffix/benchmark"
-            mv "release/avalanche-benchmark-$suffix/bombard-$suffix" "release/avalanche-benchmark-$suffix/bombard"
-            chmod +x "release/avalanche-benchmark-$suffix/benchmark" "release/avalanche-benchmark-$suffix/bombard"
+            mv "release/local-benchmark-$suffix/startnetwork-$suffix" "release/local-benchmark-$suffix/startnetwork"
+            mv "release/local-benchmark-$suffix/bombard-$suffix" "release/local-benchmark-$suffix/bombard"
+            chmod +x "release/local-benchmark-$suffix/startnetwork" "release/local-benchmark-$suffix/bombard"
 
             # Create tarball
             cd release
-            tar -czf "avalanche-benchmark-$suffix.tar.gz" "avalanche-benchmark-$suffix"
+            tar -czf "local-benchmark-$suffix.tar.gz" "local-benchmark-$suffix"
             cd ..
           done
 
