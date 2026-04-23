@@ -1,6 +1,6 @@
-# Multi-Node Benchmark
+# Remote Benchmark
 
-Benchmark tool for N-node Avalanche L1 networks. Supports 1 to N validator nodes.
+Benchmark tool for Avalanche L1 networks deployed on remote hosts. Supports 1 to N validator nodes.
 
 ## Ports
 

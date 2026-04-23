@@ -4,7 +4,7 @@
 
 AVALANCHEGO_BRANCH=configure-genesis-acp226-excess
 
-all: bin/benchmark bin/bombard bin/avalanchego plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
+all: bin/startnetwork bin/bombard bin/avalanchego plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
 
 clean:
 	rm -rf bin/ plugins/ network_data/
@@ -14,19 +14,19 @@ kill:
 	-pkill -9 -f srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
 	rm -rf network_data/
 
-run: kill bin/benchmark bin/avalanchego plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
-	./bin/benchmark
+run: kill bin/startnetwork bin/avalanchego plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
+	./bin/startnetwork
 
 build:
 	make clean
-	make bin/benchmark bin/bombard
+	make bin/startnetwork bin/bombard
 
 pack: build bin/avalanchego plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
-	rm -f avalanche-benchmark.tar.gz
-	tar -czvf avalanche-benchmark.tar.gz finality-bench-v2.js *.json bin/ plugins/ staking/
+	rm -f local-benchmark.tar.gz
+	tar -czvf local-benchmark.tar.gz finality-bench-v2.js *.json bin/ plugins/ staking/
 
-bin/benchmark:
-	go build -o bin/benchmark ./cmd/benchmark
+bin/startnetwork:
+	go build -o bin/startnetwork ./cmd/startnetwork
 
 bin/bombard:
 	go build -o bin/bombard ./cmd/bombard

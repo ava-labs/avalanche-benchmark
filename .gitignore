@@ -1,9 +1,12 @@
 plugins/
 bin/
 network_data/
-avalanche-benchmark.tar.gz
+local-benchmark.tar.gz
+remote-benchmark.tar.gz
 tmp/
 .env
-single-node/blockwatch
-single-node/bombard
+local/blockwatch
+local/bombard
+local/startnetwork
+remote/create-l1
 node_modules/

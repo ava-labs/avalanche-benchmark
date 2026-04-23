@@ -1,4 +1,4 @@
-module github.com/ava-labs/avalanche-benchmark
+module github.com/ava-labs/avalanche-benchmark/local
 
 go 1.25.8
 

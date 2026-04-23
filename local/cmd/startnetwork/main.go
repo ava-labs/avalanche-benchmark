@@ -10,7 +10,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/ava-labs/avalanche-benchmark/internal/network"
+	"github.com/ava-labs/avalanche-benchmark/local/internal/network"
 	"github.com/spf13/cobra"
 )
 
@@ -29,9 +29,9 @@ type fileConfig struct {
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:   "benchmark",
-		Short: "Avalanche L1 Benchmark",
-		Long:  "Start a local Avalanche network and benchmark it.",
+		Use:   "startnetwork",
+		Short: "Start local Avalanche L1 network",
+		Long:  "Start a local Avalanche L1 network for benchmarking.",
 		RunE:  runStart,
 	}
 
