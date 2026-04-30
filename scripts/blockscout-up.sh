@@ -16,6 +16,7 @@ FRONTEND_PORT="${BLOCKSCOUT_FRONTEND_PORT:-4001}"
 RPC_URL="${BLOCKSCOUT_RPC_URL:-}"
 CHAIN_NAME="${BLOCKSCOUT_CHAIN_NAME:-Avalanche-Benchmark}"
 CHAIN_SHORT_NAME="${BLOCKSCOUT_CHAIN_SHORT_NAME:-AVAX-BENCH}"
+START_LOCAL=0
 
 need_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
@@ -88,10 +89,13 @@ to_ws_url() {
 
 usage() {
   cat <<EOF
-Usage: ./scripts/blockscout-up.sh [--rpc URL] [--chain-name NAME] [--chain-short-name NAME]
+Usage: ./scripts/blockscout-up.sh [--rpc URL] [--chain-name NAME] [--chain-short-name NAME] [--start-local]
 
 If --rpc is omitted, the script will try to reuse a running local benchmark chain
-from local/network_data/rpcs.txt and start one automatically if needed.
+from local/network_data/rpcs.txt.
+
+Use --start-local if you want this script to start the local benchmark chain for you
+when no running local RPC is found.
 EOF
 }
 
@@ -108,6 +112,10 @@ while [[ $# -gt 0 ]]; do
     --chain-short-name)
       CHAIN_SHORT_NAME="${2:-}"
       shift 2
+      ;;
+    --start-local)
+      START_LOCAL=1
+      shift
       ;;
     -h|--help)
       usage
@@ -152,7 +160,7 @@ if [[ -n "${RPC_URL}" ]] && wait_for_rpc "${RPC_URL}" 5; then
   else
     echo "Using explicit benchmark RPC at ${RPC_URL}"
   fi
-elif [[ -z "${BLOCKSCOUT_RPC_URL:-}" ]]; then
+elif [[ -z "${BLOCKSCOUT_RPC_URL:-}" && "${START_LOCAL}" == "1" ]]; then
   echo "Starting local benchmark chain..."
   rm -f "${CHAIN_LOG}"
   (
@@ -178,7 +186,10 @@ elif [[ -z "${BLOCKSCOUT_RPC_URL:-}" ]]; then
     exit 1
   fi
 else
-  echo "benchmark RPC did not become ready: ${RPC_URL}" >&2
+  echo "no running benchmark RPC found." >&2
+  echo "start the local network first with:" >&2
+  echo "  cd local && ./bin/startnetwork --exit-on-success" >&2
+  echo "or run this script with --rpc URL or --start-local" >&2
   exit 1
 fi
 

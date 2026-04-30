@@ -11,12 +11,18 @@ The stack always runs on the operator machine via Docker. It can point at:
 
 ```bash
 cd local
+./bin/startnetwork --exit-on-success
 ./blockscout.sh up
 ./blockscout.sh smoke
 ./blockscout.sh down
 ```
 
-If no local chain is already running, the launcher will start one automatically with `startnetwork --exit-on-success`.
+If you want a one-step convenience flow instead, you can opt in explicitly:
+
+```bash
+cd local
+./blockscout.sh up --start-local
+```
 
 ### Remote
 

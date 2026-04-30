@@ -28,12 +28,19 @@ tar -xzf local-benchmark.tar.gz
 To run Blockscout locally against the benchmark chain:
 
 ```bash
+./bin/startnetwork --exit-on-success
 ./blockscout.sh up
 ./blockscout.sh smoke
 ./blockscout.sh down
 ```
 
 This launches Blockscout on your machine with Docker and points it at the local benchmark RPC.
+
+If you want the explorer script to start the local network for you, use:
+
+```bash
+./blockscout.sh up --start-local
+```
 
 ## RPC URL
 
