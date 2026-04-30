@@ -167,6 +167,15 @@ func buildNodeArgs(httpPort, stakingPort int, nodeDir, pluginDir, configPath str
 		fmt.Sprintf("--config-file=%s", configPath),
 	}
 
+	// Allow local benchmark runs to lower AvalancheGo's disk-space guard
+	// without changing the default repo behavior for everyone.
+	if required := os.Getenv("BENCHMARK_DISK_REQUIRED_PERCENT"); required != "" {
+		args = append(args, fmt.Sprintf("--system-tracker-disk-required-available-space-percentage=%s", required))
+	}
+	if warning := os.Getenv("BENCHMARK_DISK_WARNING_PERCENT"); warning != "" {
+		args = append(args, fmt.Sprintf("--system-tracker-disk-warning-available-space-percentage=%s", warning))
+	}
+
 	return args
 }
 

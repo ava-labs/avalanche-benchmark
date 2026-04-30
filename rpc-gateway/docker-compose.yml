@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: rpc-gateway-postgres
+    environment:
+      POSTGRES_DB: rpc_gateway
+      POSTGRES_USER: rpc_gateway
+      POSTGRES_PASSWORD: rpc_gateway
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+volumes:
+  postgres-data:

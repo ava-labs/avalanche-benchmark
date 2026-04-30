@@ -48,6 +48,7 @@ var httpClient = &http.Client{
 
 func main() {
 	rpcURL := flag.String("rpc", "", "RPC URL (auto-detected from network_data/rpcs.txt if omitted)")
+	apiKey := flag.String("api-key", "", "Optional API key to send as X-API-Key when using an RPC gateway")
 	targetTps := flag.Int("tps", defaultTps, "Target transactions per second")
 	erc20Mode := flag.Bool("erc20", false, "Send ERC20 transfers instead of native transfers")
 	dataDir := flag.String("data-dir", "./network_data", "Network data directory (for auto-detecting RPC URL)")
@@ -72,16 +73,26 @@ func main() {
 	// Calculate batch size based on target TPS
 	batchSize := *targetTps * int(workerDelay/time.Millisecond) / 1000
 
+	ctx := context.Background()
+
+	headers := http.Header{}
+	if *apiKey != "" {
+		headers.Set("X-API-Key", *apiKey)
+	}
+
 	// Connect
-	rpcClient, err := rpc.DialHTTPWithClient(*rpcURL, httpClient)
+	rpcClient, err := rpc.DialOptions(
+		ctx,
+		*rpcURL,
+		rpc.WithHTTPClient(httpClient),
+		rpc.WithHeaders(headers),
+	)
 	if err != nil {
 		fmt.Printf("Failed to connect: %v\n", err)
 		os.Exit(1)
 	}
 	client := ethclient.NewClient(rpcClient)
 	fmt.Printf("Connected to %s\n", *rpcURL)
-
-	ctx := context.Background()
 
 	// Get chain ID
 	chainID, err := client.NetworkID(ctx)
