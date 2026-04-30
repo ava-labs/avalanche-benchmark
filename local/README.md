@@ -23,6 +23,18 @@ tar -xzf local-benchmark.tar.gz
 ./bin/bombard --tps 300
 ```
 
+### Optional Explorer
+
+To run Blockscout locally against the benchmark chain:
+
+```bash
+./blockscout.sh up
+./blockscout.sh smoke
+./blockscout.sh down
+```
+
+This launches Blockscout on your machine with Docker and points it at the local benchmark RPC.
+
 ## RPC URL
 
 Once the network is up, the RPC URL is available in two places:

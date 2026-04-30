@@ -1,0 +1,133 @@
+services:
+  db:
+    image: ${BLOCKSCOUT_POSTGRES_IMAGE}
+    restart: unless-stopped
+    command: postgres -c max_connections=500
+    environment:
+      POSTGRES_DB: ${BLOCKSCOUT_DB_NAME}
+      POSTGRES_USER: ${BLOCKSCOUT_DB_USER}
+      POSTGRES_PASSWORD: ${BLOCKSCOUT_DB_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${BLOCKSCOUT_DB_USER} -d ${BLOCKSCOUT_DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - blockscout
+
+  redis:
+    image: ${BLOCKSCOUT_REDIS_IMAGE}
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis-data:/data
+    networks:
+      - blockscout
+
+  backend:
+    image: ${BLOCKSCOUT_BACKEND_IMAGE}
+    restart: unless-stopped
+    command:
+      - /bin/sh
+      - -c
+      - bin/blockscout eval "Elixir.Explorer.ReleaseTasks.create_and_migrate()" && bin/blockscout start
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "${BLOCKSCOUT_EXTRA_HOST}"
+    environment:
+      DATABASE_URL: postgresql://${BLOCKSCOUT_DB_USER}:${BLOCKSCOUT_DB_PASSWORD}@db:5432/${BLOCKSCOUT_DB_NAME}
+      SECRET_KEY_BASE: ${BLOCKSCOUT_SECRET_KEY_BASE}
+      ETHEREUM_JSONRPC_VARIANT: geth
+      ETHEREUM_JSONRPC_HTTP_URL: ${BLOCKSCOUT_RPC_URL_INTERNAL}
+      ETHEREUM_JSONRPC_WS_URL: ${BLOCKSCOUT_WS_URL_INTERNAL}
+      ETHEREUM_JSONRPC_TRACE_URL: ${BLOCKSCOUT_TRACE_URL_INTERNAL}
+      NETWORK: ${BLOCKSCOUT_CHAIN_NAME}
+      SUBNETWORK: ${BLOCKSCOUT_CHAIN_SHORT_NAME}
+      CHAIN_ID: ${BLOCKSCOUT_CHAIN_ID}
+      COIN: ${BLOCKSCOUT_COIN_SYMBOL}
+      COIN_NAME: ${BLOCKSCOUT_COIN_NAME}
+      PORT: "4000"
+      POOL_SIZE: "50"
+      ECTO_USE_SSL: "false"
+      INDEXER_DISABLE_PENDING_TRANSACTIONS_FETCHER: "true"
+      INDEXER_DISABLE_INTERNAL_TRANSACTIONS_FETCHER: "true"
+      BLOCK_TRANSFORMER: base
+      DISABLE_EXCHANGE_RATES: "true"
+      DISABLE_WRITE_API: "true"
+      DISABLE_INDEXER: "false"
+      DISABLE_REALTIME_INDEXER: "false"
+      ENABLE_TXS_STATS: "false"
+      API_RATE_LIMIT_DISABLED: "true"
+      API_RATE_LIMIT: "50"
+      API_RATE_LIMIT_BY_IP: "true"
+      CACHE_ADDRESS_TOKEN_TRANSFERS_COUNTER_PERIOD: 1h
+      CACHE_ADDRESS_TRANSACTIONS_COUNTER_PERIOD: 1h
+      ACCOUNT_ENABLED: "false"
+      SHOW_TESTNET_LABEL: "true"
+      TESTNET_LABEL_TEXT: ${BLOCKSCOUT_CHAIN_SHORT_NAME}
+      HEALTHY_BLOCKS_PERIOD: "60"
+      HISTORY_FETCH_INTERVAL: "30"
+      TXS_HISTORIAN_INIT_LAG: "0"
+      TXS_STATS_DAYS_TO_COMPILE_AT_INIT: "10"
+      LOG_LEVEL: info
+    ports:
+      - "${BLOCKSCOUT_API_PORT}:4000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/api/v2/stats"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    networks:
+      - blockscout
+
+  frontend:
+    image: ${BLOCKSCOUT_FRONTEND_IMAGE}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      NEXT_PUBLIC_APP_HOST: 127.0.0.1
+      NEXT_PUBLIC_API_HOST: 127.0.0.1
+      NEXT_PUBLIC_API_PORT: ${BLOCKSCOUT_API_PORT}
+      NEXT_PUBLIC_API_PROTOCOL: http
+      NEXT_PUBLIC_API_WEBSOCKET_PROTOCOL: ws
+      NEXT_PUBLIC_API_BASE_PATH: /
+      NEXT_PUBLIC_NETWORK_NAME: ${BLOCKSCOUT_CHAIN_NAME}
+      NEXT_PUBLIC_NETWORK_SHORT_NAME: ${BLOCKSCOUT_CHAIN_SHORT_NAME}
+      NEXT_PUBLIC_NETWORK_ID: ${BLOCKSCOUT_EVM_CHAIN_ID}
+      NEXT_PUBLIC_NETWORK_CURRENCY_NAME: ${BLOCKSCOUT_COIN_NAME}
+      NEXT_PUBLIC_NETWORK_CURRENCY_SYMBOL: ${BLOCKSCOUT_COIN_SYMBOL}
+      NEXT_PUBLIC_NETWORK_CURRENCY_DECIMALS: "18"
+      NEXT_PUBLIC_NETWORK_RPC_URL: ${BLOCKSCOUT_RPC_URL_PUBLIC}
+      NEXT_PUBLIC_IS_TESTNET: "true"
+      NEXT_PUBLIC_API_SPEC_URL: https://raw.githubusercontent.com/blockscout/blockscout-api-v2-swagger/main/swagger.yaml
+      NEXT_PUBLIC_HOMEPAGE_CHARTS: "[]"
+      NEXT_PUBLIC_FOOTER_LINKS: "[]"
+      NEXT_PUBLIC_AD_BANNER_PROVIDER: none
+      NEXT_PUBLIC_AD_TEXT_PROVIDER: none
+    ports:
+      - "${BLOCKSCOUT_FRONTEND_PORT}:3000"
+    networks:
+      - blockscout
+
+networks:
+  blockscout:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:

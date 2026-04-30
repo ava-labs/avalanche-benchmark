@@ -51,10 +51,15 @@ make          # builds avalanchego from configure-genesis-acp226-excess branch +
 # 4. Deploy monitoring (optional, runs on first node)
 ./04_monitoring.sh
 
-# 5. Run benchmark
+# 5. Optional: run Blockscout locally against the remote RPC
+./blockscout.sh up
+./blockscout.sh smoke
+
+# 6. Run benchmark
 ./05_benchmark.sh
 
 # Cleanup
+./blockscout.sh down
 ./06_cleanup.sh
 ```
 
@@ -63,6 +68,12 @@ To apply a new chain config without recreating the L1:
 # Edit chain-config.json, then:
 ./03_deploy_l1_config.sh
 ```
+
+## Optional Explorer
+
+`./blockscout.sh up` runs Blockscout on your local machine with Docker and points it at the remote L1 RPC URL from `network.env`.
+
+This keeps the explorer as an optional operator-side tool instead of adding Docker or extra services to the remote nodes themselves.
 
 ## Benchmark Options
 
