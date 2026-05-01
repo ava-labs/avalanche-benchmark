@@ -52,7 +52,12 @@ services:
       ETHEREUM_JSONRPC_VARIANT: geth
       ETHEREUM_JSONRPC_HTTP_URL: ${BLOCKSCOUT_RPC_URL_INTERNAL}
       ETHEREUM_JSONRPC_WS_URL: ${BLOCKSCOUT_WS_URL_INTERNAL}
-      ETHEREUM_JSONRPC_TRACE_URL: ${BLOCKSCOUT_TRACE_URL_INTERNAL}
+      # TRACE_URL is intentionally unset for subnet-evm: the chain only allows
+      # tracing finalized blocks, which races against the realtime indexer
+      # and causes Blockscout to mark the URL unavailable. We keep
+      # INDEXER_DISABLE_INTERNAL_TRANSACTIONS_FETCHER=true so trace isn't
+      # actually needed for indexing.
+      ETHEREUM_JSONRPC_HTTP_TIMEOUT: "60"
       NETWORK: ${BLOCKSCOUT_CHAIN_NAME}
       SUBNETWORK: ${BLOCKSCOUT_CHAIN_SHORT_NAME}
       CHAIN_ID: ${BLOCKSCOUT_CHAIN_ID}
@@ -61,8 +66,22 @@ services:
       PORT: "4000"
       POOL_SIZE: "50"
       ECTO_USE_SSL: "false"
+      # Indexer config tuned for subnet-evm:
+      # - No internal-tx / pending-tx fetchers (subnet-evm doesn't expose
+      #   debug_traceTransaction on unfinalized data)
+      # - FIRST_BLOCK=0 forces catchup to scan from genesis even when the
+      #   realtime indexer hasn't yet reported a chain head
+      # - INDEXER_REALTIME_FETCHER_USE_HTTP=true polls for new blocks via
+      #   HTTP instead of relying solely on WS newHeads subscription
       INDEXER_DISABLE_PENDING_TRANSACTIONS_FETCHER: "true"
       INDEXER_DISABLE_INTERNAL_TRANSACTIONS_FETCHER: "true"
+      INDEXER_REALTIME_FETCHER_USE_HTTP: "true"
+      FIRST_BLOCK: "0"
+      # Force the catchup indexer to scan a fixed range. This bypasses
+      # head-detection failures we've seen with subnet-evm where the realtime
+      # indexer can't establish a chain head, leaving block_catchup idle. Once
+      # initial backfill works we can switch this back to head-driven catchup.
+      INDEXER_BLOCK_RANGES: "0..latest"
       BLOCK_TRANSFORMER: base
       DISABLE_EXCHANGE_RATES: "true"
       DISABLE_WRITE_API: "true"

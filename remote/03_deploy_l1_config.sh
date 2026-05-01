@@ -8,9 +8,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_common.sh"
 
 # Port layout per machine:
-#   Primary:   HTTP 9650, Staking 9651 (already running from 01_bootstrap)
-#   Validator: HTTP 9652, Staking 9653
-#   RPC:       HTTP 9654, Staking 9655
+#   Primary:     HTTP 9650, Staking 9651 (already running from 01_bootstrap)
+#   Validator:   HTTP 9652, Staking 9653
+#   RPC:         HTTP 9654, Staking 9655 (bombard traffic, locked-down hosts)
+#   Archive-RPC: HTTP 9656, Staking 9657 (bootstrap only, no pruning,
+#                                        --http-allowed-hosts=*, used by Blockscout)
 
 # ------------------------------------------------------------------------------
 # Load L1 network info
@@ -158,6 +160,88 @@ for i in "${!NODE_IPS_ARRAY[@]}"; do
 done
 
 # ------------------------------------------------------------------------------
+# Start dedicated Archive-RPC node on the bootstrap host. Bound to 0.0.0.0
+# with --http-allowed-hosts=* and an archive-mode chain config (pruning-enabled
+# false, debug-tracer API exposed) so a Blockscout container on the operator's
+# machine can index it. The bombard RPC nodes above stay locked down.
+# ------------------------------------------------------------------------------
+start_l1_archive_rpc_node() {
+    local NODE_IP=$1
+    local BOOTSTRAP_ID=$2
+    local BOOTSTRAP_NODE_IP=$3
+
+    echo "  Starting Archive-RPC node on $NODE_IP (bootstrap host)..."
+
+    cat > /tmp/start-l1-archive-rpc.sh << EOF
+#!/bin/bash
+set -e
+cd ~/avalanche-benchmark
+
+# Generated: $(date)
+# SUBNET_ID: $SUBNET_ID
+# CHAIN_ID:  $CHAIN_ID
+
+pkill -f "data-dir=data/archive-rpc" || true
+sleep 2
+
+mkdir -p "data/archive-rpc/configs/chains/$CHAIN_ID"
+
+# Write an archive-mode chain config (no pruning, debug-tracer enabled).
+# This applies only to the Archive-RPC node — bombard's RPCs keep
+# the lighter shared chain-config.json.
+python3 - <<'PY' > "data/archive-rpc/configs/chains/$CHAIN_ID/config.json"
+import json, sys
+with open("chain-config.json") as f:
+    cfg = json.load(f)
+cfg["pruning-enabled"] = False
+cfg["eth-apis"] = [
+    "eth", "eth-filter", "net", "web3",
+    "internal-eth", "internal-blockchain", "internal-transaction",
+    "debug-tracer",
+]
+print(json.dumps(cfg, indent=2))
+PY
+
+nohup ./bin/avalanchego \\
+    --http-port=9656 \\
+    --staking-port=9657 \\
+    --http-host=0.0.0.0 \\
+    --http-allowed-hosts="*" \\
+    --public-ip=$NODE_IP \\
+    --db-dir=data/archive-rpc/db \\
+    --log-dir=data/archive-rpc/logs \\
+    --data-dir=data/archive-rpc \\
+    --network-id=local \\
+    --sybil-protection-enabled=false \\
+    --plugin-dir=\$(pwd)/plugins \\
+    --config-file=node-config.json \\
+    --chain-config-dir=data/archive-rpc/configs/chains \\
+    --track-subnets="$SUBNET_ID" \\
+    --bootstrap-ips=${BOOTSTRAP_NODE_IP}:9651 \\
+    --bootstrap-ids=${BOOTSTRAP_ID} \\
+    >data/archive-rpc/logs/avalanchego.out 2>&1 &
+disown
+
+sleep 2
+echo "  Archive-RPC node started on $NODE_IP:9656"
+EOF
+
+    scp -q /tmp/start-l1-archive-rpc.sh "$SSH_USER@$NODE_IP:~/avalanche-benchmark/start-l1-archive-rpc.sh"
+    ssh "$SSH_USER@$NODE_IP" "chmod +x ~/avalanche-benchmark/start-l1-archive-rpc.sh && ~/avalanche-benchmark/start-l1-archive-rpc.sh"
+}
+
+start_l1_archive_rpc_node "$BOOTSTRAP_IP" "$BOOTSTRAP_NODE_ID" "$BOOTSTRAP_IP"
+
+# Persist the Archive-RPC URL for blockscout.sh to pick up.
+ARCHIVE_RPC_URL="http://${BOOTSTRAP_IP}:9656/ext/bc/${CHAIN_ID}/rpc"
+if grep -q '^ARCHIVE_RPC_URL=' "$NETWORK_ENV"; then
+    sed -i.bak "s|^ARCHIVE_RPC_URL=.*|ARCHIVE_RPC_URL=${ARCHIVE_RPC_URL}|" "$NETWORK_ENV" && rm -f "$NETWORK_ENV.bak"
+else
+    echo "ARCHIVE_RPC_URL=${ARCHIVE_RPC_URL}" >> "$NETWORK_ENV"
+fi
+echo "  Saved ARCHIVE_RPC_URL to network.env"
+
+# ------------------------------------------------------------------------------
 # Step 4: Verify RPC is working on all nodes
 # ------------------------------------------------------------------------------
 echo ""
@@ -221,6 +305,9 @@ for i in "${!NODE_IPS_ARRAY[@]}"; do
     verify_rpc "${NODE_IPS_ARRAY[$i]}" $((i + 1)) 9654 "rpc" || FAILED=$((FAILED + 1))
 done
 
+# Verify Archive-RPC node on bootstrap (port 9656)
+verify_rpc "$BOOTSTRAP_IP" 1 9656 "archive-rpc" || FAILED=$((FAILED + 1))
+
 if [ "$FAILED" -gt 0 ]; then
     echo ""
     echo "ERROR: $FAILED node(s) failed RPC verification"
@@ -240,12 +327,15 @@ echo ""
 echo "Nodes per machine:"
 echo "  Primary (9650)   - bootstraps the network"
 echo "  Validator (9652) - validates L1 transactions"
-echo "  RPC (9654)       - handles benchmark traffic"
+echo "  RPC (9654)       - handles benchmark traffic (locked-down host header)"
 echo ""
 echo "RPC Endpoints (for benchmarking):"
 for NODE_IP in "${NODE_IPS_ARRAY[@]}"; do
     echo "  http://$NODE_IP:9654/ext/bc/$CHAIN_ID/rpc"
 done
+echo ""
+echo "Archive-RPC Endpoint (for Blockscout, bootstrap host only):"
+echo "  $ARCHIVE_RPC_URL"
 echo ""
 echo "Next: Run ./04_monitoring.sh to deploy Prometheus + Grafana"
 echo "      Then ./05_benchmark.sh to start benchmarking"

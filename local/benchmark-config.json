@@ -1,5 +1,6 @@
 {
   "primaryNodes": 2,
   "l1Validators": 3,
-  "l1Rpcs": 1
+  "l1Rpcs": 1,
+  "l1ArchiveRpcs": 1
 }

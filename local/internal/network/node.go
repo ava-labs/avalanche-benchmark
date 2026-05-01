@@ -170,6 +170,73 @@ func buildNodeArgs(httpPort, stakingPort int, nodeDir, pluginDir, configPath str
 	return args
 }
 
+// startL1ArchiveRPCNode starts an L1 RPC node bound to 0.0.0.0 with permissive
+// host-allow list and archive-mode chain config (no pruning). Intended for a
+// Blockscout container that reaches via host-gateway. Tracks the same subnet
+// as the L1 validators / RPC nodes.
+func startL1ArchiveRPCNode(ctx context.Context, avalanchego, networkDir string, nodeIndex int, pluginDir, bootstrapNodeID, subnetID string) (*NodeInfo, error) {
+	httpPort := baseHTTPPort + nodeIndex*portIncrement
+	stakingPort := httpPort + 1
+
+	nodeDir := filepath.Join(networkDir, fmt.Sprintf("l1-archive-rpc-%d", nodeIndex))
+	if err := os.MkdirAll(filepath.Join(nodeDir, "db"), 0755); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Join(nodeDir, "logs"), 0755); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Join(nodeDir, "staking"), 0755); err != nil {
+		return nil, err
+	}
+
+	configPath, err := ensureSharedNodeConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	args := buildNodeArgs(httpPort, stakingPort, nodeDir, pluginDir, configPath)
+
+	// Override the loopback bind from buildNodeArgs and accept any Host header.
+	// This is what makes Blockscout (running in a podman container) able to
+	// reach the chain via host-gateway. Scoped to the Archive-RPC node only —
+	// bombard's RPC nodes stay locked to loopback.
+	args = append(args,
+		"--http-host=0.0.0.0",
+		"--http-allowed-hosts=*",
+		"--staking-ephemeral-cert-enabled=true",
+		"--staking-ephemeral-signer-enabled=true",
+		fmt.Sprintf("--track-subnets=%s", subnetID),
+		fmt.Sprintf("--bootstrap-ips=127.0.0.1:%d", baseHTTPPort+1),
+		fmt.Sprintf("--bootstrap-ids=%s", bootstrapNodeID),
+	)
+
+	cmd := exec.Command(avalanchego, args...)
+	cmd.Dir = nodeDir
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
+	setupNodeLogging(cmd, nodeDir, fmt.Sprintf("l1-archive-rpc-%d", nodeIndex))
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("failed to start avalanchego: %w", err)
+	}
+
+	// Health check still uses 127.0.0.1 — the node is also listening there.
+	uri := fmt.Sprintf("http://127.0.0.1:%d", httpPort)
+	nodeID, err := waitForNodeHealth(ctx, uri, cmd.Process.Pid, nodeStartupTimeout)
+	if err != nil {
+		cmd.Process.Kill()
+		return nil, fmt.Errorf("L1 Archive-RPC node failed to become healthy: %w", err)
+	}
+
+	return &NodeInfo{
+		NodeID:         nodeID,
+		URI:            uri,
+		StakingAddress: fmt.Sprintf("127.0.0.1:%d", stakingPort),
+		PID:            cmd.Process.Pid,
+	}, nil
+}
+
 func ensureSharedNodeConfig() (string, error) {
 	configPath := "./node-config.json"
 	if _, err := os.Stat(configPath); err != nil {

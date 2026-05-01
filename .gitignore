@@ -2,7 +2,10 @@ plugins/
 bin/
 network_data/
 local-benchmark.tar.gz
+local-benchmark-with-blockscout.tar.gz
 remote-benchmark.tar.gz
+remote-benchmark-with-blockscout.tar.gz
+blockscout/images.tar.gz
 tmp/
 .env
 local/blockwatch

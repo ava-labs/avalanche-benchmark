@@ -32,26 +32,29 @@ const (
 
 // Config holds the configuration for starting a network
 type Config struct {
-	DataDir              string            // Directory for network data
-	GenesisPath          string            // Path to subnet-evm genesis file (optional)
-	ChainConfigPath      string            // Path to subnet-evm chain config file (optional)
-	PrimaryNodeCount     int               // Number of primary network nodes (default: 2)
-	L1ValidatorNodeCount int               // Number of L1 validator nodes (default: 2)
-	L1RPCNodeCount       int               // Number of L1 RPC-only nodes (default: 1, not validators)
+	DataDir               string // Directory for network data
+	GenesisPath           string // Path to subnet-evm genesis file (optional)
+	ChainConfigPath       string // Path to subnet-evm chain config file (optional)
+	PrimaryNodeCount      int    // Number of primary network nodes (default: 2)
+	L1ValidatorNodeCount  int    // Number of L1 validator nodes (default: 2)
+	L1RPCNodeCount        int    // Number of L1 RPC-only nodes (default: 1, not validators)
+	L1ArchiveRPCNodeCount int    // Number of L1 Archive-RPC nodes (default: 0; 0.0.0.0 + no pruning, used by Blockscout)
 }
 
 // Result holds the result of starting a network
 type Result struct {
-	DataDir       string
-	NodeURI       string
-	NodeURIs      []string // All L1 node URIs
-	ValidatorURIs []string // L1 validator node URIs
-	RPCNodeURIs   []string // L1 RPC-only node URIs
-	ChainID       string
-	SubnetID      string
-	RPCURL        string   // Single RPC URL (first RPC node)
-	RPCURLs       []string // All RPC URLs for load balancing
-	PIDs          []int    // Process IDs for cleanup
+	DataDir            string
+	NodeURI            string
+	NodeURIs           []string // All L1 node URIs
+	ValidatorURIs      []string // L1 validator node URIs
+	RPCNodeURIs        []string // L1 RPC-only node URIs (loopback, for bombard)
+	ArchiveRPCNodeURIs []string // L1 Archive-RPC node URIs (0.0.0.0, no pruning)
+	ChainID            string
+	SubnetID           string
+	RPCURL             string   // Single RPC URL (first RPC node)
+	RPCURLs            []string // All RPC URLs for load balancing
+	ArchiveRPCURLs     []string // RPC URLs for Archive-RPC nodes
+	PIDs               []int    // Process IDs for cleanup
 }
 
 // NodeInfo holds information about a running node
@@ -118,10 +121,15 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 	if l1RPCCount < 0 {
 		l1RPCCount = 0
 	}
+	l1ArchiveRPCCount := cfg.L1ArchiveRPCNodeCount
+	if l1ArchiveRPCCount < 0 {
+		l1ArchiveRPCCount = 0
+	}
 
 	fmt.Printf("Primary network nodes: %d\n", primaryNodeCount)
 	fmt.Printf("L1 validator nodes: %d\n", l1ValidatorCount)
 	fmt.Printf("L1 RPC nodes: %d\n", l1RPCCount)
+	fmt.Printf("L1 Archive-RPC nodes: %d\n", l1ArchiveRPCCount)
 
 	// Track all PIDs for cleanup
 	var allPIDs []int
@@ -357,10 +365,48 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 		}
 	}
 
-	// Collect all node URIs
+	// Now add L1 Archive-RPC nodes. These bind to 0.0.0.0, accept any Host
+	// header, and run without pruning so historical state queries succeed.
+	// Used by Blockscout. Kept separate from the bombard RPC nodes so the
+	// loopback-only nodes stay locked down and pruned.
+	l1ArchiveRPCNodes := make([]*NodeInfo, 0, l1ArchiveRPCCount)
+	if l1ArchiveRPCCount > 0 {
+		fmt.Printf("Adding %d L1 Archive-RPC node(s)...\n", l1ArchiveRPCCount)
+
+		for i := 0; i < l1ArchiveRPCCount; i++ {
+			nodeIndex := primaryNodeCount + l1ValidatorCount + l1RPCCount + i
+			fmt.Printf("  Starting L1 Archive-RPC node %d...\n", i+1)
+
+			archiveNodeDir := filepath.Join(networkDir, fmt.Sprintf("l1-archive-rpc-%d", nodeIndex))
+			if err := os.MkdirAll(archiveNodeDir, 0755); err != nil {
+				for _, pid := range allPIDs {
+					killProcess(pid)
+				}
+				return nil, fmt.Errorf("failed to create L1 Archive-RPC node dir: %w", err)
+			}
+			if err := writeArchiveChainConfig(archiveNodeDir, chainID.String(), chainConfigBytes); err != nil {
+				fmt.Printf("  Warning: failed to write archive chain config to l1-archive-rpc-%d: %v\n", nodeIndex, err)
+			}
+
+			archiveNode, err := startL1ArchiveRPCNode(ctx, avalanchegoPath, networkDir, nodeIndex, pluginDir,
+				bootstrapNode.NodeID, subnetID.String())
+			if err != nil {
+				for _, pid := range allPIDs {
+					killProcess(pid)
+				}
+				return nil, fmt.Errorf("failed to start L1 Archive-RPC node %d: %w", i, err)
+			}
+			l1ArchiveRPCNodes = append(l1ArchiveRPCNodes, archiveNode)
+			allPIDs = append(allPIDs, archiveNode.PID)
+			fmt.Printf("  L1 Archive-RPC Node %d started: %s (port %d, host 0.0.0.0)\n", i+1, archiveNode.NodeID, baseHTTPPort+nodeIndex*portIncrement)
+		}
+	}
+
+	// Collect all node URIs (Archive-RPC nodes are for Blockscout, not bombard)
 	allL1NodeURIs := make([]string, 0, len(l1ValidatorNodes)+len(l1RPCNodes))
 	validatorURIs := make([]string, 0, len(l1ValidatorNodes))
 	rpcNodeURIs := make([]string, 0, len(l1RPCNodes))
+	archiveRPCNodeURIs := make([]string, 0, len(l1ArchiveRPCNodes))
 
 	for _, node := range l1ValidatorNodes {
 		allL1NodeURIs = append(allL1NodeURIs, node.URI)
@@ -369,6 +415,9 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 	for _, node := range l1RPCNodes {
 		allL1NodeURIs = append(allL1NodeURIs, node.URI)
 		rpcNodeURIs = append(rpcNodeURIs, node.URI)
+	}
+	for _, node := range l1ArchiveRPCNodes {
+		archiveRPCNodeURIs = append(archiveRPCNodeURIs, node.URI)
 	}
 
 	// Determine RPC URLs for load balancing
@@ -389,7 +438,8 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 	}
 	rpcURL := fmt.Sprintf("%s/ext/bc/%s/rpc", primaryRPCNodeURI, chainID)
 
-	// Write all L1 RPC URLs to rpcs.txt for bombard
+	// Write all L1 RPC URLs to rpcs.txt for bombard. Archive-RPC nodes are
+	// deliberately excluded — bombard talks to the loopback-only RPCs.
 	allL1RPCURLs := make([]string, 0, len(allL1NodeURIs))
 	for _, uri := range allL1NodeURIs {
 		allL1RPCURLs = append(allL1RPCURLs, fmt.Sprintf("%s/ext/bc/%s/rpc", uri, chainID))
@@ -399,17 +449,31 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 		fmt.Printf("Warning: failed to write rpcs.txt: %v\n", err)
 	}
 
+	// Archive-RPC URLs go in a separate file that blockscout-up.sh prefers.
+	archiveRPCURLs := make([]string, 0, len(archiveRPCNodeURIs))
+	for _, uri := range archiveRPCNodeURIs {
+		archiveRPCURLs = append(archiveRPCURLs, fmt.Sprintf("%s/ext/bc/%s/rpc", uri, chainID))
+	}
+	if len(archiveRPCURLs) > 0 {
+		archiveFile := filepath.Join(networkDir, "archive-rpcs.txt")
+		if err := os.WriteFile(archiveFile, []byte(strings.Join(archiveRPCURLs, ",")), 0644); err != nil {
+			fmt.Printf("Warning: failed to write archive-rpcs.txt: %v\n", err)
+		}
+	}
+
 	return &Result{
-		DataDir:       networkDir,
-		NodeURI:       primaryRPCNodeURI,
-		NodeURIs:      allL1NodeURIs,
-		ValidatorURIs: validatorURIs,
-		RPCNodeURIs:   rpcNodeURIs,
-		ChainID:       chainID.String(),
-		SubnetID:      subnetID.String(),
-		RPCURL:        rpcURL,
-		RPCURLs:       rpcURLs,
-		PIDs:          allPIDs,
+		DataDir:            networkDir,
+		NodeURI:            primaryRPCNodeURI,
+		NodeURIs:           allL1NodeURIs,
+		ValidatorURIs:      validatorURIs,
+		RPCNodeURIs:        rpcNodeURIs,
+		ArchiveRPCNodeURIs: archiveRPCNodeURIs,
+		ChainID:            chainID.String(),
+		SubnetID:           subnetID.String(),
+		RPCURL:             rpcURL,
+		RPCURLs:            rpcURLs,
+		ArchiveRPCURLs:     archiveRPCURLs,
+		PIDs:               allPIDs,
 	}, nil
 }
 

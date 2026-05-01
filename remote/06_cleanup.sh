@@ -15,10 +15,11 @@ cleanup_node() {
     echo "Cleaning up $NODE_NAME ($NODE_IP)..."
 
     ssh "$SSH_USER@$NODE_IP" bash << 'CLEANUP_EOF'
-# Kill all avalanchego processes (primary, validator, rpc)
+# Kill all avalanchego processes (primary, validator, rpc, archive-rpc)
 pkill -f "data-dir=data/primary" 2>/dev/null || true
 pkill -f "data-dir=data/validator" 2>/dev/null || true
 pkill -f "data-dir=data/rpc" 2>/dev/null || true
+pkill -f "data-dir=data/archive-rpc" 2>/dev/null || true
 
 # Fallback: kill any remaining avalanchego
 pkill -f avalanchego 2>/dev/null || true

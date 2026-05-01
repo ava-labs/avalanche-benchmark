@@ -1,6 +1,7 @@
 package network
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -184,4 +185,33 @@ func writeChainConfig(nodeDir, chainID string, customConfig []byte) error {
 	}
 
 	return nil
+}
+
+// writeArchiveChainConfig writes a node-specific chain config that runs the
+// node in archive mode (no pruning) and exposes the debug-tracer API.
+// Used only for the dedicated Archive-RPC node that Blockscout queries; the
+// validators and bombard RPC nodes keep the lighter default config.
+func writeArchiveChainConfig(nodeDir, chainID string, baseConfig []byte) error {
+	cfg := map[string]any{}
+	if len(baseConfig) > 0 {
+		if err := json.Unmarshal(baseConfig, &cfg); err != nil {
+			return fmt.Errorf("parse chain config: %w", err)
+		}
+	}
+	cfg["pruning-enabled"] = false
+	cfg["eth-apis"] = []string{
+		"eth",
+		"eth-filter",
+		"net",
+		"web3",
+		"internal-eth",
+		"internal-blockchain",
+		"internal-transaction",
+		"debug-tracer",
+	}
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode chain config: %w", err)
+	}
+	return writeChainConfig(nodeDir, chainID, out)
 }

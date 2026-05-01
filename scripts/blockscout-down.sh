@@ -2,7 +2,8 @@
 
 set -euo pipefail
 
-ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 STATE_DIR="${ROOT_DIR}/tmp/blockscout"
 ENV_FILE="${STATE_DIR}/blockscout.env"
 COMPOSE_FILE="${ROOT_DIR}/blockscout/docker-compose.yml"
@@ -15,7 +16,17 @@ fi
 # shellcheck source=/dev/null
 source "${ENV_FILE}"
 
-docker compose \
+# shellcheck source=_blockscout_runtime.sh
+source "${SCRIPT_DIR}/_blockscout_runtime.sh"
+
+# Reuse the runtime that brought it up, if recorded.
+if [[ -n "${BLOCKSCOUT_RUNTIME:-}" ]]; then
+  export BLOCKSCOUT_RUNTIME
+fi
+
+detect_runtime
+
+"${COMPOSE[@]}" \
   --env-file "${ENV_FILE}" \
   -f "${COMPOSE_FILE}" \
   -p "${BLOCKSCOUT_PROJECT_NAME}" \

@@ -1,4 +1,4 @@
-.PHONY: all clean deps build pack
+.PHONY: all clean deps build pack pack-blockscout
 
 .DEFAULT_GOAL := all
 
@@ -9,6 +9,7 @@ PROMETHEUS_BASE_URL=https://github.com/prometheus/prometheus/releases/download/v
 GRAFANA_BASE_URL=https://dl.grafana.com/oss/release
 
 SUBNET_EVM_ID=srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
+BLOCKSCOUT_BUNDLE=../blockscout/images.tar.gz
 
 all: deps build
 	@echo "All ready."
@@ -68,6 +69,7 @@ pack: deps build
 		_common.sh \
 		0[1-6]_*.sh \
 		start-grafana.sh \
+		blockscout.sh \
 		node-config.json \
 		chain-config.json \
 		genesis.json \
@@ -76,3 +78,38 @@ pack: deps build
 		avalanche-dashboard.json \
 		.env.example \
 		README.md
+
+# Same tarball plus the optional Blockscout explorer (compose stack + saved
+# OCI images + helper scripts). Targets podman by default on the operator
+# machine. The bundle is loaded on first run via
+# `podman load -i blockscout/images.tar.gz`.
+pack-blockscout: deps build $(BLOCKSCOUT_BUNDLE)
+	rm -f remote-benchmark-with-blockscout.tar.gz
+	tar -czvf $(CURDIR)/remote-benchmark-with-blockscout.tar.gz \
+		bin/ \
+		_common.sh \
+		0[1-6]_*.sh \
+		start-grafana.sh \
+		blockscout.sh \
+		node-config.json \
+		chain-config.json \
+		genesis.json \
+		grafana-datasources.yml \
+		grafana-dashboards.yml \
+		avalanche-dashboard.json \
+		.env.example \
+		README.md \
+		-C .. \
+		blockscout/docker-compose.yml \
+		blockscout/images.conf \
+		blockscout/images.tar.gz \
+		blockscout/README.md \
+		scripts/_blockscout_runtime.sh \
+		scripts/blockscout-up.sh \
+		scripts/blockscout-down.sh \
+		scripts/blockscout-smoke.sh
+
+# Build the offline image archive on a machine with internet. Skipped if the
+# archive already exists.
+$(BLOCKSCOUT_BUNDLE):
+	../scripts/blockscout-pack-images.sh $(CURDIR)/$(BLOCKSCOUT_BUNDLE)

@@ -22,9 +22,10 @@ var (
 )
 
 type fileConfig struct {
-	PrimaryNodes int `json:"primaryNodes"`
-	L1Validators int `json:"l1Validators"`
-	L1RPCs       int `json:"l1Rpcs"`
+	PrimaryNodes   int `json:"primaryNodes"`
+	L1Validators   int `json:"l1Validators"`
+	L1RPCs         int `json:"l1Rpcs"`
+	L1ArchiveRpcs  int `json:"l1ArchiveRpcs"`
 }
 
 func main() {
@@ -56,12 +57,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := network.Config{
-		DataDir:              "./network_data",
-		GenesisPath:          "./genesis.json",
-		ChainConfigPath:      "./chain-config.json",
-		PrimaryNodeCount:     0,
-		L1ValidatorNodeCount: 0,
-		L1RPCNodeCount:       0,
+		DataDir:               "./network_data",
+		GenesisPath:           "./genesis.json",
+		ChainConfigPath:       "./chain-config.json",
+		PrimaryNodeCount:      0,
+		L1ValidatorNodeCount:  0,
+		L1RPCNodeCount:        0,
+		L1ArchiveRPCNodeCount: 0,
 	}
 
 	if fileCfg.PrimaryNodes > 0 {
@@ -72,6 +74,9 @@ func runStart(cmd *cobra.Command, args []string) error {
 	}
 	if fileCfg.L1RPCs >= 0 {
 		cfg.L1RPCNodeCount = fileCfg.L1RPCs
+	}
+	if fileCfg.L1ArchiveRpcs >= 0 {
+		cfg.L1ArchiveRPCNodeCount = fileCfg.L1ArchiveRpcs
 	}
 
 	if cmd.Flags().Changed("data-dir") {
@@ -97,6 +102,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Primary nodes: %d\n", cfg.PrimaryNodeCount)
 	fmt.Printf("L1 validators: %d\n", cfg.L1ValidatorNodeCount)
 	fmt.Printf("L1 RPCs: %d\n", cfg.L1RPCNodeCount)
+	fmt.Printf("L1 Archive-RPCs: %d\n", cfg.L1ArchiveRPCNodeCount)
 
 	return network.StartAndMonitor(ctx, cfg, exitOnSuccess)
 }

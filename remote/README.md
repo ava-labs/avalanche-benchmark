@@ -10,6 +10,7 @@ Open the following ports on your nodes:
 |------|---------|----------|-------|
 | 22 | SSH | Yes | Remote access |
 | 9650-9655 | AvalancheGo | Yes | HTTP API + Staking ports for primary/validator/RPC nodes |
+| 9656-9657 | AvalancheGo Archive-RPC | Optional | Bootstrap node only; used by Blockscout |
 | 3000 | Grafana | Optional | Monitoring dashboard (first node only) |
 | 9090 | Prometheus | No | Grafana queries locally; only needed for external access |
 
@@ -71,9 +72,31 @@ To apply a new chain config without recreating the L1:
 
 ## Optional Explorer
 
-`./blockscout.sh up` runs Blockscout on your local machine with Docker and points it at the remote L1 RPC URL from `network.env`.
+`./blockscout.sh up` runs Blockscout on your operator machine and points it
+at the dedicated **Archive-RPC** node on the bootstrap host (port 9656). That
+URL is set as `ARCHIVE_RPC_URL` in `network.env` by `03_deploy_l1_config.sh`.
+The Archive-RPC node binds to `0.0.0.0` with `--http-allowed-hosts=*` and
+runs without pruning, so historical state queries succeed and Blockscout's
+container Host headers are accepted. The bombard RPC nodes on port 9654 stay
+loopback-bound and pruned.
 
-This keeps the explorer as an optional operator-side tool instead of adding Docker or extra services to the remote nodes themselves.
+The compose stack uses **podman** if installed (RHEL default), otherwise
+**docker**.
+
+### Air-gapped (RHEL) deployment
+
+For an operator machine with no internet, use:
+
+```bash
+make pack-blockscout    # produces remote-benchmark-with-blockscout.tar.gz
+```
+
+This bundles the saved OCI images alongside the standard remote payload.
+On the target, install `podman` + `podman-compose` from your offline RPM
+mirror, extract the tarball, then `./blockscout.sh up` will auto-load the
+images from `blockscout/images.tar.gz` on first run.
+
+See [`../blockscout/README.md`](../blockscout/README.md) for full details.
 
 ## Benchmark Options
 
