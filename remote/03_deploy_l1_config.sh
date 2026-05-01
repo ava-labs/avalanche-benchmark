@@ -185,6 +185,7 @@ pkill -f "data-dir=data/archive-rpc" || true
 sleep 2
 
 mkdir -p "data/archive-rpc/configs/chains/$CHAIN_ID"
+mkdir -p "data/archive-rpc/db" "data/archive-rpc/logs"
 
 # Write an archive-mode chain config (no pruning, debug-tracer enabled).
 # This applies only to the Archive-RPC node — bombard's RPCs keep

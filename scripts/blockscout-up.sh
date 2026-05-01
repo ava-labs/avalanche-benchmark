@@ -101,6 +101,20 @@ resolve_host_gateway() {
     sh -c 'awk "/host.docker.internal/ {print \$1; exit}" /etc/hosts' 2>/dev/null
 }
 
+# True if $1 is an IP bound to one of this host's interfaces. Used to rewrite
+# remote-style URLs that happen to point at the operator host itself (which
+# the container cannot reach via its public IP under rootless podman).
+is_local_ip() {
+  local ip="$1"
+  if command -v ip >/dev/null 2>&1; then
+    ip -4 -o addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -qx "${ip}"
+  elif command -v ifconfig >/dev/null 2>&1; then
+    ifconfig 2>/dev/null | awk '/inet / {print $2}' | grep -qx "${ip}"
+  else
+    return 1
+  fi
+}
+
 to_internal_url() {
   local url="$1"
   local ip="${BLOCKSCOUT_HOST_GATEWAY_IP:-}"
@@ -120,6 +134,20 @@ to_internal_url() {
   url="${url/https:\/\/localhost/https:\/\/${ip}}"
   url="${url/wss:\/\/127.0.0.1/wss:\/\/${ip}}"
   url="${url/wss:\/\/localhost/wss:\/\/${ip}}"
+
+  # Also rewrite when the URL points at one of the operator host's own
+  # interfaces — under rootless podman the container can't always reach the
+  # host's eth0 IP directly, but it can always reach host-gateway.
+  local re='^([a-z]+)://([^:/]+)(:[0-9]+)?(/.*)?$'
+  if [[ "${url}" =~ $re ]]; then
+    local scheme="${BASH_REMATCH[1]}"
+    local host="${BASH_REMATCH[2]}"
+    local port="${BASH_REMATCH[3]}"
+    local path="${BASH_REMATCH[4]}"
+    if [[ "${host}" =~ ^[0-9.]+$ ]] && is_local_ip "${host}"; then
+      url="${scheme}://${ip}${port}${path}"
+    fi
+  fi
   echo "${url}"
 }
 
