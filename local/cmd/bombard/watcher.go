@@ -26,7 +26,7 @@ func hexToUint64(hex string) uint64 {
 
 const windowSize = 10
 
-func watchBlocks(ctx context.Context, rpcClient *rpc.Client) {
+func watchBlocks(ctx context.Context, rpcClient *rpc.Client, pollInterval time.Duration, markConfirmed bool) {
 	// Start from the latest block
 	var block blockInfo
 	err := rpcClient.CallContext(ctx, &block, "eth_getBlockByNumber", "latest", false)
@@ -51,14 +51,15 @@ func watchBlocks(ctx context.Context, rpcClient *rpc.Client) {
 
 		var block blockInfo
 		err := rpcClient.CallContext(ctx, &block, "eth_getBlockByNumber", "latest", false)
+		observedAt := time.Now()
 		if err != nil {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(pollInterval)
 			continue
 		}
 
 		num := hexToUint64(block.Number)
 		if num <= lastBlock {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(pollInterval)
 			continue
 		}
 
@@ -67,6 +68,7 @@ func watchBlocks(ctx context.Context, rpcClient *rpc.Client) {
 			var b blockInfo
 			if n < num {
 				err = rpcClient.CallContext(ctx, &b, "eth_getBlockByNumber", fmt.Sprintf("0x%x", n), false)
+				observedAt = time.Now()
 				if err != nil {
 					continue
 				}
@@ -82,7 +84,11 @@ func watchBlocks(ctx context.Context, rpcClient *rpc.Client) {
 
 			blockTime := time.UnixMilli(int64(timestampMs))
 			for _, hs := range b.Transactions {
-				tracker.markLanded(common.HexToHash(hs), blockTime)
+				if markConfirmed {
+					tracker.markLanded(common.HexToHash(hs), blockTime, observedAt)
+				} else {
+					tracker.markMined(common.HexToHash(hs), blockTime)
+				}
 			}
 
 			// Update rolling window
@@ -109,6 +115,31 @@ func watchBlocks(ctx context.Context, rpcClient *rpc.Client) {
 		}
 
 		lastBlock = num
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(pollInterval)
+	}
+}
+
+func watchAcceptedTransactions(ctx context.Context, rpcClient *rpc.Client) {
+	ch := make(chan common.Hash, 65536)
+	sub, err := rpcClient.EthSubscribe(ctx, ch, "newAcceptedTransactions")
+	if err != nil {
+		fmt.Printf("Accepted tx watcher: failed to subscribe: %v\n", err)
+		return
+	}
+	defer sub.Unsubscribe()
+	fmt.Println("Accepted tx watcher subscribed")
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case err := <-sub.Err():
+			if err != nil {
+				fmt.Printf("Accepted tx watcher: subscription error: %v\n", err)
+			}
+			return
+		case h := <-ch:
+			tracker.markConfirmed(h, time.Now())
+		}
 	}
 }

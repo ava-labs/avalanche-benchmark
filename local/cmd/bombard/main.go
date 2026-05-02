@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -31,12 +31,17 @@ type pendingEntry struct {
 	sendStart   time.Time
 	submittedAt time.Time
 	workerID    int
+	mined       time.Duration
+	hasMined    bool
+	confirm     time.Duration
+	hasConfirm  bool
 }
 
 type latencySample struct {
-	send  time.Duration
-	wait  time.Duration
-	total time.Duration
+	send    time.Duration
+	mined   time.Duration
+	confirm time.Duration
+	total   time.Duration
 }
 
 type txTracker struct {
@@ -63,7 +68,7 @@ func (t *txTracker) markSubmitted(h common.Hash, workerID int, sendStart, sendEn
 	t.mu.Unlock()
 }
 
-func (t *txTracker) markLanded(h common.Hash, blockTime time.Time) {
+func (t *txTracker) markLanded(h common.Hash, blockTime time.Time, observedAt time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	e, ok := t.pending[h]
@@ -71,13 +76,68 @@ func (t *txTracker) markLanded(h common.Hash, blockTime time.Time) {
 		return
 	}
 	send := e.submittedAt.Sub(e.sendStart)
-	wait := blockTime.Sub(e.submittedAt)
-	if wait < 0 {
-		wait = 0
+	mined := blockTime.Sub(e.submittedAt)
+	if mined < 0 {
+		mined = 0
 	}
-	total := send + wait
+	confirm := observedAt.Sub(e.submittedAt)
+	if confirm < 0 {
+		confirm = 0
+	}
+	total := send + confirm
 	t.latencies = append(t.latencies, total)
-	t.ring[t.ringHead] = latencySample{send: send, wait: wait, total: total}
+	t.ring[t.ringHead] = latencySample{send: send, mined: mined, confirm: confirm, total: total}
+	t.ringHead++
+	if t.ringHead >= ringBufferSize {
+		t.ringHead = 0
+		t.ringFull = true
+	}
+	t.landed++
+	delete(t.pending, h)
+}
+
+func (t *txTracker) markMined(h common.Hash, blockTime time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e, ok := t.pending[h]
+	if !ok {
+		return
+	}
+	mined := blockTime.Sub(e.submittedAt)
+	if mined < 0 {
+		mined = 0
+	}
+	e.mined = mined
+	e.hasMined = true
+	t.pending[h] = e
+	t.maybeFinalizeLocked(h, e)
+}
+
+func (t *txTracker) markConfirmed(h common.Hash, observedAt time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	e, ok := t.pending[h]
+	if !ok {
+		return
+	}
+	confirm := observedAt.Sub(e.submittedAt)
+	if confirm < 0 {
+		confirm = 0
+	}
+	e.confirm = confirm
+	e.hasConfirm = true
+	t.pending[h] = e
+	t.maybeFinalizeLocked(h, e)
+}
+
+func (t *txTracker) maybeFinalizeLocked(h common.Hash, e pendingEntry) {
+	if !e.hasMined || !e.hasConfirm {
+		return
+	}
+	send := e.submittedAt.Sub(e.sendStart)
+	total := send + e.confirm
+	t.latencies = append(t.latencies, total)
+	t.ring[t.ringHead] = latencySample{send: send, mined: e.mined, confirm: e.confirm, total: total}
 	t.ringHead++
 	if t.ringHead >= ringBufferSize {
 		t.ringHead = 0
@@ -169,42 +229,47 @@ func (t *txTracker) printTableLoop(ctx context.Context) {
 		prevAt = now
 
 		sendXs := make([]time.Duration, len(samples))
-		waitXs := make([]time.Duration, len(samples))
+		minedXs := make([]time.Duration, len(samples))
+		confirmXs := make([]time.Duration, len(samples))
 		totalXs := make([]time.Duration, len(samples))
 		for i, s := range samples {
 			sendXs[i] = s.send
-			waitXs[i] = s.wait
+			minedXs[i] = s.mined
+			confirmXs[i] = s.confirm
 			totalXs[i] = s.total
 		}
 		sortedSend := append([]time.Duration(nil), sendXs...)
-		sortedWait := append([]time.Duration(nil), waitXs...)
+		sortedMined := append([]time.Duration(nil), minedXs...)
+		sortedConfirm := append([]time.Duration(nil), confirmXs...)
 		sortedTotal := append([]time.Duration(nil), totalXs...)
 		sort.Slice(sortedSend, func(i, j int) bool { return sortedSend[i] < sortedSend[j] })
-		sort.Slice(sortedWait, func(i, j int) bool { return sortedWait[i] < sortedWait[j] })
+		sort.Slice(sortedMined, func(i, j int) bool { return sortedMined[i] < sortedMined[j] })
+		sort.Slice(sortedConfirm, func(i, j int) bool { return sortedConfirm[i] < sortedConfirm[j] })
 		sort.Slice(sortedTotal, func(i, j int) bool { return sortedTotal[i] < sortedTotal[j] })
 
 		meanSend := meanDur(sendXs)
-		meanWait := meanDur(waitXs)
+		meanMined := meanDur(minedXs)
+		meanConfirm := meanDur(confirmXs)
 		meanTotal := meanDur(totalXs)
 
 		fmt.Println()
-		fmt.Println("═══════════════════════════════════════════════════════════════════════════════════════════════")
+		fmt.Println("═══════════════════════════════════════════════════════════════════════════════════════════════════════════════")
 		fmt.Printf("  PERCENTILES (last %d TXs, timeouts=%d, tps=%.0f)\n", len(samples), timeouts, tps)
-		fmt.Println("═══════════════════════════════════════════════════════════════════════════════════════════════")
+		fmt.Println("═══════════════════════════════════════════════════════════════════════════════════════════════════════════════")
 		fmt.Println()
-		fmt.Println("  ┌────────────────────┬───────────────┬───────────────┬───────────────┐")
-		fmt.Println("  │ Metric             │  Send         │  Confirm      │  Total        │")
-		fmt.Println("  ├────────────────────┼───────────────┼───────────────┼───────────────┤")
-		fmt.Printf("  │ Min                │ %s │ %s │ %s │\n", fmtMs(sortedSend[0]), fmtMs(sortedWait[0]), fmtMs(sortedTotal[0]))
-		fmt.Printf("  │ Avg                │ %s │ %s │ %s │\n", fmtMs(meanSend), fmtMs(meanWait), fmtMs(meanTotal))
-		fmt.Printf("  │ Median (P50)       │ %s │ %s │ %s │\n", fmtMs(pctDur(sortedSend, 50)), fmtMs(pctDur(sortedWait, 50)), fmtMs(pctDur(sortedTotal, 50)))
-		fmt.Printf("  │ P75                │ %s │ %s │ %s │\n", fmtMs(pctDur(sortedSend, 75)), fmtMs(pctDur(sortedWait, 75)), fmtMs(pctDur(sortedTotal, 75)))
-		fmt.Printf("  │ P90                │ %s │ %s │ %s │\n", fmtMs(pctDur(sortedSend, 90)), fmtMs(pctDur(sortedWait, 90)), fmtMs(pctDur(sortedTotal, 90)))
-		fmt.Printf("  │ P95                │ %s │ %s │ %s │\n", fmtMs(pctDur(sortedSend, 95)), fmtMs(pctDur(sortedWait, 95)), fmtMs(pctDur(sortedTotal, 95)))
-		fmt.Printf("  │ P99                │ %s │ %s │ %s │\n", fmtMs(pctDur(sortedSend, 99)), fmtMs(pctDur(sortedWait, 99)), fmtMs(pctDur(sortedTotal, 99)))
-		fmt.Printf("  │ Max                │ %s │ %s │ %s │\n", fmtMs(sortedSend[len(sortedSend)-1]), fmtMs(sortedWait[len(sortedWait)-1]), fmtMs(sortedTotal[len(sortedTotal)-1]))
-		fmt.Printf("  │ Std Dev            │ %s │ %s │ %s │\n", fmtMs(stddevDur(sendXs, meanSend)), fmtMs(stddevDur(waitXs, meanWait)), fmtMs(stddevDur(totalXs, meanTotal)))
-		fmt.Println("  └────────────────────┴───────────────┴───────────────┴───────────────┘")
+		fmt.Println("  ┌────────────────────┬───────────────┬───────────────┬───────────────┬───────────────┐")
+		fmt.Println("  │ Metric             │  Send         │  Mined        │  Confirm      │  Total        │")
+		fmt.Println("  ├────────────────────┼───────────────┼───────────────┼───────────────┼───────────────┤")
+		fmt.Printf("  │ Min                │ %s │ %s │ %s │ %s │\n", fmtMs(sortedSend[0]), fmtMs(sortedMined[0]), fmtMs(sortedConfirm[0]), fmtMs(sortedTotal[0]))
+		fmt.Printf("  │ Avg                │ %s │ %s │ %s │ %s │\n", fmtMs(meanSend), fmtMs(meanMined), fmtMs(meanConfirm), fmtMs(meanTotal))
+		fmt.Printf("  │ Median (P50)       │ %s │ %s │ %s │ %s │\n", fmtMs(pctDur(sortedSend, 50)), fmtMs(pctDur(sortedMined, 50)), fmtMs(pctDur(sortedConfirm, 50)), fmtMs(pctDur(sortedTotal, 50)))
+		fmt.Printf("  │ P75                │ %s │ %s │ %s │ %s │\n", fmtMs(pctDur(sortedSend, 75)), fmtMs(pctDur(sortedMined, 75)), fmtMs(pctDur(sortedConfirm, 75)), fmtMs(pctDur(sortedTotal, 75)))
+		fmt.Printf("  │ P90                │ %s │ %s │ %s │ %s │\n", fmtMs(pctDur(sortedSend, 90)), fmtMs(pctDur(sortedMined, 90)), fmtMs(pctDur(sortedConfirm, 90)), fmtMs(pctDur(sortedTotal, 90)))
+		fmt.Printf("  │ P95                │ %s │ %s │ %s │ %s │\n", fmtMs(pctDur(sortedSend, 95)), fmtMs(pctDur(sortedMined, 95)), fmtMs(pctDur(sortedConfirm, 95)), fmtMs(pctDur(sortedTotal, 95)))
+		fmt.Printf("  │ P99                │ %s │ %s │ %s │ %s │\n", fmtMs(pctDur(sortedSend, 99)), fmtMs(pctDur(sortedMined, 99)), fmtMs(pctDur(sortedConfirm, 99)), fmtMs(pctDur(sortedTotal, 99)))
+		fmt.Printf("  │ Max                │ %s │ %s │ %s │ %s │\n", fmtMs(sortedSend[len(sortedSend)-1]), fmtMs(sortedMined[len(sortedMined)-1]), fmtMs(sortedConfirm[len(sortedConfirm)-1]), fmtMs(sortedTotal[len(sortedTotal)-1]))
+		fmt.Printf("  │ Std Dev            │ %s │ %s │ %s │ %s │\n", fmtMs(stddevDur(sendXs, meanSend)), fmtMs(stddevDur(minedXs, meanMined)), fmtMs(stddevDur(confirmXs, meanConfirm)), fmtMs(stddevDur(totalXs, meanTotal)))
+		fmt.Println("  └────────────────────┴───────────────┴───────────────┴───────────────┴───────────────┘")
 		fmt.Println()
 	}
 }
@@ -249,7 +314,7 @@ func (t *txTracker) reportLoop(ctx context.Context) {
 			mean := sum / time.Duration(len(lats))
 			p50 := lats[len(lats)/2]
 			max := lats[len(lats)-1]
-			fmt.Printf("STATS submitted=%d landed=%d timeouts=%d pending=%d | latency(last1s) n=%d mean=%v p50=%v max=%v\n",
+			fmt.Printf("STATS submitted=%d landed=%d timeouts=%d pending=%d | total-confirm-latency(last1s) n=%d mean=%v p50=%v max=%v\n",
 				sub, land, to, pend, len(lats),
 				mean.Round(time.Millisecond), p50.Round(time.Millisecond), max.Round(time.Millisecond))
 		} else {
@@ -279,21 +344,21 @@ const (
 
 var erc20Contract = common.HexToAddress("0xB0B5B0B5B0B5B0B5B0B5B0B5B0B5B0B5B0B5B0B5")
 
-var httpClient = &http.Client{
-	Transport: &http.Transport{
-		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 100,
-		IdleConnTimeout:     90 * time.Second,
-	},
-	Timeout: 30 * time.Second,
-}
-
 func main() {
 	rpcURL := flag.String("rpc", "", "RPC URL (auto-detected from network_data/rpcs.txt if omitted)")
+	wsURL := flag.String("ws", "", "WebSocket URL (auto-derived from --rpc if omitted)")
+	defaultWSConns := runtime.NumCPU() * 10
+	wsConns := flag.Int("ws-conns", defaultWSConns, "Number of WebSocket connections in the worker pool")
+	watchInterval := flag.Duration("watch-interval", time.Millisecond, "How often the watcher polls for new blocks")
+	confirmSource := flag.String("confirm-source", "block", "Confirmation source: block or accepted-sub")
 	targetTps := flag.Int("tps", defaultTps, "Target transactions per second")
 	erc20Mode := flag.Bool("erc20", false, "Send ERC20 transfers instead of native transfers")
 	dataDir := flag.String("data-dir", "./network_data", "Network data directory (for auto-detecting RPC URL)")
 	flag.Parse()
+	if *confirmSource != "block" && *confirmSource != "accepted-sub" {
+		fmt.Printf("Invalid --confirm-source=%q; expected block or accepted-sub\n", *confirmSource)
+		os.Exit(1)
+	}
 
 	if *rpcURL == "" {
 		rpcsFile := filepath.Join(*dataDir, "rpcs.txt")
@@ -310,20 +375,46 @@ func main() {
 		*rpcURL = urls[0]
 		fmt.Printf("Auto-detected RPC URL from %s\n", rpcsFile)
 	}
+	if *wsURL == "" {
+		*wsURL = httpRPCToWS(*rpcURL)
+	}
 
 	// Calculate batch size based on target TPS
 	batchSize := *targetTps * int(workerDelay/time.Millisecond) / 1000
 
-	// Connect
-	rpcClient, err := rpc.DialHTTPWithClient(*rpcURL, httpClient)
+	ctx := context.Background()
+
+	// Worker pool: fixed number of WS connections, each held exclusively for
+	// one in-flight call at a time. Pool size is the rate limit; if the node
+	// slows down, response time grows, fewer requests get through, producers
+	// block — natural backpressure.
+	pool, err := newWSPool(ctx, *wsURL, *wsConns)
 	if err != nil {
-		fmt.Printf("Failed to connect: %v\n", err)
+		fmt.Printf("Failed to open WS pool: %v\n", err)
 		os.Exit(1)
 	}
-	client := ethclient.NewClient(rpcClient)
-	fmt.Printf("Connected to %s\n", *rpcURL)
+	defer pool.Close()
+	fmt.Printf("Opened %d WS connections to %s\n", *wsConns, *wsURL)
 
-	ctx := context.Background()
+	// Dedicated WS connection for the block watcher (long-lived polling — must
+	// not steal capacity from the worker pool).
+	watcherRPC, err := rpc.DialWebsocket(ctx, *wsURL, "")
+	if err != nil {
+		fmt.Printf("Failed to dial watcher WS: %v\n", err)
+		os.Exit(1)
+	}
+	defer watcherRPC.Close()
+
+	// Dedicated WS connection for one-shot setup work (chain ID, balances,
+	// funding). Low volume, short-lived; keeping it off the pool simplifies
+	// the funding code which still takes *ethclient.Client.
+	setupRPC, err := rpc.DialWebsocket(ctx, *wsURL, "")
+	if err != nil {
+		fmt.Printf("Failed to dial setup WS: %v\n", err)
+		os.Exit(1)
+	}
+	defer setupRPC.Close()
+	client := ethclient.NewClient(setupRPC)
 
 	// Get chain ID
 	chainID, err := client.NetworkID(ctx)
@@ -374,7 +465,10 @@ func main() {
 	time.Sleep(3 * time.Second)
 
 	// Start block watcher and stats reporters
-	go watchBlocks(ctx, rpcClient)
+	go watchBlocks(ctx, watcherRPC, *watchInterval, *confirmSource == "block")
+	if *confirmSource == "accepted-sub" {
+		go watchAcceptedTransactions(ctx, watcherRPC)
+	}
 	go tracker.reportLoop(ctx)
 	go tracker.printTableLoop(ctx)
 
@@ -387,7 +481,7 @@ func main() {
 	// Start workers with staggered delays
 	for i := 0; i < numWorkers; i++ {
 		workerID := i + 1
-		go runWorker(ctx, client, workerKeys[i], signer, workerAddrs[i], workerID, batchSize, *erc20Mode)
+		go runWorker(ctx, pool, workerKeys[i], signer, workerAddrs[i], workerID, batchSize, *erc20Mode)
 		if i < numWorkers-1 {
 			time.Sleep(workerDelay)
 		}
@@ -399,7 +493,7 @@ func main() {
 
 func runWorker(
 	ctx context.Context,
-	client *ethclient.Client,
+	pool *wsPool,
 	privateKey *ecdsa.PrivateKey,
 	signer types.Signer,
 	address common.Address,
@@ -413,21 +507,21 @@ func runWorker(
 	round := 0
 
 	// Run immediately on start
-	runWorkerRound(ctx, client, privateKey, signer, address, workerID, &round, batchSize, erc20)
+	runWorkerRound(ctx, pool, privateKey, signer, address, workerID, &round, batchSize, erc20)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			runWorkerRound(ctx, client, privateKey, signer, address, workerID, &round, batchSize, erc20)
+			runWorkerRound(ctx, pool, privateKey, signer, address, workerID, &round, batchSize, erc20)
 		}
 	}
 }
 
 func runWorkerRound(
 	ctx context.Context,
-	client *ethclient.Client,
+	pool *wsPool,
 	privateKey *ecdsa.PrivateKey,
 	signer types.Signer,
 	address common.Address,
@@ -438,15 +532,20 @@ func runWorkerRound(
 ) {
 	*round++
 
-	// Fetch nonce
-	nonce, err := client.PendingNonceAt(ctx, address)
+	// Fetch nonce through the pool
+	var nonce uint64
+	err := pool.Do(ctx, func(c *ethclient.Client) error {
+		var inner error
+		nonce, inner = c.PendingNonceAt(ctx, address)
+		return inner
+	})
 	if err != nil {
 		fmt.Printf("[Worker %d] Failed to get nonce: %v\n", workerID, err)
 		return
 	}
 
 	// Send batch (to self)
-	_, errors := sendBatch(ctx, client, privateKey, signer, address, address, nonce, batchSize, erc20, workerID)
+	_, errors := sendBatch(ctx, pool, privateKey, signer, address, address, nonce, batchSize, erc20, workerID)
 	if errors > 0 {
 		fmt.Printf("[Worker %d] Errors: %d\n", workerID, errors)
 	}
@@ -463,7 +562,7 @@ func encodeERC20Transfer(to common.Address, amount *big.Int) []byte {
 
 func sendBatch(
 	ctx context.Context,
-	client *ethclient.Client,
+	pool *wsPool,
 	privateKey *ecdsa.PrivateKey,
 	signer types.Signer,
 	from, to common.Address,
@@ -508,7 +607,9 @@ func sendBatch(
 		}
 
 		sendStart := time.Now()
-		err = client.SendTransaction(ctx, signed)
+		err = pool.Do(ctx, func(c *ethclient.Client) error {
+			return c.SendTransaction(ctx, signed)
+		})
 		if err != nil {
 			errors++
 			continue
