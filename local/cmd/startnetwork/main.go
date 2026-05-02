@@ -15,10 +15,11 @@ import (
 )
 
 var (
-	genesisPath     string
-	chainConfigPath string
-	dataDir         string
-	exitOnSuccess   bool
+	genesisPath      string
+	chainConfigPath  string
+	dataDir          string
+	exitOnSuccess    bool
+	allNodesAllRoles bool
 )
 
 type fileConfig struct {
@@ -39,6 +40,7 @@ func main() {
 	rootCmd.Flags().StringVar(&chainConfigPath, "chain-config", "./chain-config.json", "Chain config file")
 	rootCmd.Flags().StringVar(&dataDir, "data-dir", "./network_data", "Data directory")
 	rootCmd.Flags().BoolVar(&exitOnSuccess, "exit-on-success", false, "Exit after the network is ready without shutting down nodes")
+	rootCmd.Flags().BoolVar(&allNodesAllRoles, "all-roles", false, "Use the same nodes as primary validators and L1 validators")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -62,6 +64,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 		PrimaryNodeCount:     0,
 		L1ValidatorNodeCount: 0,
 		L1RPCNodeCount:       0,
+		AllNodesAllRoles:     allNodesAllRoles,
 	}
 
 	if fileCfg.PrimaryNodes > 0 {
@@ -97,6 +100,7 @@ func runStart(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Primary nodes: %d\n", cfg.PrimaryNodeCount)
 	fmt.Printf("L1 validators: %d\n", cfg.L1ValidatorNodeCount)
 	fmt.Printf("L1 RPCs: %d\n", cfg.L1RPCNodeCount)
+	fmt.Printf("All roles: %t\n", cfg.AllNodesAllRoles)
 
 	return network.StartAndMonitor(ctx, cfg, exitOnSuccess)
 }

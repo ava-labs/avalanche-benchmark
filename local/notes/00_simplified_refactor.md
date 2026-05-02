@@ -153,7 +153,7 @@ New workflow:
 ```bash
 ./benchmark start      # Shows metrics, Ctrl+C to stop
 # In another terminal:
-./bombard -rpc http://127.0.0.1:9650/ext/bc/CHAINID/rpc -keys 600 -batch 50
+./bombard -rpc http://127.0.0.1:12000/ext/bc/CHAINID/rpc -keys 600 -batch 50
 ```
 
 ---

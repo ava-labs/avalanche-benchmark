@@ -10,7 +10,7 @@ import (
 )
 
 // startNode starts a primary network validator node
-func startNode(ctx context.Context, avalanchego, networkDir string, nodeIndex int, pluginDir, bootstrapNodeID string) (*NodeInfo, error) {
+func startNode(ctx context.Context, avalanchego, networkDir string, nodeIndex int, pluginDir, bootstrapNodeID string, trackSubnets ...string) (*NodeInfo, error) {
 	httpPort := baseHTTPPort + nodeIndex*portIncrement
 	stakingPort := httpPort + 1
 	stakerNum := nodeIndex + 1
@@ -29,6 +29,9 @@ func startNode(ctx context.Context, avalanchego, networkDir string, nodeIndex in
 	}
 
 	args := buildNodeArgs(httpPort, stakingPort, nodeDir, pluginDir, configPath)
+	if len(trackSubnets) > 0 && trackSubnets[0] != "" {
+		args = append(args, fmt.Sprintf("--track-subnets=%s", trackSubnets[0]))
+	}
 
 	// Add staking keys for validators (up to 5 pre-configured)
 	stakingKeysDir := filepath.Join(networkDir, "staking", "local")

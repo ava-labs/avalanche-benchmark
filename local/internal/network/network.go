@@ -21,7 +21,7 @@ import (
 
 const (
 	// Port allocation
-	baseHTTPPort  = 9650
+	baseHTTPPort  = 12000
 	portIncrement = 100
 
 	// Timeouts
@@ -32,12 +32,13 @@ const (
 
 // Config holds the configuration for starting a network
 type Config struct {
-	DataDir              string            // Directory for network data
-	GenesisPath          string            // Path to subnet-evm genesis file (optional)
-	ChainConfigPath      string            // Path to subnet-evm chain config file (optional)
-	PrimaryNodeCount     int               // Number of primary network nodes (default: 2)
-	L1ValidatorNodeCount int               // Number of L1 validator nodes (default: 2)
-	L1RPCNodeCount       int               // Number of L1 RPC-only nodes (default: 1, not validators)
+	DataDir              string // Directory for network data
+	GenesisPath          string // Path to subnet-evm genesis file (optional)
+	ChainConfigPath      string // Path to subnet-evm chain config file (optional)
+	PrimaryNodeCount     int    // Number of primary network nodes (default: 2)
+	L1ValidatorNodeCount int    // Number of L1 validator nodes (default: 2)
+	L1RPCNodeCount       int    // Number of L1 RPC-only nodes (default: 1, not validators)
+	AllNodesAllRoles     bool   // Use the same nodes as primary validators and L1 validators
 }
 
 // Result holds the result of starting a network
@@ -118,10 +119,19 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 	if l1RPCCount < 0 {
 		l1RPCCount = 0
 	}
+	if cfg.AllNodesAllRoles {
+		allRoleNodeCount := primaryNodeCount + l1ValidatorCount
+		primaryNodeCount = allRoleNodeCount
+		l1ValidatorCount = allRoleNodeCount
+		l1RPCCount = 0
+	}
 
 	fmt.Printf("Primary network nodes: %d\n", primaryNodeCount)
 	fmt.Printf("L1 validator nodes: %d\n", l1ValidatorCount)
 	fmt.Printf("L1 RPC nodes: %d\n", l1RPCCount)
+	if cfg.AllNodesAllRoles {
+		fmt.Println("All-roles mode: primary nodes will also be L1 validators; RPC-only nodes disabled")
+	}
 
 	// Track all PIDs for cleanup
 	var allPIDs []int
@@ -246,37 +256,82 @@ func Start(ctx context.Context, cfg Config) (*Result, error) {
 		}
 	}
 
-	// Now add L1 validator nodes that track the subnet
-	fmt.Printf("Adding %d L1 validator node(s)...\n", l1ValidatorCount)
 	l1ValidatorNodes := make([]*NodeInfo, 0, l1ValidatorCount)
 
-	for i := 0; i < l1ValidatorCount; i++ {
-		nodeIndex := primaryNodeCount + i // Continue port numbering after primary nodes
-		fmt.Printf("  Starting L1 validator node %d...\n", i+1)
+	if cfg.AllNodesAllRoles {
+		fmt.Println("Restarting primary nodes with subnet tracking enabled...")
+		for _, pid := range allPIDs {
+			killProcess(pid)
+		}
+		allPIDs = allPIDs[:0]
+		primaryNodes = primaryNodes[:0]
 
-		// Pre-create L1 node directory and write chain config
-		l1NodeDir := filepath.Join(networkDir, fmt.Sprintf("l1-validator-%d", nodeIndex))
-		if err := os.MkdirAll(l1NodeDir, 0755); err != nil {
-			for _, pid := range allPIDs {
-				killProcess(pid)
+		fmt.Println("  Restarting bootstrap node...")
+		bootstrapNode, err = startNode(ctx, avalanchegoPath, networkDir, 0, pluginDir, "", subnetID.String())
+		if err != nil {
+			return nil, fmt.Errorf("failed to restart bootstrap node with subnet tracking: %w", err)
+		}
+		primaryNodes = append(primaryNodes, bootstrapNode)
+		l1ValidatorNodes = append(l1ValidatorNodes, bootstrapNode)
+		allPIDs = append(allPIDs, bootstrapNode.PID)
+		fmt.Printf("  Bootstrap/L1 validator node started: %s (port %d)\n", bootstrapNode.NodeID, baseHTTPPort)
+
+		for i := 1; i < primaryNodeCount; i++ {
+			fmt.Printf("  Restarting primary/L1 validator node %d...\n", i+1)
+			node, err := startNode(ctx, avalanchegoPath, networkDir, i, pluginDir, bootstrapNode.NodeID, subnetID.String())
+			if err != nil {
+				for _, pid := range allPIDs {
+					killProcess(pid)
+				}
+				return nil, fmt.Errorf("failed to restart primary/L1 validator node %d: %w", i, err)
 			}
-			return nil, fmt.Errorf("failed to create L1 validator node dir: %w", err)
-		}
-		if err := writeChainConfig(l1NodeDir, chainID.String(), chainConfigBytes); err != nil {
-			fmt.Printf("  Warning: failed to write chain config to l1-validator-%d: %v\n", nodeIndex, err)
+			primaryNodes = append(primaryNodes, node)
+			l1ValidatorNodes = append(l1ValidatorNodes, node)
+			allPIDs = append(allPIDs, node.PID)
+			fmt.Printf("  Primary/L1 validator node %d started: %s (port %d)\n", i+1, node.NodeID, baseHTTPPort+i*portIncrement)
 		}
 
-		l1Node, err := startL1Node(ctx, avalanchegoPath, networkDir, nodeIndex, pluginDir,
-			bootstrapNode.NodeID, subnetID.String(), "validator")
+		wallet, err = primary.MakePWallet(ctx, primaryNodeURI, kc, primary.WalletConfig{
+			SubnetIDs: []ids.ID{subnetID},
+		})
 		if err != nil {
 			for _, pid := range allPIDs {
 				killProcess(pid)
 			}
-			return nil, fmt.Errorf("failed to start L1 validator node %d: %w", i, err)
+			return nil, fmt.Errorf("failed to re-sync wallet after all-roles restart: %w", err)
 		}
-		l1ValidatorNodes = append(l1ValidatorNodes, l1Node)
-		allPIDs = append(allPIDs, l1Node.PID)
-		fmt.Printf("  L1 Validator %d started: %s (port %d)\n", i+1, l1Node.NodeID, baseHTTPPort+nodeIndex*portIncrement)
+	} else {
+		// Now add L1 validator nodes that track the subnet
+		fmt.Printf("Adding %d L1 validator node(s)...\n", l1ValidatorCount)
+
+		for i := 0; i < l1ValidatorCount; i++ {
+			nodeIndex := primaryNodeCount + i // Continue port numbering after primary nodes
+			fmt.Printf("  Starting L1 validator node %d...\n", i+1)
+
+			// Pre-create L1 node directory and write chain config
+			l1NodeDir := filepath.Join(networkDir, fmt.Sprintf("l1-validator-%d", nodeIndex))
+			if err := os.MkdirAll(l1NodeDir, 0755); err != nil {
+				for _, pid := range allPIDs {
+					killProcess(pid)
+				}
+				return nil, fmt.Errorf("failed to create L1 validator node dir: %w", err)
+			}
+			if err := writeChainConfig(l1NodeDir, chainID.String(), chainConfigBytes); err != nil {
+				fmt.Printf("  Warning: failed to write chain config to l1-validator-%d: %v\n", nodeIndex, err)
+			}
+
+			l1Node, err := startL1Node(ctx, avalanchegoPath, networkDir, nodeIndex, pluginDir,
+				bootstrapNode.NodeID, subnetID.String(), "validator")
+			if err != nil {
+				for _, pid := range allPIDs {
+					killProcess(pid)
+				}
+				return nil, fmt.Errorf("failed to start L1 validator node %d: %w", i, err)
+			}
+			l1ValidatorNodes = append(l1ValidatorNodes, l1Node)
+			allPIDs = append(allPIDs, l1Node.PID)
+			fmt.Printf("  L1 Validator %d started: %s (port %d)\n", i+1, l1Node.NodeID, baseHTTPPort+nodeIndex*portIncrement)
+		}
 	}
 
 	// Gather validator info from L1 validator nodes for ConvertSubnetToL1
