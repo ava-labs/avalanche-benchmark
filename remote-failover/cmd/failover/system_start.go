@@ -22,6 +22,49 @@ const (
 	healthTimeout = 5 * time.Minute
 )
 
+// killAvalanchegoHardSnippet sends SIGKILL and waits for the process
+// to be gone. Use this when modelling catastrophic node death (kill-dc1)
+// or when we're about to wipe the data dir on the next line anyway
+// (system-start reset). After SIGKILL the kernel still has to finish
+// releasing file descriptors, including pebble's flock on chainData --
+// that's why we poll pgrep until empty (~30s bound) and then add 1s of
+// slack. Match "bin/avalanchego" specifically so we don't catch unrelated
+// processes.
+const killAvalanchegoHardSnippet = `
+	pkill -9 -f 'bin/avalanchego' 2>/dev/null || true
+	for _i in $(seq 1 30); do
+		pgrep -f 'bin/avalanchego' >/dev/null || break
+		sleep 1
+	done
+	sleep 1
+`
+
+// stopAvalanchegoGracefulSnippet sends SIGTERM and waits up to 2 minutes
+// for avalanchego to flush pebble, release locks, and close peers
+// cleanly. Use this for deliberate transitions where the node is healthy
+// and we want a clean handoff (dc2-takeover key-swap).
+//
+// We do NOT escalate to SIGKILL if SIGTERM hangs. DC2 hosts hold L1 chain
+// state we want preserved across the takeover; SIGKILL on a healthy
+// follower can leave pebble in a half-flushed state and lose the
+// chainData flock release timing window. If graceful shutdown stalls
+// past the deadline, fail loudly and let the operator look. SIGKILL on
+// DC2 is allowed only in the cleanup/wipe path (system-start reset),
+// which uses killAvalanchegoHardSnippet instead.
+const stopAvalanchegoGracefulSnippet = `
+	pkill -TERM -f 'bin/avalanchego' 2>/dev/null || true
+	for _i in $(seq 1 240); do
+		pgrep -f 'bin/avalanchego' >/dev/null || break
+		sleep 0.5
+	done
+	if pgrep -f 'bin/avalanchego' >/dev/null; then
+		echo "ERROR: avalanchego did not exit within 120s of SIGTERM" >&2
+		echo "       refusing to SIGKILL: would risk pebble corruption on DC2 state" >&2
+		exit 1
+	fi
+	sleep 1
+`
+
 func systemStart(ctx context.Context) error {
 	cfg, err := loadConfig()
 	if err != nil {
@@ -178,9 +221,6 @@ func bootChainNodes(ctx context.Context, cfg *config, rem *remote, res *l1Result
 		dc1Set[ip] = i + 1 // 1-based DC1 index
 	}
 
-	bootstrapIPs := fmt.Sprintf("%s:%d,%s:%d", cfg.controlIP, control1Staking, cfg.controlIP, control2Staking)
-	bootstrapIDs := fmt.Sprintf("%s,%s", cfg.control1NodeID, cfg.control2NodeID)
-
 	return fanOut(ctx, allHosts, func(ctx context.Context, host string) error {
 		// 1. Wipe + recreate dir tree on the remote.
 		dc1Idx, isDC1 := dc1Set[host]
@@ -191,12 +231,11 @@ func bootChainNodes(ctx context.Context, cfg *config, rem *remote, res *l1Result
 		fmt.Printf("  [%s/%s] resetting...\n", role, host)
 		setup := fmt.Sprintf(`
 			set -e
-			pkill -9 -f avalanchego 2>/dev/null || true
-			sleep 1
+			%[4]s
 			rm -rf %[1]s
 			mkdir -p %[1]s/bin %[1]s/plugins %[1]s/staking %[1]s/configs/chains/%[2]s %[1]s/db %[1]s/logs
 			chown -R %[3]s:%[3]s %[1]s
-		`, remoteDir, res.ChainID, cfg.sshUser)
+		`, remoteDir, res.ChainID, cfg.sshUser, killAvalanchegoHardSnippet)
 		if _, err := rem.run(ctx, host, setup); err != nil {
 			return err
 		}
@@ -222,34 +261,42 @@ func bootChainNodes(ctx context.Context, cfg *config, rem *remote, res *l1Result
 		}
 
 		// 3. Start avalanchego.
-		startScript := fmt.Sprintf(`
-			set -e
-			cd %[1]s
-			chmod +x bin/avalanchego plugins/%[2]s
-			nohup ./bin/avalanchego \
-				--http-port=%[3]d \
-				--staking-port=%[4]d \
-				--http-host=0.0.0.0 \
-				--public-ip=%[5]s \
-				--network-id=local \
-				--sybil-protection-enabled=false \
-				--plugin-dir=%[1]s/plugins \
-				--data-dir=%[1]s \
-				--chain-config-dir=%[1]s/configs/chains \
-				--track-subnets=%[6]s \
-				--bootstrap-ips=%[7]s \
-				--bootstrap-ids=%[8]s \
-				>logs/stdout.log 2>&1 &
-			disown
-			sleep 1
-		`, remoteDir, cfg.subnetEvmID, httpPort, stakingPort, host,
-			res.SubnetID, bootstrapIPs, bootstrapIDs)
-		if _, err := rem.run(ctx, host, startScript); err != nil {
+		if _, err := rem.run(ctx, host, chainNodeStartScript(cfg, host, res)); err != nil {
 			return err
 		}
 		fmt.Printf("  [%s/%s] avalanchego started\n", role, host)
 		return nil
 	})
+}
+
+// chainNodeStartScript returns the shell script that boots a single
+// chain-node avalanchego with --track-subnets. Reused by system-start
+// (after fresh scp) and by dc2-takeover (after key-swap).
+func chainNodeStartScript(cfg *config, host string, res *l1Result) string {
+	bootstrapIPs := fmt.Sprintf("%s:%d,%s:%d", cfg.controlIP, control1Staking, cfg.controlIP, control2Staking)
+	bootstrapIDs := fmt.Sprintf("%s,%s", cfg.control1NodeID, cfg.control2NodeID)
+	return fmt.Sprintf(`
+		set -e
+		cd %[1]s
+		chmod +x bin/avalanchego plugins/%[2]s
+		nohup ./bin/avalanchego \
+			--http-port=%[3]d \
+			--staking-port=%[4]d \
+			--http-host=0.0.0.0 \
+			--public-ip=%[5]s \
+			--network-id=local \
+			--sybil-protection-enabled=false \
+			--plugin-dir=%[1]s/plugins \
+			--data-dir=%[1]s \
+			--chain-config-dir=%[1]s/configs/chains \
+			--track-subnets=%[6]s \
+			--bootstrap-ips=%[7]s \
+			--bootstrap-ids=%[8]s \
+			>logs/stdout.log 2>&1 &
+		disown
+		sleep 1
+	`, remoteDir, cfg.subnetEvmID, httpPort, stakingPort, host,
+		res.SubnetID, bootstrapIPs, bootstrapIDs)
 }
 
 func waitChainHealthy(ctx context.Context, cfg *config) error {

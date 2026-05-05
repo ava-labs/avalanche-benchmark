@@ -32,8 +32,10 @@ func main() {
 	switch os.Args[1] {
 	case "system-start":
 		err = systemStart(ctx)
-	case "kill-dc1", "dc2-takeover":
-		err = fmt.Errorf("subcommand %q is not implemented yet", os.Args[1])
+	case "kill-dc1":
+		err = killDC1(ctx)
+	case "dc2-takeover":
+		err = dc2Takeover(ctx)
 	default:
 		usage()
 		os.Exit(2)
@@ -47,6 +49,6 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  failover system-start     boot the lab and print RPC URLs")
-	fmt.Fprintln(os.Stderr, "  failover kill-dc1         (todo) kill avalanchego on the 5 DC1 hosts")
-	fmt.Fprintln(os.Stderr, "  failover dc2-takeover     (todo) key-swap onto DC2 and restart")
+	fmt.Fprintln(os.Stderr, "  failover kill-dc1         pkill avalanchego on the 5 DC1 hosts")
+	fmt.Fprintln(os.Stderr, "  failover dc2-takeover     key-swap DC1 staking onto DC2 and restart")
 }
