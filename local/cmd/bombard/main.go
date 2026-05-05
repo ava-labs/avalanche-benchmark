@@ -162,6 +162,12 @@ func (t *txTracker) snapshotRing() ([]latencySample, uint64) {
 	return out, timeouts
 }
 
+func (t *txTracker) counts() (submitted, landed, timeouts uint64, pending int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.submitted, t.landed, t.timeouts, len(t.pending)
+}
+
 func fmtMs(d time.Duration) string {
 	return fmt.Sprintf("%10d ms", d.Milliseconds())
 }
@@ -345,13 +351,17 @@ const (
 var erc20Contract = common.HexToAddress("0xB0B5B0B5B0B5B0B5B0B5B0B5B0B5B0B5B0B5B0B5")
 
 func main() {
-	rpcURL := flag.String("rpc", "", "RPC URL (auto-detected from network_data/rpcs.txt if omitted)")
-	wsURL := flag.String("ws", "", "WebSocket URL (auto-derived from --rpc if omitted)")
+	rpcURL := flag.String("rpc", "", "RPC URL for submitting txs (auto-detected from network_data/rpcs.txt if omitted)")
+	wsURL := flag.String("ws", "", "WebSocket URL for submitting txs (auto-derived from --rpc if omitted)")
+	watchRPCURL := flag.String("watch-rpc", "", "RPC URL for the block watcher (defaults to --rpc; set to a DC2 follower to measure what a failover-side client sees)")
+	watchWSURL := flag.String("watch-ws", "", "WebSocket URL for the block watcher (auto-derived from --watch-rpc if omitted)")
 	defaultWSConns := runtime.NumCPU() * 10
 	wsConns := flag.Int("ws-conns", defaultWSConns, "Number of WebSocket connections in the worker pool")
 	watchInterval := flag.Duration("watch-interval", time.Millisecond, "How often the watcher polls for new blocks")
 	confirmSource := flag.String("confirm-source", "block", "Confirmation source: block or accepted-sub")
 	targetTps := flag.Int("tps", defaultTps, "Target transactions per second")
+	targetTxs := flag.Uint64("txs", 0, "Stop after at least this many landed transactions; 0 means run until interrupted")
+	runDuration := flag.Duration("duration", 0, "Stop after this duration; 0 means run until interrupted or --txs is reached")
 	erc20Mode := flag.Bool("erc20", false, "Send ERC20 transfers instead of native transfers")
 	dataDir := flag.String("data-dir", "./network_data", "Network data directory (for auto-detecting RPC URL)")
 	flag.Parse()
@@ -378,11 +388,52 @@ func main() {
 	if *wsURL == "" {
 		*wsURL = httpRPCToWS(*rpcURL)
 	}
+	if *watchRPCURL == "" {
+		*watchRPCURL = *rpcURL
+	}
+	if *watchWSURL == "" {
+		*watchWSURL = httpRPCToWS(*watchRPCURL)
+	}
 
 	// Calculate batch size based on target TPS
 	batchSize := *targetTps * int(workerDelay/time.Millisecond) / 1000
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if *runDuration > 0 {
+		go func() {
+			timer := time.NewTimer(*runDuration)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+			case <-timer.C:
+				fmt.Printf("Duration target reached: %s\n", runDuration.String())
+				cancel()
+			}
+		}()
+	}
+
+	if *targetTxs > 0 {
+		go func() {
+			ticker := time.NewTicker(time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+
+				_, landed, _, _ := tracker.counts()
+				if landed >= *targetTxs {
+					fmt.Printf("Transaction target reached: landed=%d target=%d\n", landed, *targetTxs)
+					cancel()
+					return
+				}
+			}
+		}()
+	}
 
 	// Worker pool: fixed number of WS connections, each held exclusively for
 	// one in-flight call at a time. Pool size is the rate limit; if the node
@@ -397,13 +448,19 @@ func main() {
 	fmt.Printf("Opened %d WS connections to %s\n", *wsConns, *wsURL)
 
 	// Dedicated WS connection for the block watcher (long-lived polling — must
-	// not steal capacity from the worker pool).
-	watcherRPC, err := rpc.DialWebsocket(ctx, *wsURL, "")
+	// not steal capacity from the worker pool). May target a different node
+	// than the submission pool (e.g., bombard a DC1 validator while watching
+	// a DC2 follower) so we can measure end-to-end latency from the failover
+	// observer's vantage point.
+	watcherRPC, err := rpc.DialWebsocket(ctx, *watchWSURL, "")
 	if err != nil {
 		fmt.Printf("Failed to dial watcher WS: %v\n", err)
 		os.Exit(1)
 	}
 	defer watcherRPC.Close()
+	if *watchWSURL != *wsURL {
+		fmt.Printf("Watcher WS: %s (separate from submission pool)\n", *watchWSURL)
+	}
 
 	// Dedicated WS connection for one-shot setup work (chain ID, balances,
 	// funding). Low volume, short-lived; keeping it off the pool simplifies
@@ -489,6 +546,8 @@ func main() {
 
 	// Wait for context cancellation
 	<-ctx.Done()
+	submitted, landed, timeouts, pending := tracker.counts()
+	fmt.Printf("FINAL submitted=%d landed=%d timeouts=%d pending=%d\n", submitted, landed, timeouts, pending)
 }
 
 func runWorker(
