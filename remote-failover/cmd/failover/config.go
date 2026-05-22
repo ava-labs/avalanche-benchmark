@@ -31,6 +31,10 @@ type config struct {
 	configDir  string
 
 	subnetEvmID string
+
+	// Validator placement chosen for this run. Set by the CLI after
+	// loadConfig. dc1+dc2 must equal 5 (the registered validator-set size).
+	arch archSpec
 }
 
 const subnetEvmID = "srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy"

@@ -1,11 +1,16 @@
 {
   "min-delay-target": 5,
+  "state-scheme": "firewood",
+  "pruning-enabled": false,
+  "state-sync-enabled": false,
+  "commit-interval": 4096,
+  "state-history": 8192,
+  "snapshot-cache": 0,
   "tx-pool-account-slots": 2048,
   "tx-pool-global-slots": 262144,
   "tx-pool-account-queue": 2048,
   "tx-pool-global-queue": 512000,
   "tx-pool-lifetime": "1m",
   "trie-clean-cache": 10240,
-  "trie-dirty-cache": 10240,
-  "snapshot-cache": 10240
+  "trie-dirty-cache": 10240
 }

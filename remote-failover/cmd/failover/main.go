@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -31,7 +32,17 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "system-start":
-		err = systemStart(ctx)
+		fs := flag.NewFlagSet("system-start", flag.ExitOnError)
+		archStr := fs.String("arch", "5+0", "validator placement: N+M where N+M=5 (e.g. 5+0, 4+1, 3+2)")
+		if err := fs.Parse(os.Args[2:]); err != nil {
+			os.Exit(2)
+		}
+		arch, parseErr := parseArch(*archStr)
+		if parseErr != nil {
+			fmt.Fprintln(os.Stderr, "ERROR:", parseErr)
+			os.Exit(2)
+		}
+		err = systemStart(ctx, arch)
 	case "kill-dc1":
 		err = killDC1(ctx)
 	case "dc2-takeover":
@@ -48,7 +59,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage:")
-	fmt.Fprintln(os.Stderr, "  failover system-start     boot the lab and print RPC URLs")
-	fmt.Fprintln(os.Stderr, "  failover kill-dc1         pkill avalanchego on the 5 DC1 hosts")
-	fmt.Fprintln(os.Stderr, "  failover dc2-takeover     key-swap DC1 staking onto DC2 and restart")
+	fmt.Fprintln(os.Stderr, "  failover system-start [--arch N+M]  boot the lab; default --arch=5+0")
+	fmt.Fprintln(os.Stderr, "  failover kill-dc1                   pkill avalanchego on the 5 DC1 hosts")
+	fmt.Fprintln(os.Stderr, "  failover dc2-takeover               key-swap DC1 staking onto DC2 and restart")
 }

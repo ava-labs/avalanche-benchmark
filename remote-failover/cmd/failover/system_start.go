@@ -65,11 +65,14 @@ const stopAvalanchegoGracefulSnippet = `
 	sleep 1
 `
 
-func systemStart(ctx context.Context) error {
+func systemStart(ctx context.Context, arch archSpec) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
+	cfg.arch = arch
+	fmt.Printf("=== arch: %s (%d DC1 validator(s) + %d DC2 validator(s)) ===\n",
+		arch, arch.dc1, arch.dc2)
 
 	// 0. Sanity: the binaries we need exist locally.
 	for _, p := range []string{
@@ -214,20 +217,15 @@ func startControlPrimary(ctx context.Context, cfg *config, idx, httpP, stakeP in
 
 func bootChainNodes(ctx context.Context, cfg *config, rem *remote, res *l1Result) error {
 	// One pass per host: wipe, mkdir tree, scp binary+plugin+chain-config
-	// (plus DC1 staking keys for DC1 hosts), start avalanchego.
+	// (plus a validator key set if the arch places one on this host),
+	// start avalanchego.
 	allHosts := append(append([]string{}, cfg.dc1IPs...), cfg.dc2IPs...)
-	dc1Set := make(map[string]int)
-	for i, ip := range cfg.dc1IPs {
-		dc1Set[ip] = i + 1 // 1-based DC1 index
-	}
+	keyAssign := keyAssignments(cfg)
 
 	return fanOut(ctx, allHosts, func(ctx context.Context, host string) error {
-		// 1. Wipe + recreate dir tree on the remote.
-		dc1Idx, isDC1 := dc1Set[host]
-		role := "dc2"
-		if isDC1 {
-			role = "dc1"
-		}
+		keyIdx, isValidator := keyAssign[host]
+		role := roleLabel(cfg, host, keyIdx, isValidator)
+
 		fmt.Printf("  [%s/%s] resetting...\n", role, host)
 		setup := fmt.Sprintf(`
 			set -e
@@ -240,7 +238,7 @@ func bootChainNodes(ctx context.Context, cfg *config, rem *remote, res *l1Result
 			return err
 		}
 
-		// 2. scp binary + plugin + chain-config + (DC1) staking keys.
+		// scp binary + plugin + chain-config (everywhere).
 		if err := rem.scpUp(ctx, host, filepath.Join(cfg.binDir, "avalanchego"), remoteDir+"/bin/"); err != nil {
 			return err
 		}
@@ -251,8 +249,9 @@ func bootChainNodes(ctx context.Context, cfg *config, rem *remote, res *l1Result
 			fmt.Sprintf("%s/configs/chains/%s/config.json", remoteDir, res.ChainID)); err != nil {
 			return err
 		}
-		if isDC1 {
-			src := filepath.Join(cfg.stakingDir, "dc1", fmt.Sprintf("%d", dc1Idx))
+		// Validator hosts get the staking key set assigned by arch.
+		if isValidator {
+			src := filepath.Join(cfg.stakingDir, "dc1", fmt.Sprintf("%d", keyIdx))
 			for _, f := range []string{"signer.key", "staker.crt", "staker.key"} {
 				if err := rem.scpUp(ctx, host, filepath.Join(src, f), remoteDir+"/staking/"); err != nil {
 					return err
@@ -260,7 +259,6 @@ func bootChainNodes(ctx context.Context, cfg *config, rem *remote, res *l1Result
 			}
 		}
 
-		// 3. Start avalanchego.
 		if _, err := rem.run(ctx, host, chainNodeStartScript(cfg, host, res)); err != nil {
 			return err
 		}
@@ -313,19 +311,27 @@ func writeNetworkEnv(cfg *config, res *l1Result) error {
 }
 
 func printRPCs(cfg *config, res *l1Result) {
+	keyAssign := keyAssignments(cfg)
+	tag := func(ip string) string {
+		if k, ok := keyAssign[ip]; ok {
+			return fmt.Sprintf("validator v%d", k)
+		}
+		return "follower"
+	}
+
 	fmt.Println()
 	fmt.Println("Primary-network RPCs (control):")
 	fmt.Printf("  control-1: http://%s:%d\n", cfg.controlIP, control1HTTP)
 	fmt.Printf("  control-2: http://%s:%d\n", cfg.controlIP, control2HTTP)
 	fmt.Println()
-	fmt.Println("L1 RPCs (DC1 validators):")
+	fmt.Printf("L1 RPCs (DC1, arch=%s):\n", cfg.arch)
 	for i, ip := range cfg.dc1IPs {
-		fmt.Printf("  dc1-%d:    http://%s:%d/ext/bc/%s/rpc\n", i+1, ip, httpPort, res.ChainID)
+		fmt.Printf("  dc1-%d (%s): http://%s:%d/ext/bc/%s/rpc\n", i+1, tag(ip), ip, httpPort, res.ChainID)
 	}
 	fmt.Println()
-	fmt.Println("L1 RPCs (DC2 followers):")
+	fmt.Printf("L1 RPCs (DC2, arch=%s):\n", cfg.arch)
 	for i, ip := range cfg.dc2IPs {
-		fmt.Printf("  dc2-%d:    http://%s:%d/ext/bc/%s/rpc\n", i+1, ip, httpPort, res.ChainID)
+		fmt.Printf("  dc2-%d (%s): http://%s:%d/ext/bc/%s/rpc\n", i+1, tag(ip), ip, httpPort, res.ChainID)
 	}
 	fmt.Println()
 	fmt.Printf("subnet ID: %s\n", res.SubnetID)
