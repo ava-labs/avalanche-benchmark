@@ -28,9 +28,9 @@ locals {
   app_name    = "benchmark"
   operator_ip = "${chomp(data.http.my_ip.response_body)}/32"
 
-  dc1_node_ips    = aws_eip.dc1_node[*].public_ip
-  dc2_node_ips    = aws_eip.dc2_node[*].public_ip
-  control_node_ip = local.dc1_node_ips[0]
+  dc1_node_ips      = aws_eip.dc1_node[*].public_ip
+  dc2_node_ips      = aws_eip.dc2_node[*].public_ip
+  benchmark_host_ip = local.dc1_node_ips[0]
 
   common_tags = {
     App = local.app_name
@@ -339,13 +339,13 @@ resource "aws_eip_association" "dc2_node" {
   instance_id   = aws_instance.dc2_node[count.index].id
 }
 
-output "control_node_ip" {
-  description = "Control/load node IP. In Terraform AWS mode, this is always the first DC1 node."
-  value       = local.control_node_ip
+output "benchmark_host_ip" {
+  description = "Benchmark host IP. In Terraform AWS mode, this is always the first DC1 node."
+  value       = local.benchmark_host_ip
 }
 
 output "dc1_node_ips" {
-  description = "DC1 public EIPs, in node order. First node is the control/load node by convention."
+  description = "DC1 public EIPs, in node order. First node is the benchmark host by convention."
   value       = local.dc1_node_ips
 }
 
@@ -359,7 +359,7 @@ output "env" {
   value       = <<EOT
 SSH_USER=ubuntu
 SSH_KEY=${var.ssh_key_path}
-CONTROL_NODE_IP=${local.control_node_ip}
+BENCHMARK_HOST_IP=${local.benchmark_host_ip}
 DC1_NODE_IPS=${join(",", local.dc1_node_ips)}
 DC2_NODE_IPS=${join(",", local.dc2_node_ips)}
 EOT

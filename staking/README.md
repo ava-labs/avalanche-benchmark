@@ -4,7 +4,7 @@ These keys are committed intentionally. They are benchmark test identities only.
 
 Layout:
 
-- `control/1..2`: local P-Chain/control node identities.
+- `pchain/1..2`: local P-Chain/benchmark host identities.
 - `l1/1..5`: L1 validator identities.
 
 Each identity directory contains:

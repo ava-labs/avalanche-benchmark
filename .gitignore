@@ -1,2 +1,7 @@
 .claude/
 .env
+runtime-data/
+benchctl
+avalanchego
+srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
+avalanche-benchmark-runtime.tar.gz
