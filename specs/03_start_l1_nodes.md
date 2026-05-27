@@ -1,0 +1,220 @@
+# Start L1 Nodes Design Notes
+
+This spec captures the target design for:
+
+```sh
+./scripts/03_start-l1.sh
+```
+
+The operator machine runs the script. The script SSHes directly to every L1 node host and starts one AvalancheGo process per host.
+
+No orchestration binary runs on the benchmark host or node hosts.
+
+## Inputs
+
+Required local files:
+
+```text
+.env
+runtime-data/l1.env
+config/chain-config.json
+staking/node-ids.env
+staking/l1/<n>/signer.key
+staking/l1/<n>/staker.crt
+staking/l1/<n>/staker.key
+```
+
+Required remote node-host artifacts from `00_copy-artifacts.sh`:
+
+```text
+/data/avalanche-benchmark/bin/avalanchego
+/data/avalanche-benchmark/plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
+```
+
+Required `.env` values:
+
+```sh
+BENCHMARK_HOST_IP=<benchmark host ip>
+DC1_NODE_IPS=<node ip>,...
+DC2_NODE_IPS=<node ip>,...
+```
+
+Required `runtime-data/l1.env` values:
+
+```sh
+L1_SUBNET_ID=<subnet id>
+L1_CHAIN_ID=<chain id>
+L1_VALIDATOR_COUNT=<conversion validator count>
+```
+
+`L1_VALIDATOR_COUNT` is not used to decide how many processes start. It only records what `create-l1` registered on the P-Chain.
+
+## Step Goals
+
+`scripts/03_start-l1.sh` must:
+
+- require `.env`;
+- require `runtime-data/l1.env`;
+- collect node hosts from `DC1_NODE_IPS` and `DC2_NODE_IPS`;
+- start one AvalancheGo process on every listed node host;
+- fail if there are zero node hosts;
+- fail if any node host lacks a committed `staking/l1/<index>` identity;
+- fail if `BENCHMARK_HOST_IP` appears in the node host list;
+- run `pkill -f '[a]valanchego' || true` on every node host;
+- wipe the node-host L1 runtime dir before starting;
+- copy the assigned committed L1 staking files into the node data dir default staking path;
+- copy the Subnet-EVM plugin into the node data dir default plugin path;
+- copy `config/chain-config.json` into the node data dir default chain config path for `L1_CHAIN_ID`;
+- start AvalancheGo with HTTP bound to `0.0.0.0`;
+- use default HTTP/staking ports;
+- bootstrap every L1 node from the two benchmark-host P-Chain nodes and every other L1 node;
+- wait up to 120 seconds for each node RPC to become ready;
+- verify `info.getNodeID` for each node against `staking/node-ids.env`;
+- verify the L1 chain RPC responds at `http://<node-ip>:9650/ext/bc/<L1_CHAIN_ID>/rpc`;
+- print concise success output with node RPC URLs and log paths.
+
+## Runtime Layout
+
+Remote work dir:
+
+```text
+/data/avalanche-benchmark
+```
+
+Per-node L1 data dir:
+
+```text
+/data/avalanche-benchmark/runtime-data/l1
+```
+
+Default staking path under the data dir:
+
+```text
+/data/avalanche-benchmark/runtime-data/l1/staking/staker.crt
+/data/avalanche-benchmark/runtime-data/l1/staking/staker.key
+/data/avalanche-benchmark/runtime-data/l1/staking/signer.key
+```
+
+Default plugin path should be used. Do not pass `--plugin-dir`.
+
+The staging copy from `00_copy-artifacts.sh` lives at:
+
+```text
+/data/avalanche-benchmark/plugins/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
+```
+
+`03_start-l1.sh` should copy that file into the node data dir default plugin path before starting.
+
+AvalancheGo default plugin path under `--data-dir`:
+
+```text
+<data-dir>/plugins
+```
+
+## Chain Config
+
+`config/chain-config.json` must be copied into the default chain config path for `L1_CHAIN_ID` under the node data dir.
+
+AvalancheGo default chain config path under `--data-dir`:
+
+```text
+<data-dir>/configs/chains/<L1_CHAIN_ID>/config.json
+```
+
+Do not pass chain config path flags unless the default path cannot work.
+
+## Node Identity Assignment
+
+Assign committed identity by global node index after concatenating:
+
+```text
+DC1_NODE_IPS, then DC2_NODE_IPS
+```
+
+Mapping:
+
+```text
+node 1 -> staking/l1/1
+node 2 -> staking/l1/2
+...
+node 15 -> staking/l1/15
+```
+
+Current committed pool is `staking/l1/1..15`.
+
+Hard fail if the node host count exceeds the committed identity pool. Do not start generated-identity nodes in this script.
+
+Do not label a node as validator or follower in this script. Validation status is decided by the P-Chain conversion validator set.
+
+## AvalancheGo Flags
+
+Use only required flags. Avoid path flags except `--data-dir` unless unavoidable.
+
+Use:
+
+```text
+--data-dir=/data/avalanche-benchmark/runtime-data/l1
+--network-id=local
+--sybil-protection-enabled=false
+--http-host=0.0.0.0
+--public-ip=<node host ip>
+--track-subnets=<L1_SUBNET_ID>
+--bootstrap-ips=<BENCHMARK_HOST_IP>:9651,<BENCHMARK_HOST_IP>:9653,<other L1 node IPs>:9651
+--bootstrap-ids=<PCHAIN_1_NODE_ID>,<PCHAIN_2_NODE_ID>,<other L1 node IDs>
+```
+
+Do not include the node's own L1 IP/NodeID in its bootstrap list.
+
+Why this is required: the benchmark-host P-Chain processes do not track the L1 subnet and advertise only the primary network in `info.peers`. They are good primary-network bootstrappers, but they cannot by themselves make L1 validators discover enough subnet validators for custom-chain bootstrap. L1 startup must manually dial the other L1 nodes.
+
+Do not pass:
+
+```text
+--http-port
+--staking-port
+--plugin-dir
+--db-dir
+--log-dir
+--chain-data-dir
+--staking-tls-cert-file
+--staking-tls-key-file
+--staking-signer-key-file
+```
+
+Default ports are acceptable because there is one AvalancheGo process per node host.
+
+## Readiness
+
+Timeout: 120 seconds.
+
+Checks:
+
+- `info.getNodeID` on `http://<node-ip>:9650/ext/info`;
+- compare expected NodeID from `staking/node-ids.env`;
+- make any simple JSON-RPC call on `http://<node-ip>:9650/ext/bc/<L1_CHAIN_ID>/rpc`.
+
+The exact chain RPC method is not important; if the endpoint responds, the chain is up enough for the next step.
+
+Use `eth_chainId` unless source inspection suggests a better trivial method.
+
+## Non-Goals
+
+Do not run benchmarks.
+
+Do not decide validator/follower role.
+
+Do not mutate the P-Chain validator set.
+
+Do not implement key swap.
+
+Do not implement failover.
+
+Do not add flags/configurability unless the script cannot work without it.
+
+## Source Checks
+
+AvalancheGo source confirms:
+
+- `defaultPluginDir = "$AVALANCHEGO_DATA_DIR/plugins"`
+- `defaultChainConfigDir = "$AVALANCHEGO_DATA_DIR/configs/chains"`
+- `$AVALANCHEGO_DATA_DIR` expands from the effective `--data-dir` value.

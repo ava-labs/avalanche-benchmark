@@ -6,101 +6,88 @@ repo_root="$(cd -- "$script_dir/.." && pwd)"
 
 remote_dir="/data/avalanche-benchmark"
 env_file="$repo_root/.env"
+plugin_id="srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy"
 
 source "$script_dir/lib.sh"
 
-artifacts=(
-  "benchctl"
+required_files=(
+  "create-l1"
+  "bombard"
   "avalanchego"
-  "srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy"
+  "$plugin_id"
+  ".env"
   "config/genesis.json"
   "config/chain-config.json"
   "config/node-config.json"
-  "scripts/00_copy-artifacts.sh"
-  "scripts/01_start-pchain.sh"
-  "scripts/02_create-l1.sh"
-  "scripts/lib.sh"
-  ".env"
+  "staking/node-ids.env"
+  "staking/pchain/1/signer.key"
+  "staking/pchain/1/staker.crt"
+  "staking/pchain/1/staker.key"
+  "staking/pchain/2/signer.key"
+  "staking/pchain/2/staker.crt"
+  "staking/pchain/2/staker.key"
 )
+
+for i in $(seq 1 15); do
+  required_files+=(
+    "staking/l1/$i/signer.key"
+    "staking/l1/$i/staker.crt"
+    "staking/l1/$i/staker.key"
+  )
+done
 
 require_artifacts() {
   local missing=0
-  for artifact in "${artifacts[@]}"; do
+  local artifact
+  for artifact in "${required_files[@]}"; do
     if [[ ! -f "$repo_root/$artifact" ]]; then
       echo "ERROR: missing $repo_root/$artifact" >&2
       missing=1
     fi
   done
   if [[ "$missing" -ne 0 ]]; then
-    echo "Run this from an unpacked runtime package, or run 'make' first in the source checkout." >&2
+    echo "Run 'make' first, and create .env from .env.example." >&2
     exit 1
   fi
+}
+
+collect_node_hosts() {
+  local host
+  declare -A seen=()
+  node_hosts=()
+  while IFS= read -r host; do
+    if [[ -z "${seen[$host]:-}" ]]; then
+      seen[$host]=1
+      node_hosts+=("$host")
+    fi
+  done < <({ csv_env_values DC1_NODE_IPS; csv_env_values DC2_NODE_IPS; })
 }
 
 require_env_file
-
 require_artifacts
 
 benchmark_host_ip="$(require_env BENCHMARK_HOST_IP)"
+collect_node_hosts
 
-if is_local_host "$benchmark_host_ip"; then
-  echo "Benchmark host is local ($benchmark_host_ip); skipped SSH/SCP."
-  exit 0
-fi
-
-ssh_user="$(require_env SSH_USER)"
-ssh_key="$(require_env SSH_KEY)"
-remote="$ssh_user@$benchmark_host_ip"
-ssh_args=(
-  -F /dev/null
-  -i "$ssh_key"
-  -o ControlMaster=no
-  -o ControlPath=none
-  -o IdentityAgent=none
-  -o IdentitiesOnly=yes
-  -o BatchMode=yes
-  -o ConnectTimeout=8
-  -o ConnectionAttempts=1
-  -o ServerAliveInterval=5
-  -o ServerAliveCountMax=1
-  -o StrictHostKeyChecking=accept-new
-)
-
-run_ssh() {
-  if ! timeout 20s ssh "${ssh_args[@]}" "$remote" "$@"; then
-    echo "ERROR: SSH command failed or timed out on benchmark host $remote" >&2
-    exit 1
-  fi
-}
-
-run_scp() {
-  if ! timeout 120s scp "${ssh_args[@]}" "$@"; then
-    echo "ERROR: SCP failed or timed out while copying artifacts to $remote" >&2
-    exit 1
-  fi
-}
-
-remote_tmp="$remote_dir/.upload-$(date +%s)-$$"
-
-run_ssh "rm -rf '$remote_tmp' && mkdir -p '$remote_tmp/config' '$remote_tmp/scripts'"
-run_scp \
-  "$repo_root/benchctl" \
+benchmark_work_dir="$(host_work_dir "$benchmark_host_ip")"
+run_host_command "$benchmark_host_ip" 20s "pkill -f '[a]valanchego' || true"
+copy_paths_to_host_dir "$benchmark_host_ip" "$benchmark_work_dir/bin" \
   "$repo_root/avalanchego" \
-  "$repo_root/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy" \
-  "$repo_root/.env" \
-  "$remote:$remote_tmp/"
-run_scp "$repo_root/config/"*.json "$remote:$remote_tmp/config/"
-run_scp "$repo_root/scripts/"*.sh "$remote:$remote_tmp/scripts/"
-run_ssh "
-  set -e
-  mkdir -p '$remote_dir/config' '$remote_dir/scripts'
-  mv -f '$remote_tmp/benchctl' '$remote_dir/benchctl'
-  mv -f '$remote_tmp/avalanchego' '$remote_dir/avalanchego'
-  mv -f '$remote_tmp/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy' '$remote_dir/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy'
-  mv -f '$remote_tmp/.env' '$remote_dir/.env'
-  mv -f '$remote_tmp/config/'*.json '$remote_dir/config/'
-  mv -f '$remote_tmp/scripts/'*.sh '$remote_dir/scripts/'
-  rm -rf '$remote_tmp'
-"
+  "$repo_root/bombard"
+copy_paths_to_host_dir "$benchmark_host_ip" "$benchmark_work_dir/plugins" "$repo_root/$plugin_id"
+run_host_command "$benchmark_host_ip" 20s "chmod +x '$benchmark_work_dir/bin/avalanchego' '$benchmark_work_dir/bin/bombard' '$benchmark_work_dir/plugins/$plugin_id'"
+echo "Copied benchmark assets to $benchmark_host_ip:$benchmark_work_dir"
 
-echo "Copied artifacts to benchmark host: $remote:$remote_dir"
+for node_host in "${node_hosts[@]}"; do
+  if [[ "$node_host" == "$benchmark_host_ip" ]] && ! is_local_host "$node_host"; then
+    echo "ERROR: BENCHMARK_HOST_IP must not also appear in DC node IPs: $node_host" >&2
+    exit 1
+  fi
+
+  node_work_dir="$(host_work_dir "$node_host")"
+  run_host_command "$node_host" 20s "pkill -f '[a]valanchego' || true"
+  copy_paths_to_host_dir "$node_host" "$node_work_dir/bin" "$repo_root/avalanchego"
+  copy_paths_to_host_dir "$node_host" "$node_work_dir/plugins" "$repo_root/$plugin_id"
+  run_host_command "$node_host" 20s "chmod +x '$node_work_dir/bin/avalanchego' '$node_work_dir/plugins/$plugin_id'"
+  echo "Copied node assets to $node_host:$node_work_dir"
+done

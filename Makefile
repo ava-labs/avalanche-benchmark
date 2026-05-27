@@ -5,12 +5,16 @@
 AVALANCHEGO_BRANCH = configure-genesis-acp226-excess
 SUBNET_EVM_ID      = srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
 PACKAGE            = avalanche-benchmark-runtime.tar.gz
+L1_SIGNER_KEYS     = $(wildcard staking/l1/*/signer.key)
 
-all: benchctl avalanchego $(SUBNET_EVM_ID) $(PACKAGE)
+all: create-l1 bombard avalanchego $(SUBNET_EVM_ID) $(PACKAGE)
 	@echo "All ready."
 
-benchctl: go.mod go.sum assets.go cmd/benchctl/*.go staking/pchain/1/signer.key staking/pchain/1/staker.crt staking/pchain/1/staker.key staking/pchain/2/signer.key staking/pchain/2/staker.crt staking/pchain/2/staker.key staking/l1/1/signer.key staking/l1/2/signer.key staking/l1/3/signer.key staking/l1/4/signer.key staking/l1/5/signer.key
-	go build -o benchctl ./cmd/benchctl
+create-l1: go.mod go.sum cmd/create-l1/*.go staking/node-ids.env $(L1_SIGNER_KEYS)
+	go build -o create-l1 ./cmd/create-l1
+
+bombard: go.mod go.sum cmd/bombard/*.go
+	go build -o bombard ./cmd/bombard
 
 avalanchego $(SUBNET_EVM_ID):
 	rm -rf /tmp/avalanchego-build-benchmark
@@ -22,10 +26,10 @@ avalanchego $(SUBNET_EVM_ID):
 	chmod +x avalanchego $(SUBNET_EVM_ID)
 	rm -rf /tmp/avalanchego-build-benchmark
 
-$(PACKAGE): benchctl avalanchego $(SUBNET_EVM_ID) config/genesis.json config/chain-config.json config/node-config.json .env.example scripts/00_copy-artifacts.sh scripts/01_start-pchain.sh scripts/02_create-l1.sh scripts/lib.sh
+$(PACKAGE): create-l1 bombard avalanchego $(SUBNET_EVM_ID) config/genesis.json config/chain-config.json config/node-config.json .env.example scripts/00_copy-artifacts.sh scripts/01_start-pchain.sh scripts/02_create-l1.sh scripts/03_start-l1.sh scripts/lib.sh staking/node-ids.env
 	rm -f $(PACKAGE)
-	tar -czf $(PACKAGE) benchctl avalanchego $(SUBNET_EVM_ID) config/genesis.json config/chain-config.json config/node-config.json .env.example scripts/00_copy-artifacts.sh scripts/01_start-pchain.sh scripts/02_create-l1.sh scripts/lib.sh
+	tar -czf $(PACKAGE) create-l1 bombard avalanchego $(SUBNET_EVM_ID) config .env.example scripts staking
 
 clean:
-	rm -f benchctl avalanchego $(SUBNET_EVM_ID) $(PACKAGE)
+	rm -f benchctl create-l1 bombard avalanchego $(SUBNET_EVM_ID) $(PACKAGE)
 	rm -rf runtime-data

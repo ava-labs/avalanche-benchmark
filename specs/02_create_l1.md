@@ -1,55 +1,56 @@
 # Create L1 Design Notes
 
-This spec captures the current decisions for the second `benchctl` command:
+This spec captures the target design for:
 
 ```sh
-./benchctl create-l1
+./scripts/02_create-l1.sh
 ```
 
-The goal is to create one Subnet-EVM L1 on the already-running local P-Chain and convert it to an L1 using committed benchmark validator identities. The command runs on the **benchmark host**.
+The goal is to create one Subnet-EVM L1 on the P-Chain running on the benchmark host and convert it to an L1 using committed benchmark validator identities.
 
 ## Re-Entry Notes For Future Agents
 
-`benchctl create-l1` and `scripts/02_create-l1.sh` are implemented. The command is intentionally not smoke-tested against a live P-Chain during normal verification because it creates a real new L1 each successful run.
+This spec supersedes the older model where L1 creation ran on the benchmark host against `127.0.0.1:9650`.
 
-The current Go module imports AvalancheGo wallet/platform packages and therefore uses Go `1.24.9`, matching the old `remote-failover` module requirement.
+Target model:
+
+- `create-l1` runs on the operator machine;
+- it talks to `http://<BENCHMARK_HOST_IP>:9650`;
+- it writes local `./runtime-data/l1.env`;
+- `scripts/02_create-l1.sh` is a local wrapper, not an SSH wrapper.
+
+If the code still hard-codes `http://127.0.0.1:9650`, refactor it before implementing later L1 node startup.
 
 ## Step Goals
 
-After reading this file, an agent should be able to implement:
+`create-l1` must:
 
-```sh
-./benchctl create-l1
-```
-
-The command must:
-
-- run from the runtime working directory on the benchmark host;
-- require `.env`;
+- run from the operator runtime working directory;
+- require local `.env`;
+- require `BENCHMARK_HOST_IP` in `.env`;
 - require `L1_VALIDATOR_COUNT` in `.env`;
-- fail immediately if `L1_VALIDATOR_COUNT` is missing, empty, not an integer, less than 1, or greater than 5;
+- fail immediately if `L1_VALIDATOR_COUNT` is missing, empty, not an integer, less than 1, or greater than the committed identity pool;
 - read the Subnet-EVM genesis from `./config/genesis.json`;
-- talk to the local P-Chain RPC at `http://127.0.0.1:9650`;
+- talk to the benchmark-host P-Chain RPC at `http://<BENCHMARK_HOST_IP>:9650`;
 - use the local-network EWOQ keychain to fund P-Chain transactions;
 - issue `CreateSubnetTx`;
 - re-sync the P-Chain wallet for the new subnet;
 - issue `CreateChainTx` with the committed Subnet-EVM VM ID;
 - create the conversion validator set from the first `L1_VALIDATOR_COUNT` committed L1 validator identities;
-- compute BLS proofs of possession locally from committed `staking/l1/<n>/signer.key` material embedded in `benchctl`;
+- compute BLS proofs of possession from committed `staking/l1/<n>/signer.key` material;
 - issue `ConvertSubnetToL1Tx`;
-- write `./runtime-data/l1.env`, overwriting any previous file;
+- write local `./runtime-data/l1.env`, overwriting any previous file;
 - print concise success output with subnet ID, chain ID, and validator count.
 
-`create-l1` intentionally creates a new L1 every time it runs. One P-Chain can host many experiment L1s while the operator edits `config/genesis.json` between runs. The latest run wins for downstream scripts through `runtime-data/l1.env`.
+`create-l1` intentionally creates a new L1 every time it runs. One P-Chain can host many experiment L1s while the operator edits `config/genesis.json` between runs. The latest run wins for downstream scripts through local `runtime-data/l1.env`.
 
 ## Non-Goals For This Step
 
-Do not implement these in this step:
+Do not implement:
 
-- starting remote L1 validator nodes;
-- starting RPC nodes;
-- copying chain config to remote nodes;
-- bombard;
+- starting L1 node processes;
+- copying chain config to node hosts;
+- `bombard`;
 - failover/key-swap;
 - runtime flags or CLI overrides;
 - L1 validator set mutation after conversion.
@@ -80,7 +81,7 @@ Do not append L1 output values to `.env`. `.env` is operator-supplied inventory/
 
 No.
 
-The operator may start one P-Chain and create many L1s while experimenting with `config/genesis.json`. Each call creates a fresh subnet, chain, and conversion transaction. The command overwrites `runtime-data/l1.env` with the latest IDs.
+Each call creates a fresh subnet, chain, and conversion transaction. The command overwrites `runtime-data/l1.env` with the latest IDs.
 
 ### Q2. How many validators should be registered during conversion?
 
@@ -98,6 +99,7 @@ staking/l1/2
 staking/l1/3
 staking/l1/4
 staking/l1/5
+...
 ```
 
 No flags. Missing or invalid `L1_VALIDATOR_COUNT` is a hard error.
@@ -106,9 +108,15 @@ No flags. Missing or invalid `L1_VALIDATOR_COUNT` is a hard error.
 
 No.
 
-Precompute the conversion validator PoPs locally from committed L1 signer keys. This is better logistically because L1 validator nodes do not need to be online before conversion.
+Compute conversion validator PoPs locally from committed L1 signer keys. L1 validator nodes do not need to be online before conversion.
 
-### Q4. What validator weights and balances should be used?
+### Q4. Should `create-l1` embed L1 keys or read files?
+
+Prefer reading committed key files from `staking/l1/<n>/signer.key` in the runtime package.
+
+Embedding is not required in the simplified model because the runtime package ships the committed test keys.
+
+### Q5. What validator weights and balances should be used?
 
 Use equal weights and equal balances for every registered L1 validator.
 
@@ -119,9 +127,7 @@ Weight:  units.Schmeckle
 Balance: units.Avax
 ```
 
-The specific values are not important for current benchmarks as long as all validators are equal.
-
-### Q5. What validator manager address should conversion use?
+### Q6. What validator manager address should conversion use?
 
 Use an empty validator-manager address:
 
@@ -131,30 +137,33 @@ Use an empty validator-manager address:
 
 This benchmark does not manage the chain validator set after conversion.
 
-### Q6. Which wrapper script should call this command?
+### Q7. Which wrapper script should call this command?
 
-Add:
+Use:
 
 ```sh
 ./scripts/02_create-l1.sh
 ```
 
-It should use the same local-or-SSH helper as `01_start-pchain.sh`:
+It should run locally:
 
-- if `BENCHMARK_HOST_IP` is `127.0.0.1`, `localhost`, or `::1`, run locally from the runtime working directory;
-- otherwise SSH to the benchmark host and run in `/data/avalanche-benchmark`.
+```sh
+./create-l1
+```
 
-### Q7. Should `create-l1` use `config/chain-config.json`?
+Do not SSH to the benchmark host for L1 creation. The benchmark-host P-Chain RPC is reachable through `BENCHMARK_HOST_IP:9650`.
+
+### Q8. Should `create-l1` use `config/chain-config.json`?
 
 No.
 
 `config/chain-config.json` is for later L1 node startup, where it must be placed under the chain-specific config path after the chain ID is known.
 
-### Q8. Should committed L1 key files be shipped separately?
+### Q9. Does `L1_VALIDATOR_COUNT` decide how many L1 node processes start?
 
 No.
 
-Like P-Chain keys, the L1 validator key material needed by `benchctl` should be embedded into the binary. Later node-start commands can write the selected L1 staking files into each validator node's default staking directory.
+It only controls the conversion validator set. Node process count comes from `DC1_NODE_IPS` / `DC2_NODE_IPS` in spec 0.
 
 ## Implementation Reference
 

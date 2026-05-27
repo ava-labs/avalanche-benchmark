@@ -28,9 +28,9 @@ locals {
   app_name    = "benchmark"
   operator_ip = "${chomp(data.http.my_ip.response_body)}/32"
 
+  benchmark_host_ip = aws_eip.benchmark_host.public_ip
   dc1_node_ips      = aws_eip.dc1_node[*].public_ip
   dc2_node_ips      = aws_eip.dc2_node[*].public_ip
-  benchmark_host_ip = local.dc1_node_ips[0]
 
   common_tags = {
     App = local.app_name
@@ -247,6 +247,15 @@ resource "aws_eip" "dc1_node" {
   })
 }
 
+resource "aws_eip" "benchmark_host" {
+  domain = "vpc"
+
+  tags = merge(local.common_tags, {
+    Name = "${var.prefix}-${local.app_name}-benchmark-host-eip"
+    Role = "benchmark-host"
+  })
+}
+
 resource "aws_eip" "dc2_node" {
   provider = aws.dc2
   count    = var.dc2_node_count
@@ -268,7 +277,7 @@ resource "aws_instance" "dc1_node" {
   iam_instance_profile        = aws_iam_instance_profile.ec2.name
   subnet_id                   = sort(data.aws_subnets.dc1_default.ids)[0]
   vpc_security_group_ids      = [aws_security_group.dc1.id]
-  associate_public_ip_address = false
+  associate_public_ip_address = true
 
   user_data = local.mount_nvme_userdata
 
@@ -292,6 +301,36 @@ resource "aws_instance" "dc1_node" {
   })
 }
 
+resource "aws_instance" "benchmark_host" {
+  ami                         = data.aws_ami.dc1_ubuntu.id
+  instance_type               = var.instance_type
+  key_name                    = var.key_name
+  iam_instance_profile        = aws_iam_instance_profile.ec2.name
+  subnet_id                   = sort(data.aws_subnets.dc1_default.ids)[0]
+  vpc_security_group_ids      = [aws_security_group.dc1.id]
+  associate_public_ip_address = true
+
+  user_data = local.mount_nvme_userdata
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+  }
+
+  root_block_device {
+    volume_size = 200
+    volume_type = "gp3"
+    iops        = 6000
+    throughput  = 500
+  }
+
+  tags = merge(local.common_tags, {
+    Name = "${var.prefix}-${local.app_name}-benchmark-host"
+    Role = "benchmark-host"
+  })
+}
+
 resource "aws_instance" "dc2_node" {
   provider = aws.dc2
   count    = var.dc2_node_count
@@ -302,7 +341,7 @@ resource "aws_instance" "dc2_node" {
   iam_instance_profile        = aws_iam_instance_profile.ec2.name
   subnet_id                   = sort(data.aws_subnets.dc2_default[0].ids)[0]
   vpc_security_group_ids      = [aws_security_group.dc2[0].id]
-  associate_public_ip_address = false
+  associate_public_ip_address = true
 
   user_data = local.mount_nvme_userdata
 
@@ -332,6 +371,11 @@ resource "aws_eip_association" "dc1_node" {
   instance_id   = aws_instance.dc1_node[count.index].id
 }
 
+resource "aws_eip_association" "benchmark_host" {
+  allocation_id = aws_eip.benchmark_host.id
+  instance_id   = aws_instance.benchmark_host.id
+}
+
 resource "aws_eip_association" "dc2_node" {
   provider      = aws.dc2
   count         = var.dc2_node_count
@@ -340,12 +384,12 @@ resource "aws_eip_association" "dc2_node" {
 }
 
 output "benchmark_host_ip" {
-  description = "Benchmark host IP. In Terraform AWS mode, this is always the first DC1 node."
+  description = "Dedicated benchmark host public EIP."
   value       = local.benchmark_host_ip
 }
 
 output "dc1_node_ips" {
-  description = "DC1 public EIPs, in node order. First node is the benchmark host by convention."
+  description = "DC1 L1 node host public EIPs, excluding the benchmark host."
   value       = local.dc1_node_ips
 }
 
@@ -362,5 +406,6 @@ SSH_KEY=${var.ssh_key_path}
 BENCHMARK_HOST_IP=${local.benchmark_host_ip}
 DC1_NODE_IPS=${join(",", local.dc1_node_ips)}
 DC2_NODE_IPS=${join(",", local.dc2_node_ips)}
+L1_VALIDATOR_COUNT=5
 EOT
 }

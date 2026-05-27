@@ -1,7 +1,9 @@
-.claude/
-.env
-runtime-data/
-benchctl
-avalanchego
-srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
-avalanche-benchmark-runtime.tar.gz
+/.claude/
+/.env
+/runtime-data/
+/benchctl
+/create-l1
+/bombard
+/avalanchego
+/srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
+/avalanche-benchmark-runtime.tar.gz

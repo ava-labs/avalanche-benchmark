@@ -26,13 +26,13 @@ variable "dc2_region" {
 }
 
 variable "dc1_node_count" {
-  description = "Number of identical DC1 machines. First DC1 machine is the benchmark host by convention."
+  description = "Number of DC1 L1 node machines, excluding the dedicated benchmark host."
   type        = number
-  default     = 7
+  default     = 6
 
   validation {
-    condition     = var.dc1_node_count >= 1
-    error_message = "dc1_node_count must be at least 1 because the first DC1 node is the benchmark host."
+    condition     = var.dc1_node_count >= 0
+    error_message = "dc1_node_count must be zero or greater."
   }
 }
 
