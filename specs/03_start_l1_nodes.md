@@ -18,6 +18,7 @@ Required local files:
 .env
 runtime-data/l1.env
 config/chain-config.json
+config/subnet-config.json (optional)
 staking/node-ids.env
 staking/l1/<n>/signer.key
 staking/l1/<n>/staker.crt
@@ -59,11 +60,12 @@ L1_CHAIN_ID=<chain id>
 - fail if there are zero node hosts;
 - fail if any node host lacks a committed `staking/l1/<index>` identity;
 - fail if `BENCHMARK_HOST_IP` appears in the node host list;
-- run `pkill -f '[a]valanchego' || true` on every node host;
-- wipe the node-host L1 runtime dir before starting;
+- stop AvalancheGo on every node host before starting any node again;
+- wipe every node-host L1 runtime dir before starting any node again;
 - copy the assigned committed L1 staking files into the node data dir default staking path;
 - copy the Subnet-EVM plugin into the node data dir default plugin path;
 - copy `config/chain-config.json` into the node data dir default chain config path for `L1_CHAIN_ID`;
+- if `config/subnet-config.json` exists, copy it into the node data dir default subnet config path for `L1_SUBNET_ID`;
 - start AvalancheGo with HTTP bound to `0.0.0.0`;
 - use default HTTP/staking ports;
 - bootstrap every L1 node from the two benchmark-host P-Chain nodes and every other L1 node;
@@ -121,6 +123,32 @@ AvalancheGo default chain config path under `--data-dir`:
 ```
 
 Do not pass chain config path flags unless the default path cannot work.
+
+## Subnet Config
+
+`config/subnet-config.json` is optional. If present, it must be copied into the default subnet config path for `L1_SUBNET_ID` under the node data dir.
+
+AvalancheGo default subnet config path under `--data-dir`:
+
+```text
+<data-dir>/configs/subnets/<L1_SUBNET_ID>.json
+```
+
+This is how benchmark scenarios set Snow parameters like alpha without changing Primary Network parameters or adding more AvalancheGo flags.
+
+Current alpha-11 benchmark config:
+
+```json
+{
+  "validatorOnly": false,
+  "snowParameters": {
+    "k": 20,
+    "alpha": 11
+  }
+}
+```
+
+Delete or move `config/subnet-config.json` before starting L1 nodes to use AvalancheGo's default subnet Snow parameters.
 
 ## Node Identity Assignment
 
@@ -182,6 +210,70 @@ Do not pass:
 
 Default ports are acceptable because there is one AvalancheGo process per node host.
 
+## Restart Phases
+
+The script must restart the cluster in phases:
+
+1. stop AvalancheGo on all node hosts;
+2. wipe and prepare `runtime-data/l1` on all node hosts;
+3. start AvalancheGo on all node hosts;
+4. wait for readiness on all node hosts.
+
+Do not interleave wipe/start one host at a time. If one host starts while another host still has old chain data, it can bootstrap the old state from that not-yet-wiped peer and the restart is not clean.
+
+## Single-Node Up/Down
+
+These scripts are for failover/recovery testing after `03_start-l1.sh` has already prepared and started the L1 node hosts:
+
+```sh
+./scripts/nodes/down.sh <node-number>
+./scripts/nodes/up.sh <node-number>
+```
+
+`<node-number>` is the 1-based global node index after concatenating `DC1_NODE_IPS`, then `DC2_NODE_IPS`. The numbering matches the identity assignment section:
+
+```text
+node 1 -> first DC1_NODE_IPS host -> staking/l1/1
+node 2 -> second DC1_NODE_IPS host -> staking/l1/2
+...
+```
+
+`scripts/nodes/down.sh` must:
+
+- require `.env`;
+- collect node hosts from `DC1_NODE_IPS` and `DC2_NODE_IPS`;
+- reject missing, non-integer, out-of-range, or extra arguments;
+- reject operating on `BENCHMARK_HOST_IP` if it appears in the node host list;
+- SSH/local execute only on the selected node host;
+- stop only the selected node host's AvalancheGo process with `pkill -TERM -x avalanchego`, then `pkill -KILL -x avalanchego`;
+- not wipe data;
+- not touch any other node host.
+
+`scripts/nodes/up.sh` must:
+
+- require `.env`;
+- require `runtime-data/l1.env`;
+- require `staking/node-ids.env`;
+- collect node hosts from `DC1_NODE_IPS` and `DC2_NODE_IPS`;
+- reject missing, non-integer, out-of-range, or extra arguments;
+- reject duplicate node hosts;
+- reject `BENCHMARK_HOST_IP` in the node host list;
+- SSH/local execute only on the selected node host;
+- verify the selected node host already has a prepared runtime dir from `03_start-l1.sh`;
+- verify the selected node host has `bin/avalanchego`;
+- verify the selected node host has staking files under `runtime-data/l1/staking`;
+- verify the selected node host has the Subnet-EVM plugin under `runtime-data/l1/plugins`;
+- verify the selected node host has the chain config under `runtime-data/l1/configs/chains/<L1_CHAIN_ID>/config.json`;
+- stop any stale AvalancheGo process on the selected node host before starting;
+- start AvalancheGo from the existing `runtime-data/l1` directory with the same core flags as `03_start-l1.sh`;
+- bootstrap from the two benchmark-host P-Chain nodes and every other L1 node;
+- wait up to 120 seconds for `info.getNodeID` and L1 chain RPC readiness;
+- not wipe data;
+- not copy keys, config, or plugins;
+- not touch any other node host.
+
+This intentionally makes "up/down" process-only. It simulates an outage and recovery of the same machine. Wipe-and-start simulates node replacement or recreation and must remain a separate explicit operation.
+
 ## Readiness
 
 Timeout: 120 seconds.
@@ -216,4 +308,5 @@ AvalancheGo source confirms:
 
 - `defaultPluginDir = "$AVALANCHEGO_DATA_DIR/plugins"`
 - `defaultChainConfigDir = "$AVALANCHEGO_DATA_DIR/configs/chains"`
+- `defaultSubnetConfigDir = "$AVALANCHEGO_DATA_DIR/configs/subnets"`
 - `$AVALANCHEGO_DATA_DIR` expands from the effective `--data-dir` value.

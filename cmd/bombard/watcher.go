@@ -31,12 +31,12 @@ func watchBlocks(ctx context.Context, rpcClient *rpc.Client, pollInterval time.D
 	var block blockInfo
 	err := rpcClient.CallContext(ctx, &block, "eth_getBlockByNumber", "latest", false)
 	if err != nil {
-		fmt.Printf("Watcher: failed to get latest block: %v\n", err)
+		progressf("Watcher: failed to get latest block: %v\n", err)
 		return
 	}
 	lastBlock := hexToUint64(block.Number)
 	lastTimestampMs := hexToUint64(block.TimestampMilliseconds)
-	fmt.Printf("Watcher starting at block %d\n", lastBlock)
+	progressf("Watcher starting at block %d\n", lastBlock)
 
 	// Rolling window for TPS calculation
 	deltaMs := make([]uint64, 0, windowSize)
@@ -111,10 +111,110 @@ func watchBlocks(ctx context.Context, rpcClient *rpc.Client, pollInterval time.D
 				avgTps = float64(totalTx) / (float64(totalMs) / 1000)
 			}
 
-			fmt.Printf("Block %d: %d txs, %.2fM / %.2fM gas, %dms, avg TPS: %.0f\n", n, txCount, gasUsed, gasLimit, delta, avgTps)
+			progressf("Block %d: %d txs, %.2fM / %.2fM gas, %dms, avg TPS: %.0f\n", n, txCount, gasUsed, gasLimit, delta, avgTps)
 		}
 
 		lastBlock = num
+		time.Sleep(pollInterval)
+	}
+}
+
+func watchBlocksManaged(ctx context.Context, endpoints *endpointManager, pollInterval time.Duration) {
+	var rpcClient *rpc.Client
+	var activeIndex = -1
+	var lastBlock uint64
+	var lastTimestampMs uint64
+	defer func() {
+		if rpcClient != nil {
+			rpcClient.Close()
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		nextIndex, _ := endpoints.activeSnapshot()
+		if nextIndex < 0 {
+			time.Sleep(pollInterval)
+			continue
+		}
+		if rpcClient == nil || nextIndex != activeIndex {
+			if rpcClient != nil {
+				rpcClient.Close()
+			}
+			activeIndex = nextIndex
+			wsURL := endpoints.activeWS()
+			var err error
+			rpcClient, err = rpc.DialWebsocket(ctx, wsURL, "")
+			if err != nil {
+				progressf("Watcher: failed to dial %s: %v\n", wsURL, err)
+				endpoints.markDown(activeIndex, err)
+				endpoints.failoverFrom(ctx, activeIndex)
+				rpcClient = nil
+				time.Sleep(time.Second)
+				continue
+			}
+
+			var block blockInfo
+			err = rpcClient.CallContext(ctx, &block, "eth_getBlockByNumber", "latest", false)
+			if err != nil {
+				progressf("Watcher: failed to get latest block: %v\n", err)
+				endpoints.markDown(activeIndex, err)
+				endpoints.failoverFrom(ctx, activeIndex)
+				rpcClient.Close()
+				rpcClient = nil
+				time.Sleep(time.Second)
+				continue
+			}
+			lastBlock = hexToUint64(block.Number)
+			lastTimestampMs = hexToUint64(block.TimestampMilliseconds)
+			progressf("Watcher starting at block %d\n", lastBlock)
+		}
+
+		var block blockInfo
+		err := rpcClient.CallContext(ctx, &block, "eth_getBlockByNumber", "latest", false)
+		observedAt := time.Now()
+		if err != nil {
+			endpoints.markDown(activeIndex, err)
+			endpoints.failoverFrom(ctx, activeIndex)
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		num := hexToUint64(block.Number)
+		if num <= lastBlock {
+			time.Sleep(pollInterval)
+			continue
+		}
+
+		for n := lastBlock + 1; n <= num; n++ {
+			var b blockInfo
+			if n < num {
+				err = rpcClient.CallContext(ctx, &b, "eth_getBlockByNumber", fmt.Sprintf("0x%x", n), false)
+				observedAt = time.Now()
+				if err != nil {
+					endpoints.markDown(activeIndex, err)
+					endpoints.failoverFrom(ctx, activeIndex)
+					break
+				}
+			} else {
+				b = block
+			}
+			timestampMs := hexToUint64(b.TimestampMilliseconds)
+			lastTimestampMs = timestampMs
+
+			blockTime := time.UnixMilli(int64(timestampMs))
+			for _, hs := range b.Transactions {
+				tracker.markLanded(common.HexToHash(hs), blockTime, observedAt)
+			}
+		}
+
+		lastBlock = num
+		_ = lastTimestampMs
 		time.Sleep(pollInterval)
 	}
 }
@@ -123,11 +223,11 @@ func watchAcceptedTransactions(ctx context.Context, rpcClient *rpc.Client) {
 	ch := make(chan common.Hash, 65536)
 	sub, err := rpcClient.EthSubscribe(ctx, ch, "newAcceptedTransactions")
 	if err != nil {
-		fmt.Printf("Accepted tx watcher: failed to subscribe: %v\n", err)
+		progressf("Accepted tx watcher: failed to subscribe: %v\n", err)
 		return
 	}
 	defer sub.Unsubscribe()
-	fmt.Println("Accepted tx watcher subscribed")
+	progressf("Accepted tx watcher subscribed\n")
 
 	for {
 		select {
@@ -135,7 +235,7 @@ func watchAcceptedTransactions(ctx context.Context, rpcClient *rpc.Client) {
 			return
 		case err := <-sub.Err():
 			if err != nil {
-				fmt.Printf("Accepted tx watcher: subscription error: %v\n", err)
+				progressf("Accepted tx watcher: subscription error: %v\n", err)
 			}
 			return
 		case h := <-ch:

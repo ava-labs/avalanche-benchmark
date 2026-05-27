@@ -5,11 +5,11 @@ import (
 	"crypto/ecdsa"
 	"flag"
 	"fmt"
+	"io"
 	"math"
 	"math/big"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -282,6 +282,106 @@ func (t *txTracker) printTableLoop(ctx context.Context) {
 	}
 }
 
+func (t *txTracker) printFinalTable(w io.Writer, tps float64) {
+	samples, timeouts := t.snapshotRing()
+
+	sendXs := make([]time.Duration, len(samples))
+	minedXs := make([]time.Duration, len(samples))
+	confirmXs := make([]time.Duration, len(samples))
+	totalXs := make([]time.Duration, len(samples))
+	for i, s := range samples {
+		sendXs[i] = s.send
+		minedXs[i] = s.mined
+		confirmXs[i] = s.confirm
+		totalXs[i] = s.total
+	}
+	sortedSend := append([]time.Duration(nil), sendXs...)
+	sortedMined := append([]time.Duration(nil), minedXs...)
+	sortedConfirm := append([]time.Duration(nil), confirmXs...)
+	sortedTotal := append([]time.Duration(nil), totalXs...)
+	sort.Slice(sortedSend, func(i, j int) bool { return sortedSend[i] < sortedSend[j] })
+	sort.Slice(sortedMined, func(i, j int) bool { return sortedMined[i] < sortedMined[j] })
+	sort.Slice(sortedConfirm, func(i, j int) bool { return sortedConfirm[i] < sortedConfirm[j] })
+	sort.Slice(sortedTotal, func(i, j int) bool { return sortedTotal[i] < sortedTotal[j] })
+
+	if len(samples) == 0 {
+		sortedSend = []time.Duration{0}
+		sortedMined = []time.Duration{0}
+		sortedConfirm = []time.Duration{0}
+		sortedTotal = []time.Duration{0}
+	}
+
+	meanSend := meanDur(sendXs)
+	meanMined := meanDur(minedXs)
+	meanConfirm := meanDur(confirmXs)
+	meanTotal := meanDur(totalXs)
+
+	fmt.Fprintln(w, "═══════════════════════════════════════════════════════════════════════════════════════════════════════════════")
+	fmt.Fprintf(w, "  PERCENTILES (last %d TXs, timeouts=%d, tps=%.0f)\n", len(samples), timeouts, tps)
+	fmt.Fprintln(w, "═══════════════════════════════════════════════════════════════════════════════════════════════════════════════")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "  ┌────────────────────┬───────────────┬───────────────┬───────────────┬───────────────┐")
+	fmt.Fprintln(w, "  │ Metric             │  Send         │  Mined        │  Confirm      │  Total        │")
+	fmt.Fprintln(w, "  ├────────────────────┼───────────────┼───────────────┼───────────────┼───────────────┤")
+	fmt.Fprintf(w, "  │ Min                │ %s │ %s │ %s │ %s │\n", fmtMs(sortedSend[0]), fmtMs(sortedMined[0]), fmtMs(sortedConfirm[0]), fmtMs(sortedTotal[0]))
+	fmt.Fprintf(w, "  │ Avg                │ %s │ %s │ %s │ %s │\n", fmtMs(meanSend), fmtMs(meanMined), fmtMs(meanConfirm), fmtMs(meanTotal))
+	fmt.Fprintf(w, "  │ Median (P50)       │ %s │ %s │ %s │ %s │\n", fmtMs(pctDur(sortedSend, 50)), fmtMs(pctDur(sortedMined, 50)), fmtMs(pctDur(sortedConfirm, 50)), fmtMs(pctDur(sortedTotal, 50)))
+	fmt.Fprintf(w, "  │ P75                │ %s │ %s │ %s │ %s │\n", fmtMs(pctDur(sortedSend, 75)), fmtMs(pctDur(sortedMined, 75)), fmtMs(pctDur(sortedConfirm, 75)), fmtMs(pctDur(sortedTotal, 75)))
+	fmt.Fprintf(w, "  │ P90                │ %s │ %s │ %s │ %s │\n", fmtMs(pctDur(sortedSend, 90)), fmtMs(pctDur(sortedMined, 90)), fmtMs(pctDur(sortedConfirm, 90)), fmtMs(pctDur(sortedTotal, 90)))
+	fmt.Fprintf(w, "  │ P95                │ %s │ %s │ %s │ %s │\n", fmtMs(pctDur(sortedSend, 95)), fmtMs(pctDur(sortedMined, 95)), fmtMs(pctDur(sortedConfirm, 95)), fmtMs(pctDur(sortedTotal, 95)))
+	fmt.Fprintf(w, "  │ P99                │ %s │ %s │ %s │ %s │\n", fmtMs(pctDur(sortedSend, 99)), fmtMs(pctDur(sortedMined, 99)), fmtMs(pctDur(sortedConfirm, 99)), fmtMs(pctDur(sortedTotal, 99)))
+	fmt.Fprintf(w, "  │ Max                │ %s │ %s │ %s │ %s │\n", fmtMs(sortedSend[len(sortedSend)-1]), fmtMs(sortedMined[len(sortedMined)-1]), fmtMs(sortedConfirm[len(sortedConfirm)-1]), fmtMs(sortedTotal[len(sortedTotal)-1]))
+	fmt.Fprintf(w, "  │ Std Dev            │ %s │ %s │ %s │ %s │\n", fmtMs(stddevDur(sendXs, meanSend)), fmtMs(stddevDur(minedXs, meanMined)), fmtMs(stddevDur(confirmXs, meanConfirm)), fmtMs(stddevDur(totalXs, meanTotal)))
+	fmt.Fprintln(w, "  └────────────────────┴───────────────┴───────────────┴───────────────┴───────────────┘")
+	fmt.Fprintln(w)
+}
+
+func (t *txTracker) timeoutLoop(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			t.expireTimeouts(time.Now())
+		}
+	}
+}
+
+func (t *txTracker) expireTimeouts(now time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for h, e := range t.pending {
+		if now.Sub(e.submittedAt) > timeoutSLA {
+			delete(t.pending, h)
+			t.timeouts++
+		}
+	}
+}
+
+func drainPending(ctx context.Context, maxWait time.Duration) {
+	deadline := time.NewTimer(maxWait)
+	defer deadline.Stop()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		_, _, _, pending := tracker.counts()
+		if pending == 0 {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline.C:
+			tracker.expireTimeouts(time.Now())
+			return
+		case <-ticker.C:
+			tracker.expireTimeouts(time.Now())
+		}
+	}
+}
+
 func (t *txTracker) reportLoop(ctx context.Context) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -352,222 +452,320 @@ const (
 
 var erc20Contract = common.HexToAddress("0xB0B5B0B5B0B5B0B5B0B5B0B5B0B5B0B5B0B5B0B5")
 
-func main() {
-	rpcURL := flag.String("rpc", "", "RPC URL for submitting txs (auto-detected from network_data/rpcs.txt if omitted)")
-	wsURL := flag.String("ws", "", "WebSocket URL for submitting txs (auto-derived from --rpc if omitted)")
-	watchRPCURL := flag.String("watch-rpc", "", "RPC URL for the block watcher (defaults to --rpc; set to a DC2 follower to measure what a failover-side client sees)")
-	watchWSURL := flag.String("watch-ws", "", "WebSocket URL for the block watcher (auto-derived from --watch-rpc if omitted)")
+const (
+	minTPS = 100
+	maxTPS = 6000
+)
+
+type runConfig struct {
+	rpcs        []string
+	oneShot     bool
+	duration    time.Duration
+	startingTPS int
+}
+
+var verboseOutput bool
+
+func progressf(format string, args ...any) {
+	if verboseOutput {
+		fmt.Fprintf(os.Stderr, format, args...)
+	}
+}
+
+func fatalf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format+"\n", args...)
+	os.Exit(1)
+}
+
+func parseConfig(args []string) (runConfig, error) {
+	fs := flag.NewFlagSet("bombard", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	rpcsRaw := fs.String("rpcs", "", "Comma-separated chain RPC URLs")
+	timeRaw := fs.String("time", "", "One-shot run duration, e.g. 40s, 2m, 1m30s")
+	startingTPS := fs.Int("starting-tps", defaultTps, "Starting target transactions per second")
+	if err := fs.Parse(args); err != nil {
+		return runConfig{}, err
+	}
+	if fs.NArg() != 0 {
+		return runConfig{}, fmt.Errorf("unexpected positional arguments: %s", strings.Join(fs.Args(), " "))
+	}
+
+	rpcs := parseRPCs(*rpcsRaw)
+	if len(rpcs) == 0 {
+		return runConfig{}, fmt.Errorf("--rpcs is required")
+	}
+	if *startingTPS < minTPS || *startingTPS > maxTPS {
+		return runConfig{}, fmt.Errorf("--starting-tps must be between %d and %d", minTPS, maxTPS)
+	}
+
+	var timeSet bool
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "time" {
+			timeSet = true
+		}
+	})
+
+	cfg := runConfig{
+		rpcs:        rpcs,
+		startingTPS: *startingTPS,
+	}
+	if !timeSet {
+		return cfg, nil
+	}
+	if strings.TrimSpace(*timeRaw) == "" {
+		return runConfig{}, fmt.Errorf("--time must be at least 1s when provided")
+	}
+	duration, err := time.ParseDuration(*timeRaw)
+	if err != nil {
+		return runConfig{}, fmt.Errorf("invalid --time: %w", err)
+	}
+	if duration < time.Second {
+		return runConfig{}, fmt.Errorf("--time must be at least 1s")
+	}
+	cfg.oneShot = true
+	cfg.duration = duration
+	return cfg, nil
+}
+
+func parseRPCs(raw string) []string {
+	parts := strings.Split(raw, ",")
+	rpcs := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			rpcs = append(rpcs, part)
+		}
+	}
+	return rpcs
+}
+
+func pickActiveRPC(ctx context.Context, rpcs []string) (int, *big.Int, error) {
+	for i, rpcURL := range rpcs {
+		chainID, err := probeChainID(ctx, rpcURL)
+		if err == nil {
+			return i, chainID, nil
+		}
+		progressf("RPC %s is down: %v\n", rpcURL, err)
+	}
+	return -1, nil, fmt.Errorf("no RPC URLs are alive")
+}
+
+func probeChainID(ctx context.Context, rpcURL string) (*big.Int, error) {
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	client, err := ethclient.DialContext(probeCtx, rpcURL)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+	return client.NetworkID(probeCtx)
+}
+
+type benchmarkRun struct {
+	endpoints *endpointManager
+	target    *targetRate
+
+	watcherCtx  context.Context
+	stopWatcher context.CancelFunc
+	stopWorkers context.CancelFunc
+	launchWG    sync.WaitGroup
+	workerWG    sync.WaitGroup
+	startedAt   time.Time
+}
+
+func startBenchmark(ctx context.Context, cfg runConfig, target *targetRate) (*benchmarkRun, error) {
 	defaultWSConns := runtime.NumCPU() * 10
-	wsConns := flag.Int("ws-conns", defaultWSConns, "Number of WebSocket connections in the worker pool")
-	watchInterval := flag.Duration("watch-interval", time.Millisecond, "How often the watcher polls for new blocks")
-	confirmSource := flag.String("confirm-source", "block", "Confirmation source: block or accepted-sub")
-	targetTps := flag.Int("tps", defaultTps, "Target transactions per second")
-	targetTxs := flag.Uint64("txs", 0, "Stop after at least this many landed transactions; 0 means run until interrupted")
-	runDuration := flag.Duration("duration", 0, "Stop after this duration; 0 means run until interrupted or --txs is reached")
-	erc20Mode := flag.Bool("erc20", false, "Send ERC20 transfers instead of native transfers")
-	dataDir := flag.String("data-dir", "./network_data", "Network data directory (for auto-detecting RPC URL)")
-	flag.Parse()
-	if *confirmSource != "block" && *confirmSource != "accepted-sub" {
-		fmt.Printf("Invalid --confirm-source=%q; expected block or accepted-sub\n", *confirmSource)
-		os.Exit(1)
+	activeIndex, chainID, err := pickActiveRPC(ctx, cfg.rpcs)
+	if err != nil {
+		return nil, err
 	}
 
-	if *rpcURL == "" {
-		rpcsFile := filepath.Join(*dataDir, "rpcs.txt")
-		data, err := os.ReadFile(rpcsFile)
-		if err != nil {
-			fmt.Printf("No --rpc provided and failed to read %s: %v\n", rpcsFile, err)
-			os.Exit(1)
+	endpoints, err := newEndpointManager(ctx, cfg.rpcs, activeIndex, defaultWSConns)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize active endpoint: %w", err)
+	}
+	cleanupEndpoints := true
+	defer func() {
+		if cleanupEndpoints {
+			endpoints.Close()
 		}
-		urls := strings.Split(strings.TrimSpace(string(data)), ",")
-		if len(urls) == 0 || urls[0] == "" {
-			fmt.Printf("No RPC URLs found in %s\n", rpcsFile)
-			os.Exit(1)
-		}
-		*rpcURL = urls[0]
-		fmt.Printf("Auto-detected RPC URL from %s\n", rpcsFile)
+	}()
+
+	activeWS := endpoints.activeWS()
+	progressf("Opened %d WS connections to %s\n", defaultWSConns, activeWS)
+
+	// Dedicated WS connection for setup work. Funding failure is a hard setup
+	// error; failover is only part of the measured runtime path.
+	setupRPC, err := rpc.DialWebsocket(ctx, activeWS, "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial setup WS: %w", err)
 	}
-	if *wsURL == "" {
-		*wsURL = httpRPCToWS(*rpcURL)
+	defer setupRPC.Close()
+	client := ethclient.NewClient(setupRPC)
+
+	progressf("Chain ID: %s\n", chainID)
+
+	privateKey, err := crypto.HexToECDSA(ewoqPrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load key: %w", err)
 	}
-	if *watchRPCURL == "" {
-		*watchRPCURL = *rpcURL
-	}
-	if *watchWSURL == "" {
-		*watchWSURL = httpRPCToWS(*watchRPCURL)
+	address := crypto.PubkeyToAddress(privateKey.PublicKey)
+	progressf("Address: %s\n", address.Hex())
+
+	signer := types.NewEIP155Signer(chainID)
+
+	workerKeys, workerAddrs, err := DeriveWorkerKeys(privateKey, numWorkers)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive worker keys: %w", err)
 	}
 
-	// Calculate batch size based on target TPS
-	batchSize := *targetTps * int(workerDelay/time.Millisecond) / 1000
+	progressf("\nChecking worker balances...\n")
+	if err := FundWorkers(ctx, client, privateKey, signer, workerAddrs); err != nil {
+		return nil, fmt.Errorf("failed to fund workers: %w", err)
+	}
+
+	progressf("Waiting for funding transactions...\n")
+	time.Sleep(3 * time.Second)
+
+	watcherCtx, stopWatcher := context.WithCancel(ctx)
+	go endpoints.probeLoop(watcherCtx)
+	go watchBlocksManaged(watcherCtx, endpoints, time.Millisecond)
+	go tracker.timeoutLoop(watcherCtx)
+
+	workerCtx, stopWorkers := context.WithCancel(ctx)
+	run := &benchmarkRun{
+		endpoints:   endpoints,
+		target:      target,
+		watcherCtx:  watcherCtx,
+		stopWatcher: stopWatcher,
+		stopWorkers: stopWorkers,
+		startedAt:   time.Now(),
+	}
+
+	progressf("\nStarting %d workers (native): starting TPS %d, staggered by %v\n\n", numWorkers, target.get(), workerDelay)
+
+	run.launchWG.Add(1)
+	go func() {
+		defer run.launchWG.Done()
+		for i := 0; i < numWorkers; i++ {
+			select {
+			case <-workerCtx.Done():
+				return
+			default:
+			}
+
+			workerID := i + 1
+			workerKey := workerKeys[i]
+			workerAddr := workerAddrs[i]
+			run.workerWG.Add(1)
+			go func() {
+				defer run.workerWG.Done()
+				runWorker(workerCtx, endpoints, target, workerKey, signer, workerAddr, workerID, false)
+			}()
+
+			if i < numWorkers-1 {
+				select {
+				case <-workerCtx.Done():
+					return
+				case <-time.After(workerDelay):
+				}
+			}
+		}
+	}()
+
+	cleanupEndpoints = false
+	return run, nil
+}
+
+func (r *benchmarkRun) stop(drain time.Duration) {
+	r.stopWorkers()
+	r.launchWG.Wait()
+	r.workerWG.Wait()
+	if drain > 0 {
+		drainPending(r.watcherCtx, drain)
+	}
+	r.stopWatcher()
+	r.endpoints.Close()
+}
+
+func main() {
+	cfg, err := parseConfig(os.Args[1:])
+	if err != nil {
+		fatalf("ERROR: %v", err)
+	}
+	verboseOutput = !cfg.oneShot
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	interrupted := make(chan os.Signal, 1)
 	go func() {
 		sig := <-sigCh
-		fmt.Printf("\nSignal %v received, stopping...\n", sig)
+		select {
+		case interrupted <- sig:
+		default:
+		}
 		cancel()
 	}()
 
-	if *runDuration > 0 {
-		go func() {
-			timer := time.NewTimer(*runDuration)
-			defer timer.Stop()
-			select {
-			case <-ctx.Done():
-			case <-timer.C:
-				fmt.Printf("Duration target reached: %s\n", runDuration.String())
-				cancel()
-			}
-		}()
-	}
-
-	if *targetTxs > 0 {
-		go func() {
-			ticker := time.NewTicker(time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-ticker.C:
-				}
-
-				_, landed, _, _ := tracker.counts()
-				if landed >= *targetTxs {
-					fmt.Printf("Transaction target reached: landed=%d target=%d\n", landed, *targetTxs)
-					cancel()
-					return
-				}
-			}
-		}()
-	}
-
-	// Worker pool: fixed number of WS connections, each held exclusively for
-	// one in-flight call at a time. Pool size is the rate limit; if the node
-	// slows down, response time grows, fewer requests get through, producers
-	// block — natural backpressure.
-	pool, err := newWSPool(ctx, *wsURL, *wsConns)
+	target := newTargetRate(cfg.startingTPS)
+	run, err := startBenchmark(ctx, cfg, target)
 	if err != nil {
-		fmt.Printf("Failed to open WS pool: %v\n", err)
-		os.Exit(1)
-	}
-	defer pool.Close()
-	fmt.Printf("Opened %d WS connections to %s\n", *wsConns, *wsURL)
-
-	// Dedicated WS connection for the block watcher (long-lived polling — must
-	// not steal capacity from the worker pool). May target a different node
-	// than the submission pool (e.g., bombard a DC1 validator while watching
-	// a DC2 follower) so we can measure end-to-end latency from the failover
-	// observer's vantage point.
-	watcherRPC, err := rpc.DialWebsocket(ctx, *watchWSURL, "")
-	if err != nil {
-		fmt.Printf("Failed to dial watcher WS: %v\n", err)
-		os.Exit(1)
-	}
-	defer watcherRPC.Close()
-	if *watchWSURL != *wsURL {
-		fmt.Printf("Watcher WS: %s (separate from submission pool)\n", *watchWSURL)
+		fatalf("ERROR: %v", err)
 	}
 
-	// Dedicated WS connection for one-shot setup work (chain ID, balances,
-	// funding). Low volume, short-lived; keeping it off the pool simplifies
-	// the funding code which still takes *ethclient.Client.
-	setupRPC, err := rpc.DialWebsocket(ctx, *wsURL, "")
-	if err != nil {
-		fmt.Printf("Failed to dial setup WS: %v\n", err)
-		os.Exit(1)
-	}
-	defer setupRPC.Close()
-	client := ethclient.NewClient(setupRPC)
-
-	// Get chain ID
-	chainID, err := client.NetworkID(ctx)
-	if err != nil {
-		fmt.Printf("Failed to get chain ID: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf("Chain ID: %s\n", chainID)
-
-	// Load key
-	privateKey, err := crypto.HexToECDSA(ewoqPrivateKey)
-	if err != nil {
-		fmt.Printf("Failed to load key: %v\n", err)
-		os.Exit(1)
-	}
-	address := crypto.PubkeyToAddress(privateKey.PublicKey)
-	fmt.Printf("Address: %s\n", address.Hex())
-
-	signer := types.NewEIP155Signer(chainID)
-
-	// Derive worker keys
-	workerKeys, workerAddrs, err := DeriveWorkerKeys(privateKey, numWorkers)
-	if err != nil {
-		fmt.Printf("Failed to derive worker keys: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Fund workers that need it
-	fmt.Println("\nChecking worker balances...")
-	err = FundWorkers(ctx, client, privateKey, signer, workerAddrs)
-	if err != nil {
-		fmt.Printf("Failed to fund workers: %v\n", err)
-		os.Exit(1)
-	}
-
-	// Fund workers with ERC20 tokens if in ERC20 mode
-	if *erc20Mode {
-		fmt.Println("Checking worker ERC20 balances...")
-		err = FundWorkersERC20(ctx, client, privateKey, signer, workerAddrs, erc20Contract)
-		if err != nil {
-			fmt.Printf("Failed to fund workers with ERC20: %v\n", err)
-			os.Exit(1)
+	if !cfg.oneShot {
+		if err := runTUI(ctx, cancel, run); err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: TUI failed: %v\n", err)
 		}
+		run.stop(0)
+		return
 	}
 
-	// Wait for funding txs to be mined
-	fmt.Println("Waiting for funding transactions...")
-	time.Sleep(3 * time.Second)
-
-	// Start block watcher and stats reporters
-	go watchBlocks(ctx, watcherRPC, *watchInterval, *confirmSource == "block")
-	if *confirmSource == "accepted-sub" {
-		go watchAcceptedTransactions(ctx, watcherRPC)
+	timer := time.NewTimer(cfg.duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
 	}
-	go tracker.reportLoop(ctx)
-	go tracker.printTableLoop(ctx)
+	run.stop(2 * time.Second)
 
-	mode := "native"
-	if *erc20Mode {
-		mode = "ERC20"
-	}
-	fmt.Printf("\nStarting %d workers (%s): send %d txs every %v, staggered by %v\n\n", numWorkers, mode, batchSize, tickerTime, workerDelay)
-
-	// Start workers with staggered delays
-	for i := 0; i < numWorkers; i++ {
-		workerID := i + 1
-		go runWorker(ctx, pool, workerKeys[i], signer, workerAddrs[i], workerID, batchSize, *erc20Mode)
-		if i < numWorkers-1 {
-			time.Sleep(workerDelay)
-		}
+	wasInterrupted := false
+	select {
+	case <-interrupted:
+		wasInterrupted = true
+	default:
 	}
 
-	// Wait for context cancellation
-	<-ctx.Done()
 	submitted, landed, timeouts, pending := tracker.counts()
+	elapsed := cfg.duration
+	if wasInterrupted {
+		elapsed = time.Since(run.startedAt)
+	}
+	tps := 0.0
+	if elapsed > 0 {
+		tps = float64(landed) / elapsed.Seconds()
+	}
+	tracker.printFinalTable(os.Stdout, tps)
 	fmt.Printf("FINAL submitted=%d landed=%d timeouts=%d pending=%d\n", submitted, landed, timeouts, pending)
+
+	if wasInterrupted {
+		os.Exit(130)
+	}
 }
 
 func runWorker(
 	ctx context.Context,
-	pool *wsPool,
+	endpoints *endpointManager,
+	target *targetRate,
 	privateKey *ecdsa.PrivateKey,
 	signer types.Signer,
 	address common.Address,
 	workerID int,
-	batchSize int,
 	erc20 bool,
 ) {
 	ticker := time.NewTicker(tickerTime)
@@ -576,47 +774,48 @@ func runWorker(
 	round := 0
 
 	// Run immediately on start
-	runWorkerRound(ctx, pool, privateKey, signer, address, workerID, &round, batchSize, erc20)
+	runWorkerRound(ctx, endpoints, target, privateKey, signer, address, workerID, &round, erc20)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			runWorkerRound(ctx, pool, privateKey, signer, address, workerID, &round, batchSize, erc20)
+			runWorkerRound(ctx, endpoints, target, privateKey, signer, address, workerID, &round, erc20)
 		}
 	}
 }
 
 func runWorkerRound(
 	ctx context.Context,
-	pool *wsPool,
+	endpoints *endpointManager,
+	target *targetRate,
 	privateKey *ecdsa.PrivateKey,
 	signer types.Signer,
 	address common.Address,
 	workerID int,
 	round *int,
-	batchSize int,
 	erc20 bool,
 ) {
 	*round++
+	batchSize := batchSizeForTPS(target.get())
 
 	// Fetch nonce through the pool
 	var nonce uint64
-	err := pool.Do(ctx, func(c *ethclient.Client) error {
+	err := endpoints.Do(ctx, func(c *ethclient.Client) error {
 		var inner error
 		nonce, inner = c.PendingNonceAt(ctx, address)
 		return inner
 	})
 	if err != nil {
-		fmt.Printf("[Worker %d] Failed to get nonce: %v\n", workerID, err)
+		progressf("[Worker %d] Failed to get nonce: %v\n", workerID, err)
 		return
 	}
 
 	// Send batch (to self)
-	_, errors := sendBatch(ctx, pool, privateKey, signer, address, address, nonce, batchSize, erc20, workerID)
+	_, errors := sendBatch(ctx, endpoints, privateKey, signer, address, address, nonce, batchSize, erc20, workerID)
 	if errors > 0 {
-		fmt.Printf("[Worker %d] Errors: %d\n", workerID, errors)
+		progressf("[Worker %d] Errors: %d\n", workerID, errors)
 	}
 }
 
@@ -631,7 +830,7 @@ func encodeERC20Transfer(to common.Address, amount *big.Int) []byte {
 
 func sendBatch(
 	ctx context.Context,
-	pool *wsPool,
+	endpoints *endpointManager,
 	privateKey *ecdsa.PrivateKey,
 	signer types.Signer,
 	from, to common.Address,
@@ -676,7 +875,7 @@ func sendBatch(
 		}
 
 		sendStart := time.Now()
-		err = pool.Do(ctx, func(c *ethclient.Client) error {
+		err = endpoints.Do(ctx, func(c *ethclient.Client) error {
 			return c.SendTransaction(ctx, signed)
 		})
 		if err != nil {

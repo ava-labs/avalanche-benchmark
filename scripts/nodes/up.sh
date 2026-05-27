@@ -2,17 +2,19 @@
 set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd -- "$script_dir/.." && pwd)"
+repo_root="$(cd -- "$script_dir/../.." && pwd)"
 
-remote_dir="/data/avalanche-benchmark"
-env_file="$repo_root/.env"
 l1_env_file="$repo_root/runtime-data/l1.env"
 node_ids_file="$repo_root/staking/node-ids.env"
-subnet_config_file="$repo_root/config/subnet-config.json"
 plugin_id="srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy"
 readiness_timeout=120
 
-source "$script_dir/lib.sh"
+source "$repo_root/scripts/lib.sh"
+
+usage() {
+  echo "usage: $0 <node-number>" >&2
+  exit 2
+}
 
 require_file() {
   local path="$1"
@@ -40,6 +42,16 @@ collect_node_hosts() {
     echo "ERROR: .env must set at least one node host in DC1_NODE_IPS or DC2_NODE_IPS" >&2
     exit 1
   fi
+}
+
+require_node_number() {
+  if [[ "$#" -ne 1 ]]; then
+    usage
+  fi
+  if [[ ! "$1" =~ ^[0-9]+$ || "$1" -lt 1 || "$1" -gt "${#node_hosts[@]}" ]]; then
+    usage
+  fi
+  node_number="$1"
 }
 
 join_by_comma() {
@@ -97,8 +109,7 @@ chain_rpc_ready() {
 
 wait_l1_ready() {
   local host="$1"
-  local index="$2"
-  local expected_node_id="$3"
+  local expected_node_id="$2"
   local info_rpc="http://$host:9650"
   local chain_rpc="$info_rpc/ext/bc/$l1_chain_id/rpc"
   local deadline=$((SECONDS + readiness_timeout))
@@ -115,22 +126,21 @@ wait_l1_ready() {
   if [[ -z "${actual_node_id:-}" ]]; then
     actual_node_id="<empty>"
   fi
-  echo "ERROR: l1-$index on $host not ready after ${readiness_timeout}s: nodeID=$actual_node_id expected=$expected_node_id chainRPC=$chain_rpc" >&2
+  echo "ERROR: l1-$node_number on $host not ready after ${readiness_timeout}s: nodeID=$actual_node_id expected=$expected_node_id chainRPC=$chain_rpc" >&2
   exit 1
 }
 
 require_env_file
 require_file "$l1_env_file"
 require_file "$node_ids_file"
-require_file "$repo_root/config/chain-config.json"
+collect_node_hosts
+require_node_number "$@"
 
 benchmark_host_ip="$(require_env BENCHMARK_HOST_IP)"
 pchain_1_node_id="$(require_env_from_file "$node_ids_file" PCHAIN_1_NODE_ID)"
 pchain_2_node_id="$(require_env_from_file "$node_ids_file" PCHAIN_2_NODE_ID)"
 l1_subnet_id="$(require_env_from_file "$l1_env_file" L1_SUBNET_ID)"
 l1_chain_id="$(require_env_from_file "$l1_env_file" L1_CHAIN_ID)"
-
-collect_node_hosts
 
 for node_host in "${node_hosts[@]}"; do
   if [[ "$node_host" == "$benchmark_host_ip" ]]; then
@@ -142,73 +152,31 @@ done
 l1_node_ids=()
 for i in "${!node_hosts[@]}"; do
   node_index=$((i + 1))
-  for file in signer.key staker.crt staker.key; do
-    require_file "$repo_root/staking/l1/$node_index/$file"
-  done
   l1_node_ids+=("$(require_env_from_file "$node_ids_file" "L1_${node_index}_NODE_ID")")
 done
 
-for i in "${!node_hosts[@]}"; do
-  node_index=$((i + 1))
-  node_host="${node_hosts[$i]}"
+node_index=$((node_number - 1))
+node_host="${node_hosts[$node_index]}"
+node_work_dir="$(host_work_dir "$node_host")"
+node_data_dir="$node_work_dir/runtime-data/l1"
+bootstrap_ips="$(bootstrap_ips_for_node "$node_index")"
+bootstrap_ids="$(bootstrap_ids_for_node "$node_index")"
+expected_node_id="${l1_node_ids[$node_index]}"
 
-  echo "Stopping l1-$node_index on $node_host"
-  run_host_script "$node_host" 20s <<SCRIPT
+echo "Starting l1-$node_number on $node_host"
+run_host_script "$node_host" 30s <<SCRIPT
 set -euo pipefail
+cd '$node_work_dir'
+test -x bin/avalanchego
+test -d runtime-data/l1
+test -f runtime-data/l1/staking/staker.crt
+test -f runtime-data/l1/staking/staker.key
+test -f runtime-data/l1/staking/signer.key
+test -x runtime-data/l1/plugins/$plugin_id
+test -f runtime-data/l1/configs/chains/$l1_chain_id/config.json
 pkill -TERM -x avalanchego || true
 sleep 2
 pkill -KILL -x avalanchego || true
-SCRIPT
-done
-
-for i in "${!node_hosts[@]}"; do
-  node_index=$((i + 1))
-  node_host="${node_hosts[$i]}"
-  node_work_dir="$(host_work_dir "$node_host")"
-  node_data_dir="$node_work_dir/runtime-data/l1"
-
-  echo "Preparing l1-$node_index on $node_host"
-  run_host_script "$node_host" 45s <<SCRIPT
-set -euo pipefail
-cd '$node_work_dir'
-rm -rf runtime-data/l1
-mkdir -p \
-  runtime-data/l1/staking \
-  runtime-data/l1/plugins \
-  runtime-data/l1/configs/chains/$l1_chain_id \
-  runtime-data/l1/configs/subnets
-test -x bin/avalanchego
-test -x plugins/$plugin_id
-cp -f plugins/$plugin_id runtime-data/l1/plugins/$plugin_id
-chmod +x runtime-data/l1/plugins/$plugin_id
-SCRIPT
-
-  copy_paths_to_host_dir "$node_host" "$node_data_dir/staking" \
-    "$repo_root/staking/l1/$node_index/signer.key" \
-    "$repo_root/staking/l1/$node_index/staker.crt" \
-    "$repo_root/staking/l1/$node_index/staker.key"
-
-  copy_paths_to_host_dir "$node_host" "$node_data_dir/configs/chains/$l1_chain_id" \
-    "$repo_root/config/chain-config.json"
-  run_host_command "$node_host" 20s "mv -f '$node_data_dir/configs/chains/$l1_chain_id/chain-config.json' '$node_data_dir/configs/chains/$l1_chain_id/config.json'"
-
-  if [[ -f "$subnet_config_file" ]]; then
-    copy_paths_to_host_dir "$node_host" "$node_data_dir/configs/subnets" "$subnet_config_file"
-    run_host_command "$node_host" 20s "mv -f '$node_data_dir/configs/subnets/subnet-config.json' '$node_data_dir/configs/subnets/$l1_subnet_id.json'"
-  fi
-done
-
-for i in "${!node_hosts[@]}"; do
-  node_index=$((i + 1))
-  node_host="${node_hosts[$i]}"
-  node_work_dir="$(host_work_dir "$node_host")"
-  node_data_dir="$node_work_dir/runtime-data/l1"
-  bootstrap_ips="$(bootstrap_ips_for_node "$i")"
-  bootstrap_ids="$(bootstrap_ids_for_node "$i")"
-
-  run_host_script "$node_host" 30s <<SCRIPT
-set -euo pipefail
-cd '$node_work_dir'
 nohup bin/avalanchego \
   --data-dir=runtime-data/l1 \
   --network-id=local \
@@ -220,22 +188,9 @@ nohup bin/avalanchego \
   --bootstrap-ids=$bootstrap_ids \
   > runtime-data/l1/stdout.log 2>&1 &
 disown || true
-echo "started l1-$node_index pid=\$! rpc=http://$node_host:9650 log=$node_data_dir/stdout.log"
+echo "started l1-$node_number pid=\$! rpc=http://$node_host:9650/ext/bc/$l1_chain_id/rpc log=$node_data_dir/stdout.log"
 SCRIPT
-done
 
-for i in "${!node_hosts[@]}"; do
-  node_index=$((i + 1))
-  node_host="${node_hosts[$i]}"
-  expected_node_id="$(require_env_from_file "$node_ids_file" "L1_${node_index}_NODE_ID")"
-  wait_l1_ready "$node_host" "$node_index" "$expected_node_id"
-done
+wait_l1_ready "$node_host" "$expected_node_id"
 
-echo "L1 nodes ready"
-for i in "${!node_hosts[@]}"; do
-  node_index=$((i + 1))
-  node_host="${node_hosts[$i]}"
-  node_work_dir="$(host_work_dir "$node_host")"
-  expected_node_id="$(require_env_from_file "$node_ids_file" "L1_${node_index}_NODE_ID")"
-  echo "  l1-$node_index RPC: http://$node_host:9650/ext/bc/$l1_chain_id/rpc expectedNodeID=$expected_node_id log=$node_work_dir/runtime-data/l1/stdout.log"
-done
+echo "l1-$node_number ready: http://$node_host:9650/ext/bc/$l1_chain_id/rpc"

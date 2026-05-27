@@ -26,7 +26,7 @@ avalanchego $(SUBNET_EVM_ID):
 	chmod +x avalanchego $(SUBNET_EVM_ID)
 	rm -rf /tmp/avalanchego-build-benchmark
 
-$(PACKAGE): create-l1 bombard avalanchego $(SUBNET_EVM_ID) config/genesis.json config/chain-config.json config/node-config.json .env.example scripts/00_copy-artifacts.sh scripts/01_start-pchain.sh scripts/02_create-l1.sh scripts/03_start-l1.sh scripts/lib.sh staking/node-ids.env
+$(PACKAGE): create-l1 bombard avalanchego $(SUBNET_EVM_ID) config/genesis.json config/chain-config.json config/node-config.json config/subnet-config.json .env.example scripts/00_copy-artifacts.sh scripts/01_start-pchain.sh scripts/02_create-l1.sh scripts/03_start-l1.sh scripts/04_bombard.sh scripts/lib.sh staking/node-ids.env
 	rm -f $(PACKAGE)
 	tar -czf $(PACKAGE) create-l1 bombard avalanchego $(SUBNET_EVM_ID) config .env.example scripts staking
 

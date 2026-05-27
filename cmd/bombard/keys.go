@@ -65,12 +65,12 @@ func FundWorkers(
 		threshold := new(big.Int).Mul(big.NewInt(fundThreshold), big.NewInt(1e18))
 		if balance.Cmp(threshold) < 0 {
 			toFund = append(toFund, i)
-			fmt.Printf("Worker %d needs funding (balance %.2f)\n", i+1, weiToEther(balance))
+			progressf("Worker %d needs funding (balance %.2f)\n", i+1, weiToEther(balance))
 		}
 	}
 
 	if len(toFund) == 0 {
-		fmt.Println("All workers have sufficient balance")
+		progressf("All workers have sufficient balance\n")
 		return nil
 	}
 
@@ -101,10 +101,10 @@ func FundWorkers(
 		if err != nil {
 			return fmt.Errorf("failed to send funding tx for worker %d: %w", workerIdx+1, err)
 		}
-		fmt.Printf("Funded worker %d with %d coins\n", workerIdx+1, fundAmount)
+		progressf("Funded worker %d with %d coins\n", workerIdx+1, fundAmount)
 	}
 
-	fmt.Printf("Sent %d funding transactions\n", len(toFund))
+	progressf("Sent %d funding transactions\n", len(toFund))
 	return nil
 }
 
@@ -168,12 +168,12 @@ func FundWorkersERC20(
 		balance := new(big.Int).SetBytes(result)
 		if balance.Cmp(threshold) < 0 {
 			toFund = append(toFund, i)
-			fmt.Printf("Worker %d needs ERC20 funding (balance %.2f)\n", i+1, weiToEther(balance))
+			progressf("Worker %d needs ERC20 funding (balance %.2f)\n", i+1, weiToEther(balance))
 		}
 	}
 
 	if len(toFund) == 0 {
-		fmt.Println("All workers have sufficient ERC20 balance")
+		progressf("All workers have sufficient ERC20 balance\n")
 		return nil
 	}
 
@@ -205,9 +205,9 @@ func FundWorkersERC20(
 		if err != nil {
 			return fmt.Errorf("failed to send ERC20 funding tx for worker %d: %w", workerIdx+1, err)
 		}
-		fmt.Printf("Funded worker %d with %d tokens\n", workerIdx+1, erc20FundAmount)
+		progressf("Funded worker %d with %d tokens\n", workerIdx+1, erc20FundAmount)
 	}
 
-	fmt.Printf("Sent %d ERC20 funding transactions\n", len(toFund))
+	progressf("Sent %d ERC20 funding transactions\n", len(toFund))
 	return nil
 }
