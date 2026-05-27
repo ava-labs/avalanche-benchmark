@@ -79,7 +79,7 @@ run_host_command "$benchmark_host_ip" 20s "chmod +x '$benchmark_work_dir/bin/ava
 echo "Copied benchmark assets to $benchmark_host_ip:$benchmark_work_dir"
 
 for node_host in "${node_hosts[@]}"; do
-  if [[ "$node_host" == "$benchmark_host_ip" ]] && ! is_local_host "$node_host"; then
+  if [[ "$node_host" == "$benchmark_host_ip" ]]; then
     echo "ERROR: BENCHMARK_HOST_IP must not also appear in DC node IPs: $node_host" >&2
     exit 1
   fi
