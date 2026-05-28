@@ -23,12 +23,6 @@ pkill -f "data-dir=data/rpc" 2>/dev/null || true
 # Fallback: kill any remaining avalanchego
 pkill -f avalanchego 2>/dev/null || true
 
-# Kill prometheus if running
-pkill -f prometheus 2>/dev/null || true
-
-# Kill grafana if running
-pkill -f grafana 2>/dev/null || true
-
 # Remove deployment directory
 rm -rf ~/avalanche-benchmark
 
@@ -42,8 +36,6 @@ done
 
 # Remove local state files
 rm -f "$SCRIPT_DIR/network.env"
-rm -f "$SCRIPT_DIR/prometheus.yml"
-rm -f "$SCRIPT_DIR/grafana-dashboards.yml"
 
 echo ""
 echo "=== Cleanup Complete ==="

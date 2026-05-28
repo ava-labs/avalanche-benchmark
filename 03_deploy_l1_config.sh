@@ -329,5 +329,4 @@ for NODE_IP in "${NODE_IPS_ARRAY[@]}"; do
     fi
 done
 echo ""
-echo "Next: Run ./04_monitoring.sh to deploy Prometheus + Grafana"
-echo "      Then ./05_benchmark.sh to start benchmarking"
+echo "Next: Run ./05_benchmark.sh to start benchmarking"

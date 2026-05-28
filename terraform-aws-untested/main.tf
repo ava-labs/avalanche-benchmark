@@ -74,16 +74,6 @@ resource "aws_security_group_rule" "operator_api_ingress" {
   description       = "Allow Avalanche API ingress from operator"
 }
 
-resource "aws_security_group_rule" "operator_prometheus_ingress" {
-  type              = "ingress"
-  from_port         = 9090
-  to_port           = 9090
-  protocol          = "tcp"
-  security_group_id = aws_security_group.app.id
-  cidr_blocks       = [local.operator_ip]
-  description       = "Allow Prometheus ingress from operator"
-}
-
 resource "aws_security_group_rule" "operator_egress" {
   type              = "egress"
   from_port         = 0
@@ -119,23 +109,6 @@ resource "aws_security_group_rule" "node_egress" {
   description       = "Allow egress to node ${count.index + 1}"
 }
 
-# Grafana - public access (node 1 only, applied via separate security group)
-resource "aws_security_group" "grafana" {
-  name        = "${local.prefix}-${local.app_name}-grafana"
-  description = "Grafana public access for node 1"
-
-  ingress {
-    from_port   = 3000
-    to_port     = 3000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "${local.prefix}-${local.app_name}-grafana"
-  }
-}
-
 # Ubuntu 24.04 AMI
 data "aws_ami" "ubuntu" {
   most_recent = true
@@ -156,11 +129,11 @@ data "aws_ami" "ubuntu" {
 resource "aws_instance" "node" {
   count = local.node_count
 
-  ami                  = data.aws_ami.ubuntu.id
-  instance_type        = "m6a.4xlarge" # 16 vCPU, 64GB RAM, AMD EPYC
-  key_name             = local.key_name
-  iam_instance_profile = aws_iam_instance_profile.ec2.name
-  security_groups      = count.index == 0 ? [aws_security_group.app.name, aws_security_group.grafana.name] : [aws_security_group.app.name]
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = "m6a.4xlarge" # 16 vCPU, 64GB RAM, AMD EPYC
+  key_name               = local.key_name
+  iam_instance_profile   = aws_iam_instance_profile.ec2.name
+  vpc_security_group_ids = [aws_security_group.app.id]
 
   metadata_options {
     http_endpoint               = "enabled"

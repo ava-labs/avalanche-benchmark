@@ -2,7 +2,6 @@
 /.env
 /network.env
 /network-info.env
-/prometheus.yml
 
 # Build/dependency artifacts
 /bin/
@@ -27,6 +26,7 @@ nohup.out
 **/.terraform/
 **/terraform.tfstate
 **/terraform.tfstate.*
+**/tfplan
 **/*.tfvars
 !**/*.tfvars.example
 **/config.yaml

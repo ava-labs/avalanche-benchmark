@@ -10,8 +10,6 @@ Open the following ports on your nodes:
 |------|---------|----------|-------|
 | 22 | SSH | Yes | Remote access |
 | 9650-9655 | AvalancheGo | Yes | HTTP API + Staking ports for primary/validator/RPC nodes |
-| 3000 | Grafana | Optional | Monitoring dashboard (first node only) |
-| 9090 | Prometheus | No | Grafana queries locally; only needed for external access |
 
 ## Setup
 
@@ -48,10 +46,7 @@ make          # builds avalanchego from configure-genesis-acp226-excess branch +
 # 3. Deploy chain config and start validator/RPC nodes
 ./03_deploy_l1_config.sh
 
-# 4. Deploy monitoring (optional, runs on first node)
-./04_monitoring.sh
-
-# 5. Run benchmark
+# 4. Run benchmark
 ./05_benchmark.sh
 
 # Cleanup
