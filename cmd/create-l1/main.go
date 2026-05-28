@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/pem"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,8 +11,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ava-labs/avalanchego/api/info"
 	"github.com/ava-labs/avalanchego/genesis"
 	"github.com/ava-labs/avalanchego/ids"
+	"github.com/ava-labs/avalanchego/staking"
 	"github.com/ava-labs/avalanchego/utils/constants"
 	"github.com/ava-labs/avalanchego/utils/crypto/bls/signer/localsigner"
 	"github.com/ava-labs/avalanchego/utils/units"
@@ -18,125 +22,100 @@ import (
 	"github.com/ava-labs/avalanchego/vms/platformvm/txs"
 	"github.com/ava-labs/avalanchego/vms/secp256k1fx"
 	"github.com/ava-labs/avalanchego/wallet/subnet/primary"
+	"github.com/joho/godotenv"
 )
 
-const (
-	envFile                     = ".env"
-	nodeIDsEnvFile              = "staking/node-ids.env"
-	genesisSource               = "config/genesis.json"
-	runtimeDataDir              = "runtime-data"
-	l1EnvPath                   = runtimeDataDir + "/l1.env"
-	l1ValidatorCountEnvKey      = "L1_VALIDATOR_COUNT"
-	l1ValidatorStartIndexEnvKey = "L1_VALIDATOR_START_INDEX"
-)
-
-type l1Result struct {
-	SubnetID            ids.ID
-	ChainID             ids.ID
-	ValidatorStartIndex int
-	ValidatorCount      int
-}
-
-type l1ValidatorIdentity struct {
-	Index     int
-	NodeID    string
-	SignerKey []byte
-}
+var outputFile string
 
 func main() {
-	if len(os.Args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: create-l1")
-		os.Exit(2)
-	}
+	flag.StringVar(&outputFile, "output", "", "Write SUBNET_ID and CHAIN_ID to this file")
+	flag.Parse()
 
-	if err := run(context.Background()); err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(ctx context.Context) error {
-	env, err := loadEnv(envFile)
-	if err != nil {
-		return err
-	}
-	nodeIDs, err := loadEnv(nodeIDsEnvFile)
-	if err != nil {
-		return err
+func run() error {
+	// Find .env file (look in script dir, then current dir)
+	envPath := findEnvFile()
+	if envPath == "" {
+		return fmt.Errorf(".env file not found")
 	}
 
-	validatorCount, err := requireEnvInt(env, l1ValidatorCountEnvKey)
-	if err != nil {
-		return err
-	}
-	if validatorCount < 1 {
-		return fmt.Errorf("%s must set %s to a positive integer, got %d", envFile, l1ValidatorCountEnvKey, validatorCount)
-	}
-	validatorStartIndex, err := l1ValidatorStartIndex(env)
-	if err != nil {
-		return err
-	}
-	identityPoolSize, err := committedL1IdentityPoolSize(nodeIDs)
-	if err != nil {
-		return err
-	}
-	validatorEndIndex := validatorStartIndex + validatorCount - 1
-	if validatorEndIndex > identityPoolSize {
-		return fmt.Errorf("%s must set %s + %s - 1 to at most the committed L1 identity pool size %d, got %d + %d - 1 = %d",
-			envFile,
-			l1ValidatorStartIndexEnvKey,
-			l1ValidatorCountEnvKey,
-			identityPoolSize,
-			validatorStartIndex,
-			validatorCount,
-			validatorEndIndex,
-		)
-	}
-	validators, err := buildL1Validators(validatorStartIndex, validatorCount, nodeIDs)
-	if err != nil {
-		return err
-	}
-	if err := requireFiles(genesisSource); err != nil {
-		return err
+	if err := godotenv.Load(envPath); err != nil {
+		return fmt.Errorf("failed to load .env: %w", err)
 	}
 
-	pchainAPI, err := pchainAPI(env)
-	if err != nil {
-		return err
-	}
-	genesisBytes, err := os.ReadFile(genesisSource)
-	if err != nil {
-		return fmt.Errorf("read %s: %w", genesisSource, err)
+	nodeIPsRaw := os.Getenv("NODE_IPS")
+	if nodeIPsRaw == "" {
+		return fmt.Errorf("NODE_IPS not set in .env (comma-separated list of IPs)")
 	}
 
-	fmt.Println("[create-l1] connecting wallet to", pchainAPI)
+	nodeIPs := strings.Split(nodeIPsRaw, ",")
+	for i := range nodeIPs {
+		nodeIPs[i] = strings.TrimSpace(nodeIPs[i])
+	}
+	if len(nodeIPs) == 0 || nodeIPs[0] == "" {
+		return fmt.Errorf("NODE_IPS must contain at least one IP")
+	}
+
+	nodeURIs := make([]string, len(nodeIPs))
+	for i, ip := range nodeIPs {
+		nodeURIs[i] = fmt.Sprintf("http://%s:9650", ip)
+	}
+
+	fmt.Println("=== Create L1 ===")
+	for i, uri := range nodeURIs {
+		fmt.Printf("  Node %d: %s\n", i+1, uri)
+	}
+	fmt.Println()
+
+	ctx := context.Background()
+
+	// Load genesis
+	genesisPath := findGenesisFile()
+	if genesisPath == "" {
+		return fmt.Errorf("genesis.json not found")
+	}
+	genesisBytes, err := os.ReadFile(genesisPath)
+	if err != nil {
+		return fmt.Errorf("failed to read genesis: %w", err)
+	}
+	fmt.Printf("Using genesis: %s\n", genesisPath)
+
+	// Create wallet using node1
+	fmt.Println("[1/4] Creating wallet...")
 	kc := secp256k1fx.NewKeychain(genesis.EWOQKey)
-	wallet, err := primary.MakePWallet(ctx, pchainAPI, kc, primary.WalletConfig{})
+	wallet, err := primary.MakePWallet(ctx, nodeURIs[0], kc, primary.WalletConfig{})
 	if err != nil {
-		return fmt.Errorf("connect wallet: %w", err)
+		return fmt.Errorf("failed to create wallet: %w", err)
 	}
 
+	// Create subnet
+	fmt.Println("[2/4] Creating subnet...")
 	owner := &secp256k1fx.OutputOwners{
 		Threshold: 1,
 		Addrs:     []ids.ShortID{genesis.EWOQKey.Address()},
 	}
-
-	fmt.Println("[create-l1] CreateSubnetTx ...")
 	subnetTx, err := wallet.IssueCreateSubnetTx(owner)
 	if err != nil {
-		return fmt.Errorf("create subnet: %w", err)
+		return fmt.Errorf("failed to create subnet: %w", err)
 	}
 	subnetID := subnetTx.ID()
-	fmt.Println("[create-l1]   subnet:", subnetID)
+	fmt.Printf("  Subnet ID: %s\n", subnetID)
 
-	wallet, err = primary.MakePWallet(ctx, pchainAPI, kc, primary.WalletConfig{
+	// Re-sync wallet with subnet
+	wallet, err = primary.MakePWallet(ctx, nodeURIs[0], kc, primary.WalletConfig{
 		SubnetIDs: []ids.ID{subnetID},
 	})
 	if err != nil {
-		return fmt.Errorf("re-sync wallet: %w", err)
+		return fmt.Errorf("failed to re-sync wallet: %w", err)
 	}
 
-	fmt.Println("[create-l1] CreateChainTx ...")
+	// Create chain
+	fmt.Println("[3/4] Creating chain...")
 	chainTx, err := wallet.IssueCreateChainTx(
 		subnetID,
 		genesisBytes,
@@ -145,66 +124,139 @@ func run(ctx context.Context) error {
 		"benchmarkchain",
 	)
 	if err != nil {
-		return fmt.Errorf("create chain: %w", err)
+		return fmt.Errorf("failed to create chain: %w", err)
 	}
 	chainID := chainTx.ID()
-	fmt.Println("[create-l1]   chain:", chainID)
+	fmt.Printf("  Chain ID: %s\n", chainID)
 
-	fmt.Println("[create-l1] ConvertSubnetToL1Tx ...")
-	_, err = wallet.IssueConvertSubnetToL1Tx(
-		subnetID,
-		chainID,
-		[]byte{},
-		validators,
-	)
+	fmt.Println("[4/4] Converting subnet to L1...")
+	validators, validatorStartIndex, validatorCount, err := buildValidators(ctx, nodeURIs, len(nodeIPs))
 	if err != nil {
-		return fmt.Errorf("convert subnet to L1: %w", err)
-	}
-
-	time.Sleep(5 * time.Second)
-
-	result := l1Result{
-		SubnetID:            subnetID,
-		ChainID:             chainID,
-		ValidatorStartIndex: validatorStartIndex,
-		ValidatorCount:      validatorCount,
-	}
-	if err := writeL1Env(result); err != nil {
 		return err
 	}
 
-	fmt.Println("L1 created")
-	fmt.Println("  subnet:", result.SubnetID)
-	fmt.Println("  chain: ", result.ChainID)
-	fmt.Printf("  validators: l1/%d..%d (%d total)\n",
-		result.ValidatorStartIndex,
-		result.ValidatorStartIndex+result.ValidatorCount-1,
-		result.ValidatorCount,
+	// Convert to L1
+	fmt.Println("  Issuing ConvertSubnetToL1Tx...")
+	_, err = wallet.IssueConvertSubnetToL1Tx(
+		subnetID,
+		chainID,
+		[]byte{}, // Empty manager address
+		validators,
 	)
-	fmt.Println("  env:", l1EnvPath)
+	if err != nil {
+		return fmt.Errorf("failed to convert subnet to L1: %w", err)
+	}
+
+	// Wait for chain
+	fmt.Println("  Waiting for chain to be ready...")
+	time.Sleep(5 * time.Second)
+
+	// Write output file if requested
+	if outputFile != "" {
+		content := fmt.Sprintf("SUBNET_ID=%s\nCHAIN_ID=%s\nL1_VALIDATOR_START_INDEX=%d\nL1_VALIDATOR_COUNT=%d\n", subnetID, chainID, validatorStartIndex, validatorCount)
+		if err := os.WriteFile(outputFile, []byte(content), 0644); err != nil {
+			return fmt.Errorf("failed to write output file: %w", err)
+		}
+	}
+
+	// Print results
+	fmt.Println()
+	fmt.Println("=== L1 Created Successfully ===")
+	fmt.Println()
+	fmt.Printf("Subnet ID: %s\n", subnetID)
+	fmt.Printf("Chain ID:  %s\n", chainID)
+	if validatorStartIndex > 0 {
+		fmt.Printf("Validators: staking/l1/%d..%d (%d total)\n", validatorStartIndex, validatorStartIndex+validatorCount-1, validatorCount)
+	} else {
+		fmt.Printf("Validators: live primary NodeIDs (%d total)\n", validatorCount)
+	}
+	fmt.Println()
+	fmt.Println("RPC Endpoints:")
+	for i, ip := range nodeIPs {
+		fmt.Printf("  Node %d: http://%s:9650/ext/bc/%s/rpc\n", i+1, ip, chainID)
+	}
+
 	return nil
 }
 
-func buildL1Validators(startIndex, count int, nodeIDs map[string]string) ([]*txs.ConvertSubnetToL1Validator, error) {
-	identities, err := loadL1ValidatorIdentities(startIndex, count, nodeIDs)
-	if err != nil {
-		return nil, err
+func buildValidators(ctx context.Context, nodeURIs []string, nodeCount int) ([]*txs.ConvertSubnetToL1Validator, int, int, error) {
+	if isTruthy(os.Getenv("SYBIL_ENABLED_LOCAL")) {
+		startIndex := envIntDefault("L1_VALIDATOR_START_INDEX", 6)
+		count := envIntDefault("L1_VALIDATOR_COUNT", 5)
+		validators, err := buildValidatorsFromCommittedKeys(startIndex, count)
+		return validators, startIndex, count, err
 	}
 
-	fmt.Printf("[create-l1] computing BLS PoPs for L1 validator identities %d..%d ...\n", startIndex, startIndex+count-1)
-	validators := make([]*txs.ConvertSubnetToL1Validator, 0, count)
-	for _, identity := range identities {
-		nodeID, err := ids.NodeIDFromString(identity.NodeID)
+	fmt.Println("  Gathering validator info from live primary nodes...")
+	validators := make([]*txs.ConvertSubnetToL1Validator, 0, len(nodeURIs))
+	for i, uri := range nodeURIs {
+		infoClient := info.NewClient(uri)
+		nodeID, nodePoP, err := infoClient.GetNodeID(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("parse L1 node ID %d (%q): %w", identity.Index, identity.NodeID, err)
+			return nil, 0, 0, fmt.Errorf("failed to get node %d info: %w", i+1, err)
 		}
-		sk, err := localsigner.FromBytes(identity.SignerKey)
+		fmt.Printf("    Node %d: %s\n", i+1, nodeID)
+
+		validators = append(validators, &txs.ConvertSubnetToL1Validator{
+			NodeID:  nodeID.Bytes(),
+			Weight:  units.Schmeckle,
+			Balance: units.Avax,
+			Signer:  *nodePoP,
+		})
+	}
+	return validators, 0, nodeCount, nil
+}
+
+func buildValidatorsFromCommittedKeys(startIndex, count int) ([]*txs.ConvertSubnetToL1Validator, error) {
+	if startIndex < 1 {
+		return nil, fmt.Errorf("L1_VALIDATOR_START_INDEX must be positive, got %d", startIndex)
+	}
+	if count < 1 {
+		return nil, fmt.Errorf("L1_VALIDATOR_COUNT must be positive, got %d", count)
+	}
+
+	stakingDir := findStakingDir()
+	if stakingDir == "" {
+		return nil, fmt.Errorf("staking directory not found")
+	}
+	nodeIDsPath := filepath.Join(stakingDir, "node-ids.env")
+	nodeIDs, err := godotenv.Read(nodeIDsPath)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", nodeIDsPath, err)
+	}
+
+	fmt.Printf("  Computing BLS PoPs for committed L1 identities %d..%d...\n", startIndex, startIndex+count-1)
+	validators := make([]*txs.ConvertSubnetToL1Validator, 0, count)
+	for i := startIndex; i < startIndex+count; i++ {
+		nodeIDStr := strings.TrimSpace(nodeIDs[fmt.Sprintf("L1_%d_NODE_ID", i)])
+		if nodeIDStr == "" {
+			return nil, fmt.Errorf("missing L1_%d_NODE_ID in %s", i, nodeIDsPath)
+		}
+		nodeID, err := ids.NodeIDFromString(nodeIDStr)
 		if err != nil {
-			return nil, fmt.Errorf("load L1 signer key %d: %w", identity.Index, err)
+			return nil, fmt.Errorf("parse L1_%d_NODE_ID %q: %w", i, nodeIDStr, err)
+		}
+
+		keyDir := filepath.Join(stakingDir, "l1", strconv.Itoa(i))
+		certNodeID, err := nodeIDFromCertFile(filepath.Join(keyDir, "staker.crt"))
+		if err != nil {
+			return nil, err
+		}
+		if certNodeID != nodeID {
+			return nil, fmt.Errorf("staking/l1/%d staker.crt yields %s but node-ids.env says %s", i, certNodeID, nodeID)
+		}
+
+		skBytes, err := os.ReadFile(filepath.Join(keyDir, "signer.key"))
+		if err != nil {
+			return nil, fmt.Errorf("read staking/l1/%d signer.key: %w", i, err)
+		}
+		sk, err := localsigner.FromBytes(skBytes)
+		if err != nil {
+			return nil, fmt.Errorf("load staking/l1/%d signer.key: %w", i, err)
 		}
 		pop, err := signer.NewProofOfPossession(sk)
 		if err != nil {
-			return nil, fmt.Errorf("build PoP for L1 validator %d: %w", identity.Index, err)
+			return nil, fmt.Errorf("build PoP for staking/l1/%d: %w", i, err)
 		}
 
 		validators = append(validators, &txs.ConvertSubnetToL1Validator{
@@ -213,104 +265,25 @@ func buildL1Validators(startIndex, count int, nodeIDs map[string]string) ([]*txs
 			Balance: units.Avax,
 			Signer:  *pop,
 		})
-		fmt.Printf("[create-l1]   l1-%d: %s\n", identity.Index, nodeID)
+		fmt.Printf("    staking/l1/%d: %s\n", i, nodeID)
 	}
 	return validators, nil
 }
 
-func committedL1IdentityPoolSize(nodeIDs map[string]string) (int, error) {
-	for i := 1; ; i++ {
-		if strings.TrimSpace(nodeIDs[fmt.Sprintf("L1_%d_NODE_ID", i)]) == "" {
-			return i - 1, nil
-		}
-
-		signerPath := filepath.Join("staking", "l1", strconv.Itoa(i), "signer.key")
-		info, err := os.Stat(signerPath)
-		if err == nil && !info.IsDir() {
-			continue
-		}
-		if err == nil {
-			return i - 1, nil
-		}
-		if os.IsNotExist(err) {
-			return i - 1, nil
-		}
-		return 0, fmt.Errorf("stat %s: %w", signerPath, err)
-	}
-}
-
-func loadL1ValidatorIdentities(startIndex, count int, nodeIDs map[string]string) ([]l1ValidatorIdentity, error) {
-	identities := make([]l1ValidatorIdentity, 0, count)
-	for i := startIndex; i < startIndex+count; i++ {
-		nodeID, err := requireEnv(nodeIDs, fmt.Sprintf("L1_%d_NODE_ID", i))
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", nodeIDsEnvFile, err)
-		}
-		signerPath := filepath.Join("staking", "l1", strconv.Itoa(i), "signer.key")
-		signerKey, err := os.ReadFile(signerPath)
-		if err != nil {
-			return nil, fmt.Errorf("read %s: %w", signerPath, err)
-		}
-		identities = append(identities, l1ValidatorIdentity{
-			Index:     i,
-			NodeID:    nodeID,
-			SignerKey: signerKey,
-		})
-	}
-	return identities, nil
-}
-
-func l1ValidatorStartIndex(env map[string]string) (int, error) {
-	value := strings.TrimSpace(env[l1ValidatorStartIndexEnvKey])
+func envIntDefault(name string, fallback int) int {
+	value := strings.TrimSpace(os.Getenv(name))
 	if value == "" {
-		if truthy(env["SYBIL_ENABLED_LOCAL"]) {
-			return 6, nil
-		}
-		return 1, nil
+		return fallback
 	}
 	parsed, err := strconv.Atoi(value)
 	if err != nil {
-		return 0, fmt.Errorf("%s must set %s to an integer: %w", envFile, l1ValidatorStartIndexEnvKey, err)
+		fmt.Fprintf(os.Stderr, "WARNING: ignoring invalid %s=%q: %v\n", name, value, err)
+		return fallback
 	}
-	if parsed < 1 {
-		return 0, fmt.Errorf("%s must set %s to a positive integer, got %d", envFile, l1ValidatorStartIndexEnvKey, parsed)
-	}
-	return parsed, nil
+	return parsed
 }
 
-func pchainAPI(env map[string]string) (string, error) {
-	if explicit := strings.TrimSpace(env["PCHAIN_RPC_URL"]); explicit != "" {
-		return explicit, nil
-	}
-	if truthy(env["SYBIL_ENABLED_LOCAL"]) {
-		firstDC1, err := firstCSVValue(env, "DC1_NODE_IPS")
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("http://%s:9650", firstDC1), nil
-	}
-	benchmarkHostIP, err := requireEnv(env, "BENCHMARK_HOST_IP")
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("http://%s:9650", benchmarkHostIP), nil
-}
-
-func firstCSVValue(env map[string]string, key string) (string, error) {
-	value, err := requireEnv(env, key)
-	if err != nil {
-		return "", err
-	}
-	for _, part := range strings.Split(value, ",") {
-		part = strings.TrimSpace(part)
-		if part != "" {
-			return part, nil
-		}
-	}
-	return "", fmt.Errorf("must set %s to at least one non-empty value", key)
-}
-
-func truthy(value string) bool {
+func isTruthy(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "1", "true", "yes", "y", "on":
 		return true
@@ -319,79 +292,72 @@ func truthy(value string) bool {
 	}
 }
 
-func loadEnv(path string) (map[string]string, error) {
-	data, err := os.ReadFile(path)
+func nodeIDFromCertFile(certPath string) (ids.NodeID, error) {
+	pemBytes, err := os.ReadFile(certPath)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
+		return ids.NodeID{}, err
 	}
-
-	env := make(map[string]string)
-	for lineNo, raw := range strings.Split(string(data), "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			return nil, fmt.Errorf("%s:%d: expected KEY=VALUE", path, lineNo+1)
-		}
-		key = strings.TrimSpace(key)
-		value = strings.TrimSpace(value)
-		value = strings.Trim(value, `"'`)
-		if key == "" {
-			return nil, fmt.Errorf("%s:%d: empty key", path, lineNo+1)
-		}
-		env[key] = value
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return ids.NodeID{}, fmt.Errorf("no PEM block in %s", certPath)
 	}
-	return env, nil
-}
-
-func requireEnv(env map[string]string, key string) (string, error) {
-	value := strings.TrimSpace(env[key])
-	if value == "" {
-		return "", fmt.Errorf("must set %s", key)
-	}
-	return value, nil
-}
-
-func requireEnvInt(env map[string]string, key string) (int, error) {
-	value, err := requireEnv(env, key)
+	cert, err := staking.ParseCertificate(block.Bytes)
 	if err != nil {
-		return 0, fmt.Errorf("%s: %w", envFile, err)
+		return ids.NodeID{}, fmt.Errorf("parse %s: %w", certPath, err)
 	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return 0, fmt.Errorf("%s must set %s to an integer: %w", envFile, key, err)
-	}
-	return parsed, nil
+	return ids.NodeIDFromCert(cert), nil
 }
 
-func requireFiles(paths ...string) error {
-	for _, path := range paths {
-		info, err := os.Stat(path)
-		if err != nil {
-			return fmt.Errorf("missing %s -- run `make` first or restore the runtime package", path)
-		}
-		if info.IsDir() {
-			return fmt.Errorf("%s is a directory, expected a file", path)
+func findEnvFile() string {
+	// Check executable directory
+	exe, err := os.Executable()
+	if err == nil {
+		exeDir := filepath.Dir(exe)
+		envPath := filepath.Join(exeDir, "..", ".env")
+		if _, err := os.Stat(envPath); err == nil {
+			return envPath
 		}
 	}
-	return nil
+
+	// Check current directory
+	if _, err := os.Stat(".env"); err == nil {
+		return ".env"
+	}
+
+	return ""
 }
 
-func writeL1Env(result l1Result) error {
-	if err := os.MkdirAll(filepath.Dir(l1EnvPath), 0o755); err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Dir(l1EnvPath), err)
+func findGenesisFile() string {
+	// Check executable directory
+	exe, err := os.Executable()
+	if err == nil {
+		exeDir := filepath.Dir(exe)
+		genesisPath := filepath.Join(exeDir, "..", "genesis.json")
+		if _, err := os.Stat(genesisPath); err == nil {
+			return genesisPath
+		}
 	}
-	data := fmt.Sprintf(
-		"# Generated by create-l1. Do not edit by hand; rerun ./scripts/02_create-l1.sh to replace.\nL1_SUBNET_ID=%s\nL1_CHAIN_ID=%s\nL1_VALIDATOR_START_INDEX=%d\nL1_VALIDATOR_COUNT=%d\n",
-		result.SubnetID,
-		result.ChainID,
-		result.ValidatorStartIndex,
-		result.ValidatorCount,
-	)
-	if err := os.WriteFile(l1EnvPath, []byte(data), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", l1EnvPath, err)
+
+	// Check current directory
+	if _, err := os.Stat("genesis.json"); err == nil {
+		return "genesis.json"
 	}
-	return nil
+
+	return ""
+}
+
+func findStakingDir() string {
+	exe, err := os.Executable()
+	if err == nil {
+		exeDir := filepath.Dir(exe)
+		stakingPath := filepath.Join(exeDir, "..", "staking")
+		if info, err := os.Stat(stakingPath); err == nil && info.IsDir() {
+			return stakingPath
+		}
+	}
+
+	if info, err := os.Stat("staking"); err == nil && info.IsDir() {
+		return "staking"
+	}
+	return ""
 }

@@ -1,9 +1,37 @@
-/.claude/
+# Local operator config and generated run metadata
 /.env
-/runtime-data/
-/benchctl
-/create-l1
-/bombard
+/network.env
+/network-info.env
+/prometheus.yml
+
+# Build/dependency artifacts
+/bin/
 /avalanchego
+/bombard
+/create-l1
 /srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
+
+# Deployment packages
+/remote-benchmark.tar.gz
+/avalanche-benchmark-multi.tar.gz
 /avalanche-benchmark-runtime.tar.gz
+
+# Runtime data and logs
+/data/
+/runtime-data/
+*.log
+*.out
+nohup.out
+
+# Terraform local state/config
+**/.terraform/
+**/terraform.tfstate
+**/terraform.tfstate.*
+**/*.tfvars
+!**/*.tfvars.example
+**/config.yaml
+!**/config.yaml.example
+
+# Local editor/agent state
+/.claude/
+.DS_Store

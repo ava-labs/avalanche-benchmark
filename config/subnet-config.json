@@ -1,7 +1,0 @@
-{
-  "validatorOnly": false,
-  "snowParameters": {
-    "k": 20,
-    "alpha": 11
-  }
-}

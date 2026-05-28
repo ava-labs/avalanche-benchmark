@@ -1,6 +1,0 @@
-prefix       = "your-name"
-key_name     = "your-aws-key-name"
-ssh_key_path = "/home/ubuntu/.ssh/your-private-key"
-
-dc1_node_count = 6
-dc2_node_count = 0

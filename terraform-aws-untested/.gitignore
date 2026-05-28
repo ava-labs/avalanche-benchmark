@@ -1,3 +1,5 @@
+config.yaml
+
 # Terraform
 .terraform/
 terraform.tfstate
