@@ -47,17 +47,20 @@ require_node_number "$@"
 
 benchmark_host_ip="$(require_env BENCHMARK_HOST_IP)"
 node_host="${node_hosts[$((node_number - 1))]}"
+node_work_dir="$(host_work_dir "$node_host")"
 
 if [[ "$node_host" == "$benchmark_host_ip" ]]; then
   echo "ERROR: refusing to operate on benchmark host listed as node $node_number: $node_host" >&2
   exit 1
 fi
 
-echo "Stopping l1-$node_number on $node_host"
-run_host_script "$node_host" 20s <<'SCRIPT'
+echo "Stopping and wiping l1-$node_number on $node_host"
+run_host_script "$node_host" 30s <<SCRIPT
 set -euo pipefail
+cd '$node_work_dir'
 pkill -TERM -f 'runtime-data/l1' || true
 sleep 2
 pkill -KILL -f 'runtime-data/l1' || true
+rm -rf runtime-data/l1
 SCRIPT
-echo "l1-$node_number stopped"
+echo "l1-$node_number stopped and wiped"

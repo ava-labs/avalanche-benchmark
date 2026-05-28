@@ -25,8 +25,8 @@ import (
 )
 
 const (
-	timeoutSLA     = 5 * time.Second
-	ringBufferSize = 100000
+	timeoutSLA    = 5 * time.Second
+	latencyWindow = 10 * time.Second
 )
 
 type pendingEntry struct {
@@ -37,13 +37,15 @@ type pendingEntry struct {
 	hasMined    bool
 	confirm     time.Duration
 	hasConfirm  bool
+	observedAt  time.Time
 }
 
 type latencySample struct {
-	send    time.Duration
-	mined   time.Duration
-	confirm time.Duration
-	total   time.Duration
+	observedAt time.Time
+	send       time.Duration
+	mined      time.Duration
+	confirm    time.Duration
+	total      time.Duration
 }
 
 type txTracker struct {
@@ -52,11 +54,11 @@ type txTracker struct {
 	submitted uint64
 	landed    uint64
 	timeouts  uint64
+	block     uint64
+	hasBlock  bool
 	latencies []time.Duration
 
-	ring     [ringBufferSize]latencySample
-	ringHead int
-	ringFull bool
+	recent []latencySample
 }
 
 func newTxTracker() *txTracker {
@@ -87,13 +89,13 @@ func (t *txTracker) markLanded(h common.Hash, blockTime time.Time, observedAt ti
 		confirm = 0
 	}
 	total := send + confirm
-	t.latencies = append(t.latencies, total)
-	t.ring[t.ringHead] = latencySample{send: send, mined: mined, confirm: confirm, total: total}
-	t.ringHead++
-	if t.ringHead >= ringBufferSize {
-		t.ringHead = 0
-		t.ringFull = true
-	}
+	t.recordLatencyLocked(latencySample{
+		observedAt: observedAt,
+		send:       send,
+		mined:      mined,
+		confirm:    confirm,
+		total:      total,
+	})
 	t.landed++
 	delete(t.pending, h)
 }
@@ -128,6 +130,7 @@ func (t *txTracker) markConfirmed(h common.Hash, observedAt time.Time) {
 	}
 	e.confirm = confirm
 	e.hasConfirm = true
+	e.observedAt = observedAt
 	t.pending[h] = e
 	t.maybeFinalizeLocked(h, e)
 }
@@ -138,30 +141,62 @@ func (t *txTracker) maybeFinalizeLocked(h common.Hash, e pendingEntry) {
 	}
 	send := e.submittedAt.Sub(e.sendStart)
 	total := send + e.confirm
-	t.latencies = append(t.latencies, total)
-	t.ring[t.ringHead] = latencySample{send: send, mined: e.mined, confirm: e.confirm, total: total}
-	t.ringHead++
-	if t.ringHead >= ringBufferSize {
-		t.ringHead = 0
-		t.ringFull = true
+	observedAt := e.observedAt
+	if observedAt.IsZero() {
+		observedAt = time.Now()
 	}
+	t.recordLatencyLocked(latencySample{
+		observedAt: observedAt,
+		send:       send,
+		mined:      e.mined,
+		confirm:    e.confirm,
+		total:      total,
+	})
 	t.landed++
 	delete(t.pending, h)
 }
 
-func (t *txTracker) snapshotRing() ([]latencySample, uint64) {
+func (t *txTracker) recordLatencyLocked(sample latencySample) {
+	t.latencies = append(t.latencies, sample.total)
+	t.recent = append(t.recent, sample)
+	t.pruneLatencyWindowLocked(sample.observedAt)
+}
+
+func (t *txTracker) pruneLatencyWindowLocked(now time.Time) {
+	cutoff := now.Add(-latencyWindow)
+	keepFrom := 0
+	for keepFrom < len(t.recent) && t.recent[keepFrom].observedAt.Before(cutoff) {
+		keepFrom++
+	}
+	if keepFrom == 0 {
+		return
+	}
+	copy(t.recent, t.recent[keepFrom:])
+	clear(t.recent[len(t.recent)-keepFrom:])
+	t.recent = t.recent[:len(t.recent)-keepFrom]
+}
+
+func (t *txTracker) snapshotLatencyWindow(now time.Time) ([]latencySample, uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.pruneLatencyWindowLocked(now)
 	timeouts := t.timeouts
-	if !t.ringFull {
-		out := make([]latencySample, t.ringHead)
-		copy(out, t.ring[:t.ringHead])
-		return out, timeouts
-	}
-	out := make([]latencySample, ringBufferSize)
-	copy(out, t.ring[t.ringHead:])
-	copy(out[ringBufferSize-t.ringHead:], t.ring[:t.ringHead])
+	out := make([]latencySample, len(t.recent))
+	copy(out, t.recent)
 	return out, timeouts
+}
+
+func (t *txTracker) setLatestBlock(block uint64) {
+	t.mu.Lock()
+	t.block = block
+	t.hasBlock = true
+	t.mu.Unlock()
+}
+
+func (t *txTracker) latestBlock() (uint64, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.block, t.hasBlock
 }
 
 func (t *txTracker) counts() (submitted, landed, timeouts uint64, pending int) {
@@ -219,7 +254,7 @@ func (t *txTracker) printTableLoop(ctx context.Context) {
 		case <-ticker.C:
 		}
 
-		samples, timeouts := t.snapshotRing()
+		samples, timeouts := t.snapshotLatencyWindow(time.Now())
 		if len(samples) == 0 {
 			continue
 		}
@@ -262,7 +297,7 @@ func (t *txTracker) printTableLoop(ctx context.Context) {
 
 		fmt.Println()
 		fmt.Println("═══════════════════════════════════════════════════════════════════════════════════════════════════════════════")
-		fmt.Printf("  PERCENTILES (last %d TXs, timeouts=%d, tps=%.0f)\n", len(samples), timeouts, tps)
+		fmt.Printf("  PERCENTILES (last 10s, samples=%d, timeouts=%d, tps=%.0f)\n", len(samples), timeouts, tps)
 		fmt.Println("═══════════════════════════════════════════════════════════════════════════════════════════════════════════════")
 		fmt.Println()
 		fmt.Println("  ┌────────────────────┬───────────────┬───────────────┬───────────────┬───────────────┐")
@@ -283,7 +318,7 @@ func (t *txTracker) printTableLoop(ctx context.Context) {
 }
 
 func (t *txTracker) printFinalTable(w io.Writer, tps float64) {
-	samples, timeouts := t.snapshotRing()
+	samples, timeouts := t.snapshotLatencyWindow(time.Now())
 
 	sendXs := make([]time.Duration, len(samples))
 	minedXs := make([]time.Duration, len(samples))
@@ -317,7 +352,7 @@ func (t *txTracker) printFinalTable(w io.Writer, tps float64) {
 	meanTotal := meanDur(totalXs)
 
 	fmt.Fprintln(w, "═══════════════════════════════════════════════════════════════════════════════════════════════════════════════")
-	fmt.Fprintf(w, "  PERCENTILES (last %d TXs, timeouts=%d, tps=%.0f)\n", len(samples), timeouts, tps)
+	fmt.Fprintf(w, "  PERCENTILES (last 10s, samples=%d, timeouts=%d, tps=%.0f)\n", len(samples), timeouts, tps)
 	fmt.Fprintln(w, "═══════════════════════════════════════════════════════════════════════════════════════════════════════════════")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "  ┌────────────────────┬───────────────┬───────────────┬───────────────┬───────────────┐")

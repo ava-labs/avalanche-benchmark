@@ -8,6 +8,14 @@ This spec captures the current target design for:
 
 The goal is to start two P-Chain/Primary Network AvalancheGo processes on the benchmark host. The operator machine runs the script and performs remote health checks over HTTP.
 
+When `.env` sets `SYBIL_ENABLED_LOCAL=1`, this script uses the sybil-enabled local-genesis path instead of the older benchmark-host two-process path:
+
+- start the first five `DC1_NODE_IPS` as the built-in local genesis Primary Network validators;
+- copy `staking/l1/1..5` into those five primary data dirs;
+- use ports `9650/9651` on each of those five node hosts;
+- do not pass `--sybil-protection-enabled=false`;
+- do not start the benchmark-host `staking/pchain/1..2` processes.
+
 ## Re-Entry Notes For Future Agents
 
 This spec supersedes the older `benchctl start-pchain` design. If the code still starts P-Chain through `benchctl`, refactor it to this script-driven model before building later steps.

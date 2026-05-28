@@ -406,6 +406,8 @@ SSH_KEY=${var.ssh_key_path}
 BENCHMARK_HOST_IP=${local.benchmark_host_ip}
 DC1_NODE_IPS=${join(",", local.dc1_node_ips)}
 DC2_NODE_IPS=${join(",", local.dc2_node_ips)}
+SYBIL_ENABLED_LOCAL=1
+L1_VALIDATOR_START_INDEX=6
 L1_VALIDATOR_COUNT=5
 EOT
 }

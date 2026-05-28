@@ -67,6 +67,111 @@ verify_node_id() {
   fi
 }
 
+start_sybil_enabled_local_primary() {
+  local -a primary_hosts
+  mapfile -t primary_hosts < <(csv_env_values DC1_NODE_IPS)
+
+  if [[ "${#primary_hosts[@]}" -lt 5 ]]; then
+    echo "ERROR: SYBIL_ENABLED_LOCAL needs at least 5 DC1_NODE_IPS for built-in local genesis primary validators" >&2
+    exit 1
+  fi
+
+  for i in 0 1 2 3 4; do
+    if [[ "${primary_hosts[$i]}" == "$benchmark_host_ip" ]]; then
+      echo "ERROR: BENCHMARK_HOST_IP must not be one of the first five DC1_NODE_IPS in SYBIL_ENABLED_LOCAL mode" >&2
+      exit 1
+    fi
+  done
+
+  echo "Starting sybil-enabled local Primary Network on first five DC1 nodes"
+
+  for i in 0 1 2 3 4; do
+    local node_number=$((i + 1))
+    local node_host="${primary_hosts[$i]}"
+    local expected_node_id
+    local node_work_dir
+    expected_node_id="$(require_env_from_file "$node_ids_file" "L1_${node_number}_NODE_ID")"
+    node_work_dir="$(host_work_dir "$node_host")"
+
+    echo "Preparing primary-$node_number on $node_host expectedNodeID=$expected_node_id"
+    run_host_script "$node_host" 45s <<SCRIPT
+set -euo pipefail
+cd '$node_work_dir'
+pkill -f '[a]valanchego' || true
+rm -rf runtime-data/primary runtime-data/l1
+mkdir -p runtime-data/primary/staking runtime-data/primary/plugins
+test -x bin/avalanchego
+test -x plugins/$plugin_id
+cp -f plugins/$plugin_id runtime-data/primary/plugins/$plugin_id
+chmod +x runtime-data/primary/plugins/$plugin_id
+SCRIPT
+
+    copy_paths_to_host_dir "$node_host" "$node_work_dir/runtime-data/primary/staking" \
+      "$repo_root/staking/l1/$node_number/signer.key" \
+      "$repo_root/staking/l1/$node_number/staker.crt" \
+      "$repo_root/staking/l1/$node_number/staker.key"
+    copy_paths_to_host_dir "$node_host" "$node_work_dir/runtime-data/primary" "$repo_root/config/node-config.json"
+  done
+
+  for i in 0 1 2 3 4; do
+    local node_number=$((i + 1))
+    local node_host="${primary_hosts[$i]}"
+    local node_work_dir
+    local bootstrap_ip=""
+    local bootstrap_id=""
+    node_work_dir="$(host_work_dir "$node_host")"
+
+    if [[ "$i" -ne 0 ]]; then
+      bootstrap_ip="${primary_hosts[0]}:9651"
+      bootstrap_id="$(require_env_from_file "$node_ids_file" L1_1_NODE_ID)"
+    fi
+
+    run_host_script "$node_host" 30s <<SCRIPT
+set -euo pipefail
+cd '$node_work_dir'
+nohup bin/avalanchego \
+  --data-dir=runtime-data/primary \
+  --config-file=runtime-data/primary/node-config.json \
+  --network-id=local \
+  --http-host=0.0.0.0 \
+  --http-port=9650 \
+  --staking-port=9651 \
+  --public-ip=$node_host \
+  --bootstrap-ips=$bootstrap_ip \
+  --bootstrap-ids=$bootstrap_id \
+  > runtime-data/primary/stdout.log 2>&1 &
+disown || true
+echo "started primary-$node_number pid=\$! rpc=http://$node_host:9650 log=$node_work_dir/runtime-data/primary/stdout.log"
+SCRIPT
+  done
+
+  for i in 0 1 2 3 4; do
+    local node_number=$((i + 1))
+    local node_host="${primary_hosts[$i]}"
+    local expected_node_id
+    local rpc="http://$node_host:9650"
+    expected_node_id="$(require_env_from_file "$node_ids_file" "L1_${node_number}_NODE_ID")"
+    wait_healthy "primary-$node_number" "$rpc"
+    verify_node_id "primary-$node_number" "$rpc" "$expected_node_id"
+  done
+
+  echo "Sybil-enabled local Primary Network ready"
+  for i in 0 1 2 3 4; do
+    local node_number=$((i + 1))
+    local node_host="${primary_hosts[$i]}"
+    local node_work_dir
+    local expected_node_id
+    node_work_dir="$(host_work_dir "$node_host")"
+    expected_node_id="$(require_env_from_file "$node_ids_file" "L1_${node_number}_NODE_ID")"
+    echo "  primary-$node_number RPC: http://$node_host:9650 expectedNodeID=$expected_node_id log=$node_work_dir/runtime-data/primary/stdout.log"
+  done
+}
+
+if truthy "$(read_env SYBIL_ENABLED_LOCAL)"; then
+  start_sybil_enabled_local_primary
+  exit 0
+fi
+
 run_host_script "$benchmark_host_ip" 45s <<SCRIPT
 set -euo pipefail
 cd '$benchmark_work_dir'

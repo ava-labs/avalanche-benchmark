@@ -26,6 +26,17 @@ read_env() {
   read_env_from_file "$env_file" "$1"
 }
 
+truthy() {
+  case "$1" in
+    1|true|TRUE|yes|YES|y|Y|on|ON)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 require_env_from_file() {
   local file="$1"
   local key="$2"

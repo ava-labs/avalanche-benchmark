@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestParseConfigOneShot(t *testing.T) {
 	cfg, err := parseConfig([]string{
@@ -54,5 +57,62 @@ func TestParseConfigRejectsOldFlags(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected old flags to fail")
+	}
+}
+
+func TestSnapshotLatencyWindowKeepsOnlyLastTenSeconds(t *testing.T) {
+	now := time.Unix(100, 0)
+	tracker := newTxTracker()
+
+	tracker.mu.Lock()
+	tracker.recordLatencyLocked(latencySample{
+		observedAt: now.Add(-11 * time.Second),
+		total:      time.Millisecond,
+	})
+	tracker.recordLatencyLocked(latencySample{
+		observedAt: now.Add(-9 * time.Second),
+		total:      2 * time.Millisecond,
+	})
+	tracker.mu.Unlock()
+
+	samples, _ := tracker.snapshotLatencyWindow(now)
+	if len(samples) != 1 {
+		t.Fatalf("expected 1 recent sample, got %d", len(samples))
+	}
+	if samples[0].total != 2*time.Millisecond {
+		t.Fatalf("unexpected sample total: %s", samples[0].total)
+	}
+}
+
+func TestLatencyWindowKeepsCutoffSample(t *testing.T) {
+	now := time.Unix(100, 0)
+	tracker := newTxTracker()
+
+	tracker.mu.Lock()
+	tracker.recordLatencyLocked(latencySample{
+		observedAt: now.Add(-latencyWindow),
+		total:      time.Millisecond,
+	})
+	tracker.mu.Unlock()
+
+	samples, _ := tracker.snapshotLatencyWindow(now)
+	if len(samples) != 1 {
+		t.Fatalf("expected cutoff sample to remain, got %d samples", len(samples))
+	}
+}
+
+func TestLatestBlockSnapshot(t *testing.T) {
+	tracker := newTxTracker()
+	if _, ok := tracker.latestBlock(); ok {
+		t.Fatal("expected latest block to start unset")
+	}
+
+	tracker.setLatestBlock(123)
+	block, ok := tracker.latestBlock()
+	if !ok {
+		t.Fatal("expected latest block to be set")
+	}
+	if block != 123 {
+		t.Fatalf("unexpected latest block: %d", block)
 	}
 }

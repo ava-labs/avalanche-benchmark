@@ -71,11 +71,15 @@ if [[ ! -f "$l1_env_file" ]]; then
 fi
 
 benchmark_host_ip="$(require_env BENCHMARK_HOST_IP)"
-validator_count="$(require_env L1_VALIDATOR_COUNT)"
+validator_count="$(require_env_from_file "$l1_env_file" L1_VALIDATOR_COUNT)"
 l1_chain_id="$(require_env_from_file "$l1_env_file" L1_CHAIN_ID)"
+l1_rpc_port=9650
+if truthy "$(read_env SYBIL_ENABLED_LOCAL)"; then
+  l1_rpc_port=9652
+fi
 
 if ! [[ "$validator_count" =~ ^[0-9]+$ ]] || [[ "$validator_count" -lt 1 ]]; then
-  echo "ERROR: L1_VALIDATOR_COUNT must be a positive integer" >&2
+  echo "ERROR: $l1_env_file must set L1_VALIDATOR_COUNT to a positive integer" >&2
   exit 1
 fi
 
@@ -87,11 +91,19 @@ fi
 
 rpcs=()
 for ((i = 0; i < validator_count; i++)); do
-  rpcs+=("http://${node_hosts[$i]}:9650/ext/bc/${l1_chain_id}/rpc")
+  rpcs+=("http://${node_hosts[$i]}:${l1_rpc_port}/ext/bc/${l1_chain_id}/rpc")
 done
 rpcs_csv="$(IFS=,; printf '%s' "${rpcs[*]}")"
 
 benchmark_work_dir="$(host_work_dir "$benchmark_host_ip")"
+bombard_binary="$repo_root/bombard"
+if [[ ! -f "$bombard_binary" ]]; then
+  echo "ERROR: missing $bombard_binary; run 'make bombard' first" >&2
+  exit 1
+fi
+copy_paths_to_host_dir "$benchmark_host_ip" "$benchmark_work_dir/bin" "$bombard_binary"
+run_host_command "$benchmark_host_ip" 10s "chmod +x '$benchmark_work_dir/bin/bombard'"
+
 cmd_args=("--rpcs=$rpcs_csv" "${bombard_args[@]}")
 
 if is_local_host "$benchmark_host_ip"; then

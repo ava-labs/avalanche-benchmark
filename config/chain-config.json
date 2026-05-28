@@ -5,6 +5,8 @@
     "tx-pool-account-queue": 2048,
     "tx-pool-global-queue": 512000,
     "tx-pool-lifetime": "1m",
+    "state-sync-enabled": true,
+    "state-sync-min-blocks": 1000,
     "trie-clean-cache": 10240,
     "trie-dirty-cache": 10240,
     "snapshot-cache": 10240

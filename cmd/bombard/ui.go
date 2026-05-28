@@ -27,6 +27,9 @@ type uiModel struct {
 
 	p50MS int
 	p95MS int
+
+	latestBlock    uint64
+	hasLatestBlock bool
 }
 
 func runTUI(ctx context.Context, cancel context.CancelFunc, run *benchmarkRun) error {
@@ -103,11 +106,12 @@ func (m uiModel) updateStats() uiModel {
 	m.lastLanded = landed
 
 	m.p50MS, m.p95MS = currentLatencyPercentilesMS()
+	m.latestBlock, m.hasLatestBlock = tracker.latestBlock()
 	return m
 }
 
 func currentLatencyPercentilesMS() (int, int) {
-	samples, _ := tracker.snapshotRing()
+	samples, _ := tracker.snapshotLatencyWindow(time.Now())
 	if len(samples) == 0 {
 		return 0, 0
 	}
@@ -125,7 +129,12 @@ func (m uiModel) View() string {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "TPS: actual %-6d target %-6d [-] [+]\n", m.actualTPS, m.run.target.get())
-	fmt.Fprintf(&b, "Latency: P50 %-6d ms  P95 %-6d ms\n", m.p50MS, m.p95MS)
+	if m.hasLatestBlock {
+		fmt.Fprintf(&b, "Block: latest %-10d\n", m.latestBlock)
+	} else {
+		fmt.Fprintf(&b, "Block: latest -\n")
+	}
+	fmt.Fprintf(&b, "Latency(10s): P50 %-6d ms  P95 %-6d ms\n", m.p50MS, m.p95MS)
 	fmt.Fprintf(&b, "Counts: sub %-7d land %-7d to %-5d pend %-5d fail %-3d\n\n",
 		submitted, landed, timeouts, pending, failovers)
 

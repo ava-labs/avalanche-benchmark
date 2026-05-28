@@ -1,6 +1,6 @@
 # Bombard Design Notes
 
-This spec captures the target design for:
+This spec captures the current implemented design for:
 
 ```sh
 ./bombard
@@ -9,6 +9,10 @@ This spec captures the target design for:
 The goal is to drive sustained transaction load against the L1 from the
 benchmark host and report throughput and latency, in either continuous TUI
 mode or one-shot timed mode.
+
+The native-transfer benchmark below is V1 and should stay aligned with the
+current implementation. Future contract/state workload ideas belong in the
+V2 draft section near the end of this file until they are implemented.
 
 ## Re-Entry Notes For Future Agents
 
@@ -44,8 +48,9 @@ The core that must be preserved verbatim:
   endpoint health probes.
 - Confirmation discovery: scan incoming blocks for our submitted tx hashes;
   do not poll `eth_getTransactionReceipt` per tx.
-- Per-tx latency tracking: send / mined / confirm / total durations, fixed-
-  size ring buffer of latency samples, percentile computation over the ring.
+- Per-tx latency tracking: send / mined / confirm / total durations. This
+  project reports percentiles over the last 10 seconds of landed txs, not a
+  fixed-size sample ring.
 
 The default starting TPS target stays `4000`, but benchmark runs must be
 able to start at another TPS target.
@@ -94,13 +99,14 @@ The default WebSocket connection count stays `runtime.NumCPU() * 10`.
 
 - [x] Replace old flags with `--rpcs`, `--time`, and `--starting-tps`.
 - [x] Preserve the native-transfer core: deterministic workers, funding,
-  fixed worker pool shape, WS submission pool, block scanning, and latency
-  ring.
+  fixed worker pool shape, WS submission pool, block scanning, and per-tx
+  latency tracking.
 - [x] Implement one-shot mode first: quiet setup, timed run, final
   percentile table plus counters only.
 - [x] Add active URL probing and failover across the `--rpcs` list.
 - [x] Add continuous TUI mode with node status, plain TPS/latency text, and
   live target TPS controls.
+- [x] Add latest observed block number to the continuous TUI.
 - [x] Add/update operator wrapper script that reads `.env` and
   `runtime-data/l1.env`, assembles RPC URLs, and SSH-runs bombard on the
   benchmark host.
@@ -147,9 +153,9 @@ Final verification:
   second RPC passed: one-shot still produced `submitted=100 landed=100
   timeouts=0 pending=0`.
 
-## Non-Goals
+## V1 Non-Goals
 
-`bombard` must NOT:
+In the current native-transfer V1, `bombard` must NOT:
 
 - read `.env`, `runtime-data/l1.env`, `staking/node-ids.env`, or any other
   inventory file;
@@ -161,7 +167,7 @@ Final verification:
 - accept any flag other than `--rpcs`, `--time`, and `--starting-tps`;
 - expose `--ws-conns`, `--erc20`, `--confirm-source`, `--watch-rpc`,
   `--data-dir`, or any other override that the reference implementation has.
-- send ERC20 transfers; this version sends native transfers only.
+- send ERC20-like contract calls; V1 sends native transfers only.
 
 Anything that lives outside the core load-generation algorithm and outside
 the display layer is the operator's responsibility, not bombard's.
@@ -234,7 +240,8 @@ add charts, sparklines, or box drawing for the live view. Layout:
 
 ```
 TPS: actual <current> target <target> [-] [+]
-Latency: P50 <n> ms  P95 <n> ms
+Block: latest <n>
+Latency(10s): P50 <n> ms  P95 <n> ms
 Counts: sub <n> land <n> to <n> pend <n> fail <n>
 
 > node 1  <host:port>  active alive
@@ -259,9 +266,12 @@ Specifics:
 - the TUI may also handle mouse clicks on `[-]` and `[+]` when the
   operator's terminal and SSH session support mouse events, but keyboard
   controls are the required path;
-- P50 and P95 are computed over the same latency ring the reference
-  implementation already maintains, refreshed each second;
-- changing target TPS in continuous mode does not reset the latency ring;
+- P50 and P95 are computed over landed txs observed in the last 10 seconds,
+  refreshed each second;
+- changing target TPS in continuous mode does not reset or clear the
+  10-second latency window;
+- latest block is the newest block number observed by the block watcher on
+  the active endpoint, or `-` before the watcher has a block;
 - Node list shows every URL from `--rpcs` in input order. `host:port` is
   extracted from each URL. The `>` cursor marks `activeIndex`. Status is
   `alive` or `DOWN` from the per-second probe;
@@ -280,7 +290,7 @@ reference percentile table:
 
 ```
 ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
-  PERCENTILES (last <N> TXs, timeouts=<N>, tps=<N>)
+  PERCENTILES (last 10s, samples=<N>, timeouts=<N>, tps=<N>)
 ═══════════════════════════════════════════════════════════════════════════════════════════════════════════════
 
   ┌────────────────────┬───────────────┬───────────────┬───────────────┬───────────────┐
@@ -344,7 +354,9 @@ not part of this spec, but its contract is:
 - read `runtime-data/l1.env` for `L1_CHAIN_ID`;
 - assemble the chain RPC URLs the operator wants to load against (typically
   the first `L1_VALIDATOR_COUNT` hosts);
-- SSH to the benchmark host and exec `./bombard --rpcs=... [--time=...] [--starting-tps=...]`.
+- copy the local `./bombard` binary to `<benchmark-work-dir>/bin/bombard`
+  before every run, without stopping any AvalancheGo process;
+- SSH to the benchmark host and exec `./bin/bombard --rpcs=... [--time=...] [--starting-tps=...]`.
 
 The wrapper is the only piece that knows the inventory. `bombard` itself
 never learns it.
@@ -454,7 +466,7 @@ line.
 
 ### Q20. Does changing target TPS reset latency history?
 
-No. Preserve the latency ring across target TPS changes.
+No. Preserve the current 10-second latency window across target TPS changes.
 
 ### Q21. Does one-shot mode have different failover mechanics?
 
@@ -498,3 +510,117 @@ No. If `--time` is present, it must be at least `1s`.
 
 Use Go duration syntax only, such as `40s`, `2m`, or `1m30s`. Bare
 numbers are invalid.
+
+## V2 Draft: Contract State Workload
+
+This section is a draft for the next benchmark workload. It is not the
+current implementation and should not be treated as a contract until the
+code catches up.
+
+V2 keeps the same operator shape where possible: one benchmark binary,
+continuous mode without `--time`, one-shot mode with `--time`, active-node
+failover, 10-second latency percentiles, and the same TUI/result style.
+
+### Workload / Contract Model
+
+V2 adds an ERC-20-ish contract workload that is closer to the expected
+client application than native transfers.
+
+The model:
+
+- one real EOA sender submits all benchmark transactions;
+- the contract keeps balances for many logical subaccounts;
+- each transaction emits a transfer-like event and mutates contract state;
+- the contract has an account cap, for example `5_000_000_000`;
+- the cap is an addressable-account limit, not a claim that all accounts
+  already exist in state;
+- state grows naturally as new logical accounts are touched;
+- after the benchmark reaches the cap, it continues overwriting existing
+  accounts instead of growing forever.
+
+The preferred benchmark call is parameterless:
+
+```solidity
+function simulateTransaction() external
+```
+
+The contract owns the account-selection logic. On every call, it advances
+an internal counter, derives the logical account from the counter modulo
+the account cap, updates that account's balance, and emits the event. The
+benchmark tool should not generate per-account calldata.
+
+The account key should not be a simple sequential storage key if we are
+trying to approximate a large sparse account set. A reasonable default is
+to hash the counter and truncate to an address-shaped key, for example:
+
+```solidity
+uint256 i = txIndex++;
+address account = address(uint160(uint256(keccak256(abi.encode(i % accountCap)))));
+```
+
+Sequential account IDs are acceptable only if we deliberately want the
+cheapest possible storage-key path. The default should favor more realistic
+state access even though hashing adds EVM cost.
+
+Important wording:
+
+- `--accounts=5000000000` means "the workload can address and cycle through
+  up to 5B logical subaccounts";
+- it does not mean the chain starts with 5B materialized storage entries;
+- reported results must distinguish account cap from materialized state
+  reached during the run.
+
+### Benchmark Tool Changes
+
+V2 should add the smallest possible interface change: one workload/state
+knob.
+
+Tentative V2 flags:
+
+```text
+--rpcs=URL1,URL2,...
+--time=DURATION
+--starting-tps=N
+--accounts=N
+```
+
+`--accounts` is required for the contract workload and means:
+
+- grow state by touching new logical accounts until `N` accounts have been
+  touched;
+- after that, keep submitting the same parameterless contract call and let
+  the contract wrap around inside the `N` account set;
+- do not add separate flags for working-set size, growth ratio, or account
+  selection unless a later benchmark result proves they are needed.
+
+Open implementation decision:
+
+- either V2 contract mode is the only mode once implemented, replacing
+  native transfers;
+- or V2 keeps native transfers as the default and introduces an explicit
+  workload selector.
+
+The second option adds another flag and conflicts with the current
+"smallest interface" preference, so replacing native transfers may be the
+cleaner path if the client workload becomes the only workload that matters.
+
+The benchmark mechanics should otherwise remain familiar:
+
+- same single active RPC/WebSocket endpoint behavior;
+- same failover behavior;
+- same one-shot and continuous modes;
+- same 10-second rolling latency window;
+- same latest-block display;
+- same target TPS adjustment rules.
+
+The main implementation differences are:
+
+- deploy or locate the benchmark contract before measured load starts;
+- fund only the single sender, not 1800 worker wallets, unless workers are
+  still needed only as local pacing goroutines behind a single sender;
+- manage one sender nonce stream correctly under high TPS;
+- submit contract-call transactions to `simulateTransaction()`;
+- track total calls submitted/landed/timeouts/pending the same way V1
+  tracks native transactions;
+- report the configured account cap and, if available, the contract's
+  current touched-account count in the TUI and one-shot result.

@@ -21,18 +21,20 @@ import (
 )
 
 const (
-	envFile           = ".env"
-	nodeIDsEnvFile    = "staking/node-ids.env"
-	genesisSource     = "config/genesis.json"
-	runtimeDataDir    = "runtime-data"
-	l1EnvPath         = runtimeDataDir + "/l1.env"
-	l1ValidatorEnvKey = "L1_VALIDATOR_COUNT"
+	envFile                     = ".env"
+	nodeIDsEnvFile              = "staking/node-ids.env"
+	genesisSource               = "config/genesis.json"
+	runtimeDataDir              = "runtime-data"
+	l1EnvPath                   = runtimeDataDir + "/l1.env"
+	l1ValidatorCountEnvKey      = "L1_VALIDATOR_COUNT"
+	l1ValidatorStartIndexEnvKey = "L1_VALIDATOR_START_INDEX"
 )
 
 type l1Result struct {
-	SubnetID       ids.ID
-	ChainID        ids.ID
-	ValidatorCount int
+	SubnetID            ids.ID
+	ChainID             ids.ID
+	ValidatorStartIndex int
+	ValidatorCount      int
 }
 
 type l1ValidatorIdentity struct {
@@ -63,25 +65,34 @@ func run(ctx context.Context) error {
 		return err
 	}
 
-	benchmarkHostIP, err := requireEnv(env, "BENCHMARK_HOST_IP")
-	if err != nil {
-		return err
-	}
-	validatorCount, err := requireEnvInt(env, l1ValidatorEnvKey)
+	validatorCount, err := requireEnvInt(env, l1ValidatorCountEnvKey)
 	if err != nil {
 		return err
 	}
 	if validatorCount < 1 {
-		return fmt.Errorf("%s must set %s to a positive integer, got %d", envFile, l1ValidatorEnvKey, validatorCount)
+		return fmt.Errorf("%s must set %s to a positive integer, got %d", envFile, l1ValidatorCountEnvKey, validatorCount)
+	}
+	validatorStartIndex, err := l1ValidatorStartIndex(env)
+	if err != nil {
+		return err
 	}
 	identityPoolSize, err := committedL1IdentityPoolSize(nodeIDs)
 	if err != nil {
 		return err
 	}
-	if validatorCount > identityPoolSize {
-		return fmt.Errorf("%s must set %s to at most the committed L1 identity pool size %d, got %d", envFile, l1ValidatorEnvKey, identityPoolSize, validatorCount)
+	validatorEndIndex := validatorStartIndex + validatorCount - 1
+	if validatorEndIndex > identityPoolSize {
+		return fmt.Errorf("%s must set %s + %s - 1 to at most the committed L1 identity pool size %d, got %d + %d - 1 = %d",
+			envFile,
+			l1ValidatorStartIndexEnvKey,
+			l1ValidatorCountEnvKey,
+			identityPoolSize,
+			validatorStartIndex,
+			validatorCount,
+			validatorEndIndex,
+		)
 	}
-	validators, err := buildL1Validators(validatorCount, nodeIDs)
+	validators, err := buildL1Validators(validatorStartIndex, validatorCount, nodeIDs)
 	if err != nil {
 		return err
 	}
@@ -89,7 +100,10 @@ func run(ctx context.Context) error {
 		return err
 	}
 
-	pchainAPI := fmt.Sprintf("http://%s:9650", benchmarkHostIP)
+	pchainAPI, err := pchainAPI(env)
+	if err != nil {
+		return err
+	}
 	genesisBytes, err := os.ReadFile(genesisSource)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", genesisSource, err)
@@ -150,9 +164,10 @@ func run(ctx context.Context) error {
 	time.Sleep(5 * time.Second)
 
 	result := l1Result{
-		SubnetID:       subnetID,
-		ChainID:        chainID,
-		ValidatorCount: validatorCount,
+		SubnetID:            subnetID,
+		ChainID:             chainID,
+		ValidatorStartIndex: validatorStartIndex,
+		ValidatorCount:      validatorCount,
 	}
 	if err := writeL1Env(result); err != nil {
 		return err
@@ -161,18 +176,22 @@ func run(ctx context.Context) error {
 	fmt.Println("L1 created")
 	fmt.Println("  subnet:", result.SubnetID)
 	fmt.Println("  chain: ", result.ChainID)
-	fmt.Println("  validators:", result.ValidatorCount)
+	fmt.Printf("  validators: l1/%d..%d (%d total)\n",
+		result.ValidatorStartIndex,
+		result.ValidatorStartIndex+result.ValidatorCount-1,
+		result.ValidatorCount,
+	)
 	fmt.Println("  env:", l1EnvPath)
 	return nil
 }
 
-func buildL1Validators(count int, nodeIDs map[string]string) ([]*txs.ConvertSubnetToL1Validator, error) {
-	identities, err := loadL1ValidatorIdentities(count, nodeIDs)
+func buildL1Validators(startIndex, count int, nodeIDs map[string]string) ([]*txs.ConvertSubnetToL1Validator, error) {
+	identities, err := loadL1ValidatorIdentities(startIndex, count, nodeIDs)
 	if err != nil {
 		return nil, err
 	}
 
-	fmt.Printf("[create-l1] computing BLS PoPs for %d L1 validator(s) ...\n", count)
+	fmt.Printf("[create-l1] computing BLS PoPs for L1 validator identities %d..%d ...\n", startIndex, startIndex+count-1)
 	validators := make([]*txs.ConvertSubnetToL1Validator, 0, count)
 	for _, identity := range identities {
 		nodeID, err := ids.NodeIDFromString(identity.NodeID)
@@ -220,9 +239,9 @@ func committedL1IdentityPoolSize(nodeIDs map[string]string) (int, error) {
 	}
 }
 
-func loadL1ValidatorIdentities(count int, nodeIDs map[string]string) ([]l1ValidatorIdentity, error) {
+func loadL1ValidatorIdentities(startIndex, count int, nodeIDs map[string]string) ([]l1ValidatorIdentity, error) {
 	identities := make([]l1ValidatorIdentity, 0, count)
-	for i := 1; i <= count; i++ {
+	for i := startIndex; i < startIndex+count; i++ {
 		nodeID, err := requireEnv(nodeIDs, fmt.Sprintf("L1_%d_NODE_ID", i))
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", nodeIDsEnvFile, err)
@@ -239,6 +258,65 @@ func loadL1ValidatorIdentities(count int, nodeIDs map[string]string) ([]l1Valida
 		})
 	}
 	return identities, nil
+}
+
+func l1ValidatorStartIndex(env map[string]string) (int, error) {
+	value := strings.TrimSpace(env[l1ValidatorStartIndexEnvKey])
+	if value == "" {
+		if truthy(env["SYBIL_ENABLED_LOCAL"]) {
+			return 6, nil
+		}
+		return 1, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must set %s to an integer: %w", envFile, l1ValidatorStartIndexEnvKey, err)
+	}
+	if parsed < 1 {
+		return 0, fmt.Errorf("%s must set %s to a positive integer, got %d", envFile, l1ValidatorStartIndexEnvKey, parsed)
+	}
+	return parsed, nil
+}
+
+func pchainAPI(env map[string]string) (string, error) {
+	if explicit := strings.TrimSpace(env["PCHAIN_RPC_URL"]); explicit != "" {
+		return explicit, nil
+	}
+	if truthy(env["SYBIL_ENABLED_LOCAL"]) {
+		firstDC1, err := firstCSVValue(env, "DC1_NODE_IPS")
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("http://%s:9650", firstDC1), nil
+	}
+	benchmarkHostIP, err := requireEnv(env, "BENCHMARK_HOST_IP")
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("http://%s:9650", benchmarkHostIP), nil
+}
+
+func firstCSVValue(env map[string]string, key string) (string, error) {
+	value, err := requireEnv(env, key)
+	if err != nil {
+		return "", err
+	}
+	for _, part := range strings.Split(value, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			return part, nil
+		}
+	}
+	return "", fmt.Errorf("must set %s to at least one non-empty value", key)
+}
+
+func truthy(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func loadEnv(path string) (map[string]string, error) {
@@ -306,9 +384,10 @@ func writeL1Env(result l1Result) error {
 		return fmt.Errorf("create %s: %w", filepath.Dir(l1EnvPath), err)
 	}
 	data := fmt.Sprintf(
-		"# Generated by create-l1. Do not edit by hand; rerun ./scripts/02_create-l1.sh to replace.\nL1_SUBNET_ID=%s\nL1_CHAIN_ID=%s\nL1_VALIDATOR_COUNT=%d\n",
+		"# Generated by create-l1. Do not edit by hand; rerun ./scripts/02_create-l1.sh to replace.\nL1_SUBNET_ID=%s\nL1_CHAIN_ID=%s\nL1_VALIDATOR_START_INDEX=%d\nL1_VALIDATOR_COUNT=%d\n",
 		result.SubnetID,
 		result.ChainID,
+		result.ValidatorStartIndex,
 		result.ValidatorCount,
 	)
 	if err := os.WriteFile(l1EnvPath, []byte(data), 0o644); err != nil {

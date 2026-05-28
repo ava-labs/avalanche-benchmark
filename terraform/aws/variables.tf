@@ -28,7 +28,7 @@ variable "dc2_region" {
 variable "dc1_node_count" {
   description = "Number of DC1 L1 node machines, excluding the dedicated benchmark host."
   type        = number
-  default     = 6
+  default     = 5
 
   validation {
     condition     = var.dc1_node_count >= 0

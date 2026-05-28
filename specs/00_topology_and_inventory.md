@@ -35,6 +35,8 @@ SSH_KEY=/path/to/private-key
 BENCHMARK_HOST_IP=<benchmark host ip or 127.0.0.1>
 DC1_NODE_IPS=<dc1 node ip 1>,<dc1 node ip 2>,...
 DC2_NODE_IPS=<dc2 node ip 1>,<dc2 node ip 2>,...
+SYBIL_ENABLED_LOCAL=1
+L1_VALIDATOR_START_INDEX=6
 L1_VALIDATOR_COUNT=5
 ```
 
@@ -52,7 +54,7 @@ AWS single-DC development should create:
 
 ```text
 1 benchmark host
-6 DC1 node hosts
+5 DC1 node hosts
 0 DC2 node hosts
 ```
 
@@ -60,8 +62,10 @@ Terraform output must write:
 
 ```sh
 BENCHMARK_HOST_IP=<benchmark host>
-DC1_NODE_IPS=<six node hosts, excluding benchmark host>
+DC1_NODE_IPS=<five node hosts, excluding benchmark host>
 DC2_NODE_IPS=
+SYBIL_ENABLED_LOCAL=1
+L1_VALIDATOR_START_INDEX=6
 L1_VALIDATOR_COUNT=5
 ```
 

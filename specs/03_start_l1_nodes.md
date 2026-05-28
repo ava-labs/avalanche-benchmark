@@ -124,6 +124,17 @@ AvalancheGo default chain config path under `--data-dir`:
 
 Do not pass chain config path flags unless the default path cannot work.
 
+Current benchmark chain config enables state sync for wiped-node recovery:
+
+```json
+{
+  "state-sync-enabled": true,
+  "state-sync-min-blocks": 1000
+}
+```
+
+`state-sync-min-blocks` is the minimum gap between the local last accepted height and the peer syncable height before Subnet-EVM prefers state sync over ordinary block bootstrap. `1000` keeps small gaps on normal replay but makes wiped benchmark nodes state sync instead of replaying the whole chain.
+
 ## Subnet Config
 
 `config/subnet-config.json` is optional. If present, it must be copied into the default subnet config path for `L1_SUBNET_ID` under the node data dir.
@@ -177,6 +188,18 @@ Do not label a node as validator or follower in this script. Validation status i
 
 Use only required flags. Avoid path flags except `--data-dir` unless unavoidable.
 
+When `.env` sets `SYBIL_ENABLED_LOCAL=1`, `03_start-l1.sh` starts only the first `L1_VALIDATOR_COUNT` DC1 hosts as colocated L1 validator processes:
+
+- identity range comes from `runtime-data/l1.env`:
+  - `L1_VALIDATOR_START_INDEX=6`
+  - `L1_VALIDATOR_COUNT=5`
+- node 1 uses `staking/l1/6`, node 2 uses `staking/l1/7`, and so on;
+- L1 processes use HTTP `9652` and staking `9653` so they can coexist with primary processes on `9650/9651`;
+- the script does not pass `--sybil-protection-enabled=false`;
+- bootstrap lists include the five primary process staking ports plus the other L1 process staking ports.
+
+The older sybil-disabled path remains available when `SYBIL_ENABLED_LOCAL` is unset.
+
 Use:
 
 ```text
@@ -228,6 +251,7 @@ These scripts are for failover/recovery testing after `03_start-l1.sh` has alrea
 ```sh
 ./scripts/nodes/down.sh <node-number>
 ./scripts/nodes/up.sh <node-number>
+./scripts/nodes/wipe.sh <node-number>
 ```
 
 `<node-number>` is the 1-based global node index after concatenating `DC1_NODE_IPS`, then `DC2_NODE_IPS`. The numbering matches the identity assignment section:
@@ -259,20 +283,33 @@ node 2 -> second DC1_NODE_IPS host -> staking/l1/2
 - reject duplicate node hosts;
 - reject `BENCHMARK_HOST_IP` in the node host list;
 - SSH/local execute only on the selected node host;
-- verify the selected node host already has a prepared runtime dir from `03_start-l1.sh`;
 - verify the selected node host has `bin/avalanchego`;
-- verify the selected node host has staking files under `runtime-data/l1/staking`;
-- verify the selected node host has the Subnet-EVM plugin under `runtime-data/l1/plugins`;
-- verify the selected node host has the chain config under `runtime-data/l1/configs/chains/<L1_CHAIN_ID>/config.json`;
 - stop any stale AvalancheGo process on the selected node host before starting;
+- create missing runtime directories under `runtime-data/l1`;
+- copy the selected node's committed staking files into `runtime-data/l1/staking`;
+- copy the staged Subnet-EVM plugin into `runtime-data/l1/plugins`;
+- copy `config/chain-config.json` into `runtime-data/l1/configs/chains/<L1_CHAIN_ID>/config.json`;
+- if `config/subnet-config.json` exists, copy it into `runtime-data/l1/configs/subnets/<L1_SUBNET_ID>.json`;
 - start AvalancheGo from the existing `runtime-data/l1` directory with the same core flags as `03_start-l1.sh`;
 - bootstrap from the two benchmark-host P-Chain nodes and every other L1 node;
 - wait up to 120 seconds for `info.getNodeID` and L1 chain RPC readiness;
-- not wipe data;
-- not copy keys, config, or plugins;
+- not wipe existing chain data;
 - not touch any other node host.
 
-This intentionally makes "up/down" process-only. It simulates an outage and recovery of the same machine. Wipe-and-start simulates node replacement or recreation and must remain a separate explicit operation.
+`scripts/nodes/wipe.sh` must:
+
+- require `.env`;
+- collect node hosts from `DC1_NODE_IPS` and `DC2_NODE_IPS`;
+- reject missing, non-integer, out-of-range, or extra arguments;
+- reject duplicate node hosts;
+- reject operating on `BENCHMARK_HOST_IP` if it appears in the node host list;
+- SSH/local execute only on the selected node host;
+- stop only the selected node host's AvalancheGo process with `pkill -TERM -x avalanchego`, then `pkill -KILL -x avalanchego`;
+- remove only the selected node host's L1 runtime dir: `runtime-data/l1`;
+- not remove staged artifacts such as `bin/avalanchego`, `plugins/<subnet-evm-id>`, or `.env`;
+- not touch any other node host.
+
+`down.sh` is process-only. `up.sh` is idempotent prepare-and-start for one node: it can recover a process-only outage and can also bring back a node after `wipe.sh` by restoring keys/config/plugin into the runtime dir. It must not wipe existing chain data. `wipe.sh` simulates disk/state loss for the selected node.
 
 ## Readiness
 

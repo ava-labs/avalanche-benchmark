@@ -36,6 +36,7 @@ func watchBlocks(ctx context.Context, rpcClient *rpc.Client, pollInterval time.D
 	}
 	lastBlock := hexToUint64(block.Number)
 	lastTimestampMs := hexToUint64(block.TimestampMilliseconds)
+	tracker.setLatestBlock(lastBlock)
 	progressf("Watcher starting at block %d\n", lastBlock)
 
 	// Rolling window for TPS calculation
@@ -58,6 +59,7 @@ func watchBlocks(ctx context.Context, rpcClient *rpc.Client, pollInterval time.D
 		}
 
 		num := hexToUint64(block.Number)
+		tracker.setLatestBlock(num)
 		if num <= lastBlock {
 			time.Sleep(pollInterval)
 			continue
@@ -172,6 +174,7 @@ func watchBlocksManaged(ctx context.Context, endpoints *endpointManager, pollInt
 			}
 			lastBlock = hexToUint64(block.Number)
 			lastTimestampMs = hexToUint64(block.TimestampMilliseconds)
+			tracker.setLatestBlock(lastBlock)
 			progressf("Watcher starting at block %d\n", lastBlock)
 		}
 
@@ -186,6 +189,7 @@ func watchBlocksManaged(ctx context.Context, endpoints *endpointManager, pollInt
 		}
 
 		num := hexToUint64(block.Number)
+		tracker.setLatestBlock(num)
 		if num <= lastBlock {
 			time.Sleep(pollInterval)
 			continue
