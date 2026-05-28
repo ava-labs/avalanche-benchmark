@@ -52,45 +52,35 @@ fi
 if [ -z "$NODE_IPS" ]; then
     echo "ERROR: NODE_IPS not set in .env"
     echo ""
-    echo "Examples:"
-    echo "  NODE_IPS=1.2.3.1               (single validator)"
-    echo "  NODE_IPS=1.2.3.1,1.2.3.2,1.2.3.3  (three validators)"
+    echo "Set NODE_IPS to exactly five comma-separated benchmark node IPs."
     exit 1
 fi
 
 IFS=',' read -ra NODE_IPS_ARRAY <<< "$NODE_IPS"
 NODE_COUNT=${#NODE_IPS_ARRAY[@]}
 
-if [ "$NODE_COUNT" -lt 1 ]; then
-    echo "ERROR: NODE_IPS must contain at least one IP"
+if [ "$NODE_COUNT" -ne 5 ]; then
+    echo "ERROR: NODE_IPS must contain exactly five benchmark node IPs"
     exit 1
 fi
 
-# First node is always the bootstrap and monitoring host
+# First benchmark node is the default benchmark ingress host.
 BOOTSTRAP_IP="${NODE_IPS_ARRAY[0]}"
 
 SUBNET_EVM_ID="srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy"
 STAKING_DIR="$SCRIPT_DIR/staking"
 NODE_IDS_FILE="$STAKING_DIR/node-ids.env"
-SYBIL_ENABLED_LOCAL="${SYBIL_ENABLED_LOCAL:-false}"
-L1_VALIDATOR_START_INDEX="${L1_VALIDATOR_START_INDEX:-}"
-L1_VALIDATOR_COUNT="${L1_VALIDATOR_COUNT:-}"
+PCHAIN_NODE_COUNT=5
+PCHAIN_HTTP_BASE_PORT=9650
+PCHAIN_STAKING_BASE_PORT=9651
+PCHAIN_PORT_STEP=10
+L1_VALIDATOR_START_INDEX=6
+L1_VALIDATOR_COUNT=5
 
-is_truthy() {
-    case "$1" in
-        1|true|TRUE|yes|YES|y|Y|on|ON) return 0 ;;
-        *) return 1 ;;
-    esac
+join_by_comma() {
+    local IFS=,
+    echo "$*"
 }
-
-if is_truthy "$SYBIL_ENABLED_LOCAL"; then
-    if [ -z "$L1_VALIDATOR_START_INDEX" ]; then
-        L1_VALIDATOR_START_INDEX=6
-    fi
-    if [ -z "$L1_VALIDATOR_COUNT" ]; then
-        L1_VALIDATOR_COUNT=5
-    fi
-fi
 
 node_id_for_l1_index() {
     local idx=$1
@@ -107,11 +97,42 @@ node_id_for_l1_index() {
     echo "$value"
 }
 
+pchain_http_port() {
+    local idx=$1
+    echo $((PCHAIN_HTTP_BASE_PORT + (idx - 1) * PCHAIN_PORT_STEP))
+}
+
+pchain_staking_port() {
+    local idx=$1
+    echo $((PCHAIN_STAKING_BASE_PORT + (idx - 1) * PCHAIN_PORT_STEP))
+}
+
+pchain_node_ids_csv() {
+    local ids=()
+    local i
+    for i in $(seq 1 "$PCHAIN_NODE_COUNT"); do
+        ids+=("$(node_id_for_l1_index "$i")")
+    done
+    join_by_comma "${ids[@]}"
+}
+
+pchain_public_ip() {
+    curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]'
+}
+
+pchain_public_staking_ips_csv() {
+    local public_ip=$1
+    local ips=()
+    local i
+    for i in $(seq 1 "$PCHAIN_NODE_COUNT"); do
+        ips+=("$public_ip:$(pchain_staking_port "$i")")
+    done
+    join_by_comma "${ips[@]}"
+}
+
 print_nodes() {
     for i in "${!NODE_IPS_ARRAY[@]}"; do
         local n=$((i + 1))
-        local label=""
-        if [ "$i" -eq 0 ]; then label=" (bootstrap)"; fi
-        echo "  Node $n: ${NODE_IPS_ARRAY[$i]}$label"
+        echo "  Benchmark node $n: ${NODE_IPS_ARRAY[$i]}"
     done
 }

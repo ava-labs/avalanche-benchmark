@@ -2,260 +2,198 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$SCRIPT_DIR/_common.sh"
 
-# Port layout per machine:
-#   Primary:   HTTP 9650, Staking 9651
-#   Validator: HTTP 9652, Staking 9653
-#   RPC:       HTTP 9654, Staking 9655
+STAKING_DIR="$SCRIPT_DIR/staking"
+NODE_IDS_FILE="$STAKING_DIR/node-ids.env"
+DATA_ROOT="$SCRIPT_DIR/data/pchain"
+PCHAIN_NODE_COUNT=5
+PCHAIN_HTTP_BASE_PORT=9650
+PCHAIN_STAKING_BASE_PORT=9651
+PCHAIN_PORT_STEP=10
 
-echo "=== Multi-Node Primary Network Bootstrap ==="
-print_nodes
-echo ""
-echo "Starting PRIMARY NETWORK nodes only (port 9650/9651)"
-echo ""
+node_id_for_l1_index() {
+    local idx=$1
+    local value
 
-if is_truthy "$SYBIL_ENABLED_LOCAL"; then
-    if [ "$NODE_COUNT" -ne 5 ]; then
-        echo "ERROR: SYBIL_ENABLED_LOCAL requires exactly 5 NODE_IPS for the built-in local genesis validators"
+    if [ ! -f "$NODE_IDS_FILE" ]; then
+        echo "ERROR: missing $NODE_IDS_FILE" >&2
         exit 1
     fi
-    echo "Sybil protection: enabled"
-    echo "Primary identities: staking/l1/1..5"
-    echo ""
-fi
 
-# ------------------------------------------------------------------------------
-# Step 1: Upload files to all nodes
-# ------------------------------------------------------------------------------
-echo "[1/4] Uploading files to all nodes..."
-
-for NODE_IP in "${NODE_IPS_ARRAY[@]}"; do
-    echo "  Uploading to $NODE_IP..."
-    ssh "$SSH_USER@$NODE_IP" "rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR/bin $REMOTE_DIR/plugins"
-    scp -q "$SCRIPT_DIR/bin/avalanchego" "$SSH_USER@$NODE_IP:$REMOTE_DIR/bin/"
-    scp -q "$SCRIPT_DIR/bin/$SUBNET_EVM_ID" "$SSH_USER@$NODE_IP:$REMOTE_DIR/plugins/"
-    scp -q "$SCRIPT_DIR/node-config.json" "$SSH_USER@$NODE_IP:$REMOTE_DIR/"
-    scp -q "$SCRIPT_DIR/chain-config.json" "$SSH_USER@$NODE_IP:$REMOTE_DIR/"
-    scp -q -r "$SCRIPT_DIR/staking" "$SSH_USER@$NODE_IP:$REMOTE_DIR/"
-done
-
-echo "  Upload complete."
-
-# ------------------------------------------------------------------------------
-# Step 2: Start bootstrap node (first node - primary network)
-# ------------------------------------------------------------------------------
-echo "[2/4] Starting bootstrap primary node on $BOOTSTRAP_IP..."
-
-ssh "$SSH_USER@$BOOTSTRAP_IP" bash -s "$BOOTSTRAP_IP" "$SYBIL_ENABLED_LOCAL" << 'BOOTSTRAP_EOF'
-set -e
-PUBLIC_IP=$1
-SYBIL_ENABLED_LOCAL=$2
-cd ~/avalanche-benchmark
-
-# Kill any existing avalanchego processes
-pkill -f avalanchego || true
-sleep 1
-
-# Create data directories for all three node types
-rm -rf data
-mkdir -p data/primary/{db,logs}
-mkdir -p data/validator/{db,logs}
-mkdir -p data/rpc/{db,logs}
-
-# Start PRIMARY NETWORK node (port 9650/9651)
-extra_args=(--sybil-protection-enabled=false)
-staking_args=()
-case "$SYBIL_ENABLED_LOCAL" in
-    1|true|TRUE|yes|YES|y|Y|on|ON)
-        extra_args=()
-        staking_args=(
-            --staking-tls-cert-file=staking/l1/1/staker.crt
-            --staking-tls-key-file=staking/l1/1/staker.key
-            --staking-signer-key-file=staking/l1/1/signer.key
-        )
-        ;;
-esac
-
-nohup ./bin/avalanchego \
-    --http-port=9650 \
-    --staking-port=9651 \
-    --http-host=0.0.0.0 \
-    --public-ip=$PUBLIC_IP \
-    --db-dir=data/primary/db \
-    --log-dir=data/primary/logs \
-    --data-dir=data/primary \
-    --network-id=local \
-    "${extra_args[@]}" \
-    "${staking_args[@]}" \
-    --plugin-dir="$(pwd)/plugins" \
-    --config-file=node-config.json \
-    --bootstrap-ips= \
-    --bootstrap-ids= \
-    >data/primary/logs/avalanchego.out 2>&1 &
-
-disown
-sleep 2
-BOOTSTRAP_EOF
-
-echo "  Waiting for bootstrap node ID..."
-
-BOOTSTRAP_NODE_ID=""
-for i in {1..60}; do
-    RESULT=$(curl -s -X POST --data '{"jsonrpc":"2.0","id":1,"method":"info.getNodeID"}' -H 'Content-Type: application/json' "http://$BOOTSTRAP_IP:9650/ext/info" 2>/dev/null || true)
-    BOOTSTRAP_NODE_ID=$(echo "$RESULT" | grep -o '"nodeID":"[^"]*"' | cut -d'"' -f4 || true)
-    if [ -n "$BOOTSTRAP_NODE_ID" ]; then
-        break
-    fi
-    sleep 1
-done
-
-if [ -z "$BOOTSTRAP_NODE_ID" ]; then
-    echo "ERROR: Could not get bootstrap node ID"
-    exit 1
-fi
-
-echo "  Bootstrap node ID: $BOOTSTRAP_NODE_ID"
-
-if is_truthy "$SYBIL_ENABLED_LOCAL"; then
-    EXPECTED_BOOTSTRAP_NODE_ID=$(node_id_for_l1_index 1)
-    if [ "$BOOTSTRAP_NODE_ID" != "$EXPECTED_BOOTSTRAP_NODE_ID" ]; then
-        echo "ERROR: bootstrap primary NodeID mismatch: got $BOOTSTRAP_NODE_ID expected $EXPECTED_BOOTSTRAP_NODE_ID"
+    value=$(grep -E "^L1_${idx}_NODE_ID=" "$NODE_IDS_FILE" | tail -n 1 | cut -d= -f2- || true)
+    if [ -z "$value" ]; then
+        echo "ERROR: missing L1_${idx}_NODE_ID in $NODE_IDS_FILE" >&2
         exit 1
     fi
-fi
-
-# ------------------------------------------------------------------------------
-# Step 3: Start primary network nodes on remaining machines
-# ------------------------------------------------------------------------------
-if [ "$NODE_COUNT" -gt 1 ]; then
-    echo "[3/4] Starting primary network nodes on other machines..."
-else
-    echo "[3/4] Single-node mode, no additional primary nodes to start."
-fi
-
-start_primary_node() {
-    local NODE_IP=$1
-    local NODE_NUM=$2
-
-    echo "  Starting primary node $NODE_NUM on $NODE_IP..."
-
-    ssh "$SSH_USER@$NODE_IP" bash -s "$BOOTSTRAP_NODE_ID" "$BOOTSTRAP_IP" "$NODE_IP" "$SYBIL_ENABLED_LOCAL" "$NODE_NUM" << 'PRIMARY_EOF'
-set -e
-BOOTSTRAP_NODE_ID=$1
-BOOTSTRAP_IP=$2
-PUBLIC_IP=$3
-SYBIL_ENABLED_LOCAL=$4
-NODE_NUM=$5
-
-cd ~/avalanche-benchmark
-
-# Kill any existing avalanchego processes
-pkill -f avalanchego || true
-sleep 1
-
-# Create data directories for all three node types
-rm -rf data
-mkdir -p data/primary/{db,logs}
-mkdir -p data/validator/{db,logs}
-mkdir -p data/rpc/{db,logs}
-
-# Start PRIMARY NETWORK node (port 9650/9651)
-extra_args=(--sybil-protection-enabled=false)
-staking_args=()
-case "$SYBIL_ENABLED_LOCAL" in
-    1|true|TRUE|yes|YES|y|Y|on|ON)
-        extra_args=()
-        staking_args=(
-            --staking-tls-cert-file=staking/l1/${NODE_NUM}/staker.crt
-            --staking-tls-key-file=staking/l1/${NODE_NUM}/staker.key
-            --staking-signer-key-file=staking/l1/${NODE_NUM}/signer.key
-        )
-        ;;
-esac
-
-nohup ./bin/avalanchego \
-    --http-port=9650 \
-    --staking-port=9651 \
-    --http-host=0.0.0.0 \
-    --public-ip=$PUBLIC_IP \
-    --db-dir=data/primary/db \
-    --log-dir=data/primary/logs \
-    --data-dir=data/primary \
-    --network-id=local \
-    "${extra_args[@]}" \
-    "${staking_args[@]}" \
-    --plugin-dir="$(pwd)/plugins" \
-    --config-file=node-config.json \
-    --bootstrap-ips=${BOOTSTRAP_IP}:9651 \
-    --bootstrap-ids=${BOOTSTRAP_NODE_ID} \
-    >data/primary/logs/avalanchego.out 2>&1 &
-
-disown
-sleep 2
-PRIMARY_EOF
+    echo "$value"
 }
 
-for i in $(seq 1 $((NODE_COUNT - 1))); do
-    start_primary_node "${NODE_IPS_ARRAY[$i]}" $((i + 1))
-done
+pchain_http_port() {
+    local idx=$1
+    echo $((PCHAIN_HTTP_BASE_PORT + (idx - 1) * PCHAIN_PORT_STEP))
+}
 
-# ------------------------------------------------------------------------------
-# Step 4: Wait for all primary nodes to be healthy
-# ------------------------------------------------------------------------------
-echo "[4/4] Waiting for all primary nodes to be healthy..."
+pchain_staking_port() {
+    local idx=$1
+    echo $((PCHAIN_STAKING_BASE_PORT + (idx - 1) * PCHAIN_PORT_STEP))
+}
 
-check_node_health() {
-    local NODE_IP=$1
-    local NODE_NAME=$2
+join_by_comma() {
+    local IFS=,
+    echo "$*"
+}
 
-    echo -n "  Waiting for $NODE_NAME ($NODE_IP:9650)..." >&2
-    for i in {1..60}; do
-        if curl -sf "http://$NODE_IP:9650/ext/health" >/dev/null 2>&1; then
-            RESULT=$(curl -s -X POST --data '{"jsonrpc":"2.0","id":1,"method":"info.getNodeID"}' -H 'Content-Type: application/json' "http://$NODE_IP:9650/ext/info" || true)
-            NODE_ID=$(echo "$RESULT" | grep -o '"nodeID":"[^"]*"' | cut -d'"' -f4 || true)
-            echo " OK" >&2
-            echo "$NODE_ID"
-            return 0
+pchain_bootstrap_ips_for_node() {
+    local ips=()
+    local i
+
+    for i in $(seq 1 "$PCHAIN_NODE_COUNT"); do
+        ips+=("127.0.0.1:$(pchain_staking_port "$i")")
+    done
+    join_by_comma "${ips[@]}"
+}
+
+pchain_bootstrap_ids_for_node() {
+    local ids=()
+    local i
+
+    for i in $(seq 1 "$PCHAIN_NODE_COUNT"); do
+        ids+=("$(node_id_for_l1_index "$i")")
+    done
+    join_by_comma "${ids[@]}"
+}
+
+require_file() {
+    local path=$1
+    if [ ! -f "$path" ]; then
+        echo "ERROR: missing $path"
+        exit 1
+    fi
+}
+
+require_local_artifacts() {
+    require_file "$SCRIPT_DIR/bin/avalanchego"
+    require_file "$SCRIPT_DIR/node-config.json"
+
+    local node_num
+    for node_num in $(seq 1 "$PCHAIN_NODE_COUNT"); do
+        require_file "$STAKING_DIR/l1/$node_num/staker.crt"
+        require_file "$STAKING_DIR/l1/$node_num/staker.key"
+        require_file "$STAKING_DIR/l1/$node_num/signer.key"
+        node_id_for_l1_index "$node_num" >/dev/null
+    done
+}
+
+discover_public_ip() {
+    curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]'
+}
+
+start_local_pchain_node() {
+    local node_num=$1
+    local http_port
+    local staking_port
+    local data_dir
+    local args=()
+
+    http_port=$(pchain_http_port "$node_num")
+    staking_port=$(pchain_staking_port "$node_num")
+    data_dir="$DATA_ROOT/$node_num"
+
+    mkdir -p "$data_dir/db" "$data_dir/logs"
+
+    args=(
+        --http-port="$http_port"
+        --staking-port="$staking_port"
+        --http-host=127.0.0.1
+        --public-ip="$PCHAIN_PUBLIC_IP"
+        --db-dir="$data_dir/db"
+        --log-dir="$data_dir/logs"
+        --data-dir="$data_dir"
+        --network-id=local
+        --staking-tls-cert-file="$STAKING_DIR/l1/$node_num/staker.crt"
+        --staking-tls-key-file="$STAKING_DIR/l1/$node_num/staker.key"
+        --staking-signer-key-file="$STAKING_DIR/l1/$node_num/signer.key"
+        --plugin-dir="$SCRIPT_DIR/plugins"
+        --config-file="$SCRIPT_DIR/node-config.json"
+        --bootstrap-ips="$(pchain_bootstrap_ips_for_node)"
+        --bootstrap-ids="$(pchain_bootstrap_ids_for_node)"
+    )
+
+    echo "  pchain-$node_num: http=127.0.0.1:$http_port staking=$PCHAIN_PUBLIC_IP:$staking_port identity=staking/l1/$node_num"
+    setsid "$SCRIPT_DIR/bin/avalanchego" "${args[@]}" >"$data_dir/logs/avalanchego.out" 2>&1 < /dev/null &
+    disown
+}
+
+wait_for_local_pchain_node() {
+    local node_num=$1
+    local http_port
+    local expected_node_id
+    local result
+    local node_id
+
+    http_port=$(pchain_http_port "$node_num")
+    expected_node_id=$(node_id_for_l1_index "$node_num")
+
+    echo -n "  Waiting for pchain-$node_num (127.0.0.1:$http_port)..."
+    for _ in {1..60}; do
+        if curl -sf "http://127.0.0.1:$http_port/ext/health" >/dev/null 2>&1; then
+            result=$(curl -s -X POST \
+                --data '{"jsonrpc":"2.0","id":1,"method":"info.getNodeID"}' \
+                -H 'Content-Type: application/json' \
+                "http://127.0.0.1:$http_port/ext/info" || true)
+            node_id=$(echo "$result" | grep -o '"nodeID":"[^"]*"' | cut -d'"' -f4 || true)
+            if [ "$node_id" = "$expected_node_id" ]; then
+                echo " OK"
+                return 0
+            fi
         fi
         sleep 1
     done
-    echo " TIMEOUT" >&2
+
+    echo " TIMEOUT"
+    echo "ERROR: pchain-$node_num did not become healthy with expected NodeID $expected_node_id"
+    echo "  Logs: $DATA_ROOT/$node_num/logs/main.log"
     return 1
 }
 
-# Collect all node IDs
-declare -a NODE_IDS
-NODE_IDS[0]="$BOOTSTRAP_NODE_ID"
+echo "=== Local Primary Network Bootstrap ==="
+echo ""
+echo "Starting five local-genesis P-chain validators on this machine."
+echo "No remote SSH or artifact upload happens in this script."
+echo ""
 
-for i in $(seq 1 $((NODE_COUNT - 1))); do
-    local_n=$((i + 1))
-    NODE_ID=$(check_node_health "${NODE_IPS_ARRAY[$i]}" "node $local_n")
-    if [ -z "$NODE_ID" ]; then
-        echo "ERROR: Node $local_n failed to become healthy within 60s"
-        echo "  Check logs: ssh ${NODE_IPS_ARRAY[$i]} 'tail -50 ~/avalanche-benchmark/data/primary/logs/main.log'"
-        exit 1
-    fi
-    if is_truthy "$SYBIL_ENABLED_LOCAL"; then
-        EXPECTED_NODE_ID=$(node_id_for_l1_index "$local_n")
-        if [ "$NODE_ID" != "$EXPECTED_NODE_ID" ]; then
-            echo "ERROR: Node $local_n primary NodeID mismatch: got $NODE_ID expected $EXPECTED_NODE_ID"
-            exit 1
-        fi
-    fi
-    NODE_IDS[$i]="$NODE_ID"
+require_local_artifacts
+
+PCHAIN_PUBLIC_IP="$(discover_public_ip)"
+if [ -z "$PCHAIN_PUBLIC_IP" ]; then
+    echo "ERROR: could not discover local public IP"
+    exit 1
+fi
+
+echo "Local public IP: $PCHAIN_PUBLIC_IP"
+echo ""
+
+echo "[1/3] Cleaning local AvalancheGo processes and P-chain data..."
+pkill -f avalanchego || true
+sleep 1
+rm -rf "$DATA_ROOT"
+mkdir -p "$DATA_ROOT" "$SCRIPT_DIR/plugins"
+
+echo "[2/3] Starting local P-chain validators..."
+for node_num in $(seq 1 "$PCHAIN_NODE_COUNT"); do
+    start_local_pchain_node "$node_num"
+    sleep 1
+done
+
+echo "[3/3] Waiting for local P-chain validators..."
+for node_num in $(seq 1 "$PCHAIN_NODE_COUNT"); do
+    wait_for_local_pchain_node "$node_num"
 done
 
 echo ""
-echo "=== Primary Network Bootstrap Complete ==="
-echo ""
-echo "Primary Network Nodes (port 9650):"
-for i in "${!NODE_IPS_ARRAY[@]}"; do
-    local_n=$((i + 1))
-    label=""
-    if [ "$i" -eq 0 ]; then label=" (bootstrap)"; fi
-    echo "  Node $local_n: ${NODE_IPS_ARRAY[$i]} - ${NODE_IDS[$i]}$label"
+echo "=== Local Primary Network Ready ==="
+for node_num in $(seq 1 "$PCHAIN_NODE_COUNT"); do
+    echo "  pchain-$node_num: http://127.0.0.1:$(pchain_http_port "$node_num") staking=$PCHAIN_PUBLIC_IP:$(pchain_staking_port "$node_num") $(node_id_for_l1_index "$node_num")"
 done
 echo ""
 echo "Next step: ./02_create_l1.sh"
-echo "  This will start validator (9652) and RPC (9654) nodes on each machine."

@@ -8,6 +8,10 @@ echo "=== Multi-Node Cleanup ==="
 print_nodes
 echo ""
 
+echo "Cleaning up local P-chain validators..."
+pkill -f avalanchego 2>/dev/null || true
+rm -rf "$SCRIPT_DIR/data/pchain"
+
 cleanup_node() {
     local NODE_IP=$1
     local NODE_NAME=$2

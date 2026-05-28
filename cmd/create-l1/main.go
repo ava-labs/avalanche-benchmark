@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ava-labs/avalanchego/api/info"
 	"github.com/ava-labs/avalanchego/genesis"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/staking"
@@ -26,6 +25,12 @@ import (
 )
 
 var outputFile string
+
+const (
+	pchainURI             = "http://127.0.0.1:9650"
+	l1ValidatorStartIndex = 6
+	l1ValidatorCount      = 5
+)
 
 func main() {
 	flag.StringVar(&outputFile, "output", "", "Write SUBNET_ID and CHAIN_ID to this file")
@@ -60,15 +65,14 @@ func run() error {
 	if len(nodeIPs) == 0 || nodeIPs[0] == "" {
 		return fmt.Errorf("NODE_IPS must contain at least one IP")
 	}
-
-	nodeURIs := make([]string, len(nodeIPs))
-	for i, ip := range nodeIPs {
-		nodeURIs[i] = fmt.Sprintf("http://%s:9650", ip)
+	if len(nodeIPs) != l1ValidatorCount {
+		return fmt.Errorf("NODE_IPS must contain exactly %d benchmark node IPs", l1ValidatorCount)
 	}
 
 	fmt.Println("=== Create L1 ===")
-	for i, uri := range nodeURIs {
-		fmt.Printf("  Node %d: %s\n", i+1, uri)
+	fmt.Printf("  P-chain API: %s\n", pchainURI)
+	for i, ip := range nodeIPs {
+		fmt.Printf("  L1 validator %d: %s staking/l1/%d\n", i+1, ip, l1ValidatorStartIndex+i)
 	}
 	fmt.Println()
 
@@ -88,7 +92,7 @@ func run() error {
 	// Create wallet using node1
 	fmt.Println("[1/4] Creating wallet...")
 	kc := secp256k1fx.NewKeychain(genesis.EWOQKey)
-	wallet, err := primary.MakePWallet(ctx, nodeURIs[0], kc, primary.WalletConfig{})
+	wallet, err := primary.MakePWallet(ctx, pchainURI, kc, primary.WalletConfig{})
 	if err != nil {
 		return fmt.Errorf("failed to create wallet: %w", err)
 	}
@@ -107,7 +111,7 @@ func run() error {
 	fmt.Printf("  Subnet ID: %s\n", subnetID)
 
 	// Re-sync wallet with subnet
-	wallet, err = primary.MakePWallet(ctx, nodeURIs[0], kc, primary.WalletConfig{
+	wallet, err = primary.MakePWallet(ctx, pchainURI, kc, primary.WalletConfig{
 		SubnetIDs: []ids.ID{subnetID},
 	})
 	if err != nil {
@@ -130,7 +134,7 @@ func run() error {
 	fmt.Printf("  Chain ID: %s\n", chainID)
 
 	fmt.Println("[4/4] Converting subnet to L1...")
-	validators, validatorStartIndex, validatorCount, err := buildValidators(ctx, nodeURIs, len(nodeIPs))
+	validators, err := buildValidatorsFromCommittedKeys(l1ValidatorStartIndex, l1ValidatorCount)
 	if err != nil {
 		return err
 	}
@@ -153,7 +157,7 @@ func run() error {
 
 	// Write output file if requested
 	if outputFile != "" {
-		content := fmt.Sprintf("SUBNET_ID=%s\nCHAIN_ID=%s\nL1_VALIDATOR_START_INDEX=%d\nL1_VALIDATOR_COUNT=%d\n", subnetID, chainID, validatorStartIndex, validatorCount)
+		content := fmt.Sprintf("SUBNET_ID=%s\nCHAIN_ID=%s\n", subnetID, chainID)
 		if err := os.WriteFile(outputFile, []byte(content), 0644); err != nil {
 			return fmt.Errorf("failed to write output file: %w", err)
 		}
@@ -165,54 +169,22 @@ func run() error {
 	fmt.Println()
 	fmt.Printf("Subnet ID: %s\n", subnetID)
 	fmt.Printf("Chain ID:  %s\n", chainID)
-	if validatorStartIndex > 0 {
-		fmt.Printf("Validators: staking/l1/%d..%d (%d total)\n", validatorStartIndex, validatorStartIndex+validatorCount-1, validatorCount)
-	} else {
-		fmt.Printf("Validators: live primary NodeIDs (%d total)\n", validatorCount)
-	}
+	fmt.Printf("Validators: staking/l1/%d..%d (%d total)\n", l1ValidatorStartIndex, l1ValidatorStartIndex+l1ValidatorCount-1, l1ValidatorCount)
 	fmt.Println()
 	fmt.Println("RPC Endpoints:")
 	for i, ip := range nodeIPs {
-		fmt.Printf("  Node %d: http://%s:9650/ext/bc/%s/rpc\n", i+1, ip, chainID)
+		fmt.Printf("  Node %d: http://%s:9652/ext/bc/%s/rpc\n", i+1, ip, chainID)
 	}
 
 	return nil
 }
 
-func buildValidators(ctx context.Context, nodeURIs []string, nodeCount int) ([]*txs.ConvertSubnetToL1Validator, int, int, error) {
-	if isTruthy(os.Getenv("SYBIL_ENABLED_LOCAL")) {
-		startIndex := envIntDefault("L1_VALIDATOR_START_INDEX", 6)
-		count := envIntDefault("L1_VALIDATOR_COUNT", 5)
-		validators, err := buildValidatorsFromCommittedKeys(startIndex, count)
-		return validators, startIndex, count, err
-	}
-
-	fmt.Println("  Gathering validator info from live primary nodes...")
-	validators := make([]*txs.ConvertSubnetToL1Validator, 0, len(nodeURIs))
-	for i, uri := range nodeURIs {
-		infoClient := info.NewClient(uri)
-		nodeID, nodePoP, err := infoClient.GetNodeID(ctx)
-		if err != nil {
-			return nil, 0, 0, fmt.Errorf("failed to get node %d info: %w", i+1, err)
-		}
-		fmt.Printf("    Node %d: %s\n", i+1, nodeID)
-
-		validators = append(validators, &txs.ConvertSubnetToL1Validator{
-			NodeID:  nodeID.Bytes(),
-			Weight:  units.Schmeckle,
-			Balance: units.Avax,
-			Signer:  *nodePoP,
-		})
-	}
-	return validators, 0, nodeCount, nil
-}
-
 func buildValidatorsFromCommittedKeys(startIndex, count int) ([]*txs.ConvertSubnetToL1Validator, error) {
 	if startIndex < 1 {
-		return nil, fmt.Errorf("L1_VALIDATOR_START_INDEX must be positive, got %d", startIndex)
+		return nil, fmt.Errorf("validator start index must be positive, got %d", startIndex)
 	}
 	if count < 1 {
-		return nil, fmt.Errorf("L1_VALIDATOR_COUNT must be positive, got %d", count)
+		return nil, fmt.Errorf("validator count must be positive, got %d", count)
 	}
 
 	stakingDir := findStakingDir()
@@ -268,28 +240,6 @@ func buildValidatorsFromCommittedKeys(startIndex, count int) ([]*txs.ConvertSubn
 		fmt.Printf("    staking/l1/%d: %s\n", i, nodeID)
 	}
 	return validators, nil
-}
-
-func envIntDefault(name string, fallback int) int {
-	value := strings.TrimSpace(os.Getenv(name))
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING: ignoring invalid %s=%q: %v\n", name, value, err)
-		return fallback
-	}
-	return parsed
-}
-
-func isTruthy(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true", "yes", "y", "on":
-		return true
-	default:
-		return false
-	}
 }
 
 func nodeIDFromCertFile(certPath string) (ids.NodeID, error) {

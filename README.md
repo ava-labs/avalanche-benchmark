@@ -1,6 +1,6 @@
 # Remote Benchmark
 
-Benchmark tool for Avalanche L1 networks deployed on remote hosts. Supports 1 to N validator nodes.
+Benchmark tool for an Avalanche L1 deployed on five remote benchmark hosts.
 
 ## Ports
 
@@ -9,7 +9,10 @@ Open the following ports on your nodes:
 | Port | Service | Required | Notes |
 |------|---------|----------|-------|
 | 22 | SSH | Yes | Remote access |
-| 9650-9655 | AvalancheGo | Yes | HTTP API + Staking ports for primary/validator/RPC nodes |
+| 9652-9653 | AvalancheGo | Yes | Remote L1 validator HTTP/staking ports |
+
+The five local-genesis P-chain validators run on the dev machine on ports
+`9650/9651`, `9660/9661`, `9670/9671`, `9680/9681`, and `9690/9691`.
 
 ## Setup
 
@@ -18,12 +21,7 @@ Open the following ports on your nodes:
 cp .env.example .env
 # Edit .env:
 #   SSH_USER=ubuntu
-#   NODE_IPS=1.2.3.1,1.2.3.2,1.2.3.3    # comma-separated, first = bootstrap
-```
-
-Single-node example:
-```bash
-NODE_IPS=1.2.3.1
+#   NODE_IPS=1.2.3.1,1.2.3.2,1.2.3.3,1.2.3.4,1.2.3.5
 ```
 
 ## Build
@@ -37,13 +35,13 @@ make          # builds avalanchego from configure-genesis-acp226-excess branch +
 ## Usage
 
 ```bash
-# 1. Start N-node primary network
+# 1. Start five local P-chain validators
 ./01_bootstrap_primary_network.sh
 
-# 2. Create L1 (subnet + chain) with all nodes as validators
+# 2. Create L1 and register staking/l1/6..10 as validators
 ./02_create_l1.sh
 
-# 3. Deploy chain config and start validator/RPC nodes
+# 3. Upload remote artifacts and start remote L1 validators
 ./03_deploy_l1_config.sh
 
 # 4. Run benchmark
@@ -87,17 +85,13 @@ If you pushed too hard and need to restart, wait 60 seconds for the mempool to c
 
 Genesis is configured with ACP-226 excess gas parameters (`graniteTimestamp: 0`, `initialMinDelayMS: 100`) for fast block production from the start. To tune further, edit `min-delay-target` in `chain-config.json` and run `./03_deploy_l1_config.sh` again.
 
-## Sybil-Enabled Five-Node Mode
+## Topology
 
-Set this in `.env` for the production-closer local-genesis setup:
+This repo has one topology:
 
-```bash
-SYBIL_ENABLED_LOCAL=true
-L1_VALIDATOR_START_INDEX=6
-L1_VALIDATOR_COUNT=5
-```
-
-This mode requires exactly five `NODE_IPS`. Primary Network processes use committed `staking/l1/1..5` on port `9650`; L1 validator processes use disjoint committed `staking/l1/6..10` on port `9652`. Dedicated RPC-only processes on `9654` are skipped, and `05_benchmark.sh` points at validator RPC port `9652`.
+- Local dev machine: five P-chain validators using committed `staking/l1/1..5`.
+- Five remote benchmark hosts: L1 validators using committed `staking/l1/6..10`.
+- Benchmark traffic goes to the first remote L1 validator on port `9652`.
 
 ### Reference Benchmark
 
