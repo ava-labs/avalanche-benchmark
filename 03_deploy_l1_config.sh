@@ -25,7 +25,7 @@ echo ""
 echo "Subnet ID: $SUBNET_ID"
 echo "Chain ID:  $CHAIN_ID"
 echo "L1 validator identities: staking/l1/${L1_VALIDATOR_START_INDEX}..$((L1_VALIDATOR_START_INDEX + L1_VALIDATOR_COUNT - 1))"
-echo "L1 Snow parameters: AvalancheGo defaults (k=20 alpha=15)"
+echo "L1 Snow parameters: k=20 alpha=11 (subnet-config.json)"
 echo "Terraform benchmark machines 1..$L1_VALIDATOR_COUNT run one L1 validator/RPC process each; P-chain runs locally."
 echo ""
 
@@ -65,6 +65,7 @@ for i in "${!NODE_IPS_ARRAY[@]}"; do
     scp -q "$SCRIPT_DIR/bin/$SUBNET_EVM_ID" "$SSH_USER@$NODE_IP:$REMOTE_DIR/plugins/"
     scp -q "$SCRIPT_DIR/node-config.json" "$SSH_USER@$NODE_IP:$REMOTE_DIR/"
     scp -q "$SCRIPT_DIR/chain-config.json" "$SSH_USER@$NODE_IP:$REMOTE_DIR/"
+    scp -q "$SCRIPT_DIR/subnet-config.json" "$SSH_USER@$NODE_IP:$REMOTE_DIR/"
     scp -q -r "$SCRIPT_DIR/staking/l1/$VALIDATOR_KEY_INDEX" "$SSH_USER@$NODE_IP:$REMOTE_DIR/staking/l1/"
 done
 echo "  Upload complete."
@@ -119,8 +120,9 @@ set -e
 cd ~/avalanche-benchmark
 
 rm -rf data/validator
-mkdir -p "data/validator/configs/chains/$CHAIN_ID" "data/validator/db" "data/validator/logs"
+mkdir -p "data/validator/configs/chains/$CHAIN_ID" "data/validator/configs/subnets" "data/validator/db" "data/validator/logs"
 cp chain-config.json "data/validator/configs/chains/$CHAIN_ID/config.json"
+cp subnet-config.json "data/validator/configs/subnets/$SUBNET_ID.json"
 
 setsid ./bin/avalanchego \\
     --http-port=9652 \\
@@ -137,6 +139,7 @@ setsid ./bin/avalanchego \\
     --plugin-dir=\$(pwd)/plugins \\
     --config-file=node-config.json \\
     --chain-config-dir=data/validator/configs/chains \\
+    --subnet-config-dir=data/validator/configs/subnets \\
     --track-subnets="$SUBNET_ID" \\
     --bootstrap-ips=$L1_BOOTSTRAP_IPS \\
     --bootstrap-ids=$L1_BOOTSTRAP_IDS \\

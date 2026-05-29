@@ -9,29 +9,34 @@ import (
 	"github.com/ava-labs/libevm/rpc"
 )
 
-// wsPool holds a fixed set of WebSocket-backed JSON-RPC clients. Each client
-// is checked out exclusively for one call at a time, so the pool size acts as
-// a hard concurrency cap — when all connections are busy, callers block until
-// a response comes back. This gives us natural backpressure: if the node slows
-// down, fewer requests get through.
+// wsPool holds a fixed set of WebSocket-backed JSON-RPC clients spread across
+// one or more endpoints. Each client is checked out exclusively for one call at
+// a time, so the pool size is a hard concurrency cap and gives natural
+// backpressure. Spreading connections across every available RPC means sends
+// fan out to all nodes — whichever accepts the tx first wins.
 type wsPool struct {
 	rpcs    []*rpc.Client
 	clients chan *ethclient.Client
 }
 
-func newWSPool(ctx context.Context, wsURL string, n int) (*wsPool, error) {
-	if n <= 0 {
-		return nil, fmt.Errorf("wsPool size must be > 0, got %d", n)
+// newWSPool opens n connections distributed round-robin across wsURLs.
+func newWSPool(ctx context.Context, wsURLs []string, n int) (*wsPool, error) {
+	if len(wsURLs) == 0 {
+		return nil, fmt.Errorf("wsPool needs at least one URL")
+	}
+	if n < len(wsURLs) {
+		n = len(wsURLs) // at least one connection per endpoint
 	}
 	p := &wsPool{
 		rpcs:    make([]*rpc.Client, 0, n),
 		clients: make(chan *ethclient.Client, n),
 	}
-	for i := range n {
-		rc, err := rpc.DialWebsocket(ctx, wsURL, "")
+	for i := 0; i < n; i++ {
+		url := wsURLs[i%len(wsURLs)]
+		rc, err := rpc.DialWebsocket(ctx, url, "")
 		if err != nil {
 			p.Close()
-			return nil, fmt.Errorf("dial ws conn %d: %w", i, err)
+			return nil, fmt.Errorf("dial ws conn %d (%s): %w", i, url, err)
 		}
 		p.rpcs = append(p.rpcs, rc)
 		p.clients <- ethclient.NewClient(rc)
@@ -39,8 +44,8 @@ func newWSPool(ctx context.Context, wsURL string, n int) (*wsPool, error) {
 	return p, nil
 }
 
-// Do checks out a client, runs fn, returns the client to the pool. Blocks
-// until a client is available or ctx is cancelled.
+// Do checks out a client, runs fn, returns the client to the pool. Blocks until
+// a client is available or ctx is cancelled.
 func (p *wsPool) Do(ctx context.Context, fn func(*ethclient.Client) error) error {
 	select {
 	case c := <-p.clients:

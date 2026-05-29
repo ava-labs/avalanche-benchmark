@@ -9,11 +9,9 @@ import (
 	"github.com/ava-labs/libevm/rpc"
 )
 
-// blockInfo holds the fields we care about from the block response
+// blockInfo holds the fields we care about from the block response.
 type blockInfo struct {
 	Number                string   `json:"number"`
-	GasUsed               string   `json:"gasUsed"`
-	GasLimit              string   `json:"gasLimit"`
 	Transactions          []string `json:"transactions"`
 	TimestampMilliseconds string   `json:"timestampMilliseconds"`
 }
@@ -24,23 +22,17 @@ func hexToUint64(hex string) uint64 {
 	return val
 }
 
-const windowSize = 10
-
-func watchBlocks(ctx context.Context, rpcClient *rpc.Client, pollInterval time.Duration, markConfirmed bool) {
-	// Start from the latest block
+// watchBlocks polls for new blocks and marks each of our transactions mined as
+// it appears. It is intentionally tolerant: any RPC error just sleeps and
+// retries, so a node hiccup never crashes the watcher (resubmission keeps the
+// txs alive in the meantime).
+func watchBlocks(ctx context.Context, rpcClient *rpc.Client, pollInterval time.Duration) {
 	var block blockInfo
-	err := rpcClient.CallContext(ctx, &block, "eth_getBlockByNumber", "latest", false)
-	if err != nil {
+	if err := rpcClient.CallContext(ctx, &block, "eth_getBlockByNumber", "latest", false); err != nil {
 		fmt.Printf("Watcher: failed to get latest block: %v\n", err)
 		return
 	}
 	lastBlock := hexToUint64(block.Number)
-	lastTimestampMs := hexToUint64(block.TimestampMilliseconds)
-	fmt.Printf("Watcher starting at block %d\n", lastBlock)
-
-	// Rolling window for TPS calculation
-	deltaMs := make([]uint64, 0, windowSize)
-	txCounts := make([]int, 0, windowSize)
 
 	for {
 		select {
@@ -63,83 +55,24 @@ func watchBlocks(ctx context.Context, rpcClient *rpc.Client, pollInterval time.D
 			continue
 		}
 
-		// Print any missed blocks
 		for n := lastBlock + 1; n <= num; n++ {
 			var b blockInfo
 			if n < num {
-				err = rpcClient.CallContext(ctx, &b, "eth_getBlockByNumber", fmt.Sprintf("0x%x", n), false)
-				observedAt = time.Now()
-				if err != nil {
+				if err := rpcClient.CallContext(ctx, &b, "eth_getBlockByNumber", fmt.Sprintf("0x%x", n), false); err != nil {
 					continue
 				}
+				observedAt = time.Now()
 			} else {
 				b = block
 			}
-			gasUsed := float64(hexToUint64(b.GasUsed)) / 1_000_000
-			gasLimit := float64(hexToUint64(b.GasLimit)) / 1_000_000
-			txCount := len(b.Transactions)
-			timestampMs := hexToUint64(b.TimestampMilliseconds)
-			delta := timestampMs - lastTimestampMs
-			lastTimestampMs = timestampMs
 
-			blockTime := time.UnixMilli(int64(timestampMs))
+			blockTime := time.UnixMilli(int64(hexToUint64(b.TimestampMilliseconds)))
 			for _, hs := range b.Transactions {
-				if markConfirmed {
-					tracker.markLanded(common.HexToHash(hs), blockTime, observedAt)
-				} else {
-					tracker.markMined(common.HexToHash(hs), blockTime)
-				}
+				track.onMined(common.HexToHash(hs), blockTime, observedAt)
 			}
-
-			// Update rolling window
-			if len(deltaMs) >= windowSize {
-				deltaMs = deltaMs[1:]
-				txCounts = txCounts[1:]
-			}
-			deltaMs = append(deltaMs, delta)
-			txCounts = append(txCounts, txCount)
-
-			// Calculate average TPS over window
-			var totalMs uint64
-			var totalTx int
-			for i := range deltaMs {
-				totalMs += deltaMs[i]
-				totalTx += txCounts[i]
-			}
-			avgTps := float64(0)
-			if totalMs > 0 {
-				avgTps = float64(totalTx) / (float64(totalMs) / 1000)
-			}
-
-			fmt.Printf("Block %d: %d txs, %.2fM / %.2fM gas, %dms, avg TPS: %.0f\n", n, txCount, gasUsed, gasLimit, delta, avgTps)
 		}
 
 		lastBlock = num
 		time.Sleep(pollInterval)
-	}
-}
-
-func watchAcceptedTransactions(ctx context.Context, rpcClient *rpc.Client) {
-	ch := make(chan common.Hash, 65536)
-	sub, err := rpcClient.EthSubscribe(ctx, ch, "newAcceptedTransactions")
-	if err != nil {
-		fmt.Printf("Accepted tx watcher: failed to subscribe: %v\n", err)
-		return
-	}
-	defer sub.Unsubscribe()
-	fmt.Println("Accepted tx watcher subscribed")
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case err := <-sub.Err():
-			if err != nil {
-				fmt.Printf("Accepted tx watcher: subscription error: %v\n", err)
-			}
-			return
-		case h := <-ch:
-			tracker.markConfirmed(h, time.Now())
-		}
 	}
 }
