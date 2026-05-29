@@ -24,11 +24,12 @@ echo "=== Start Remote L1 Nodes ==="
 echo ""
 echo "Subnet ID: $SUBNET_ID"
 echo "Chain ID:  $CHAIN_ID"
-echo "L1 validator identities: staking/l1/6..10"
-echo "Terraform benchmark machines run one L1 validator/RPC process and one adjacent non-validator/RPC process; P-chain runs locally."
+echo "L1 validator identities: staking/l1/${L1_VALIDATOR_START_INDEX}..$((L1_VALIDATOR_START_INDEX + L1_VALIDATOR_COUNT - 1))"
+echo "L1 Snow parameters: AvalancheGo defaults (k=20 alpha=15)"
+echo "Terraform benchmark machines 1..$L1_VALIDATOR_COUNT run one L1 validator/RPC process each; P-chain runs locally."
 echo ""
 
-echo "[1/5] Checking local P-chain bootstrap node..."
+echo "[1/4] Checking local P-chain bootstrap node..."
 BOOTSTRAP_NODE_ID=$(curl -s -X POST --data '{"jsonrpc":"2.0","id":1,"method":"info.getNodeID"}' \
     -H 'Content-Type: application/json' "http://127.0.0.1:9650/ext/info" | \
     grep -o '"nodeID":"[^"]*"' | cut -d'"' -f4)
@@ -46,13 +47,20 @@ PCHAIN_BOOTSTRAP_IPS="$(pchain_public_staking_ips_csv "$PCHAIN_PUBLIC_IP")"
 PCHAIN_BOOTSTRAP_IDS="$(pchain_node_ids_csv)"
 echo "  P-chain staking bootstrap: $PCHAIN_BOOTSTRAP_IPS"
 
-echo "[2/5] Uploading remote L1 artifacts to benchmark nodes..."
+echo "[2/4] Cleaning benchmark nodes and uploading remote L1 artifacts..."
 for i in "${!NODE_IPS_ARRAY[@]}"; do
     NODE_IP="${NODE_IPS_ARRAY[$i]}"
     VALIDATOR_KEY_INDEX=$((L1_VALIDATOR_START_INDEX + i))
+    NODE_NUM=$((i + 1))
 
-    echo "  Uploading to $NODE_IP..."
+    echo "  Cleaning node $NODE_NUM ($NODE_IP)..."
     ssh "$SSH_USER@$NODE_IP" "pkill -x avalanchego || true; rm -rf $REMOTE_DIR && mkdir -p $REMOTE_DIR/bin $REMOTE_DIR/plugins $REMOTE_DIR/staking/l1"
+
+    if [ "$NODE_NUM" -gt "$L1_VALIDATOR_COUNT" ]; then
+        continue
+    fi
+
+    echo "  Uploading validator artifacts to node $NODE_NUM ($NODE_IP)..."
     scp -q "$SCRIPT_DIR/bin/avalanchego" "$SSH_USER@$NODE_IP:$REMOTE_DIR/bin/"
     scp -q "$SCRIPT_DIR/bin/$SUBNET_EVM_ID" "$SSH_USER@$NODE_IP:$REMOTE_DIR/plugins/"
     scp -q "$SCRIPT_DIR/node-config.json" "$SSH_USER@$NODE_IP:$REMOTE_DIR/"
@@ -67,7 +75,7 @@ l1_bootstrap_ips_for_node() {
     local i
 
     IFS=',' read -ra ips <<< "$PCHAIN_BOOTSTRAP_IPS"
-    for i in "${!NODE_IPS_ARRAY[@]}"; do
+    for i in $(seq 0 $((L1_VALIDATOR_COUNT - 1))); do
         if [ $((i + 1)) -eq "$NODE_NUM" ]; then
             continue
         fi
@@ -83,39 +91,10 @@ l1_bootstrap_ids_for_node() {
     local key_idx
 
     IFS=',' read -ra ids <<< "$PCHAIN_BOOTSTRAP_IDS"
-    for i in $(seq 1 "$NODE_COUNT"); do
+    for i in $(seq 1 "$L1_VALIDATOR_COUNT"); do
         if [ "$i" -eq "$NODE_NUM" ]; then
             continue
         fi
-        key_idx=$((L1_VALIDATOR_START_INDEX + i - 1))
-        ids+=("$(node_id_for_l1_index "$key_idx")")
-    done
-    join_by_comma "${ids[@]}"
-}
-
-nonvalidator_bootstrap_ips_for_node() {
-    local NODE_NUM=$1
-    local ips=()
-    local i
-
-    IFS=',' read -ra ips <<< "$PCHAIN_BOOTSTRAP_IPS"
-    for i in "${!NODE_IPS_ARRAY[@]}"; do
-        if [ $((i + 1)) -eq "$NODE_NUM" ]; then
-            ips+=("127.0.0.1:9653")
-        else
-            ips+=("${NODE_IPS_ARRAY[$i]}:9653")
-        fi
-    done
-    join_by_comma "${ips[@]}"
-}
-
-nonvalidator_bootstrap_ids_for_node() {
-    local ids=()
-    local i
-    local key_idx
-
-    IFS=',' read -ra ids <<< "$PCHAIN_BOOTSTRAP_IDS"
-    for i in $(seq 1 "$NODE_COUNT"); do
         key_idx=$((L1_VALIDATOR_START_INDEX + i - 1))
         ids+=("$(node_id_for_l1_index "$key_idx")")
     done
@@ -168,59 +147,12 @@ EOF
     ssh "$SSH_USER@$NODE_IP" "chmod +x ~/avalanche-benchmark/start-l1-validator.sh && ~/avalanche-benchmark/start-l1-validator.sh"
 }
 
-start_l1_nonvalidator() {
-    local NODE_IP=$1
-    local NODE_NUM=$2
-    local L1_BOOTSTRAP_IPS
-    local L1_BOOTSTRAP_IDS
-
-    L1_BOOTSTRAP_IPS=$(nonvalidator_bootstrap_ips_for_node "$NODE_NUM")
-    L1_BOOTSTRAP_IDS=$(nonvalidator_bootstrap_ids_for_node)
-
-    echo "  Starting L1 non-validator $NODE_NUM on $NODE_IP..."
-
-    cat > /tmp/start-l1-nonvalidator-${NODE_NUM}.sh << EOF
-#!/bin/bash
-set -e
-cd ~/avalanche-benchmark
-
-rm -rf data/nonvalidator
-mkdir -p "data/nonvalidator/configs/chains/$CHAIN_ID" "data/nonvalidator/db" "data/nonvalidator/logs"
-cp chain-config.json "data/nonvalidator/configs/chains/$CHAIN_ID/config.json"
-
-setsid ./bin/avalanchego \\
-    --http-port=9654 \\
-    --staking-port=9655 \\
-    --http-host=0.0.0.0 \\
-    --public-ip=$NODE_IP \\
-    --db-dir=data/nonvalidator/db \\
-    --log-dir=data/nonvalidator/logs \\
-    --data-dir=data/nonvalidator \\
-    --network-id=local \\
-    --plugin-dir=\$(pwd)/plugins \\
-    --config-file=node-config.json \\
-    --chain-config-dir=data/nonvalidator/configs/chains \\
-    --track-subnets="$SUBNET_ID" \\
-    --bootstrap-ips=$L1_BOOTSTRAP_IPS \\
-    --bootstrap-ids=$L1_BOOTSTRAP_IDS \\
-    >data/nonvalidator/logs/avalanchego.out 2>&1 < /dev/null &
-EOF
-
-    scp -q /tmp/start-l1-nonvalidator-${NODE_NUM}.sh "$SSH_USER@$NODE_IP:~/avalanche-benchmark/start-l1-nonvalidator.sh"
-    ssh "$SSH_USER@$NODE_IP" "chmod +x ~/avalanche-benchmark/start-l1-nonvalidator.sh && ~/avalanche-benchmark/start-l1-nonvalidator.sh"
-}
-
-echo "[3/5] Starting remote L1 validators..."
-for i in "${!NODE_IPS_ARRAY[@]}"; do
+echo "[3/4] Starting remote L1 validators..."
+for i in $(seq 0 $((L1_VALIDATOR_COUNT - 1))); do
     start_l1_validator "${NODE_IPS_ARRAY[$i]}" $((i + 1))
 done
 
-echo "[4/5] Starting adjacent L1 non-validators..."
-for i in "${!NODE_IPS_ARRAY[@]}"; do
-    start_l1_nonvalidator "${NODE_IPS_ARRAY[$i]}" $((i + 1))
-done
-
-echo "[5/5] Verifying L1 RPC endpoints..."
+echo "[4/4] Verifying L1 RPC endpoints..."
 verify_rpc() {
     local NODE_IP=$1
     local NODE_NUM=$2
@@ -270,16 +202,14 @@ verify_rpc() {
 }
 
 FAILED=0
-for i in "${!NODE_IPS_ARRAY[@]}"; do
+for i in $(seq 0 $((L1_VALIDATOR_COUNT - 1))); do
     verify_rpc "${NODE_IPS_ARRAY[$i]}" $((i + 1)) 9652 validator || FAILED=$((FAILED + 1))
-    verify_rpc "${NODE_IPS_ARRAY[$i]}" $((i + 1)) 9654 non-validator || FAILED=$((FAILED + 1))
 done
 
 if [ "$FAILED" -gt 0 ]; then
     echo ""
     echo "ERROR: $FAILED L1 RPC endpoint(s) failed verification"
     echo "  Validator logs: ssh <NODE_IP> 'tail -100 ~/avalanche-benchmark/data/validator/logs/main.log'"
-    echo "  Non-validator logs: ssh <NODE_IP> 'tail -100 ~/avalanche-benchmark/data/nonvalidator/logs/main.log'"
     exit 1
 fi
 
@@ -287,13 +217,9 @@ echo ""
 echo "=== Remote L1 Nodes Started ==="
 echo ""
 echo "Validator RPC endpoints:"
-for NODE_IP in "${NODE_IPS_ARRAY[@]}"; do
+for i in $(seq 0 $((L1_VALIDATOR_COUNT - 1))); do
+    NODE_IP="${NODE_IPS_ARRAY[$i]}"
     echo "  http://$NODE_IP:9652/ext/bc/$CHAIN_ID/rpc"
-done
-echo ""
-echo "Non-validator RPC endpoints:"
-for NODE_IP in "${NODE_IPS_ARRAY[@]}"; do
-    echo "  http://$NODE_IP:9654/ext/bc/$CHAIN_ID/rpc"
 done
 echo ""
 echo "Next: Run ./05_benchmark.sh"

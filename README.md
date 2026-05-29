@@ -1,6 +1,6 @@
 # Remote Benchmark
 
-Benchmark tool for an Avalanche L1 deployed on five remote benchmark hosts.
+Benchmark tool for an Avalanche L1 deployed on the first three hosts of a five-machine benchmark inventory.
 
 ## Ports
 
@@ -38,10 +38,10 @@ make          # builds avalanchego from configure-genesis-acp226-excess branch +
 # 1. Start five local P-chain validators
 ./01_bootstrap_primary_network.sh
 
-# 2. Create L1 and register staking/l1/6..10 as validators
+# 2. Create L1 and register staking/l1/6..8 as validators
 ./02_create_l1.sh
 
-# 3. Upload remote artifacts and start remote L1 validators
+# 3. Upload remote artifacts and start three remote L1 validators
 ./03_deploy_l1_config.sh
 
 # 4. Run benchmark
@@ -90,7 +90,7 @@ Genesis is configured with ACP-226 excess gas parameters (`graniteTimestamp: 0`,
 This repo has one topology:
 
 - Local dev machine: five P-chain validators using committed `staking/l1/1..5`.
-- Five remote benchmark hosts: L1 validators using committed `staking/l1/6..10`.
+- First three remote benchmark hosts: L1 validators using committed `staking/l1/6..8`.
 - Benchmark traffic goes to the first remote L1 validator on port `9652`.
 
 ### Reference Benchmark

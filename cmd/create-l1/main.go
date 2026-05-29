@@ -29,7 +29,7 @@ var outputFile string
 const (
 	pchainURI             = "http://127.0.0.1:9650"
 	l1ValidatorStartIndex = 6
-	l1ValidatorCount      = 5
+	l1ValidatorCount      = 3
 )
 
 func main() {
@@ -65,9 +65,10 @@ func run() error {
 	if len(nodeIPs) == 0 || nodeIPs[0] == "" {
 		return fmt.Errorf("NODE_IPS must contain at least one IP")
 	}
-	if len(nodeIPs) != l1ValidatorCount {
-		return fmt.Errorf("NODE_IPS must contain exactly %d benchmark node IPs", l1ValidatorCount)
+	if len(nodeIPs) < l1ValidatorCount {
+		return fmt.Errorf("NODE_IPS must contain at least %d benchmark node IPs", l1ValidatorCount)
 	}
+	nodeIPs = nodeIPs[:l1ValidatorCount]
 
 	fmt.Println("=== Create L1 ===")
 	fmt.Printf("  P-chain API: %s\n", pchainURI)
