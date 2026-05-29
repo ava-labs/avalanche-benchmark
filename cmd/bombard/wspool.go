@@ -19,27 +19,49 @@ type wsPool struct {
 	clients chan *ethclient.Client
 }
 
-// newWSPool opens n connections distributed round-robin across wsURLs.
+// newWSPool opens n connections distributed round-robin across the reachable
+// wsURLs. Unreachable endpoints are skipped so the run proceeds as long as at
+// least one endpoint is alive.
 func newWSPool(ctx context.Context, wsURLs []string, n int) (*wsPool, error) {
 	if len(wsURLs) == 0 {
 		return nil, fmt.Errorf("wsPool needs at least one URL")
 	}
-	if n < len(wsURLs) {
-		n = len(wsURLs) // at least one connection per endpoint
+
+	// Probe each endpoint once; keep only the reachable ones.
+	var live []string
+	for _, url := range wsURLs {
+		rc, err := rpc.DialWebsocket(ctx, url, "")
+		if err != nil {
+			fmt.Printf("WS endpoint unavailable, skipping: %s (%v)\n", url, err)
+			continue
+		}
+		rc.Close()
+		live = append(live, url)
 	}
+	if len(live) == 0 {
+		return nil, fmt.Errorf("no reachable WS endpoints among %d", len(wsURLs))
+	}
+	if n < len(live) {
+		n = len(live) // at least one connection per live endpoint
+	}
+
 	p := &wsPool{
 		rpcs:    make([]*rpc.Client, 0, n),
 		clients: make(chan *ethclient.Client, n),
 	}
 	for i := 0; i < n; i++ {
-		url := wsURLs[i%len(wsURLs)]
+		url := live[i%len(live)]
 		rc, err := rpc.DialWebsocket(ctx, url, "")
 		if err != nil {
-			p.Close()
-			return nil, fmt.Errorf("dial ws conn %d (%s): %w", i, url, err)
+			fmt.Printf("WS dial failed, skipping connection: %s (%v)\n", url, err)
+			continue
 		}
 		p.rpcs = append(p.rpcs, rc)
 		p.clients <- ethclient.NewClient(rc)
+	}
+	if len(p.rpcs) == 0 {
+		p.Close()
+		return nil, fmt.Errorf("no WS connections established")
 	}
 	return p, nil
 }

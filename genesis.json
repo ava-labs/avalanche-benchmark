@@ -2,9 +2,9 @@
     "config": {
         "chainId": 99999,
         "graniteTimestamp": 0,
-        "initialMinDelayMS": 5,
+        "initialMinDelayMS": 100,
         "feeConfig": {
-            "gasLimit": 200000000,
+            "gasLimit": 10000000,
             "targetBlockRate": 1,
             "minBaseFee": 1,
             "targetGas": 18446744073709551615,
@@ -30,7 +30,7 @@
     "nonce": "0x0",
     "timestamp": "0x69cd7b8d",
     "extraData": "0x00",
-    "gasLimit": "0xbebc200",
+    "gasLimit": "0x989680",
     "difficulty": "0x0",
     "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
     "coinbase": "0x0000000000000000000000000000000000000000",

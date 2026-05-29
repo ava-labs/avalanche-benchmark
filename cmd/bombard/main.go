@@ -46,14 +46,7 @@ const (
 
 	gasLimitNative = 21000
 	gasPrice       = 25
-
-	ringBufferSize = 100000
 )
-
-type latencySample struct {
-	mined time.Duration // first-send -> block timestamp
-	total time.Duration // first-send -> observed by watcher
-}
 
 type txState struct {
 	signed    *types.Transaction
@@ -64,7 +57,7 @@ type txState struct {
 
 // tracker is the single source of truth. issued/mined are atomic counters so
 // the issuer can check the in-flight cap without taking the lock on every tick;
-// the map and ring buffer are guarded by mu.
+// the maps and latSince are guarded by mu.
 type tracker struct {
 	mu       sync.Mutex
 	inflight map[uint64]*txState     // nonce -> state, present until mined
@@ -75,9 +68,6 @@ type tracker struct {
 	resent atomic.Uint64 // resubmissions
 
 	latSince []time.Duration // total latencies since the last report tick
-	ring     [ringBufferSize]latencySample
-	ringHead int
-	ringFull bool
 }
 
 func newTracker() *tracker {
@@ -97,7 +87,7 @@ func (t *tracker) register(nonce uint64, st *txState) {
 	t.mu.Unlock()
 }
 
-func (t *tracker) onMined(hash common.Hash, blockTime, observedAt time.Time) {
+func (t *tracker) onMined(hash common.Hash, observedAt time.Time) {
 	t.mu.Lock()
 	nonce, ok := t.byHash[hash]
 	if !ok {
@@ -108,21 +98,11 @@ func (t *tracker) onMined(hash common.Hash, blockTime, observedAt time.Time) {
 	delete(t.inflight, nonce)
 	delete(t.byHash, hash)
 
-	mined := blockTime.Sub(st.firstSend)
-	if mined < 0 {
-		mined = 0
-	}
 	total := observedAt.Sub(st.firstSend)
 	if total < 0 {
 		total = 0
 	}
 	t.latSince = append(t.latSince, total)
-	t.ring[t.ringHead] = latencySample{mined: mined, total: total}
-	t.ringHead++
-	if t.ringHead >= ringBufferSize {
-		t.ringHead = 0
-		t.ringFull = true
-	}
 	t.mu.Unlock()
 
 	t.mined.Add(1)
@@ -150,27 +130,13 @@ func (t *tracker) dueForResubmit(interval time.Duration, now time.Time) []*types
 	return out
 }
 
-func (t *tracker) snapshotRing() []latencySample {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if !t.ringFull {
-		out := make([]latencySample, t.ringHead)
-		copy(out, t.ring[:t.ringHead])
-		return out
-	}
-	out := make([]latencySample, ringBufferSize)
-	copy(out, t.ring[t.ringHead:])
-	copy(out[ringBufferSize-t.ringHead:], t.ring[:t.ringHead])
-	return out
-}
-
 var track = newTracker()
 
 const (
 	// in-flight cap = rps / inflightDivisor nonces ahead of last-mined. A
-	// divisor of 5 stops issuance once in-flight represents ~1/5s of latency,
+	// divisor of 2 stops issuance once in-flight represents ~1/2s of latency,
 	// providing early backpressure before a resubmit storm can build.
-	inflightDivisor = 5
+	inflightDivisor = 2
 	// resubmitInterval re-sends any tx still in flight after this long, to
 	// survive mempool loss from node overload or a crash.
 	resubmitInterval = time.Second
@@ -263,21 +229,36 @@ func main() {
 	defer pool.Close()
 	fmt.Printf("Opened %d WS connections across %d endpoint(s)\n", len(pool.rpcs), len(wsURLs))
 
-	// One watcher per endpoint; first to see a tx in a block records it.
+	// One watcher per reachable endpoint; first to see a tx in a block records
+	// it. Unreachable endpoints are skipped (a dead node must not abort the run).
+	watchers := 0
 	for _, ws := range wsURLs {
 		watcherRPC, err := rpc.DialWebsocket(ctx, ws, "")
 		if err != nil {
-			fmt.Printf("Failed to dial watcher WS %s: %v\n", ws, err)
-			os.Exit(1)
+			fmt.Printf("Watcher endpoint unavailable, skipping: %s (%v)\n", ws, err)
+			continue
 		}
 		defer watcherRPC.Close()
 		go watchBlocks(ctx, watcherRPC, pollInterval)
+		watchers++
+	}
+	if watchers == 0 {
+		fmt.Println("No reachable watcher endpoints")
+		os.Exit(1)
 	}
 
-	// Setup connection: chain ID + start nonce.
-	setupRPC, err := rpc.DialWebsocket(ctx, wsURLs[0], "")
-	if err != nil {
-		fmt.Printf("Failed to dial setup WS: %v\n", err)
+	// Setup connection (chain ID + start nonce): use the first reachable endpoint.
+	var setupRPC *rpc.Client
+	for _, ws := range wsURLs {
+		rc, err := rpc.DialWebsocket(ctx, ws, "")
+		if err != nil {
+			continue
+		}
+		setupRPC = rc
+		break
+	}
+	if setupRPC == nil {
+		fmt.Println("No reachable endpoint for setup")
 		os.Exit(1)
 	}
 	defer setupRPC.Close()
@@ -305,8 +286,15 @@ func main() {
 	}
 	fmt.Printf("Issuer: %s  start nonce: %d\n", address.Hex(), startNonce)
 
+	// Metric scrape only makes sense for a bounded run (start/end window to
+	// subtract over). Snapshot every node now; the dead one is skipped.
+	metricsChainID := chainIDFromRPC(rpcURLs[0])
+	var startSnaps []nodeSnapshot
+	if *runDuration > 0 {
+		startSnaps = scrapeAllNodes(rpcURLs)
+	}
+
 	go reportLoop(ctx, *rps, cap)
-	go printTableLoop(ctx)
 	go resubmitLoop(ctx, pool, resubmitInterval)
 
 	fmt.Printf("\nSingle issuer: target %d rps, in-flight cap %d nonces, resubmit after %s\n\n",
@@ -332,6 +320,11 @@ func main() {
 	wg.Wait()
 	fmt.Printf("FINAL issued=%d mined=%d inflight=%d resubmits=%d\n",
 		track.issued.Load(), track.mined.Load(), track.inFlight(), track.resent.Load())
+
+	if *runDuration > 0 {
+		endSnaps := scrapeAllNodes(rpcURLs)
+		printNodeMetrics(startSnaps, endSnaps, metricsChainID)
+	}
 }
 
 // issuer releases nonces under the per-second rate budget and the in-flight cap.
@@ -473,70 +466,12 @@ func reportLoop(ctx context.Context, tps, cap int) {
 	}
 }
 
-func printTableLoop(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-
-		samples := track.snapshotRing()
-		if len(samples) == 0 {
-			continue
-		}
-		minedXs := make([]time.Duration, len(samples))
-		totalXs := make([]time.Duration, len(samples))
-		for i, s := range samples {
-			minedXs[i] = s.mined
-			totalXs[i] = s.total
-		}
-		sortedMined := append([]time.Duration(nil), minedXs...)
-		sortedTotal := append([]time.Duration(nil), totalXs...)
-		sort.Slice(sortedMined, func(i, j int) bool { return sortedMined[i] < sortedMined[j] })
-		sort.Slice(sortedTotal, func(i, j int) bool { return sortedTotal[i] < sortedTotal[j] })
-
-		fmt.Println()
-		fmt.Printf("  PERCENTILES (last %d mined)\n", len(samples))
-		fmt.Println("  ┌────────────────────┬───────────────┬───────────────┐")
-		fmt.Println("  │ Metric             │  Mined        │  Total        │")
-		fmt.Println("  ├────────────────────┼───────────────┼───────────────┤")
-		fmt.Printf("  │ Min                │ %s │ %s │\n", fmtMs(sortedMined[0]), fmtMs(sortedTotal[0]))
-		fmt.Printf("  │ Avg                │ %s │ %s │\n", fmtMs(meanDur(minedXs)), fmtMs(meanDur(totalXs)))
-		fmt.Printf("  │ Median (P50)       │ %s │ %s │\n", fmtMs(pctDur(sortedMined, 50)), fmtMs(pctDur(sortedTotal, 50)))
-		fmt.Printf("  │ P75                │ %s │ %s │\n", fmtMs(pctDur(sortedMined, 75)), fmtMs(pctDur(sortedTotal, 75)))
-		fmt.Printf("  │ P90                │ %s │ %s │\n", fmtMs(pctDur(sortedMined, 90)), fmtMs(pctDur(sortedTotal, 90)))
-		fmt.Printf("  │ P95                │ %s │ %s │\n", fmtMs(pctDur(sortedMined, 95)), fmtMs(pctDur(sortedTotal, 95)))
-		fmt.Printf("  │ P99                │ %s │ %s │\n", fmtMs(pctDur(sortedMined, 99)), fmtMs(pctDur(sortedTotal, 99)))
-		fmt.Printf("  │ Max                │ %s │ %s │\n", fmtMs(sortedMined[len(sortedMined)-1]), fmtMs(sortedTotal[len(sortedTotal)-1]))
-		fmt.Println("  └────────────────────┴───────────────┴───────────────┘")
-		fmt.Println()
-	}
-}
-
-func fmtMs(d time.Duration) string {
-	return fmt.Sprintf("%10d ms", d.Milliseconds())
-}
-
 func pctDur(sorted []time.Duration, p int) time.Duration {
 	if len(sorted) == 0 {
 		return 0
 	}
 	idx := p * (len(sorted) - 1) / 100
 	return sorted[idx]
-}
-
-func meanDur(xs []time.Duration) time.Duration {
-	if len(xs) == 0 {
-		return 0
-	}
-	var sum time.Duration
-	for _, x := range xs {
-		sum += x
-	}
-	return sum / time.Duration(len(xs))
 }
 
 // splitNonEmpty splits on commas and whitespace, dropping empty fields.

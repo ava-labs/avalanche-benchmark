@@ -3,6 +3,8 @@
 .DEFAULT_GOAL := all
 
 AVALANCHEGO_BRANCH=configure-genesis-acp226-excess
+# Local worktree used for proposer-window experiments (currently WindowDuration=1000ms)
+AVALANCHEGO_SRC=/home/ubuntu/avalanchego-configure-genesis-acp226-excess-50ms-window
 
 SUBNET_EVM_ID=srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
 
@@ -27,16 +29,13 @@ deps: bin/avalanchego
 clean:
 	rm -rf bin/
 
-# Build avalanchego + subnet-evm from source (run on Linux)
+# Build avalanchego + subnet-evm from the local worktree (run on Linux)
 bin/avalanchego bin/$(SUBNET_EVM_ID):
 	@mkdir -p bin
-	rm -rf /tmp/avalanchego-build
-	git clone --depth 1 --branch $(AVALANCHEGO_BRANCH) https://github.com/ava-labs/avalanchego.git /tmp/avalanchego-build
-	cd /tmp/avalanchego-build && ./scripts/build.sh
-	cd /tmp/avalanchego-build && ./graft/subnet-evm/scripts/build.sh || true
-	cp /tmp/avalanchego-build/build/avalanchego bin/avalanchego
-	cp /tmp/avalanchego-build/build/subnet-evm bin/$(SUBNET_EVM_ID)
-	rm -rf /tmp/avalanchego-build
+	cd $(AVALANCHEGO_SRC) && ./scripts/build.sh
+	cd $(AVALANCHEGO_SRC) && ./graft/subnet-evm/scripts/build.sh || true
+	cp $(AVALANCHEGO_SRC)/build/avalanchego bin/avalanchego
+	cp $(AVALANCHEGO_SRC)/build/subnet-evm bin/$(SUBNET_EVM_ID)
 
 # Create offline package for deployment to another machine
 pack: deps build
