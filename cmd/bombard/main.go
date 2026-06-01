@@ -60,7 +60,7 @@ type txState struct {
 // the maps and latSince are guarded by mu.
 type tracker struct {
 	mu       sync.Mutex
-	inflight map[uint64]*txState     // nonce -> state, present until mined
+	inflight map[uint64]*txState    // nonce -> state, present until mined
 	byHash   map[common.Hash]uint64 // tx hash -> nonce, for the watcher
 
 	issued atomic.Uint64 // nonces released by the issuer
@@ -152,6 +152,7 @@ func main() {
 	resubmitFlag := flag.Duration("resubmit", resubmitInterval, "Re-send still-in-flight txs after this long. Set above the worst block latency (e.g. failover proposer stalls) to avoid resubmit storms.")
 	inflightCapFlag := flag.Int("inflight", 0, "Absolute in-flight cap (nonces ahead of last-mined). 0 = rps/inflightDivisor.")
 	sendTimeoutFlag := flag.Duration("sendtimeout", time.Second, "Per-node send timeout. Every tx is broadcast to every node over HTTP; a node slower than this is skipped for that tx (errors ignored).")
+	tuiFlag := flag.Bool("tui", true, "Render a live terminal UI when stdout is a terminal. Set false to force one-line STATS output.")
 	flag.Parse()
 
 	if *rps <= 0 {
@@ -166,6 +167,7 @@ func main() {
 		cap = 1
 	}
 	resubmitEvery := *resubmitFlag
+	useTUI := *tuiFlag && stdoutIsTerminal()
 
 	// Resolve the RPC endpoint list.
 	rpcURLs := splitNonEmpty(*rpcFlag)
@@ -193,7 +195,14 @@ func main() {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() { os.Exit(signalExitCode(<-sigCh)) }()
+	go func() {
+		sig := <-sigCh
+		restoreTerminal()
+		if useTUI {
+			fmt.Println()
+		}
+		os.Exit(signalExitCode(sig))
+	}()
 
 	if *runDuration > 0 {
 		go func() {
@@ -202,7 +211,9 @@ func main() {
 			select {
 			case <-ctx.Done():
 			case <-timer.C:
-				fmt.Printf("Duration target reached: %s\n", runDuration.String())
+				if !useTUI {
+					fmt.Printf("Duration target reached: %s\n", runDuration.String())
+				}
 				cancel()
 			}
 		}()
@@ -218,7 +229,9 @@ func main() {
 				case <-ticker.C:
 				}
 				if track.mined.Load() >= *targetTxs {
-					fmt.Printf("Transaction target reached: mined=%d target=%d\n", track.mined.Load(), *targetTxs)
+					if !useTUI {
+						fmt.Printf("Transaction target reached: mined=%d target=%d\n", track.mined.Load(), *targetTxs)
+					}
 					cancel()
 					return
 				}
@@ -321,7 +334,11 @@ func main() {
 		startSnaps = scrapeAllNodes(rpcURLs)
 	}
 
-	go reportLoop(ctx, *rps, cap)
+	reportDone := make(chan struct{})
+	go func() {
+		defer close(reportDone)
+		reportLoop(ctx, *rps, cap, useTUI)
+	}()
 	go resubmitLoop(ctx, bc, resubmitEvery)
 
 	fmt.Printf("\nSingle issuer: target %d rps, in-flight cap %d nonces, resubmit after %s\n\n",
@@ -345,6 +362,7 @@ func main() {
 	<-ctx.Done()
 	close(sendCh)
 	wg.Wait()
+	<-reportDone
 	fmt.Printf("FINAL issued=%d mined=%d inflight=%d resubmits=%d\n",
 		track.issued.Load(), track.mined.Load(), track.inFlight(), track.resent.Load())
 
@@ -442,9 +460,16 @@ func benignSendErr(err error) bool {
 		strings.Contains(s, "nonce too low")
 }
 
-func reportLoop(ctx context.Context, tps, cap int) {
+func reportLoop(ctx context.Context, tps, cap int, useTUI bool) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+
+	var ui *terminalStatsUI
+	if useTUI {
+		ui = newTerminalStatsUI(os.Stdout)
+		defer ui.close()
+	}
+
 	prevMined := track.mined.Load()
 	prevAt := time.Now()
 	for {
@@ -470,19 +495,33 @@ func reportLoop(ctx context.Context, tps, cap int) {
 		prevAt = now
 
 		inflight := track.inFlight()
-		behind := ""
-		if inflight >= uint64(cap) {
-			behind = " AT-CAP(behind)"
+		snapshot := statsSnapshot{
+			at:        now,
+			targetRPS: tps,
+			cap:       cap,
+			issued:    track.issued.Load(),
+			mined:     mined,
+			inflight:  inflight,
+			resubmits: track.resent.Load(),
+			minedTPS:  minedTps,
+			atCap:     inflight >= uint64(cap),
+			p50:       0,
+			p95:       0,
+			p99:       0,
 		}
 
 		if len(lats) > 0 {
 			sort.Slice(lats, func(i, j int) bool { return lats[i] < lats[j] })
-			fmt.Printf("STATS issued=%d mined=%d inflight=%d/%d resubmits=%d minedTps=%.0f/%d%s | total p50=%v p95=%v p99=%v\n",
-				track.issued.Load(), mined, inflight, cap, track.resent.Load(), minedTps, tps, behind,
-				pctDur(lats, 50).Round(time.Millisecond), pctDur(lats, 95).Round(time.Millisecond), pctDur(lats, 99).Round(time.Millisecond))
+			snapshot.latencySamples = len(lats)
+			snapshot.p50 = pctDur(lats, 50)
+			snapshot.p95 = pctDur(lats, 95)
+			snapshot.p99 = pctDur(lats, 99)
+		}
+
+		if ui != nil {
+			ui.render(snapshot)
 		} else {
-			fmt.Printf("STATS issued=%d mined=%d inflight=%d/%d resubmits=%d minedTps=%.0f/%d%s | no landings this tick\n",
-				track.issued.Load(), mined, inflight, cap, track.resent.Load(), minedTps, tps, behind)
+			printStats(snapshot)
 		}
 	}
 }
