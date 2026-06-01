@@ -149,6 +149,8 @@ func main() {
 	rps := flag.Int("rps", 4000, "Target transactions issued per second")
 	targetTxs := flag.Uint64("txs", 0, "Stop after at least this many mined txs; 0 means run until interrupted")
 	runDuration := flag.Duration("duration", 0, "Stop after this duration; 0 means run until interrupted or --txs is reached")
+	resubmitFlag := flag.Duration("resubmit", resubmitInterval, "Re-send still-in-flight txs after this long. Set above the worst block latency (e.g. failover proposer stalls) to avoid resubmit storms.")
+	inflightCapFlag := flag.Int("inflight", 0, "Absolute in-flight cap (nonces ahead of last-mined). 0 = rps/inflightDivisor.")
 	flag.Parse()
 
 	if *rps <= 0 {
@@ -156,9 +158,13 @@ func main() {
 		os.Exit(1)
 	}
 	cap := *rps / inflightDivisor
+	if *inflightCapFlag > 0 {
+		cap = *inflightCapFlag
+	}
 	if cap < 1 {
 		cap = 1
 	}
+	resubmitEvery := *resubmitFlag
 
 	// Resolve the RPC endpoint list.
 	rpcURLs := splitNonEmpty(*rpcFlag)
@@ -295,10 +301,10 @@ func main() {
 	}
 
 	go reportLoop(ctx, *rps, cap)
-	go resubmitLoop(ctx, pool, resubmitInterval)
+	go resubmitLoop(ctx, pool, resubmitEvery)
 
 	fmt.Printf("\nSingle issuer: target %d rps, in-flight cap %d nonces, resubmit after %s\n\n",
-		*rps, cap, resubmitInterval.String())
+		*rps, cap, resubmitEvery.String())
 
 	// Send workers sign + submit nonces handed to them by the issuer. Signing
 	// is spread across all these goroutines (nproc cores) so it never gates the
