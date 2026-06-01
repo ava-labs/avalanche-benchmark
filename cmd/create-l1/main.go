@@ -172,7 +172,8 @@ func run() error {
 	fmt.Printf("Chain ID:  %s\n", chainID)
 	fmt.Printf("Validators: staking/l1/%d..%d (%d total)\n", l1ValidatorStartIndex, l1ValidatorStartIndex+l1ValidatorCount-1, l1ValidatorCount)
 	fmt.Println()
-	fmt.Println("RPC Endpoints:")
+	fmt.Println("RPC endpoints (NOT live yet — these start serving only after")
+	fmt.Println("./03_wipe_and_deploy_l1.sh deploys and boots the validators):")
 	for i, ip := range nodeIPs {
 		fmt.Printf("  Node %d: http://%s:9652/ext/bc/%s/rpc\n", i+1, ip, chainID)
 	}

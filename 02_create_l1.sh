@@ -19,7 +19,7 @@ if [ -f "$NETWORK_ENV" ]; then
     read -p "Create a NEW L1? This will overwrite network.env. [y/N] " -n 1 -r
     echo ""
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Aborted. To deploy config to existing L1, run: ./03_deploy_l1_config.sh"
+        echo "Aborted. To deploy config to existing L1, run: ./03_wipe_and_deploy_l1.sh"
         exit 0
     fi
 fi
@@ -43,5 +43,5 @@ echo "Chain ID:  $CHAIN_ID"
 echo ""
 echo "Saved to: $NETWORK_ENV"
 echo ""
-echo "Next step: ./03_deploy_l1_config.sh"
+echo "Next step: ./03_wipe_and_deploy_l1.sh"
 echo "  This will deploy chain config and start remote L1 validators."

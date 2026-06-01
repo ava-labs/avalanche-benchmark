@@ -143,17 +143,64 @@ wait_for_local_pchain_node() {
                 "http://127.0.0.1:$http_port/ext/info" || true)
             node_id=$(echo "$result" | grep -o '"nodeID":"[^"]*"' | cut -d'"' -f4 || true)
             if [ "$node_id" = "$expected_node_id" ]; then
-                echo " OK"
-                return 0
+                # Health + matching NodeID is not enough: the API answers before
+                # the P-chain has finished bootstrapping. Require P bootstrapped
+                # so we never declare "ready" on a node that can't yet serve the
+                # chain the L1 validators bootstrap against.
+                if curl -s -X POST \
+                    --data '{"jsonrpc":"2.0","id":1,"method":"info.isBootstrapped","params":{"chain":"P"}}' \
+                    -H 'Content-Type: application/json' \
+                    "http://127.0.0.1:$http_port/ext/info" 2>/dev/null \
+                    | grep -q '"isBootstrapped":true'; then
+                    echo " OK"
+                    return 0
+                fi
             fi
         fi
         sleep 1
     done
 
     echo " TIMEOUT"
-    echo "ERROR: pchain-$node_num did not become healthy with expected NodeID $expected_node_id"
+    echo "ERROR: pchain-$node_num did not become healthy + P-bootstrapped with expected NodeID $expected_node_id"
     echo "  Logs: $DATA_ROOT/$node_num/logs/main.log"
     return 1
+}
+
+# Verify the 5 local validators formed a full peer mesh. The L1 nodes can only
+# clear AvalancheGo's >=75%-connected-stake startup latch if these P-chain
+# validators are actually connected to each other; a node that is "healthy" but
+# isolated (numPeers < N-1) is the classic cause of L1 nodes wedging in
+# BOOTSTRAPPING downstream. Assert it here so the failure surfaces locally.
+verify_pchain_mesh() {
+    local expected=$((PCHAIN_NODE_COUNT - 1))
+    local ok=0
+    local node_num
+    local http_port
+    local num_peers
+
+    echo "[verify] Checking P-chain peer mesh (expect numPeers=$expected per node)..."
+    for node_num in $(seq 1 "$PCHAIN_NODE_COUNT"); do
+        http_port=$(pchain_http_port "$node_num")
+        num_peers=$(curl -s -X POST \
+            --data '{"jsonrpc":"2.0","id":1,"method":"info.peers","params":{}}' \
+            -H 'Content-Type: application/json' \
+            "http://127.0.0.1:$http_port/ext/info" 2>/dev/null \
+            | grep -o '"numPeers":"\?[0-9]*' | grep -o '[0-9]*' | head -n1)
+        num_peers=${num_peers:-0}
+        if [ "$num_peers" -ge "$expected" ]; then
+            echo "  pchain-$node_num: numPeers=$num_peers OK"
+        else
+            echo "  pchain-$node_num: numPeers=$num_peers (expected >=$expected) NOT MESHED"
+            ok=1
+        fi
+    done
+    if [ "$ok" -ne 0 ]; then
+        echo "ERROR: P-chain validators are not fully meshed. L1 nodes will likely"
+        echo "       wedge in BOOTSTRAPPING (cannot reach >=75% connected stake)."
+        return 1
+    fi
+    echo "  P-chain mesh OK."
+    return 0
 }
 
 echo "=== Local Primary Network Bootstrap ==="
@@ -189,6 +236,9 @@ echo "[3/3] Waiting for local P-chain validators..."
 for node_num in $(seq 1 "$PCHAIN_NODE_COUNT"); do
     wait_for_local_pchain_node "$node_num"
 done
+
+echo ""
+verify_pchain_mesh
 
 echo ""
 echo "=== Local Primary Network Ready ==="

@@ -28,6 +28,11 @@ pkill -f "data-dir=data/nonvalidator" 2>/dev/null || true
 # Fallback: kill any remaining avalanchego
 pkill -f avalanchego 2>/dev/null || true
 
+# Reap the subnet-evm plugin child too — it runs as a separate process under
+# plugins/ that "pkill avalanchego" does not match, and would otherwise linger.
+# The [p]lugins bracket keeps this pkill from matching its own shell.
+pkill -KILL -f "avalanche-benchmark/[p]lugins/" 2>/dev/null || true
+
 # Remove deployment directory
 rm -rf ~/avalanche-benchmark
 

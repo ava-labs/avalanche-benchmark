@@ -37,17 +37,11 @@ func logBlock(num uint64, txCount int, tsMs, gasUsed, gasLimit uint64) {
 	}
 	blockLog.seen[num] = true
 
-	var dtMs int64
+	// Per-block line intentionally not printed; STATS lines carry the signal.
 	if num > blockLog.lastNum {
-		if blockLog.prevTime != 0 {
-			dtMs = int64(tsMs) - int64(blockLog.prevTime)
-		}
 		blockLog.lastNum = num
 		blockLog.prevTime = tsMs
 	}
-
-	fmt.Printf("block %d  txs=%d  dt=%dms  gas=%.1fm/%.1fm\n",
-		num, txCount, dtMs, float64(gasUsed)/1e6, float64(gasLimit)/1e6)
 }
 
 func hexToUint64(hex string) uint64 {

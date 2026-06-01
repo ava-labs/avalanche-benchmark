@@ -146,11 +146,12 @@ const (
 
 func main() {
 	rpcFlag := flag.String("rpc", "", "Comma-separated RPC URLs (auto-detected from network_data/rpcs.txt if omitted). Sends fan out across all; watchers race across all.")
-	rps := flag.Int("rps", 4000, "Target transactions issued per second")
+	rps := flag.Int("rps", 1000, "Target transactions issued per second")
 	targetTxs := flag.Uint64("txs", 0, "Stop after at least this many mined txs; 0 means run until interrupted")
 	runDuration := flag.Duration("duration", 0, "Stop after this duration; 0 means run until interrupted or --txs is reached")
 	resubmitFlag := flag.Duration("resubmit", resubmitInterval, "Re-send still-in-flight txs after this long. Set above the worst block latency (e.g. failover proposer stalls) to avoid resubmit storms.")
 	inflightCapFlag := flag.Int("inflight", 0, "Absolute in-flight cap (nonces ahead of last-mined). 0 = rps/inflightDivisor.")
+	sendTimeoutFlag := flag.Duration("sendtimeout", time.Second, "Per-node send timeout. Every tx is broadcast to every node over HTTP; a node slower than this is skipped for that tx (errors ignored).")
 	flag.Parse()
 
 	if *rps <= 0 {
@@ -225,15 +226,18 @@ func main() {
 		}()
 	}
 
-	// Send pool: connections spread across every endpoint so sends fan out.
-	wsConns := runtime.NumCPU() * 10
-	pool, err := newWSPool(ctx, wsURLs, wsConns)
+	// Broadcaster: every tx is sent to every node over HTTP behind a single
+	// keep-alive transport (connections reused, not churned). A down or slow
+	// node is dropped per-tx and never blocks the issuer or the healthy nodes.
+	bc, err := newBroadcaster(ctx, rpcURLs, *sendTimeoutFlag)
 	if err != nil {
-		fmt.Printf("Failed to open WS pool: %v\n", err)
+		fmt.Printf("Failed to start broadcaster: %v\n", err)
 		os.Exit(1)
 	}
-	defer pool.Close()
-	fmt.Printf("Opened %d WS connections across %d endpoint(s)\n", len(pool.rpcs), len(wsURLs))
+	defer bc.Close()
+	sendWorkers := runtime.NumCPU() * 4
+	fmt.Printf("Broadcasting to %d node(s) over HTTP (%d conns/node, %s send timeout)\n",
+		len(bc.nodes), sendConcPerNode, sendTimeoutFlag.String())
 
 	// One watcher per reachable endpoint; first to see a tx in a block records
 	// it. Unreachable endpoints are skipped (a dead node must not abort the run).
@@ -285,12 +289,29 @@ func main() {
 	address := crypto.PubkeyToAddress(privateKey.PublicKey)
 	signer := types.NewEIP155Signer(chainID)
 
-	startNonce, err := client.PendingNonceAt(ctx, address)
-	if err != nil {
-		fmt.Printf("Failed to get nonce: %v\n", err)
+	// Read the start nonce as the MAX across all nodes. A lagging spare /
+	// non-validator reports a stale (too-low) nonce; using it would make every
+	// tx "nonce too low" and silently rejected. The chain head has the true
+	// highest nonce, so the max is correct.
+	var startNonce uint64
+	gotNonce := false
+	for _, n := range bc.nodes {
+		nctx, ncancel := context.WithTimeout(ctx, *sendTimeoutFlag)
+		nn, nerr := n.client.PendingNonceAt(nctx, address)
+		ncancel()
+		if nerr != nil {
+			continue
+		}
+		gotNonce = true
+		if nn > startNonce {
+			startNonce = nn
+		}
+	}
+	if !gotNonce {
+		fmt.Println("Failed to get nonce from any node")
 		os.Exit(1)
 	}
-	fmt.Printf("Issuer: %s  start nonce: %d\n", address.Hex(), startNonce)
+	fmt.Printf("Issuer: %s  start nonce: %d (max across %d node(s))\n", address.Hex(), startNonce, len(bc.nodes))
 
 	// Metric scrape only makes sense for a bounded run (start/end window to
 	// subtract over). Snapshot every node now; the dead one is skipped.
@@ -301,7 +322,7 @@ func main() {
 	}
 
 	go reportLoop(ctx, *rps, cap)
-	go resubmitLoop(ctx, pool, resubmitEvery)
+	go resubmitLoop(ctx, bc, resubmitEvery)
 
 	fmt.Printf("\nSingle issuer: target %d rps, in-flight cap %d nonces, resubmit after %s\n\n",
 		*rps, cap, resubmitEvery.String())
@@ -311,11 +332,11 @@ func main() {
 	// issuer's 1ms cadence.
 	sendCh := make(chan uint64, cap)
 	var wg sync.WaitGroup
-	for i := 0; i < wsConns; i++ {
+	for i := 0; i < sendWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			sendWorker(ctx, pool, sendCh, privateKey, signer, address)
+			sendWorker(bc, sendCh, privateKey, signer, address)
 		}()
 	}
 
@@ -374,8 +395,7 @@ func issuer(ctx context.Context, sendCh chan<- uint64, tps int, cap, startNonce 
 }
 
 func sendWorker(
-	ctx context.Context,
-	pool *wsPool,
+	bc *broadcaster,
 	sendCh <-chan uint64,
 	key *ecdsa.PrivateKey,
 	signer types.Signer,
@@ -390,13 +410,14 @@ func sendWorker(
 		}
 		now := time.Now()
 		track.register(nonce, &txState{signed: signed, firstSend: now, lastSend: now})
-		// A failed first send is fine: the tx stays in flight and the resubmit
-		// loop will re-send it. We only drop it from accounting when it mines.
-		_ = pool.Do(ctx, func(c *ethclient.Client) error { return c.SendTransaction(ctx, signed) })
+		// Fire-and-forget to every node; a failed/dropped send is fine — the tx
+		// stays in flight and the resubmit loop re-broadcasts it. We only drop
+		// it from accounting when it mines.
+		bc.broadcast(signed)
 	}
 }
 
-func resubmitLoop(ctx context.Context, pool *wsPool, interval time.Duration) {
+func resubmitLoop(ctx context.Context, bc *broadcaster, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -406,13 +427,7 @@ func resubmitLoop(ctx context.Context, pool *wsPool, interval time.Duration) {
 		case <-ticker.C:
 		}
 		for _, signed := range track.dueForResubmit(interval, time.Now()) {
-			s := signed
-			err := pool.Do(ctx, func(c *ethclient.Client) error { return c.SendTransaction(ctx, s) })
-			if err != nil && !benignSendErr(err) {
-				// Real send failure; the tx is still in flight and will be
-				// retried on the next tick.
-				continue
-			}
+			bc.broadcast(signed)
 		}
 	}
 }

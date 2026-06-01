@@ -241,8 +241,20 @@ validator-over-non-validating priority, swaps, double-failure, spare rotation).
 It lives in **Go** with table unit tests that run with no cluster (state in,
 actions out).
 
-The I/O is the easy part and is bash-shaped: SSH in, `cat` the key marker,
-`info.getNodeID` over HTTP, `pkill`, `scp` a key into `staking/active/`, start the
-process. The Go binary shells out for these. Thin bash wrappers
-(`scripts/failover/{up,down,failover}.sh`, and `03`) just set intent / flags and
-call the binary.
+The I/O is the easy part and is bash-shaped: SSH in, `pgrep -x avalanchego` for
+liveness, `cat staking/active/key_index` for the actual key, `pkill`, `scp` a key
+set into `staking/active/`, start the process. The Go binary shells out for these
+(replicating the YubiKey-safe SSH options from `_common.sh`). Thin bash wrappers
+(`scripts/failover/{up,down,failover}.sh`, and `03`) source `_common.sh` +
+`network.env`, compute the static P-chain bootstrap set, export it, and call the
+binary.
+
+**Layout:**
+- `cmd/reconcile/plan.go` — pure planner (`ComputeMapping`, `Plan`, `LiveValidators`).
+- `cmd/reconcile/plan_test.go`, `state_test.go` — table tests, cluster-free.
+- `cmd/reconcile/state.go` — intentions JSON load/save + `retarget` (cordon toggle → sticky remap).
+- `cmd/reconcile/remote.go` — SSH/scp I/O, observe, stop, swap, start, provision.
+- `cmd/reconcile/main.go` — CLI (`fresh`/`down <m>`/`up <m>`/`apply`) + the 3-pass loop.
+- `scripts/failover/{_failover_common,up,down,failover}.sh` — wrappers.
+- `03_wipe_and_deploy_l1.sh` — `reconcile fresh`. `05_benchmark.sh` — all 4 pool RPCs.
+- `bin/reconcile` — `make build` target.
