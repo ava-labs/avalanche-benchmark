@@ -23,9 +23,9 @@ the ceiling. All numbers from benchmarks on 2026-06-03.
 | tx-pool caps | `chain-config.json` | 131072 acct-slots etc | Far above any single-issuer need. |
 
 This gives a **~4300 TPS smooth ceiling with zero forks and zero wedge risk**, so
-4000 sits comfortably under it. (The released `WindowDuration=700ms` also reaches
-~4300 and sustained 4278 TPS for 10 min, but is twitchier with less margin —
-prefer 1s.)
+4000 sits comfortably under it. (The earlier `WindowDuration=700ms` build also
+reached ~4300 and sustained 4278 TPS for 10 min, but was twitchier with less
+margin; the packaged build now pins 1s.)
 
 **The forbidden combination:** `beta < ~8` **and** `WindowDuration < 1s` **and**
 overdrive **and** hard SIGKILLs. That is the recipe for a permanently diverged

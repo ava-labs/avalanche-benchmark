@@ -352,9 +352,9 @@ If you pushed too hard and need to restart, wait 60 seconds for the mempool to c
 ### Block Time
 
 Genesis is configured with ACP-226 excess gas parameters (`graniteTimestamp: 0`,
-`initialMinDelayMS: 20`) for fast block production from the start. The chain
-config sets `min-delay-target: 20`, and the packaged AvalancheGo build pins a
-700ms proposer window branch. To tune further, edit `min-delay-target` in
+`initialMinDelayMS: 5`) for fast block production from the start. The chain
+config sets `min-delay-target: 5`, and the packaged AvalancheGo build pins a
+1s proposer window branch. To tune further, edit `min-delay-target` in
 `chain-config.json` and re-run `./03_wipe_and_deploy_l1.sh` (which resets the
 chain to genesis — see step 3).
 
