@@ -51,14 +51,20 @@ RPC_LIST="$(IFS=,; echo "${RPC_URLS[*]}")"
 TARGET_RPS=4000
 INFLIGHT=750
 RESUBMIT_INTERVAL=5s
+# Issue 1% over target. The rolling token-bucket pacer no longer leaks the tail
+# of each second, but mined still reads a hair under target because ~240 txs are
+# always in flight at any instant (mined = issued - inflight). A 1% overshoot
+# absorbs that tail plus reject/jitter losses so mined lands at-or-above target;
+# measured 4032 TPS, inflight ~244, 0 resubmits (2% starts grazing the cap).
+OVERSHOOT=0.01
 
 echo "=== Benchmark ==="
 echo "Chain ID: $CHAIN_ID"
-echo "Target:   $TARGET_RPS rps  (inflight cap $INFLIGHT)"
+echo "Target:   $TARGET_RPS rps  (inflight cap $INFLIGHT, +$(echo "$OVERSHOOT*100" | bc)% overshoot)"
 echo "Resubmit: $RESUBMIT_INTERVAL"
 echo ""
 echo "Ingress: dedicated RPC node (machine 5, key 10, pinned non-validator) only:"
 for u in "${RPC_URLS[@]}"; do echo "  $u"; done
 echo ""
 
-exec "$BOMBARD" --rpc "$RPC_LIST" -rps "$TARGET_RPS" -inflight "$INFLIGHT" -resubmit "$RESUBMIT_INTERVAL"
+exec "$BOMBARD" --rpc "$RPC_LIST" -rps "$TARGET_RPS" -inflight "$INFLIGHT" -resubmit "$RESUBMIT_INTERVAL" -overshoot "$OVERSHOOT"

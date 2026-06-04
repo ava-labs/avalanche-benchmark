@@ -29,8 +29,14 @@ import (
 // One key, one strictly increasing nonce — a production-shaped workload (a
 // single web2->web3 gateway issuing transactions in order). Two governors:
 //
-//  1. Rate limiter: a per-second budget. Every 1ms we may have sent up to
-//     tps/1000 * msElapsedThisSecond txs; the budget resets each wall second.
+//  1. Rate limiter: a rolling token bucket. Tokens accrue at `rps`(×overshoot)
+//     per second and are capped at a 1-second burst, so a deficit in the
+//     trailing ~1s (send workers briefly saturated, inflight grazing the cap)
+//     is made up instead of being dropped at a wall-second boundary — the old
+//     per-second-reset budget leaked the tail of every second (~the last few
+//     txs each second), so mined always sat a hair under target. Carry-over is
+//     bounded to 1s so a long stall (e.g. a failover dip) cannot trigger an
+//     unbounded catch-up flood; at most one second is recovered.
 //  2. In-flight cap: we never let ourselves get more than `inflight` nonces
 //     ahead of the last-mined nonce. Hitting the cap is the backpressure /
 //     "falling behind" signal — there is no timeout counter.
@@ -151,6 +157,7 @@ func main() {
 	runDuration := flag.Duration("duration", 0, "Stop after this duration; 0 means run until interrupted or --txs is reached")
 	resubmitFlag := flag.Duration("resubmit", resubmitInterval, "Re-send still-in-flight txs after this long. Set above the worst block latency (e.g. failover proposer stalls) to avoid resubmit storms.")
 	inflightCapFlag := flag.Int("inflight", 0, "Absolute in-flight cap (nonces ahead of last-mined). 0 = rps/inflightDivisor.")
+	overshootFlag := flag.Float64("overshoot", 0, "Issue this fraction above -rps to offset reject/jitter losses so mined lands at-or-above target (e.g. 0.01 = 1% over). Still bounded by the in-flight cap.")
 	sendTimeoutFlag := flag.Duration("sendtimeout", time.Second, "Per-node send timeout. Every tx is broadcast to every node over HTTP; a node slower than this is skipped for that tx (errors ignored).")
 	tuiFlag := flag.Bool("tui", true, "Render a live terminal UI when stdout is a terminal. Set false to force one-line STATS output.")
 	scrapeFlag := flag.String("scrape", "", "Comma-separated RPC URLs to scrape /ext/metrics from at run start/end (decoupled from -rpc). Empty = scrape the -rpc nodes. Lets you send to the tracker but observe every validator.")
@@ -372,8 +379,12 @@ func main() {
 	}()
 	go resubmitLoop(ctx, bc, resubmitEvery)
 
-	fmt.Printf("\nSingle issuer: target %d rps, in-flight cap %d nonces, resubmit after %s\n\n",
-		*rps, cap, resubmitEvery.String())
+	overshootNote := ""
+	if *overshootFlag > 0 {
+		overshootNote = fmt.Sprintf(" (+%.1f%% overshoot)", *overshootFlag*100)
+	}
+	fmt.Printf("\nSingle issuer: target %d rps%s, in-flight cap %d nonces, resubmit after %s\n\n",
+		*rps, overshootNote, cap, resubmitEvery.String())
 
 	// Send workers sign + submit nonces handed to them by the issuer. Signing
 	// is spread across all these goroutines (nproc cores) so it never gates the
@@ -388,7 +399,9 @@ func main() {
 		}()
 	}
 
-	go issuer(ctx, sendCh, *rps, uint64(cap), startNonce)
+	ratePerSec := float64(*rps) * (1 + *overshootFlag)
+	burst := float64(*rps) // rolling ~1s window: bounded catch-up
+	go issuer(ctx, sendCh, ratePerSec, burst, uint64(cap), startNonce)
 
 	<-ctx.Done()
 	close(sendCh)
@@ -403,14 +416,19 @@ func main() {
 	}
 }
 
-// issuer releases nonces under the per-second rate budget and the in-flight cap.
-func issuer(ctx context.Context, sendCh chan<- uint64, tps int, cap, startNonce uint64) {
+// issuer releases nonces under a rolling token bucket and the in-flight cap.
+// Tokens accrue at ratePerSec (already includes any overshoot) and are capped at
+// `burst` (= 1 second's worth), so the issuer makes up a deficit from the
+// trailing ~1s instead of dropping the tail of each wall-second the way a
+// per-second-reset budget did — while the burst cap keeps a long stall from
+// triggering an unbounded catch-up flood.
+func issuer(ctx context.Context, sendCh chan<- uint64, ratePerSec, burst float64, cap, startNonce uint64) {
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 
 	nextNonce := startNonce
-	curSec := time.Now().Truncate(time.Second)
-	var sentThisSecond int64
+	tokens := 0.0
+	last := time.Now()
 
 	for {
 		select {
@@ -420,24 +438,25 @@ func issuer(ctx context.Context, sendCh chan<- uint64, tps int, cap, startNonce 
 		}
 
 		now := time.Now()
-		if sec := now.Truncate(time.Second); sec != curSec {
-			curSec = sec
-			sentThisSecond = 0
+		tokens += ratePerSec * now.Sub(last).Seconds()
+		last = now
+		if tokens > burst {
+			tokens = burst
 		}
-		msPassed := now.Sub(curSec).Milliseconds()
-		allowed := int64(tps) * msPassed / 1000
 
-		for sentThisSecond < allowed && track.inFlight() < cap {
+		saturated := false
+		for tokens >= 1 && track.inFlight() < cap && !saturated {
 			select {
 			case sendCh <- nextNonce:
 				track.issued.Add(1)
 				nextNonce++
-				sentThisSecond++
+				tokens--
 			case <-ctx.Done():
 				return
 			default:
-				// Send workers are saturated; let pressure build and retry next tick.
-				sentThisSecond = allowed
+				// Send workers saturated; keep the tokens (bounded by burst on the
+				// next refill) and retry next tick rather than dropping them.
+				saturated = true
 			}
 		}
 	}
