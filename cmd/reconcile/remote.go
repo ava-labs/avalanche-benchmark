@@ -13,7 +13,7 @@ import (
 // _common.sh + network.env and computes the P-chain bootstrap set). The pure
 // planner needs none of this; only the I/O orchestration does.
 type config struct {
-	nodeIPs      []string // pool machines 1..poolSize (first 4 of NODE_IPS)
+	nodeIPs      []string // pool machines 1..poolSize (first poolSize of NODE_IPS)
 	sshUser      string
 	sshKey       string
 	remoteDir    string // e.g. ~/avalanche-benchmark (tilde expanded remotely)
@@ -246,7 +246,7 @@ func (c *config) provisioned(host string) bool {
 	out := c.ssh(host, fmt.Sprintf(
 		"cd %s 2>/dev/null && test -f bin/avalanchego && test -f plugins/%s && "+
 			"test -f node-config.json && test -f chain-config.json && test -f subnet-config.json && "+
-			"test -d staking/l1/6 && test -d staking/l1/7 && test -d staking/l1/8 && test -d staking/l1/9 && "+
+			"test -d staking/l1/6 && test -d staking/l1/7 && test -d staking/l1/8 && test -d staking/l1/9 && test -d staking/l1/10 && "+
 			"echo OK || echo MISSING",
 		c.remoteDir, c.subnetEVMID))
 	return out == "OK"
@@ -260,7 +260,7 @@ func (c *config) upload(host string) {
 	c.scp(c.repoDir+"/node-config.json", host, c.remoteDir+"/", false)
 	c.scp(c.repoDir+"/chain-config.json", host, c.remoteDir+"/", false)
 	c.scp(c.repoDir+"/subnet-config.json", host, c.remoteDir+"/", false)
-	for _, k := range []int{6, 7, 8, 9} {
+	for _, k := range []int{6, 7, 8, 9, 10} {
 		c.scp(fmt.Sprintf("%s/staking/l1/%d", c.repoDir, k), host, c.remoteDir+"/staking/l1/", true)
 	}
 }

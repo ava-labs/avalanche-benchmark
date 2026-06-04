@@ -7,26 +7,39 @@ dilute the dead-node proposer fraction.
 
 ## Topology
 
-- **Pool = machines 1–4** (`NODE_IPS` 1..4): 3 validators + 1 hot spare.
+- **Pool = machines 1–5** (`NODE_IPS` 1..5): 3 validators + 1 hot spare + 1
+  pinned dedicated-RPC node.
 - Steady state after deploy: `m1=v1` (key `staking/l1/6`), `m2=v2` (key 7),
-  `m3=v3` (key 8), `m4=spare` (non-validating key `staking/l1/9`).
-- Machine 5 is unused by the failover sim.
-- The benchmark (`bombard`) is **failover-native**: pass it **all four pool
-  RPCs** and it fans sends across them, runs one watcher per reachable endpoint
-  (first-to-see-in-a-block wins), skips unreachable nodes instead of aborting,
-  and resubmits in-flight txs so a node crash that drops the mempool self-heals.
-  So a cordoned validator is just an endpoint bombard ignores — the ingress is
-  never a single point of failure as long as it gets the full list.
+  `m3=v3` (key 8), `m4=spare` (non-validating key `staking/l1/9`), `m5=rpc`
+  (pinned non-validating key `staking/l1/10`).
+- **`m5` is the dedicated ingress: bombard `m5` only.** It is *pinned* — the
+  reconcile engine never promotes it to a validator (see "Mapping policy"), so
+  this clean non-validating RPC path **survives every failover event**. The hot
+  spare `m4` is what gets promoted when a validator goes down, which is exactly
+  why ingress must not ride on `m4`. (Measured 2026-06-04: a dedicated
+  non-validating RPC holds ~4000 TPS glass-smooth; ingress on the validators or
+  on the spare degrades.)
+- The benchmark (`bombard`) is also **failover-native**: it can be pointed at
+  multiple pool RPCs and it fans sends across them, runs one watcher per
+  reachable endpoint (first-to-see-in-a-block wins), skips unreachable nodes
+  instead of aborting, and resubmits in-flight txs so a node crash that drops the
+  mempool self-heals. That multi-endpoint mode is available if you want ingress
+  redundancy, but the steady benchmark uses the single pinned `m5`.
 
-## Model: 4 keys, conserved
+## Model: 5 keys, conserved
 
-There are exactly **4 staking identities** in play and every pool machine always
+There are exactly **5 staking identities** in play and every pool machine always
 holds exactly one:
 
 - 3 **validator keys** (`staking/l1/6,7,8` = `v1,v2,v3`) — registered on the
   P-chain at `create-l1`, **permanent and IP-agnostic**.
 - 1 fixed **non-validating key** (`staking/l1/9`) — never staked. The spare and
   any cordoned machine wear this.
+- 1 fixed **pinned RPC key** (`staking/l1/10`) — never staked, worn only by
+  `m5`. It is sticky and is **never** handed an orphaned validator key, so it
+  cannot be drawn into the validator rotation. This is the only difference the
+  5th machine adds to the conserved-keys model; the failover dance among the
+  other four is unchanged.
 
 **Linchpin (confirmed):** an L1 validator is identified by **NodeID + BLS key**,
 not by IP. NodeID comes from `staker.crt`, the BLS key from `signer.key`. Copy
@@ -39,11 +52,14 @@ each NodeID*.
 
 Because a validator key exists in exactly one place on the cluster at a time,
 **double-signing is structurally impossible** — it is a property of conserving
-the keys, not a guard we bolt on. The non-validating key may sit on several
-stopped machines (it is never staked). **One non-validating key is enough**: with
-4 machines and 3 validator keys, at most one machine is ever left to *run* as a
-non-validator at a time, so two nodes never claim NodeID-9 simultaneously (which
-would collide on the network).
+the keys, not a guard we bolt on. The non-validating keys may sit on several
+stopped machines (they are never staked). **One floating non-validating key (9)
+is enough** for the spare role: among machines 1–4 (3 validator keys + 1 spare),
+at most one is ever left to *run* as a non-validator at a time, so two nodes
+never claim NodeID-9 simultaneously (which would collide on the network). The
+pinned RPC key (10) is a *separate* identity worn only by `m5`, so it never
+collides with the spare's key 9 — that distinctness is exactly why the RPC node
+needs its own key rather than reusing 9.
 
 ## Intent: cordon
 
@@ -67,15 +83,15 @@ placing a key.
 
 - **`03` → `reconcile --fresh`** — clear all cordons, wipe `data/` on every pool
   machine, **force re-upload** of binary/plugin/configs, reset the intentions to
-  the **default seed** `{m1:6, m2:7, m3:8, m4:9(nv)}`, start all four. A fresh
-  deploy against the existing chain from `02`; a brand-new chain means re-running
-  `01`/`02`.
+  the **default seed** `{m1:6, m2:7, m3:8, m4:9(nv), m5:10(rpc)}`, start all five.
+  A fresh deploy against the existing chain from `02`; a brand-new chain means
+  re-running `01`/`02`.
 - **`scripts/failover/down.sh <m>`** — cordon machine, then reconcile.
 - **`scripts/failover/up.sh <m>`** — uncordon machine, then reconcile.
 - **`scripts/failover/failover.sh`** — pure reconcile, no intent change.
 
 What stays separate is **`01` (local P-chain)** and **`02` (`create-l1`)** — those
-make the chain *exist* and reconcile cannot reissue them. Reconcile owns all four
+make the chain *exist* and reconcile cannot reissue them. Reconcile owns all five
 pool machines forever after, first deploy and every failover.
 
 No lockfile: the client is trusted to drive from a single terminal session,
@@ -86,9 +102,9 @@ serially.
 The persisted desired state is a single local JSON — **the "intentions"**
 (`scripts/failover/intentions.json`, gitignored) — with one entry per machine:
 `{cordoned: bool, key: int}`, where `key` is the *intended* identity (`6/7/8`
-validator, `9` nv). It is the sole persisted state and the source of truth for
-what each machine *should* be. If absent (or on `--fresh`), it is seeded to the
-default `{m1:6, m2:7, m3:8, m4:9}`.
+validator, `9` nv spare, `10` pinned rpc). It is the sole persisted state and the
+source of truth for what each machine *should* be. If absent (or on `--fresh`),
+it is seeded to the default `{m1:6, m2:7, m3:8, m4:9, m5:10}`.
 
 - **`up`/`down`** mutate `cordoned`, recompute the sticky key mapping (from the
   *previous* intentions), and write the new JSON, then reconcile.
@@ -176,6 +192,17 @@ a **cordoned** machine — is reassigned, to a free uncordoned machine (the curr
 spare), chosen deterministically (lowest machine number). When there is no free
 machine, the orphaned key simply stays uncovered.
 
+**The pinned RPC machine (`m5`, key 10) is excluded from this entirely.** It is
+checked first in `ComputeMapping` and always keeps key 10 — it is never counted
+as a "free" machine, so an orphaned validator key can never be assigned to it,
+even when that key would otherwise go uncovered (it just stays uncovered, exactly
+as it would without `m5`). The pin is sticky across cordon/uncordon of `m5`
+itself: taking the RPC node down for maintenance and back up does not change its
+identity. This is what guarantees ingress on `m5` survives any failover. Note
+this costs nothing in availability: a double validator failure already lands at
+2/3 (quorum holds) whether or not a would-be second spare exists, and only a
+*triple* failure halts — the same as the 4-machine model.
+
 **Orphaning is driven by cordon intent only, never by liveness.** A genuine crash
 of an *uncordoned* validator is not a failover: its key is still "kept" (step 1),
 and the start phase simply brings the **same** node back with its **own** key (DB
@@ -256,5 +283,5 @@ binary.
 - `cmd/reconcile/remote.go` — SSH/scp I/O, observe, stop, swap, start, provision.
 - `cmd/reconcile/main.go` — CLI (`fresh`/`down <m>`/`up <m>`/`apply`) + the 3-pass loop.
 - `scripts/failover/{_failover_common,up,down,failover}.sh` — wrappers.
-- `03_wipe_and_deploy_l1.sh` — `reconcile fresh`. `05_benchmark.sh` — all 4 pool RPCs.
+- `03_wipe_and_deploy_l1.sh` — `reconcile fresh`. `05_benchmark.sh` — bombards the pinned RPC node `m5` only.
 - `bin/reconcile` — `make build` target.

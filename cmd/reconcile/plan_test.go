@@ -54,6 +54,30 @@ func TestComputeMapping(t *testing.T) {
 			prevKey:  []int{6, 7, 9, 9},
 			want:     []int{9, 9, 6, 7}, // m3,m4 free; orphans 6,7 -> m3=6, m4=7
 		},
+		{
+			name:     "pinned rpc m5 stays put in steady state",
+			cordoned: []bool{false, false, false, false, false},
+			prevKey:  []int{6, 7, 8, 9, 10},
+			want:     []int{6, 7, 8, 9, 10},
+		},
+		{
+			name:     "cordon m2: spare m4 promotes, pinned rpc m5 untouched",
+			cordoned: []bool{false, true, false, false, false},
+			prevKey:  []int{6, 7, 8, 9, 10},
+			want:     []int{6, 9, 8, 7, 10},
+		},
+		{
+			name:     "rpc m5 NEVER absorbs an orphan even when v3 goes uncovered",
+			cordoned: []bool{false, true, true, false, false},
+			prevKey:  []int{6, 7, 8, 9, 10},
+			want:     []int{6, 9, 9, 7, 10}, // only m4 free; v3(8) stays uncovered; m5 keeps 10
+		},
+		{
+			name:     "pin is sticky across cordon/uncordon of m5 itself",
+			cordoned: []bool{false, false, false, false, true},
+			prevKey:  []int{6, 7, 8, 9, 10},
+			want:     []int{6, 7, 8, 9, 10}, // cordoned rpc still keeps key 10 (just goes down)
+		},
 	}
 
 	for _, tt := range tests {

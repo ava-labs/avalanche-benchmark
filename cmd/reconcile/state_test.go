@@ -24,10 +24,11 @@ func TestRetargetSequence(t *testing.T) {
 		wantKeys []int
 		wantLive int
 	}{
-		{"down", 2, true, []int{6, 9, 8, 7}, 3}, // spare m4 takes v2
-		{"down", 3, true, []int{6, 9, 9, 7}, 2}, // no spare, v3 uncovered
-		{"down", 1, true, []int{9, 9, 9, 7}, 1}, // v1 uncovered -> halt
-		{"up", 3, false, []int{9, 9, 6, 7}, 2},  // m3 covers lowest orphan (v1), quorum back
+		// m5 (key 10, pinned RPC) is never promoted — it stays 10 every step.
+		{"down", 2, true, []int{6, 9, 8, 7, 10}, 3}, // spare m4 takes v2
+		{"down", 3, true, []int{6, 9, 9, 7, 10}, 2}, // no spare, v3 uncovered
+		{"down", 1, true, []int{9, 9, 9, 7, 10}, 1}, // v1 uncovered -> halt
+		{"up", 3, false, []int{9, 9, 6, 7, 10}, 2},  // m3 covers lowest orphan (v1), quorum back
 	}
 
 	for _, s := range steps {

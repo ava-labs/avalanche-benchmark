@@ -30,25 +30,35 @@ if [ ! -x "$BOMBARD" ]; then
     exit 1
 fi
 
-# bombard broadcasts every tx to ALL pool RPCs (machines 1-4) over HTTP and
-# ignores down nodes, so pass all four. A cordoned validator is just an endpoint
-# whose sends are dropped — never a single point of failure.
-RPC_URLS=()
-for i in 0 1 2 3; do
-    RPC_URLS+=("http://${NODE_IPS_ARRAY[$i]}:9652/ext/bc/$CHAIN_ID/rpc")
-done
+# Bombard ONLY the dedicated RPC node (machine 5, key 10 = zero-weight
+# non-validator that tracks the subnet and serves RPC). It is PINNED: the
+# failover engine never promotes it to a validator, so this clean ingress path
+# survives failover events — unlike the hot spare m4 (key 9), which becomes a
+# validator whenever one of m1-m3 goes down. Ingress on the consensus-critical
+# validators (m1-m3) wedges/throttles consensus; routing all load through the
+# dedicated non-validating RPC node keeps the validators healthy and holds
+# ~4000 TPS glass-smooth (2026-06-04 submission-target comparison). See wiki:
+# why_bombard_the_non_validating_rpc_tracker_not_the_validator_and_it_must_be_sybil_on.
+TRACKER_IP="${NODE_IPS_ARRAY[4]}"
+RPC_URLS=("http://${TRACKER_IP}:9652/ext/bc/$CHAIN_ID/rpc")
 RPC_LIST="$(IFS=,; echo "${RPC_URLS[*]}")"
 
-TARGET_RPS=1000
-RESUBMIT_INTERVAL=3s
+# Validated stable defaults (2026-06-03): bombard the m5 dedicated RPC node at
+# 4000 rps with a SHALLOW inflight cap of 750. Inflight depth is the smoothness knob — deeper
+# queues turn proposer-slot stalls into big post-stall bursts that provoke more
+# stalls. inflight=750 sustains ~4.3k TPS glass-smooth (p50 ~130ms, 0% reject,
+# no folds over 10 min). See devlog 2026-06-03 + wiki tracker note.
+TARGET_RPS=4000
+INFLIGHT=750
+RESUBMIT_INTERVAL=5s
 
 echo "=== Benchmark ==="
 echo "Chain ID: $CHAIN_ID"
-echo "Target:   $TARGET_RPS rps"
+echo "Target:   $TARGET_RPS rps  (inflight cap $INFLIGHT)"
 echo "Resubmit: $RESUBMIT_INTERVAL"
 echo ""
-echo "RPC endpoints (pool machines 1-4):"
+echo "Ingress: dedicated RPC node (machine 5, key 10, pinned non-validator) only:"
 for u in "${RPC_URLS[@]}"; do echo "  $u"; done
 echo ""
 
-exec "$BOMBARD" --rpc "$RPC_LIST" -rps "$TARGET_RPS" -resubmit "$RESUBMIT_INTERVAL"
+exec "$BOMBARD" --rpc "$RPC_LIST" -rps "$TARGET_RPS" -inflight "$INFLIGHT" -resubmit "$RESUBMIT_INTERVAL"

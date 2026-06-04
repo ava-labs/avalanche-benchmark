@@ -167,5 +167,8 @@ func roleLabel(key int) string {
 	if isValidatorKey(key) {
 		return fmt.Sprintf("v%d", key-valKeyLo+1)
 	}
+	if isRPCKey(key) {
+		return "rpc(nv)"
+	}
 	return "spare(nv)"
 }

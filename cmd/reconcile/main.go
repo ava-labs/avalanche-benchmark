@@ -1,5 +1,6 @@
-// Command reconcile converges a fixed pool of 4 machines to the desired failover
-// state recorded in the intentions JSON. It is the single engine behind 03
+// Command reconcile converges a fixed pool of 5 machines (3 validators + 1 hot
+// spare + 1 pinned dedicated-RPC node) to the desired failover state recorded in
+// the intentions JSON. It is the single engine behind 03
 // (fresh deploy), and the up/down/failover wrappers — see
 // docs/failover-recovery-simulation.md.
 //
@@ -49,7 +50,7 @@ func main() {
 		if err := saveIntents(cfg.stateFile, intents); err != nil {
 			fatalf("%v", err)
 		}
-		fmt.Println("== reconcile fresh: reseeded intentions to {m1:6, m2:7, m3:8, m4:9} ==")
+		fmt.Println("== reconcile fresh: reseeded intentions to {m1:6, m2:7, m3:8, m4:9(spare), m5:10(rpc)} ==")
 
 	case "down", "up":
 		m := parseMachine(os.Args)
@@ -95,15 +96,11 @@ func parseMachine(args []string) int {
 
 func printIntents(intents []MachineIntent) {
 	for i, in := range intents {
-		role := "spare(nv)"
-		if isValidatorKey(in.Key) {
-			role = fmt.Sprintf("v%d", in.Key-valKeyLo+1)
-		}
 		state := "up"
 		if in.Cordoned {
 			state = "cordoned"
 		}
-		fmt.Printf("  m%d: key=%d %-9s %s\n", i+1, in.Key, role, state)
+		fmt.Printf("  m%d: key=%d %-9s %s\n", i+1, in.Key, roleLabel(in.Key), state)
 	}
 }
 

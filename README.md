@@ -4,11 +4,13 @@ Tools to stand up an Avalanche L1, drive it with transaction load, and **simulat
 validator failover** — taking validators "offline" and recovering them — on a
 fixed pool of machines, without ever adding or removing machines from the fleet.
 
-**Pool:** 4 remote machines run the L1 as **3 validators + 1 hot spare**. Validator
-identities (staking keys) move between machines on failover, so the L1 keeps
-quorum when a machine goes offline. A 5th inventory machine is currently unused.
-The local dev machine runs 5 P-chain (primary network) validators that the L1
-bootstraps against.
+**Pool:** 5 remote machines run the L1 as **3 validators + 1 hot spare + 1
+dedicated RPC node**. Validator identities (staking keys) move between machines
+on failover, so the L1 keeps quorum when a machine goes offline. The 5th machine
+(`m5`) is a **pinned non-validating RPC node** — the load generator's ingress
+target; it is never promoted to a validator, so the benchmark ingress survives
+failover events. The local dev machine runs 5 P-chain (primary network)
+validators that the L1 bootstraps against.
 
 ## Ports
 
@@ -36,7 +38,7 @@ make          # builds pinned avalanchego + subnet-evm + local tools
 cp .env.example .env
 # Edit .env:
 #   SSH_USER=ubuntu
-#   NODE_IPS=1.2.3.1,1.2.3.2,1.2.3.3,1.2.3.4,1.2.3.5   # exactly 5; machines 1-4 are the pool, 5 is unused
+#   NODE_IPS=1.2.3.1,1.2.3.2,1.2.3.3,1.2.3.4,1.2.3.5   # exactly 5: m1-3 validators, m4 hot spare, m5 dedicated RPC
 ```
 
 ## Full Walkthrough
@@ -65,8 +67,8 @@ writes `network.env` with the new `SUBNET_ID` / `CHAIN_ID`.
 ```bash
 ./03_wipe_and_deploy_l1.sh
 ```
-Uploads binaries/plugin/keys to all 4 pool machines and starts **3 validators + 1
-hot spare**. **Destructive:** it wipes node data and (re)starts the chain from
+Uploads binaries/plugin/keys to all 5 pool machines and starts **3 validators + 1
+hot spare + 1 dedicated RPC node**. **Destructive:** it wipes node data and (re)starts the chain from
 genesis (block 0). Re-run any time to reset to a clean chain — the L1's P-chain
 registration is preserved, so you do **not** re-run `01`/`02`. Editing
 `chain-config.json` and re-running this is how you apply a new chain config.
@@ -76,14 +78,15 @@ registration is preserved, so you do **not** re-run `01`/`02`. Editing
 ```bash
 ./scripts/failover/status.sh
 ```
-Read-only. Expect all four nodes `SERVING` and `validators serving: 3/3`.
+Read-only. Expect all five nodes `SERVING` (m1-3 validators, m4 spare, m5 rpc) and `validators serving: 3/3`.
 
 ### 5. Run a benchmark
 
 ```bash
-./05_benchmark.sh            # fixed 1000 rps failover target
+./05_benchmark.sh            # fixed failover target
 ```
-Sends load across all 4 pool RPCs and skips any offline node. See
+Sends load to the dedicated RPC node `m5` (pinned non-validator, never promoted),
+so ingress is unaffected by validator failover. See
 [Benchmark Script](#benchmark-script).
 
 ### 6. Fail a validator over (safe — chain keeps running)
@@ -214,12 +217,15 @@ may hold the spare key on disk, but only one node ever runs a given key at a tim
 the failover tool never starts two nodes on the same identity.
 
 > **Note on the benchmark as a witness:** `05_benchmark.sh` is a single-issuer
-> load generator that fans out across all four pool RPCs. When a validator goes
-> down, its RPC endpoint drops out of the fan-out and the strict nonce line can
-> stall behind the gap, so the benchmark can look "stuck" momentarily even after
-> the chain itself is healthy again. Treat `status.sh` / node health as the source
-> of truth for chain state during transitions; the benchmark fully recovers once
-> the chain is back to `3/3`.
+> load generator that sends to the pinned RPC node `m5`. Because `m5` is never
+> promoted, its endpoint stays up across validator failover — but while the chain
+> itself is mid-transition (a validator going down, the spare booting into its
+> role) block production briefly stalls, so the strict nonce line can look
+> "stuck" momentarily even after the chain is healthy again. Treat `status.sh` /
+> node health as the source of truth for chain state during transitions; the
+> benchmark fully recovers once the chain is back to `3/3`. (`bombard` can also be
+> pointed at multiple RPCs for ingress redundancy, in which case a downed
+> endpoint just drops out of the fan-out.)
 
 ## Failover Commands
 
@@ -331,7 +337,7 @@ uses one fixed profile:
 
 - target rate: `1000 rps`
 - resubmit interval: `3s`
-- RPC fan-out: machines 1-4
+- ingress: the dedicated RPC node `m5` (pinned non-validator, never promoted)
 
 To change the profile, edit the constants in `05_benchmark.sh`.
 
@@ -357,10 +363,13 @@ chain to genesis — see step 3).
 - **Local dev machine:** 5 P-chain (primary network) validators using committed
   `staking/l1/1..5`.
 - **Pool (remote machines 1–4):** 3 L1 validators using committed
-  `staking/l1/6,7,8` plus 1 hot spare using `staking/l1/9`. Identities move
-  between these 4 machines on failover.
-- **Machine 5:** present in `NODE_IPS` but unused by the failover sim.
-- **Benchmark traffic:** `05_benchmark.sh` fans out across all 4 pool RPCs (port
+  `staking/l1/6,7,8` plus 1 hot spare using `staking/l1/9`. Validator identities
+  move between these 4 machines on failover.
+- **Machine 5:** the dedicated RPC node, a pinned non-validating tracker using
+  committed `staking/l1/10`. Never promoted to a validator, so the benchmark
+  ingress survives failover. (In production this tier has 2+ RPC machines; here
+  it is one.)
+- **Benchmark traffic:** `05_benchmark.sh` sends to the `m5` dedicated RPC (port
   `9652`) and skips any node that is offline.
 
 ### Reference Benchmark

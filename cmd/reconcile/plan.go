@@ -4,13 +4,20 @@ import "sort"
 
 // Key identities in play. The 3 validator keys are registered on the P-chain at
 // create-l1 and are permanent + IP-agnostic; key 9 is the fixed non-validating
-// ("nv") key that the spare and any cordoned machine wear.
+// ("nv") key that the spare and any cordoned machine wear. Key 10 is the pinned
+// dedicated-RPC identity worn by m5 — a non-validating tracker that bombard
+// targets; it is never promoted to a validator, so ingress survives failover.
 const (
 	valKeyLo = 6
 	valKeyHi = 8
 	nvKey    = 9
-	poolSize = 4
+	rpcKey   = 10
+	poolSize = 5
 )
+
+// isRPCKey reports whether k is the pinned dedicated-RPC identity. An rpc machine
+// is sticky on this key and is never a promotion target (never joins `free`).
+func isRPCKey(k int) bool { return k == rpcKey }
 
 func validatorKeys() []int { return []int{6, 7, 8} }
 
@@ -24,13 +31,14 @@ type MachineIntent struct {
 }
 
 // seedIntents is the default mapping a fresh deploy resets to:
-// m1=v1(6), m2=v2(7), m3=v3(8), m4=spare(9), all uncordoned.
+// m1=v1(6), m2=v2(7), m3=v3(8), m4=spare(9), m5=rpc(10), all uncordoned.
 func seedIntents() []MachineIntent {
 	return []MachineIntent{
 		{Cordoned: false, Key: 6},
 		{Cordoned: false, Key: 7},
 		{Cordoned: false, Key: 8},
 		{Cordoned: false, Key: 9},
+		{Cordoned: false, Key: 10},
 	}
 }
 
@@ -39,6 +47,9 @@ func seedIntents() []MachineIntent {
 // machine, it returns the new key per machine.
 //
 // Policy (move only what must move):
+//   - A pinned RPC machine (wears key 10) keeps it forever — never validates,
+//     never a promotion target. Checked first so the pin is sticky even across a
+//     cordon/uncordon of that machine.
 //   - A cordoned machine gives up its key and wears nv.
 //   - An uncordoned machine holding a validator key keeps it (sticky).
 //   - A validator key left uncovered (because its holder was cordoned, or it was
@@ -53,6 +64,8 @@ func ComputeMapping(cordoned []bool, prevKey []int) []int {
 
 	for i := 0; i < n; i++ {
 		switch {
+		case isRPCKey(prevKey[i]):
+			newKey[i] = rpcKey // pinned RPC: sticky identity, never promoted
 		case cordoned[i]:
 			newKey[i] = nvKey
 		case isValidatorKey(prevKey[i]):
