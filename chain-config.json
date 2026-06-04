@@ -1,5 +1,5 @@
 {
-    "min-delay-target": 20,
+    "min-delay-target": 5,
     "push-gossip-frequency": "20ms",
     "state-sync-enabled": true,
     "state-sync-min-blocks": 10000,
