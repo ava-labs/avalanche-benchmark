@@ -153,6 +153,8 @@ func main() {
 	inflightCapFlag := flag.Int("inflight", 0, "Absolute in-flight cap (nonces ahead of last-mined). 0 = rps/inflightDivisor.")
 	sendTimeoutFlag := flag.Duration("sendtimeout", time.Second, "Per-node send timeout. Every tx is broadcast to every node over HTTP; a node slower than this is skipped for that tx (errors ignored).")
 	tuiFlag := flag.Bool("tui", true, "Render a live terminal UI when stdout is a terminal. Set false to force one-line STATS output.")
+	scrapeFlag := flag.String("scrape", "", "Comma-separated RPC URLs to scrape /ext/metrics from at run start/end (decoupled from -rpc). Empty = scrape the -rpc nodes. Lets you send to the tracker but observe every validator.")
+	sampleFlag := flag.Duration("sample", 0, "If >0, scrape a focused set of rate/gauge node metrics every interval (e.g. 1s) and print compact SAMPLE rows. Forces -tui=false. Reveals per-second dynamics the begin/end panel hides.")
 	flag.Parse()
 
 	if *rps <= 0 {
@@ -302,15 +304,20 @@ func main() {
 	address := crypto.PubkeyToAddress(privateKey.PublicKey)
 	signer := types.NewEIP155Signer(chainID)
 
-	// Read the start nonce as the MAX across all nodes. A lagging spare /
-	// non-validator reports a stale (too-low) nonce; using it would make every
-	// tx "nonce too low" and silently rejected. The chain head has the true
-	// highest nonce, so the max is correct.
+	// Read the start nonce as the real ACCEPTED (latest-block) nonce, MAX across
+	// all nodes. We deliberately use NonceAt(latest), NOT PendingNonceAt: the
+	// pending nonce counts mempool txs, so leftover in-flight txs from a previous
+	// run inflate it ABOVE a gap and a fresh run would issue past the missing
+	// nonce — stranding the account behind an unfilled gap. The accepted nonce is
+	// the true chain frontier and can never skip a gap; re-issuing from there is
+	// safe because every tx is idempotent (deterministic signing -> same hash)
+	// and a re-sent already-known/already-mined nonce is a benign no-op. MAX
+	// ignores a lagging spare that reports a stale-low accepted nonce.
 	var startNonce uint64
 	gotNonce := false
 	for _, n := range bc.nodes {
 		nctx, ncancel := context.WithTimeout(ctx, *sendTimeoutFlag)
-		nn, nerr := n.client.PendingNonceAt(nctx, address)
+		nn, nerr := n.client.NonceAt(nctx, address, nil) // nil = latest accepted block
 		ncancel()
 		if nerr != nil {
 			continue
@@ -324,14 +331,38 @@ func main() {
 		fmt.Println("Failed to get nonce from any node")
 		os.Exit(1)
 	}
-	fmt.Printf("Issuer: %s  start nonce: %d (max across %d node(s))\n", address.Hex(), startNonce, len(bc.nodes))
+	fmt.Printf("Issuer: %s  start nonce: %d (max accepted across %d node(s))\n", address.Hex(), startNonce, len(bc.nodes))
 
 	// Metric scrape only makes sense for a bounded run (start/end window to
-	// subtract over). Snapshot every node now; the dead one is skipped.
-	metricsChainID := chainIDFromRPC(rpcURLs[0])
+	// subtract over). Scrape targets default to the send nodes but can be set
+	// independently (-scrape) to watch validators while sending to the tracker.
+	scrapeURLs := splitNonEmpty(*scrapeFlag)
+	if len(scrapeURLs) == 0 {
+		scrapeURLs = rpcURLs
+	}
+	metricsChainID := chainIDFromRPC(scrapeURLs[0])
 	var startSnaps []nodeSnapshot
 	if *runDuration > 0 {
-		startSnaps = scrapeAllNodes(rpcURLs)
+		startSnaps = scrapeAllNodes(scrapeURLs)
+	}
+
+	// Per-second sampler: rate/gauge metrics the begin/end panel can't show.
+	if *sampleFlag > 0 {
+		useTUI = false
+		printSampleLegend(scrapeURLs)
+		smp := newSampler(scrapeURLs, metricsChainID)
+		go func() {
+			tk := time.NewTicker(*sampleFlag)
+			defer tk.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case t := <-tk.C:
+					smp.tick(t)
+				}
+			}
+		}()
 	}
 
 	reportDone := make(chan struct{})
@@ -367,8 +398,8 @@ func main() {
 		track.issued.Load(), track.mined.Load(), track.inFlight(), track.resent.Load())
 
 	if *runDuration > 0 {
-		endSnaps := scrapeAllNodes(rpcURLs)
-		printNodeMetrics(startSnaps, endSnaps, metricsChainID)
+		endSnaps := scrapeAllNodes(scrapeURLs)
+		printNodeMetrics(startSnaps, endSnaps, metricsChainID, runDuration.Seconds())
 	}
 }
 
