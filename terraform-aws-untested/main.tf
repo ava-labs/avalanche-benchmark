@@ -44,10 +44,10 @@ resource "aws_iam_instance_profile" "ec2" {
   role = aws_iam_role.ec2.name
 }
 
-# Security Group - isolated benchmark nodes
+# Security Group - benchmark nodes
 resource "aws_security_group" "app" {
   name        = "${local.prefix}-${local.app_name}"
-  description = "Benchmark nodes - isolated, operator access only"
+  description = "Benchmark nodes"
 
   tags = {
     Name = "${local.prefix}-${local.app_name}"
@@ -64,49 +64,24 @@ resource "aws_security_group_rule" "operator_ssh_ingress" {
   description       = "Allow SSH ingress from operator"
 }
 
-resource "aws_security_group_rule" "operator_api_ingress" {
+resource "aws_security_group_rule" "l1_ingress" {
   type              = "ingress"
-  from_port         = 9650
-  to_port           = 9655
+  from_port         = 9652
+  to_port           = 9653
   protocol          = "tcp"
   security_group_id = aws_security_group.app.id
-  cidr_blocks       = [local.operator_ip]
-  description       = "Allow Avalanche API ingress from operator"
+  cidr_blocks       = ["0.0.0.0/0"]
+  description       = "Allow L1 RPC and staking ingress"
 }
 
-resource "aws_security_group_rule" "operator_egress" {
+resource "aws_security_group_rule" "egress" {
   type              = "egress"
   from_port         = 0
   to_port           = 0
   protocol          = "-1"
   security_group_id = aws_security_group.app.id
-  cidr_blocks       = [local.operator_ip]
-  description       = "Allow egress to operator"
-}
-
-# Inter-node: 9650-9655 (HTTP APIs) ingress from other nodes
-# Primary: 9650, Validator: 9652, RPC: 9654
-resource "aws_security_group_rule" "node_http_ingress" {
-  count             = local.node_count
-  type              = "ingress"
-  from_port         = 9650
-  to_port           = 9655
-  protocol          = "tcp"
-  security_group_id = aws_security_group.app.id
-  cidr_blocks       = ["${aws_instance.node[count.index].public_ip}/32"]
-  description       = "Allow 9650-9655 ingress from node ${count.index + 1}"
-}
-
-# Inter-node: egress to other nodes (9650-9655)
-resource "aws_security_group_rule" "node_egress" {
-  count             = local.node_count
-  type              = "egress"
-  from_port         = 9650
-  to_port           = 9655
-  protocol          = "tcp"
-  security_group_id = aws_security_group.app.id
-  cidr_blocks       = ["${aws_instance.node[count.index].public_ip}/32"]
-  description       = "Allow egress to node ${count.index + 1}"
+  cidr_blocks       = ["0.0.0.0/0"]
+  description       = "Allow all outbound traffic"
 }
 
 # Ubuntu 24.04 AMI
