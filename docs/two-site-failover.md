@@ -92,25 +92,63 @@ watch -n 2 ./scripts/failover/status.sh # watch B bootstrap + serve
 ./scripts/failover/site-failover.sh a   # fail back under load
 ```
 
+## Validated run (2026-06-12, us-east-1 ↔ us-east-2)
+
+10× m6a.xlarge (+1 control), ~1000 rps bombard via both pinned RPCs:
+
+- **Failover A→B under load: 17.8s** for the reconcile (stop site A, swap
+  v1-v3 onto b1-b3, start), **~30s more to 3/3 serving** from the backup site.
+  bombard rode through on the backup RPC with a catch-up burst, zero manual
+  intervention. All three new validators in lockstep immediately — the
+  trackers were at tip, and the all-stops-before-any-starts ordering cleared
+  the 75% bootstrap latch in one pass.
+- **Failback B→A exposed the rollback hazard (by design of the test):**
+  `site-failover a` stops every site-B node and restarts site A from its
+  pre-failover state. Site A bootstrapped only to its own highest block — the
+  ~7.7k blocks site B mined during its tenure were on stopped machines, so the
+  chain resumed ~2 minutes in the past. Same branch, no equivocation (block
+  hashes at the divergence point matched exactly), but everything mined during
+  the backup tenure was discarded, and the load generator's nonce line
+  straddled the discard → 0 TPS until restarted.
+- **Discarded-branch cleanup is itself a hazard:** archiving only
+  `data/validator/db` was not enough — the rejoining backup nodes recovered
+  the discarded 15k-block frontier from surviving VM state and reported a
+  height the validators didn't have. Archiving the **entire `data/validator`
+  dir** and rejoining resynced all 10 nodes onto the live branch, verified by
+  matching heights and a clean follow-up load run (0 resubmits).
+
+**Failback procedure (until state hand-back is automated):**
+
+1. Bring site A up as *trackers first* while B still validates: `up.sh 1..5`
+   (they wear home identities 11-13/9/10 and sync the B-tenure history).
+2. Wait until site A is at tip (`status.sh` heights match).
+3. Then `site-failover.sh a` — no history is lost, no rollback.
+
+A naive immediate `site-failover.sh a` after a real outage (site A state stale)
+re-creates the rollback above. This is exactly the gap the
+deterministic-EVM-sync protocol ask (request #8) closes.
+
 ## What this simulates vs. production
 
 - **Simulated faithfully:** key/identity conservation, zero-weight backup
   trackers at tip, all-at-once BLS/cert swap onto the backup site, in-flight tx
   replay, ingress cutover to the backup RPC, recovery-time measurement under
-  load.
+  load, and the failback rollback hazard (measured above).
 - **Not simulated:** the P-chain itself failing (the 5 P-chain validators run
   on the dev machine and stay up throughout — equivalent to the production
   assumption that P-chain state is frozen/controllable during failover); DNS/VIP
-  cutover mechanics; fork reconciliation if site A kept mining after the swap
-  decision (the simulation cordons A atomically, so no competing history is
-  produced — see open items).
+  cutover mechanics; a *concurrent* split (both sites mining at once is
+  impossible here because the validator keys are conserved — one site holds
+  them at a time).
 
 ## Open items
 
-- **Rollback/fork recovery:** simulate a non-atomic failover where site A mines
-  blocks that site B never saw, then measure recovery (sync everyone from a
-  chosen height). Needs the deterministic-EVM-sync mechanism (protocol request
-  #8) or a benchmark-local approximation (copy DB from the highest backup node).
+- **Staged failback automation:** encode the failback procedure above as a
+  single command (uncordon-as-trackers → wait-for-tip → swap), instead of
+  relying on the operator to sequence it.
+- **Honest health for idle chains:** `status.sh` reports SERVING from
+  `eth_blockNumber` even when no blocks are being produced; add a
+  height-advancing check so a post-failback stall is visible.
 - **Terraform:** `terraform-aws-untested/` provisions one site; parameterize a
   second region for site B.
 - **Configurable site sizes:** both sites are pinned at 5 machines; production
