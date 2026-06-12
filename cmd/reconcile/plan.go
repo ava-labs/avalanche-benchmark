@@ -1,23 +1,112 @@
 package main
 
-import "sort"
+import (
+	"sort"
+	"strconv"
+)
 
 // Key identities in play. The 3 validator keys are registered on the P-chain at
 // create-l1 and are permanent + IP-agnostic; key 9 is the fixed non-validating
-// ("nv") key that the spare and any cordoned machine wear. Key 10 is the pinned
-// dedicated-RPC identity worn by m5 — a non-validating tracker that bombard
-// targets; it is never promoted to a validator, so ingress survives failover.
+// ("nv") key that the site-A spare and any cordoned machine wear in single-site
+// mode. Key 10 is the pinned dedicated-RPC identity worn by m5 — a
+// non-validating tracker that bombard targets; it is never promoted to a
+// validator, so ingress survives failover.
+//
+// Two-site mode (BACKUP_SITE_NODE_IPS set) adds a backup data center of 5
+// machines (b1-b5) that run as live zero-weight syncing trackers, plus unique
+// "home" identities so every live machine has a distinct NodeID:
+//
+//	m1-m3 park on 11-13 when displaced, m4 spare=9, m5 rpc=10 (pinned)
+//	b1-b4 sync on 14-17,                          b5 rpc=18 (pinned)
+//
+// Validator keys (6-8) only cross sites via an explicit site-failover — a
+// single-machine cordon never promotes a backup-site machine (consensus stays
+// single-site by design).
 const (
 	valKeyLo = 6
 	valKeyHi = 8
-	nvKey    = 9
-	rpcKey   = 10
-	poolSize = 5
+	nvKey    = 9  // non-validating home (m4 spare; shared by free machines in single-site mode)
+	rpcKey   = 10 // site-A pinned RPC (m5)
+
+	rpcKeyB = 18 // site-B pinned RPC (b5)
+
+	sitePoolSize = 5
 )
 
-// isRPCKey reports whether k is the pinned dedicated-RPC identity. An rpc machine
+const (
+	siteA = 0
+	siteB = 1
+)
+
+// Topology describes the machine pool: one site of 5 (legacy single-site mode)
+// or two sites of 5 (primary A + backup B).
+type Topology struct {
+	TwoSite bool
+}
+
+func (t Topology) Size() int {
+	if t.TwoSite {
+		return 2 * sitePoolSize
+	}
+	return sitePoolSize
+}
+
+// Site reports which site machine i (0-based) belongs to.
+func (t Topology) Site(i int) int {
+	if i >= sitePoolSize {
+		return siteB
+	}
+	return siteA
+}
+
+// MachineName renders the operator-facing name: m1-m5 (site A), b1-b5 (site B).
+func (t Topology) MachineName(i int) string {
+	if t.Site(i) == siteB {
+		return "b" + strconv.Itoa(i-sitePoolSize+1)
+	}
+	return "m" + strconv.Itoa(i+1)
+}
+
+// twoSiteHomes maps machine index -> the non-validating identity it wears when
+// not hosting a validator key. Unique per machine: a backup site means several
+// live non-validating trackers at once, which can't share a NodeID.
+var twoSiteHomes = []int{11, 12, 13, nvKey, rpcKey, 14, 15, 16, 17, rpcKeyB}
+
+// HomeKey is the identity machine i falls back to when cordoned or free. In
+// single-site mode this is the shared nv key (at most one free machine is ever
+// live, so sharing is safe — preserved from the validated single-site runs).
+func (t Topology) HomeKey(i int) int {
+	if t.TwoSite {
+		return twoSiteHomes[i]
+	}
+	return nvKey
+}
+
+// AllKeys lists every committed key index a pool machine must be provisioned with.
+func (t Topology) AllKeys() []int {
+	if t.TwoSite {
+		return []int{6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}
+	}
+	return []int{6, 7, 8, 9, 10}
+}
+
+// SiteFromName parses an operator site argument ("a" or "b").
+func (t Topology) SiteFromName(s string) (int, bool) {
+	switch s {
+	case "a", "A":
+		return siteA, true
+	case "b", "B":
+		if !t.TwoSite {
+			return 0, false
+		}
+		return siteB, true
+	}
+	return 0, false
+}
+
+// isRPCKey reports whether k is a pinned dedicated-RPC identity. An rpc machine
 // is sticky on this key and is never a promotion target (never joins `free`).
-func isRPCKey(k int) bool { return k == rpcKey }
+func isRPCKey(k int) bool { return k == rpcKey || k == rpcKeyB }
 
 func validatorKeys() []int { return []int{6, 7, 8} }
 
@@ -31,49 +120,65 @@ type MachineIntent struct {
 }
 
 // seedIntents is the default mapping a fresh deploy resets to:
-// m1=v1(6), m2=v2(7), m3=v3(8), m4=spare(9), m5=rpc(10), all uncordoned.
-func seedIntents() []MachineIntent {
-	return []MachineIntent{
+// m1=v1(6), m2=v2(7), m3=v3(8), m4=spare(9), m5=rpc(10), all uncordoned —
+// plus, in two-site mode, b1-b4 syncing on 14-17 and b5=rpc(18).
+func seedIntents(topo Topology) []MachineIntent {
+	intents := []MachineIntent{
 		{Cordoned: false, Key: 6},
 		{Cordoned: false, Key: 7},
 		{Cordoned: false, Key: 8},
 		{Cordoned: false, Key: 9},
 		{Cordoned: false, Key: 10},
 	}
+	if topo.TwoSite {
+		intents = append(intents,
+			MachineIntent{Cordoned: false, Key: 14},
+			MachineIntent{Cordoned: false, Key: 15},
+			MachineIntent{Cordoned: false, Key: 16},
+			MachineIntent{Cordoned: false, Key: 17},
+			MachineIntent{Cordoned: false, Key: rpcKeyB},
+		)
+	}
+	return intents
 }
 
-// ComputeMapping recomputes the sticky key assignment after a cordon toggle.
+// ComputeMapping recomputes the sticky key assignment after a cordon change.
 // It is pure: given the (already-toggled) cordon flags and the previous key per
 // machine, it returns the new key per machine.
 //
 // Policy (move only what must move):
-//   - A pinned RPC machine (wears key 10) keeps it forever — never validates,
-//     never a promotion target. Checked first so the pin is sticky even across a
-//     cordon/uncordon of that machine.
-//   - A cordoned machine gives up its key and wears nv.
+//   - A pinned RPC machine (wears key 10 or 18) keeps it forever — never
+//     validates, never a promotion target. Checked first so the pin is sticky
+//     even across a cordon/uncordon of that machine.
+//   - A cordoned machine gives up its key and wears its home identity.
 //   - An uncordoned machine holding a validator key keeps it (sticky).
 //   - A validator key left uncovered (because its holder was cordoned, or it was
 //     uncovered already) is "orphaned" and reassigned to a free uncordoned
-//     machine (one currently wearing nv), lowest machine number first.
-//   - With no free machine, the orphaned key stays uncovered (quorum may drop).
-func ComputeMapping(cordoned []bool, prevKey []int) []int {
+//     machine — but ONLY within preferredSite, lowest machine number first.
+//     Orphans never cross sites implicitly; only an explicit site-failover
+//     (which cordons one whole site and prefers the other) moves the set.
+//   - With no free machine in preferredSite, the orphaned key stays uncovered
+//     (quorum may drop).
+func ComputeMapping(topo Topology, cordoned []bool, prevKey []int, preferredSite int) []int {
 	n := len(cordoned)
 	newKey := make([]int, n)
 	covered := map[int]bool{}
-	var free []int // 0-based machine indices wearing nv and uncordoned
+	var free []int // 0-based machine indices in preferredSite wearing a home key, uncordoned
 
 	for i := 0; i < n; i++ {
 		switch {
 		case isRPCKey(prevKey[i]):
-			newKey[i] = rpcKey // pinned RPC: sticky identity, never promoted
+			newKey[i] = prevKey[i] // pinned RPC: sticky identity, never promoted
 		case cordoned[i]:
-			newKey[i] = nvKey
+			newKey[i] = topo.HomeKey(i)
 		case isValidatorKey(prevKey[i]):
 			newKey[i] = prevKey[i] // sticky: keep our live validator key
 			covered[prevKey[i]] = true
-		default: // uncordoned, holds nv -> free spare, candidate for an orphan
-			newKey[i] = nvKey
-			free = append(free, i)
+		default: // uncordoned, wears a home key -> candidate for an orphan
+			newKey[i] = topo.HomeKey(i)
+			if topo.Site(i) == preferredSite {
+				free = append(free, i)
+			}
 		}
 	}
 

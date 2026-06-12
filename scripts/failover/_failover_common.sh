@@ -36,7 +36,7 @@ fi
 # Static P-chain bootstrap set (control machine's public IP + the 5 P-chain NodeIDs).
 PCHAIN_PUBLIC_IP="$(pchain_public_ip)"
 
-export NODE_IPS SSH_USER SSH_KEY_PATH REMOTE_DIR
+export NODE_IPS BACKUP_SITE_NODE_IPS SSH_USER SSH_KEY_PATH REMOTE_DIR
 export CHAIN_ID SUBNET_ID SUBNET_EVM_ID
 export PCHAIN_BOOTSTRAP_IPS="$(pchain_public_staking_ips_csv "$PCHAIN_PUBLIC_IP")"
 export PCHAIN_BOOTSTRAP_IDS="$(pchain_node_ids_csv)"

@@ -13,7 +13,8 @@ import (
 // _common.sh + network.env and computes the P-chain bootstrap set). The pure
 // planner needs none of this; only the I/O orchestration does.
 type config struct {
-	nodeIPs      []string // pool machines 1..poolSize (first poolSize of NODE_IPS)
+	topo         Topology
+	nodeIPs      []string // pool machines: site A (first 5 of NODE_IPS), then site B (BACKUP_SITE_NODE_IPS) if configured
 	sshUser      string
 	sshKey       string
 	remoteDir    string // e.g. ~/avalanche-benchmark (tilde expanded remotely)
@@ -36,11 +37,24 @@ func mustEnv(key string) string {
 
 func loadConfig() *config {
 	ips := strings.Split(mustEnv("NODE_IPS"), ",")
-	if len(ips) < poolSize {
-		fatalf("NODE_IPS has %d entries, need at least %d pool machines", len(ips), poolSize)
+	if len(ips) < sitePoolSize {
+		fatalf("NODE_IPS has %d entries, need at least %d pool machines", len(ips), sitePoolSize)
 	}
+	pool := ips[:sitePoolSize]
+
+	topo := Topology{}
+	if backup := os.Getenv("BACKUP_SITE_NODE_IPS"); backup != "" {
+		bips := strings.Split(backup, ",")
+		if len(bips) != sitePoolSize {
+			fatalf("BACKUP_SITE_NODE_IPS has %d entries, need exactly %d backup-site machines", len(bips), sitePoolSize)
+		}
+		topo.TwoSite = true
+		pool = append(pool, bips...)
+	}
+
 	return &config{
-		nodeIPs:      ips[:poolSize],
+		topo:         topo,
+		nodeIPs:      pool,
 		sshUser:      mustEnv("SSH_USER"),
 		sshKey:       mustEnv("SSH_KEY_PATH"),
 		remoteDir:    envOr("REMOTE_DIR", "~/avalanche-benchmark"),
@@ -241,14 +255,17 @@ func (c *config) freshClean(host string) {
 }
 
 // provisioned reports whether the machine already has binary, plugin, configs and
-// all four committed key sets.
+// every committed key set the topology can assign to it.
 func (c *config) provisioned(host string) bool {
+	var keyChecks strings.Builder
+	for _, k := range c.topo.AllKeys() {
+		fmt.Fprintf(&keyChecks, "test -d staking/l1/%d && ", k)
+	}
 	out := c.ssh(host, fmt.Sprintf(
 		"cd %s 2>/dev/null && test -f bin/avalanchego && test -f plugins/%s && "+
 			"test -f node-config.json && test -f chain-config.json && test -f subnet-config.json && "+
-			"test -d staking/l1/6 && test -d staking/l1/7 && test -d staking/l1/8 && test -d staking/l1/9 && test -d staking/l1/10 && "+
-			"echo OK || echo MISSING",
-		c.remoteDir, c.subnetEVMID))
+			"%secho OK || echo MISSING",
+		c.remoteDir, c.subnetEVMID, keyChecks.String()))
 	return out == "OK"
 }
 
@@ -260,7 +277,7 @@ func (c *config) upload(host string) {
 	c.scp(c.repoDir+"/node-config.json", host, c.remoteDir+"/", false)
 	c.scp(c.repoDir+"/chain-config.json", host, c.remoteDir+"/", false)
 	c.scp(c.repoDir+"/subnet-config.json", host, c.remoteDir+"/", false)
-	for _, k := range []int{6, 7, 8, 9, 10} {
+	for _, k := range c.topo.AllKeys() {
 		c.scp(fmt.Sprintf("%s/staking/l1/%d", c.repoDir, k), host, c.remoteDir+"/staking/l1/", true)
 	}
 }
