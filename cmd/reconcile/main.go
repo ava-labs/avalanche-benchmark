@@ -26,7 +26,10 @@ func usage() {
   fresh              clear cordons, wipe data, reseed mapping, force re-upload, start all
   down <m>           cordon machine m, recompute mapping, reconcile
   up <m>             uncordon machine m, recompute mapping, reconcile
-  site-failover <a|b>  fail the validator set over to the given site (two-site mode)
+  site-failover <a|b>  fail the validator set over to the given site (hard cutover, two-site mode)
+  restore <a|b>        graceful rolling migration of the validator set to a site — one
+                       validator at a time, chain stays >=2/3 throughout, no fork (two-site
+                       mode); typically used to restore the original site after site-failover
   apply              pure reconcile against the existing intentions (no intent change)
   status             read-only health report (actual node state, no changes)`)
 	os.Exit(2)
@@ -41,6 +44,18 @@ func main() {
 
 	if os.Args[1] == "status" {
 		status(cfg)
+		return
+	}
+
+	if os.Args[1] == "restore" {
+		if len(os.Args) < 3 {
+			usage()
+		}
+		target, ok := topo.SiteFromName(os.Args[2])
+		if !ok {
+			fatalf("site must be 'a' or 'b' (two-site mode requires BACKUP_SITE_NODE_IPS), got %q", os.Args[2])
+		}
+		rollingRestore(cfg, target)
 		return
 	}
 

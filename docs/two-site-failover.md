@@ -64,13 +64,66 @@ One new wrapper:
 ```bash
 ./scripts/failover/site-failover.sh b   # full site-A outage: cordon all of A,
                                         # v1-v3 swap onto b1-b3, b4 = new spare
-./scripts/failover/site-failover.sh a   # failback: cordon B, restore A
+./scripts/failover/site-failover.sh a   # hard failback: cordon B, restore A (see caveat)
 ```
+
+`site-failover` is a **hard cutover** — it cordons a whole site and swaps the
+set across in one shot. That's correct for an *outage* (the primary is already
+gone), but using it to fail *back* onto a site whose data is stale reproduces
+the rollback fork (below). For a planned return with both DCs healthy, use the
+graceful rolling restore instead.
+
+### Graceful rolling restore (no chain downtime)
+
+`restore <a|b>` migrates the validator set onto a site **one validator at a
+time**, keeping the chain at ≥2/3 throughout — the operational answer to
+"restore the original DC after a failover, ideally without downtime."
+
+```bash
+./scripts/failover/restore.sh a   # roll the set back to site A, gracefully
+```
+
+It runs in two phases:
+
+1. **Trackers + sync gate** — uncordon the target site so its nodes rejoin as
+   zero-weight trackers, then **wait until the validator-destination machines are
+   synced to the live tip** (within `syncToleranceBlocks`). Only the machines about
+   to take a validator key are gated: the spare and pinned-RPC trackers carry no
+   vote, so they finish syncing on their own and can't fork — or block — the
+   restore. No stake moves until those targets are at tip, so no node is ever
+   promoted onto a stale/divergent branch — this is what eliminates the fork.
+2. **Rolling swap** — move v1, then v2, then v3 onto the target site, one key at
+   a time, with a health gate (`waitForFullValidatorSet`) between each. Dropping
+   one validator leaves 2/3 live, so the chain never halts; the promoted node's
+   `data/` is preserved, so it continues the live branch in well under a second.
+
+End state equals the steady seed with the target site active. Because the chain
+never stops and the target is always at tip, **there is no fork and nothing to
+replay** — unlike the hard `site-failover` cutover.
+
+**What "no downtime" does and doesn't mean.** No *chain* downtime: quorum holds
+the whole time, so the ATS/settlement path (which talks to the RPC, not the
+validators) sees no interruption. It is *not* a live process hot-migration —
+each of the three validators restarts (~5s) as its key lands, and while one is
+down its proposer slots stall briefly (Ilya's ~1s-per-slot finding), so there
+are three short latency/throughput dips, not an outage. Erasing even those dips
+would require temporarily running stake in *both* DCs (a real P-chain
+validator-set change), which violates the single-DC-consensus invariant — a
+topology decision, not a tooling one.
 
 The swap wipes only `staking/active`, never `data/`, and reconcile's two-pass
 order (all stops before any starts) holds across the whole pool — so all three
 validators come up on site B together, satisfying the 75%-stake bootstrap latch
 in one shot rather than stalling on it.
+
+**Failback is sync-bound under sustained load.** The gate above only clears once
+the validator destinations reach the tip, so a graceful failback completes quickly
+only when the rejoining site is at (or near) tip. If write load produces blocks
+faster than the recovering DC can replay them — measured on 4-vCPU nodes, where a
+saturated tracker replays at a fraction of the production rate — the gate holds
+until load eases. Operationally: **fail back during a lull.** The structural fix is
+deterministic EVM state-sync to a chosen height (request #8) rather than full block
+replay; until then the gate's per-poll log warns when a target is losing ground.
 
 ## Benchmark across a failover
 
@@ -143,9 +196,12 @@ deterministic-EVM-sync protocol ask (request #8) closes.
 
 ## Open items
 
-- **Staged failback automation:** encode the failback procedure above as a
-  single command (uncordon-as-trackers → wait-for-tip → swap), instead of
-  relying on the operator to sequence it.
+- ~~**Staged failback automation:** encode the failback procedure as a single
+  command (uncordon-as-trackers → wait-for-tip → swap).~~ **Done** —
+  `restore <a|b>` (rolling, one validator at a time; see above).
+- **Truly seamless (zero-dip) restore:** would need a transient dual-DC
+  validator set via real P-chain validator-management txns — relaxes the
+  single-DC-consensus invariant; pending a topology decision.
 - **Honest health for idle chains:** `status.sh` reports SERVING from
   `eth_blockNumber` even when no blocks are being produced; add a
   height-advancing check so a post-failback stall is visible.

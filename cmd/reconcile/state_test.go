@@ -182,6 +182,63 @@ func TestSiteFailoverRequiresTwoSite(t *testing.T) {
 	}
 }
 
+// TestRestorePlan checks the rolling-restore snapshot sequence: bring the
+// target site up as trackers, then move each validator key over one at a time,
+// never with a key on two live machines, ending exactly at the steady seed.
+func TestRestorePlan(t *testing.T) {
+	topo := Topology{TwoSite: true}
+	// Failed-over state (after `site-failover b`): site A cordoned on home keys,
+	// site B active with v1-v3 on b1-b3.
+	prev := []MachineIntent{
+		{true, 11}, {true, 12}, {true, 13}, {true, 9}, {true, 10},
+		{false, 6}, {false, 7}, {false, 8}, {false, 17}, {false, 18},
+	}
+	trackerStep, keySteps := RestorePlan(topo, prev, siteA)
+
+	wantTracker := []MachineIntent{
+		{false, 11}, {false, 12}, {false, 13}, {false, 9}, {false, 10},
+		{false, 6}, {false, 7}, {false, 8}, {false, 17}, {false, 18},
+	}
+	if !reflect.DeepEqual(trackerStep, wantTracker) {
+		t.Fatalf("trackerStep = %v, want %v", trackerStep, wantTracker)
+	}
+	if len(keySteps) != 3 {
+		t.Fatalf("got %d key steps, want 3", len(keySteps))
+	}
+
+	// Every snapshot must keep all three validator keys assigned to exactly one
+	// live machine each (no key on two live machines, none dropped).
+	for n, step := range keySteps {
+		seen := map[int]int{}
+		for _, in := range step {
+			if isValidatorKey(in.Key) && !in.Cordoned {
+				seen[in.Key]++
+			}
+		}
+		for k, c := range seen {
+			if c != 1 {
+				t.Errorf("step %d: validator key %d on %d live machines, want 1", n, k, c)
+			}
+		}
+		if len(seen) != 3 {
+			t.Errorf("step %d: %d validator keys live, want 3", n, len(seen))
+		}
+	}
+
+	// Step 0 moves only v1 (key 6) to m1; v2/v3 stay on site B.
+	if keySteps[0][0].Key != 6 || keySteps[0][5].Key != 14 {
+		t.Errorf("step0: want m1=6, b1=14; got m1=%d b1=%d", keySteps[0][0].Key, keySteps[0][5].Key)
+	}
+	if keySteps[0][6].Key != 7 || keySteps[0][7].Key != 8 {
+		t.Errorf("step0: v2/v3 should still be on site B; got b2=%d b3=%d", keySteps[0][6].Key, keySteps[0][7].Key)
+	}
+
+	// Final state equals the steady seed with site A active.
+	if !reflect.DeepEqual(keySteps[2], seedIntents(topo)) {
+		t.Errorf("final step = %v, want seed %v", keySteps[2], seedIntents(topo))
+	}
+}
+
 func TestLoadIntentsMissingReturnsSeed(t *testing.T) {
 	topo := Topology{}
 	got, err := loadIntents(filepath.Join(t.TempDir(), "does-not-exist.json"), topo)
