@@ -41,6 +41,16 @@ fi
 # why_bombard_the_non_validating_rpc_tracker_not_the_validator_and_it_must_be_sybil_on.
 TRACKER_IP="${NODE_IPS_ARRAY[4]}"
 RPC_URLS=("http://${TRACKER_IP}:9652/ext/bc/$CHAIN_ID/rpc")
+
+# Two-site mode: also feed bombard the backup site's pinned RPC (b5, key 18).
+# Bombard is failover-native — it fans sends across reachable endpoints, runs a
+# watcher per endpoint, and resubmits in-flight txs — so with both pinned RPCs
+# listed the benchmark rides through a full site failover and the latency
+# report captures the recovery window. See docs/two-site-failover.md.
+if [ -n "$BACKUP_SITE_NODE_IPS" ]; then
+    BACKUP_TRACKER_IP="${BACKUP_SITE_IPS_ARRAY[4]}"
+    RPC_URLS+=("http://${BACKUP_TRACKER_IP}:9652/ext/bc/$CHAIN_ID/rpc")
+fi
 RPC_LIST="$(IFS=,; echo "${RPC_URLS[*]}")"
 
 # Validated stable defaults (2026-06-03): bombard the m5 dedicated RPC node at
@@ -63,7 +73,7 @@ echo "Chain ID: $CHAIN_ID"
 echo "Target:   $TARGET_RPS rps  (inflight cap $INFLIGHT, +$(echo "$OVERSHOOT*100" | bc)% overshoot)"
 echo "Resubmit: $RESUBMIT_INTERVAL"
 echo ""
-echo "Ingress: dedicated RPC node (machine 5, key 10, pinned non-validator) only:"
+echo "Ingress: pinned dedicated RPC node(s) — never promoted to validators:"
 for u in "${RPC_URLS[@]}"; do echo "  $u"; done
 echo ""
 

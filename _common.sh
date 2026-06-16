@@ -64,6 +64,17 @@ if [ "$NODE_COUNT" -ne 5 ]; then
     exit 1
 fi
 
+# Optional backup site (site B) for two-site failover. When set it must be
+# exactly five more IPs: b1-b4 zero-weight syncing trackers + b5 backup RPC.
+BACKUP_SITE_NODE_IPS="${BACKUP_SITE_NODE_IPS:-}"
+if [ -n "$BACKUP_SITE_NODE_IPS" ]; then
+    IFS=',' read -ra BACKUP_SITE_IPS_ARRAY <<< "$BACKUP_SITE_NODE_IPS"
+    if [ "${#BACKUP_SITE_IPS_ARRAY[@]}" -ne 5 ]; then
+        echo "ERROR: BACKUP_SITE_NODE_IPS must contain exactly five backup-site node IPs"
+        exit 1
+    fi
+fi
+
 # First benchmark node is the default benchmark ingress host.
 BOOTSTRAP_IP="${NODE_IPS_ARRAY[0]}"
 

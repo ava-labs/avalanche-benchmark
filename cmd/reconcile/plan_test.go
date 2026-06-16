@@ -7,10 +7,12 @@ import (
 
 func TestComputeMapping(t *testing.T) {
 	tests := []struct {
-		name     string
-		cordoned []bool
-		prevKey  []int
-		want     []int
+		name      string
+		topo      Topology
+		preferred int
+		cordoned  []bool
+		prevKey   []int
+		want      []int
 	}{
 		{
 			name:     "steady state, no cordon, no change",
@@ -78,11 +80,60 @@ func TestComputeMapping(t *testing.T) {
 			prevKey:  []int{6, 7, 8, 9, 10},
 			want:     []int{6, 7, 8, 9, 10}, // cordoned rpc still keeps key 10 (just goes down)
 		},
+		{
+			name:      "two-site steady state: backup trackers untouched",
+			topo:      Topology{TwoSite: true},
+			preferred: siteA,
+			cordoned:  []bool{false, false, false, false, false, false, false, false, false, false},
+			prevKey:   []int{6, 7, 8, 9, 10, 14, 15, 16, 17, 18},
+			want:      []int{6, 7, 8, 9, 10, 14, 15, 16, 17, 18},
+		},
+		{
+			name:      "two-site cordon m2: same-site spare m4 promotes, B never touched",
+			topo:      Topology{TwoSite: true},
+			preferred: siteA,
+			cordoned:  []bool{false, true, false, false, false, false, false, false, false, false},
+			prevKey:   []int{6, 7, 8, 9, 10, 14, 15, 16, 17, 18},
+			want:      []int{6, 12, 8, 7, 10, 14, 15, 16, 17, 18}, // m2 parks on home 12, m4 takes v2
+		},
+		{
+			name:      "two-site: orphan with no same-site spare stays uncovered, never crosses to B",
+			topo:      Topology{TwoSite: true},
+			preferred: siteA,
+			cordoned:  []bool{false, true, true, false, false, false, false, false, false, false},
+			prevKey:   []int{6, 12, 8, 7, 10, 14, 15, 16, 17, 18},
+			want:      []int{6, 12, 13, 7, 10, 14, 15, 16, 17, 18}, // v3(8) uncovered; b1-b4 stay sync
+		},
+		{
+			name:      "site-failover to B: all of A cordoned, v1-v3 land on b1-b3",
+			topo:      Topology{TwoSite: true},
+			preferred: siteB,
+			cordoned:  []bool{true, true, true, true, true, false, false, false, false, false},
+			prevKey:   []int{6, 7, 8, 9, 10, 14, 15, 16, 17, 18},
+			want:      []int{11, 12, 13, 9, 10, 6, 7, 8, 17, 18}, // b4 is the new spare, b5 rpc pinned
+		},
+		{
+			name:      "post-failover fault on b2: B spare b4 promotes",
+			topo:      Topology{TwoSite: true},
+			preferred: siteB,
+			cordoned:  []bool{true, true, true, true, true, false, true, false, false, false},
+			prevKey:   []int{11, 12, 13, 9, 10, 6, 7, 8, 17, 18},
+			want:      []int{11, 12, 13, 9, 10, 6, 15, 8, 7, 18}, // b2 parks on home 15, b4 takes v2
+		},
+		{
+			name:      "failback to A: B cordons to homes, m1-m3 retake v1-v3",
+			topo:      Topology{TwoSite: true},
+			preferred: siteA,
+			cordoned:  []bool{false, false, false, false, false, true, true, true, true, true},
+			prevKey:   []int{11, 12, 13, 9, 10, 6, 7, 8, 17, 18},
+			want:      []int{6, 7, 8, 9, 10, 14, 15, 16, 17, 18}, // exact seed restored
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := ComputeMapping(tt.cordoned, tt.prevKey)
+			preferred := tt.preferred // zero value is siteA, correct for the legacy cases
+			got := ComputeMapping(tt.topo, tt.cordoned, tt.prevKey, preferred)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("ComputeMapping() = %v, want %v", got, tt.want)
 			}

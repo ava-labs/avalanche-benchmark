@@ -39,7 +39,14 @@ cp .env.example .env
 # Edit .env:
 #   SSH_USER=ubuntu
 #   NODE_IPS=1.2.3.1,1.2.3.2,1.2.3.3,1.2.3.4,1.2.3.5   # exactly 5: m1-3 validators, m4 hot spare, m5 dedicated RPC
+#   BACKUP_SITE_NODE_IPS=...                            # optional: 5 more IPs = backup site (b1-b4 sync, b5 RPC)
 ```
+
+Setting `BACKUP_SITE_NODE_IPS` enables **two-site mode**: a backup data center
+of zero-weight syncing trackers the validator set can be swapped onto when the
+whole primary site goes down (`./scripts/failover/site-failover.sh b`), and
+back (`... a`). Single-site behavior is unchanged when it is unset. See
+[docs/two-site-failover.md](docs/two-site-failover.md).
 
 ## Full Walkthrough
 

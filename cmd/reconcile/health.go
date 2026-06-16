@@ -118,19 +118,20 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 
 	for i, in := range intents {
 		ip := cfg.nodeIPs[i]
+		name := cfg.topo.MachineName(i)
 		label := roleLabel(in.Key)
 		if in.Cordoned {
-			fmt.Printf("  m%d (%s): cordoned       %-9s (down by intent)\n", i+1, ip, label)
+			fmt.Printf("  %s (%s): cordoned       %-9s (down by intent)\n", name, ip, label)
 			continue
 		}
 		r := results[i]
 		switch r.state {
 		case healthServing:
-			fmt.Printf("  m%d (%s): SERVING        %-9s block=%d\n", i+1, ip, label, r.block)
+			fmt.Printf("  %s (%s): SERVING        %-9s block=%d\n", name, ip, label, r.block)
 		case healthBootstrapping:
-			fmt.Printf("  m%d (%s): BOOTSTRAPPING  %-9s (catching up, not yet serving)\n", i+1, ip, label)
+			fmt.Printf("  %s (%s): BOOTSTRAPPING  %-9s (catching up, not yet serving)\n", name, ip, label)
 		default:
-			fmt.Printf("  m%d (%s): DOWN           %-9s (uncordoned but not responding!)\n", i+1, ip, label)
+			fmt.Printf("  %s (%s): DOWN           %-9s (uncordoned but not responding!)\n", name, ip, label)
 		}
 		if isValidatorKey(in.Key) {
 			intendedValidators++
@@ -164,11 +165,16 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 }
 
 func roleLabel(key int) string {
-	if isValidatorKey(key) {
+	switch {
+	case isValidatorKey(key):
 		return fmt.Sprintf("v%d", key-valKeyLo+1)
-	}
-	if isRPCKey(key) {
+	case isRPCKey(key):
 		return "rpc(nv)"
+	case key >= 11 && key <= 13:
+		return "idle(nv)" // displaced site-A machine parked on its home identity
+	case key >= 14 && key <= 17:
+		return "sync(nv)" // site-B zero-weight syncing tracker
+	default:
+		return "spare(nv)"
 	}
-	return "spare(nv)"
 }
