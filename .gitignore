@@ -9,14 +9,17 @@
 # Build/dependency artifacts
 /bin/
 /avalanchego
+/benchmark
 /bombard
 /create-l1
 /srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
+# Cross-compiled binaries (make pack)
+/*-linux
+/*-linux-amd64
 
 # Deployment packages
 /remote-benchmark.tar.gz
-/avalanche-benchmark-multi.tar.gz
-/avalanche-benchmark-runtime.tar.gz
+/avalanche-benchmark-*.tar.gz
 
 # Runtime data and logs
 /data/
@@ -34,6 +37,14 @@ nohup.out
 !**/*.tfvars.example
 **/config.yaml
 !**/config.yaml.example
+
+# Demo-generated working dirs
+/blockscout/
+/multi-node/
+/single-node/
+
+# Local-only AWS demo harness (personal paths; never commit)
+/two-dc-demo.sh
 
 # Local editor/agent state
 /.claude/
