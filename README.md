@@ -44,9 +44,12 @@ cp .env.example .env
 
 Setting `BACKUP_SITE_NODE_IPS` enables **two-site mode**: a backup data center
 of zero-weight syncing trackers the validator set can be swapped onto when the
-whole primary site goes down (`./scripts/failover/site-failover.sh b`), and
-back (`... a`). Single-site behavior is unchanged when it is unset. See
-[docs/two-site-failover.md](docs/two-site-failover.md).
+whole primary site goes down (`./scripts/failover/site-failover.sh b`). To return
+once the primary is healthy, use the graceful `restore.sh a` — it rolls the set
+back one validator at a time with no chain downtime; `site-failover.sh a` is the
+hard-cutover failback for a true outage (see the rollback caveat in
+[docs/two-site-failover.md](docs/two-site-failover.md)). Single-site behavior is
+unchanged when it is unset.
 
 ## Full Walkthrough
 
@@ -237,7 +240,8 @@ the failover tool never starts two nodes on the same identity.
 ## Failover Commands
 
 `scripts/failover/` simulates validators going offline and recovering on the
-fixed 4-machine pool by moving validator identities between machines. See
+fixed 5-machine pool by moving validator identities between m1–m4 (m5 is a
+pinned RPC tracker that never validates). See
 `docs/failover-recovery-simulation.md` for the design.
 
 ```bash
@@ -246,6 +250,10 @@ fixed 4-machine pool by moving validator identities between machines. See
 ./scripts/failover/failover.sh   # re-apply current intent (recover an interrupted run)
 ./scripts/failover/status.sh     # read-only: show each node's ACTUAL state
 ./scripts/failover/clean.sh <m>  # wipe machine m's chain data and re-bootstrap it clean
+
+# Two-site mode (requires BACKUP_SITE_NODE_IPS):
+./scripts/failover/site-failover.sh <a|b>  # hard cutover: swap the whole validator set to site a/b (for a real outage)
+./scripts/failover/restore.sh <a|b>        # graceful rolling failback: one validator at a time, no chain downtime
 ```
 
 `status.sh` reports every node as `SERVING@block` / `BOOTSTRAPPING` / `DOWN` and
