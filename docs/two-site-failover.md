@@ -85,9 +85,12 @@ time**, keeping the chain at ≥2/3 throughout — the operational answer to
 
 It runs in two phases:
 
-1. **Trackers + sync gate** — uncordon the target site so its nodes rejoin as
-   zero-weight trackers, then **wait until the validator-destination machines are
-   synced to the live tip** (within `syncToleranceBlocks`). Only the machines about
+1. **Wipe + trackers + sync gate** — wipe each recovering node's chain data so it
+   rejoins with a clean slate, then uncordon the target site so its nodes rejoin as
+   zero-weight trackers and **state-sync the L1 to the live tip** (within
+   `syncToleranceBlocks`) before any stake moves. The wipe is what makes the failback
+   fork-proof: a node that kept its stale post-failover data would resurrect a frontier
+   the live validators never had and never converge. Only the machines about
    to take a validator key are gated: the spare and pinned-RPC trackers carry no
    vote, so they finish syncing on their own and can't fork — or block — the
    restore. No stake moves until those targets are at tip, so no node is ever

@@ -254,6 +254,30 @@ func (c *config) freshClean(host string) {
 		c.remoteDir, c.remoteDir, c.remoteDir, c.remoteDir))
 }
 
+// wipeL1Data stops the node and deletes its entire data/validator directory so it
+// rejoins with no local chain state and is forced to state-sync the L1 fresh onto
+// the live branch. Used by `restore` for the recovering site only.
+//
+// The whole dir is removed on purpose. There is no "L1-only" database to delete:
+// avalanchego keeps every chain (P-chain, C/X, and the L1 subnet) in one shared
+// --db-dir (data/validator/db, a single prefixdb with no per-chain subdir), and
+// subnet-evm keeps its EVM state under data/validator/chainData/<chainID>. Removing
+// only db/ is NOT enough — the EVM state resurrects the stale post-failover frontier
+// and the node then reports a height the live validators never had, so it never
+// converges (measured 2026-06-12; see docs/two-site-failover.md). Clearing all of
+// data/validator is the only reliable clean slate.
+//
+// This is safe: nothing unique lives in data/validator. The node identity
+// (staking/active) and committed key sets (staking/l1) are outside it and untouched,
+// so the P-chain validator registration (authoritative on the dev-machine P-chain) is
+// unaffected. On restart the node re-bootstraps the primary network from the dev
+// machine and state-syncs the L1 to tip (state-sync-enabled in chain-config.json);
+// startScript re-creates the dirs and re-copies configs.
+func (c *config) wipeL1Data(host string) {
+	c.killNode(host)
+	c.ssh(host, fmt.Sprintf("cd %s && rm -rf data/validator || true", c.remoteDir))
+}
+
 // provisioned reports whether the machine already has binary, plugin, configs and
 // every committed key set the topology can assign to it.
 func (c *config) provisioned(host string) bool {

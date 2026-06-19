@@ -3,8 +3,9 @@ package main
 // Graceful rolling restore (two-site mode). Where `site-failover` is a hard
 // cutover (cordon a whole site, swap the validator set across in one shot),
 // `restore` moves the set back one validator at a time while both DCs are
-// healthy: bring the target site up as trackers, wait until they are synced to
-// the live tip, then migrate v1, v2, v3 in sequence with a health gate between
+// healthy: wipe the target site's stale chain data, bring it up as trackers and
+// wait until they state-sync clean to the live tip, then migrate v1, v2, v3 in
+// sequence with a health gate between
 // each. Because the chain never drops below 2/3 and each promoted node is
 // already at tip (so it continues the live branch), there is no chain downtime
 // and no fork — the operational answer to "restore the original DC after a
@@ -154,6 +155,21 @@ func rollingRestore(cfg *config, targetSite int) {
 		fatalf("%v", err)
 	}
 	printIntents(topo, trackerStep)
+
+	// Wipe each recovering node's chain data BEFORE it restarts so it state-syncs
+	// the L1 clean onto the live branch, instead of resurrecting the stale
+	// post-failover frontier it had when the site went down. That stale frontier is
+	// the rollback/fork hazard: the node would report a height the live validators
+	// never had and never converge. Only the target site is touched — identities
+	// (staking/active, staking/l1) live outside data/ and are preserved. See wipeL1Data.
+	fmt.Printf("== restore: wipe site %s chain data (force clean state-sync) ==\n", siteName(targetSite))
+	for i := range trackerStep {
+		if topo.Site(i) == targetSite {
+			fmt.Printf("  %s: stop + wipe data/validator\n", topo.MachineName(i))
+			cfg.wipeL1Data(cfg.nodeIPs[i])
+		}
+	}
+
 	reconcile(cfg, trackerStep, false)
 
 	fmt.Printf("waiting for site %s validator targets to sync to tip (within %d blocks)...\n", siteName(targetSite), syncToleranceBlocks)
