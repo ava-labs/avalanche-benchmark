@@ -1,0 +1,165 @@
+#!/bin/bash
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/_common.sh"
+
+# Prometheus + Grafana, run LOCALLY on this control host — NOT on a benchmark
+# node. Failover monitoring has to outlive any single site: node 1 (m1) is a
+# validator that goes DOWN during a site-A failover, so hosting the monitor
+# there would blind you exactly when the failover happens. The control host is
+# the one machine that stays up across both site outages and already reaches
+# every node's :9652 (bombard does). It scrapes all 10 nodes' /ext/metrics and
+# keeps recording the survivors as a site drops out.
+#
+#   bin/prometheus            fetched by `make monitoring-deps` (linux-amd64)
+#   bin/grafana-dist/         extracted here from bin/grafana.tar.gz
+#   monitoring/prometheus.yml generated here (scrape targets; gitignored)
+#   monitoring/provisioning/  generated here (gitignored)
+#   monitoring/dashboards/    committed dashboards (avalanche + failover)
+#   data/prometheus,          runtime TSDB
+#   data/grafana              runtime grafana state
+
+PROM_BIN="$SCRIPT_DIR/bin/prometheus"
+GRAFANA_TGZ="$SCRIPT_DIR/bin/grafana.tar.gz"
+GRAFANA_HOME="$SCRIPT_DIR/bin/grafana-dist"
+MON_DIR="$SCRIPT_DIR/monitoring"
+PROM_YML="$MON_DIR/prometheus.yml"
+PROV_DIR="$MON_DIR/provisioning"
+DASH_DIR="$MON_DIR/dashboards"
+DATA_DIR="$SCRIPT_DIR/data"
+PROM_PORT=9090
+GRAFANA_PORT=3000
+
+echo "=== Monitoring (Prometheus + Grafana on this control host) ==="
+
+# ------------------------------------------------------------------------------
+# [1/5] Binaries
+# ------------------------------------------------------------------------------
+echo "[1/5] Checking monitoring binaries..."
+if [ ! -x "$PROM_BIN" ] || [ ! -f "$GRAFANA_TGZ" ]; then
+    echo "ERROR: missing bin/prometheus and/or bin/grafana.tar.gz."
+    echo "       Fetch them first:  make monitoring-deps"
+    exit 1
+fi
+if [ ! -x "$GRAFANA_HOME/bin/grafana" ]; then
+    echo "  Extracting grafana..."
+    rm -rf "$SCRIPT_DIR"/bin/grafana-v* "$GRAFANA_HOME"
+    tar -xzf "$GRAFANA_TGZ" -C "$SCRIPT_DIR/bin"
+    mv "$SCRIPT_DIR"/bin/grafana-v* "$GRAFANA_HOME"
+fi
+echo "  OK."
+
+# ------------------------------------------------------------------------------
+# [2/5] Generate prometheus.yml — scrape every node in both sites, labeled by
+# site + machine + home role so the dashboards can group A vs B.
+# ------------------------------------------------------------------------------
+echo "[2/5] Generating prometheus.yml..."
+mkdir -p "$MON_DIR"
+
+emit_target() {  # ip site machine home_role
+    printf "      - targets: ['%s:9652']\n" "$1"
+    printf "        labels:\n"
+    printf "          site: %s\n" "$2"
+    printf "          machine: %s\n" "$3"
+    printf "          home_role: %s\n" "$4"
+}
+
+{
+    echo "global:"
+    echo "  scrape_interval: 5s"
+    echo "  evaluation_interval: 5s"
+    echo ""
+    echo "scrape_configs:"
+    echo "  - job_name: 'avalanche-l1'"
+    echo "    metrics_path: /ext/metrics"
+    echo "    static_configs:"
+    A_ROLES=(validator validator validator spare rpc)
+    for i in "${!NODE_IPS_ARRAY[@]}"; do
+        emit_target "${NODE_IPS_ARRAY[$i]}" "a" "m$((i + 1))" "${A_ROLES[$i]}"
+    done
+    if [ -n "$BACKUP_SITE_NODE_IPS" ]; then
+        B_ROLES=(tracker tracker tracker tracker rpc)
+        for i in "${!BACKUP_SITE_IPS_ARRAY[@]}"; do
+            emit_target "${BACKUP_SITE_IPS_ARRAY[$i]}" "b" "b$((i + 1))" "${B_ROLES[$i]}"
+        done
+    fi
+} > "$PROM_YML"
+
+TARGET_COUNT=${#NODE_IPS_ARRAY[@]}
+[ -n "$BACKUP_SITE_NODE_IPS" ] && TARGET_COUNT=$((TARGET_COUNT + ${#BACKUP_SITE_IPS_ARRAY[@]}))
+echo "  $PROM_YML ($TARGET_COUNT targets)."
+
+# ------------------------------------------------------------------------------
+# [3/5] Grafana provisioning (datasource -> local prometheus; auto-load dashboards)
+# ------------------------------------------------------------------------------
+echo "[3/5] Provisioning grafana..."
+mkdir -p "$PROV_DIR/datasources" "$PROV_DIR/dashboards" "$DASH_DIR"
+cp "$MON_DIR/grafana-datasources.yml" "$PROV_DIR/datasources/datasources.yml"
+cat > "$PROV_DIR/dashboards/dashboards.yml" <<EOF
+apiVersion: 1
+providers:
+    - name: 'default'
+      orgId: 1
+      folder: ''
+      type: file
+      disableDeletion: false
+      editable: true
+      options:
+          path: $DASH_DIR
+EOF
+echo "  OK ($(ls "$DASH_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ') dashboards)."
+
+# ------------------------------------------------------------------------------
+# [4/5] (Re)start prometheus + grafana
+# ------------------------------------------------------------------------------
+echo "[4/5] Starting prometheus + grafana..."
+mkdir -p "$DATA_DIR/prometheus" "$DATA_DIR/grafana/logs" "$DATA_DIR/grafana/plugins"
+
+pkill -f "$SCRIPT_DIR/bin/prometheus" 2>/dev/null || true
+pkill -f "$GRAFANA_HOME/bin/grafana" 2>/dev/null || true
+sleep 1
+
+nohup "$PROM_BIN" \
+    --config.file="$PROM_YML" \
+    --storage.tsdb.path="$DATA_DIR/prometheus" \
+    --web.listen-address="0.0.0.0:$PROM_PORT" \
+    >"$DATA_DIR/prometheus.log" 2>&1 &
+echo $! > "$DATA_DIR/prometheus.pid"
+
+GF_PATHS_DATA="$DATA_DIR/grafana" \
+GF_PATHS_LOGS="$DATA_DIR/grafana/logs" \
+GF_PATHS_PLUGINS="$DATA_DIR/grafana/plugins" \
+GF_PATHS_PROVISIONING="$PROV_DIR" \
+GF_SERVER_HTTP_ADDR="0.0.0.0" \
+GF_SERVER_HTTP_PORT="$GRAFANA_PORT" \
+GF_AUTH_ANONYMOUS_ENABLED="true" \
+GF_AUTH_ANONYMOUS_ORG_ROLE="Admin" \
+GF_AUTH_DISABLE_LOGIN_FORM="true" \
+    nohup "$GRAFANA_HOME/bin/grafana" server --homepath="$GRAFANA_HOME" \
+    >"$DATA_DIR/grafana.log" 2>&1 &
+echo $! > "$DATA_DIR/grafana.pid"
+
+# ------------------------------------------------------------------------------
+# [5/5] Wait for readiness
+# ------------------------------------------------------------------------------
+echo "[5/5] Waiting for services..."
+for _ in $(seq 1 30); do
+    if curl -sf "http://localhost:$PROM_PORT/-/ready" >/dev/null 2>&1; then break; fi
+    sleep 1
+done
+for _ in $(seq 1 30); do
+    if curl -sf "http://localhost:$GRAFANA_PORT/api/health" >/dev/null 2>&1; then break; fi
+    sleep 1
+done
+
+PUBLIC_IP="$(pchain_public_ip 2>/dev/null || echo localhost)"
+echo ""
+echo "=== Monitoring ready ==="
+echo "Prometheus: http://$PUBLIC_IP:$PROM_PORT"
+echo "Grafana:    http://$PUBLIC_IP:$GRAFANA_PORT   (anonymous admin, no login)"
+echo "  Failover board:  http://$PUBLIC_IP:$GRAFANA_PORT/d/avalanche-failover?refresh=5s&from=now-15m&to=now"
+echo "  Benchmark board: http://$PUBLIC_IP:$GRAFANA_PORT/d/avalanche-benchmark?refresh=5s"
+echo ""
+echo "Scraping $TARGET_COUNT node(s) at :9652/ext/metrics (site a = m1-m5, site b = b1-b5)."
+echo "Stop with:  kill \$(cat $DATA_DIR/prometheus.pid $DATA_DIR/grafana.pid)"

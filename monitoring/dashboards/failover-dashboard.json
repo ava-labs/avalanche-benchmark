@@ -1,0 +1,156 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": true,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Per-node finalized (last-accepted) height. On a site failover the failing site's lines flatline / go to No Data while the active site keeps climbing.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never" },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "max by (machine) (avalanche_snowman_last_accepted_height{chain=~\".*\"})",
+          "legendFormat": "{{machine}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Last accepted (finalized) height by node",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Highest finalized height in site A minus site B (and vice-versa). This is the finalized-but-not-yet-propagated window: how many finalized blocks one site is ahead of the other. Under a partition it grows.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "max(avalanche_snowman_last_accepted_height{site=\"a\",chain=~\".*\"}) - max(avalanche_snowman_last_accepted_height{site=\"b\",chain=~\".*\"})",
+          "legendFormat": "A minus B",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Finalized gap between sites (blocks)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Prometheus scrape liveness per node (1 = reachable, 0 = down). The clearest failover view: the failing site drops to 0 while the other stays at 1.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "lineWidth": 2, "fillOpacity": 15, "showPoints": "never" },
+          "min": 0,
+          "max": 1,
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 12, "x": 0, "y": 9 },
+      "id": 3,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "up{job=\"avalanche-l1\"}",
+          "legendFormat": "{{machine}} ({{site}})",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Node up (1 = scrape OK)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Block acceptance rate per node. Shows which site is actively producing/accepting blocks (the live validator set) versus merely tracking.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "lineWidth": 2, "fillOpacity": 5, "showPoints": "never" },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 12, "x": 12, "y": 9 },
+      "id": 4,
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "max by (machine) (rate(avalanche_snowman_blks_accepted_count{chain=~\".*\"}[1m]))",
+          "legendFormat": "{{machine}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Block acceptance rate by node",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "5s",
+  "schemaVersion": 39,
+  "tags": ["avalanche", "failover"],
+  "templating": { "list": [] },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Avalanche Failover",
+  "uid": "avalanche-failover",
+  "version": 1,
+  "weekStart": ""
+}
