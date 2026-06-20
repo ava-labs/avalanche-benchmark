@@ -32,6 +32,12 @@ SSH_OPTS=(
     -o ControlMaster=no
     -o ControlPath=none
     -o LogLevel=ERROR
+    # Fail fast on a wedged host instead of hanging forever: bound the
+    # connect/banner phase, and bail (~60s) if an established connection goes
+    # dead mid-command. Kept in sync with cmd/reconcile/remote.go sshArgs.
+    -o ConnectTimeout=10
+    -o ServerAliveInterval=15
+    -o ServerAliveCountMax=4
 )
 
 ssh() {

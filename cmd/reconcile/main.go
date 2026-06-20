@@ -29,9 +29,12 @@ func usage() {
   site-failover <a|b>  fail the validator set over to the given site (hard cutover, two-site mode)
   restore <a|b>        graceful rolling migration of the validator set to a site — one
                        validator at a time, chain stays >=2/3 throughout, no fork (two-site
-                       mode); typically used to restore the original site after site-failover
+                       mode); seeds targets from a live DB snapshot by default
+                       (RESTORE_MODE=state-sync forces from-scratch). Typically used to
+                       restore the original site after a site-failover
   apply              pure reconcile against the existing intentions (no intent change)
-  status             read-only health report (actual node state, no changes)`)
+  status             read-only health report (actual node state, no changes)
+  verify             read-only proof the live network is ONE branch (no fork) + quorum healthy`)
 	os.Exit(2)
 }
 
@@ -44,6 +47,13 @@ func main() {
 
 	if os.Args[1] == "status" {
 		status(cfg)
+		return
+	}
+
+	if os.Args[1] == "verify" {
+		if !verifyAgreement(cfg) {
+			os.Exit(1)
+		}
 		return
 	}
 

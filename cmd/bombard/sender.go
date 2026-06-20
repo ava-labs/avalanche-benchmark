@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ava-labs/libevm/core/types"
@@ -23,6 +25,16 @@ const (
 	// fills its queue and then drops — it never blocks the issuer or other
 	// nodes. Resubmission and the other nodes cover the dropped sends.
 	sendQueueLen = 4096
+
+	// Healthy ingress routing (mirrors a production load-balancer health check):
+	// drop an endpoint from the send rotation once it falls ingressDropBehind
+	// blocks behind the furthest-ahead endpoint, and re-add it once within
+	// ingressRejoinWithin. Routing ingress to a node that isn't caught up wastes
+	// sends and — worse — keeps a recovering node (e.g. a wiped RPC) from ever
+	// catching up. Hysteresis (drop >> rejoin) avoids flapping at the boundary.
+	ingressDropBehind    = 200
+	ingressRejoinWithin  = 50
+	ingressCheckInterval = 3 * time.Second
 )
 
 // broadcaster sends every tx to every node over HTTP. Each node drains its own
@@ -35,9 +47,10 @@ type broadcaster struct {
 }
 
 type nodeSender struct {
-	url    string
-	client *ethclient.Client
-	queue  chan *types.Transaction
+	url     string
+	client  *ethclient.Client
+	queue   chan *types.Transaction
+	healthy atomic.Bool // routed ingress only while caught up to tip
 }
 
 // newBroadcaster dials every rpcURL (lazily, over HTTP — a down node is included
@@ -75,6 +88,7 @@ func newBroadcaster(ctx context.Context, rpcURLs []string, sendTimeout time.Dura
 			client: ethclient.NewClient(rc),
 			queue:  make(chan *types.Transaction, sendQueueLen),
 		}
+		ns.healthy.Store(true)
 		b.nodes = append(b.nodes, ns)
 		for i := 0; i < sendConcPerNode; i++ {
 			go ns.run(ctx, sendTimeout)
@@ -83,6 +97,7 @@ func newBroadcaster(ctx context.Context, rpcURLs []string, sendTimeout time.Dura
 	if len(b.nodes) == 0 {
 		return nil, fmt.Errorf("no usable endpoints among %d", len(rpcURLs))
 	}
+	go b.monitorIngress(ctx)
 	return b, nil
 }
 
@@ -105,11 +120,59 @@ func (n *nodeSender) run(ctx context.Context, timeout time.Duration) {
 // full (it is down or lagging) the send is dropped for that node only.
 func (b *broadcaster) broadcast(signed *types.Transaction) {
 	for _, n := range b.nodes {
+		if !n.healthy.Load() {
+			continue // behind tip / not caught up — out of ingress rotation
+		}
 		select {
 		case n.queue <- signed:
 		default:
 			// Node is saturated/down; drop. Other nodes still get it and the
 			// resubmit loop will retry.
+		}
+	}
+}
+
+// monitorIngress polls every endpoint's height and routes ingress only to those
+// caught up to the tip — mirroring a load-balancer health check. A node that has
+// fallen behind (e.g. a freshly-wiped RPC rejoining mid-load) is taken out of the
+// send rotation so it can catch up without also serving load, then re-added once
+// within range. The furthest-ahead node is behind=0, so at least one endpoint is
+// always healthy.
+func (b *broadcaster) monitorIngress(ctx context.Context) {
+	t := time.NewTicker(ingressCheckInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			heights := make([]uint64, len(b.nodes))
+			var maxH uint64
+			for i, n := range b.nodes {
+				hctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+				h, err := n.client.BlockNumber(hctx)
+				cancel()
+				if err == nil {
+					heights[i] = h
+					if h > maxH {
+						maxH = h
+					}
+				}
+			}
+			if maxH == 0 {
+				continue // nothing reachable yet — leave routing unchanged
+			}
+			for i, n := range b.nodes {
+				behind := maxH - heights[i]
+				switch {
+				case n.healthy.Load() && behind > ingressDropBehind:
+					n.healthy.Store(false)
+					fmt.Fprintf(os.Stderr, "ingress: %s out of rotation — %d blocks behind tip (catching up)\n", n.url, behind)
+				case !n.healthy.Load() && behind <= ingressRejoinWithin:
+					n.healthy.Store(true)
+					fmt.Fprintf(os.Stderr, "ingress: %s back in rotation — caught up (%d behind)\n", n.url, behind)
+				}
+			}
 		}
 	}
 }

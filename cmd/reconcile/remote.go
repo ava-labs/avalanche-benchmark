@@ -77,6 +77,15 @@ func envOr(key, def string) string {
 
 // sshOpts mirror _common.sh exactly — these avoid the YubiKey-agent hang on the
 // ephemeral bench hosts. Keep them byte-identical with _common.sh.
+//
+// ConnectTimeout + ServerAlive* are load-bearing: without them a single wedged
+// host (sshd up at TCP but starved so it never completes the banner, or a box
+// that thrashes mid-command) hangs ssh — and thus the whole reconcile/restore —
+// FOREVER with no error. ConnectTimeout bounds the connect/banner phase;
+// ServerAliveInterval*CountMax (~60s) bails if an established connection goes
+// dead mid-command. A failed ssh is fatal (see ssh()), so the operator gets a
+// clear "ssh <host> failed" instead of an indefinite hang (measured 2026-06-19:
+// a starved m1 froze `restore` on the first killNode pkill).
 func (c *config) sshArgs(host string, extra ...string) []string {
 	args := []string{
 		"-i", c.sshKey,
@@ -87,6 +96,9 @@ func (c *config) sshArgs(host string, extra ...string) []string {
 		"-o", "ControlMaster=no",
 		"-o", "ControlPath=none",
 		"-o", "LogLevel=ERROR",
+		"-o", "ConnectTimeout=10",
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=4",
 		fmt.Sprintf("%s@%s", c.sshUser, host),
 	}
 	return append(args, extra...)
@@ -102,6 +114,9 @@ func (c *config) scpArgs(extra ...string) []string {
 		"-o", "ControlMaster=no",
 		"-o", "ControlPath=none",
 		"-o", "LogLevel=ERROR",
+		"-o", "ConnectTimeout=10",
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=4",
 		"-q",
 	}
 	return append(args, extra...)
@@ -140,6 +155,47 @@ func (c *config) scp(localPath, host, remotePath string, recursive bool) {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		fatalf("scp %s -> %s:%s failed: %v", localPath, host, remotePath, err)
+	}
+}
+
+// snapshotPull streams a (lightly-compressed) tar of the already-stopped source's
+// chain data dir into a local file on the control box. The source MUST be stopped
+// first (killNode) so the on-disk pebble/EVM state is a consistent point-in-time
+// image — copying a live DB yields a torn, unopenable snapshot. The output is
+// streamed to a file, never buffered in memory (the DB is many GB). gzip -1 keeps
+// the cross-region pull fast without pegging CPU on the (idle, stopped) source.
+func (c *config) snapshotPull(host, localTar string) bool {
+	f, err := os.Create(localTar)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "snapshot: create %s: %v\n", localTar, err)
+		return false
+	}
+	defer f.Close()
+	cmd := exec.Command("ssh", c.sshArgs(host, fmt.Sprintf("cd %s && tar -cf - data/validator | gzip -1", c.remoteDir))...)
+	cmd.Stdout = f
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "snapshot pull from %s failed: %v\n", host, err)
+		return false
+	}
+	return true
+}
+
+// snapshotPush streams a local snapshot tar to a target and extracts it, recreating
+// data/validator from the source's committed state. The target MUST be stopped and
+// its data/validator removed first (loadSnapshot does this) so nothing stale merges
+// with the extracted image.
+func (c *config) snapshotPush(host, localTar string) {
+	f, err := os.Open(localTar)
+	if err != nil {
+		fatalf("snapshot: open %s: %v", localTar, err)
+	}
+	defer f.Close()
+	cmd := exec.Command("ssh", c.sshArgs(host, fmt.Sprintf("cd %s && gzip -dc | tar -xf -", c.remoteDir))...)
+	cmd.Stdin = f
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fatalf("snapshot push to %s failed: %v", host, err)
 	}
 }
 

@@ -3,16 +3,30 @@ package main
 // Graceful rolling restore (two-site mode). Where `site-failover` is a hard
 // cutover (cordon a whole site, swap the validator set across in one shot),
 // `restore` moves the set back one validator at a time while both DCs are
-// healthy: wipe the target site's stale chain data, bring it up as trackers and
-// wait until they state-sync clean to the live tip, then migrate v1, v2, v3 in
-// sequence with a health gate between
-// each. Because the chain never drops below 2/3 and each promoted node is
-// already at tip (so it continues the live branch), there is no chain downtime
-// and no fork — the operational answer to "restore the original DC after a
-// failover, ideally without downtime." See docs/two-site-failover.md.
+// healthy: seed the target site's machines with a fresh copy of the live chain,
+// bring them up as trackers and wait until they reach the live tip, then migrate
+// v1, v2, v3 in sequence with a health gate between each. Because the chain never
+// drops below 2/3 and each promoted node is already at tip (so it continues the
+// live branch), there is no chain downtime and no fork.
+//
+// Seeding defaults to a DB SNAPSHOT of the live source site (see snapshot.go): the
+// target replays only the tiny delta since the snapshot instead of pulling the
+// whole state trie from loaded peers — the fragile, memory-heavy state-sync that
+// wedged recovering nodes under sustained ingress. Set RESTORE_MODE=state-sync to
+// force the from-scratch path (also the automatic fallback when no snapshot source
+// is available). Either way the target's stale data is discarded first, so it can
+// never resurrect the divergent post-failover frontier (the rollback/fork hazard).
+//
+// The pinned RPC is held back until the target site holds the validator MAJORITY
+// (after the 2nd validator lands), then brought up + seeded so it catches up from
+// SAME-SITE validators rather than racing a cross-region sync (off the still-active
+// remote site) while also carrying ingress load. It is gated to tip before
+// completion, and the restore self-verifies (single branch + quorum) at the end.
+// See docs/two-site-failover.md.
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -26,6 +40,7 @@ const (
 	restorePollInterval = 3 * time.Second
 	restoreSyncTimeout  = 30 * time.Minute // generous: replaying a heavy post-failover backlog can take minutes (benign wait, logged each poll)
 	restoreSetTimeout   = 5 * time.Minute
+	restoreRPCTimeout   = 6 * time.Minute // bounded gate for the late pinned-RPC catch-up; warn (don't block) if it overruns
 )
 
 func siteName(site int) string {
@@ -143,30 +158,53 @@ func rollingRestore(cfg *config, targetSite int) {
 	}
 
 	trackerStep, keySteps := RestorePlan(topo, prev, targetSite)
-	srcIdx := validatorMachineIdx(trackerStep)    // currently-active validators (the source site = the tip)
 	destIdx := validatorDestIdx(topo, targetSite) // machines that will receive a validator key (gate only these)
 
-	// Phase 1 — bring the target site up as trackers and wait until the validator
-	// destinations reach the tip. The spare/RPC trackers catch up on their own and
-	// do NOT gate promotion: they never take a vote, so a slow one can't fork the
-	// chain — and must not be able to block (or deadlock) the failback.
-	fmt.Printf("== restore: bring site %s up as trackers ==\n", siteName(targetSite))
+	// Hold the pinned RPC back until the target site holds the validator MAJORITY,
+	// so it state-syncs from same-site validators instead of racing a cross-region
+	// sync (off the still-active remote site) under ingress load (see package doc).
+	// rpcAfter = majority count; the RPC comes up right after that many validators land.
+	rpcIdx := rpcMachineIdx(topo, targetSite)
+	rpcAfter := want/2 + 1
+	delayRPC := rpcIdx >= 0 && rpcAfter <= len(keySteps)
+	if delayRPC {
+		trackerStep[rpcIdx].Cordoned = true
+		for i := range keySteps {
+			keySteps[i][rpcIdx].Cordoned = i < rpcAfter
+		}
+	}
+	srcIdx := validatorMachineIdx(trackerStep) // currently-active validators (the source site = the tip)
+
+	// Choose the seeding strategy. Default: a DB snapshot of the live source site,
+	// so targets replay only a tiny delta. RESTORE_MODE=state-sync forces the
+	// from-scratch path; an unavailable snapshot source falls back to it too.
+	snapMode := os.Getenv("RESTORE_MODE") != "state-sync"
+	var snapTar string
+	if snapMode {
+		if tar, ok := cfg.takeSnapshot(trackerStep, otherSite(targetSite)); ok {
+			snapTar = tar
+			defer cleanupSnapshot(snapTar)
+		} else {
+			fmt.Println("WARN: no usable snapshot source — falling back to wipe + state-sync.")
+			snapMode = false
+		}
+	}
+
+	// Phase 1 — seed the target site's validators (+ spare), bring them up as
+	// trackers, and wait until the validator destinations reach the tip. The pinned
+	// RPC is excluded here when delayRPC; it comes up in Phase 2. Each target's
+	// stale data is discarded first, so it can never resurrect the divergent
+	// post-failover frontier — identities (staking/active, staking/l1) live outside
+	// data/ and are preserved. See prepareTarget / wipeL1Data.
+	fmt.Printf("== restore: prepare + bring site %s up as trackers ==\n", siteName(targetSite))
 	if err := saveIntents(cfg.stateFile, trackerStep); err != nil {
 		fatalf("%v", err)
 	}
 	printIntents(topo, trackerStep)
 
-	// Wipe each recovering node's chain data BEFORE it restarts so it state-syncs
-	// the L1 clean onto the live branch, instead of resurrecting the stale
-	// post-failover frontier it had when the site went down. That stale frontier is
-	// the rollback/fork hazard: the node would report a height the live validators
-	// never had and never converge. Only the target site is touched — identities
-	// (staking/active, staking/l1) live outside data/ and are preserved. See wipeL1Data.
-	fmt.Printf("== restore: wipe site %s chain data (force clean state-sync) ==\n", siteName(targetSite))
 	for i := range trackerStep {
-		if topo.Site(i) == targetSite {
-			fmt.Printf("  %s: stop + wipe data/validator\n", topo.MachineName(i))
-			cfg.wipeL1Data(cfg.nodeIPs[i])
+		if topo.Site(i) == targetSite && !trackerStep[i].Cordoned {
+			cfg.prepareTarget(cfg.nodeIPs[i], topo.MachineName(i), snapMode, snapTar)
 		}
 	}
 
@@ -177,7 +215,8 @@ func rollingRestore(cfg *config, targetSite int) {
 		fatalf("site %s validator targets did not reach tip within %s; aborting. No stake moved — the site is a tracker, safe to retry.", siteName(targetSite), restoreSyncTimeout)
 	}
 
-	// Phase 2 — roll each validator key onto the target site, one at a time.
+	// Phase 2 — roll each validator key onto the target site, one at a time; bring
+	// the pinned RPC up once the majority is local so it state-syncs from local peers.
 	current := trackerStep
 	for n, step := range keySteps {
 		fmt.Printf("== restore: migrate validator %d/%d to site %s ==\n", n+1, len(keySteps), siteName(targetSite))
@@ -193,9 +232,35 @@ func rollingRestore(cfg *config, targetSite int) {
 			fatalf("validator did not return to %d/%d after migrating a key; chain is at 2/3 (still live). Re-run `reconcile apply` once the node recovers, then re-run restore.", want, want)
 		}
 		current = step
+
+		if delayRPC && n+1 == rpcAfter {
+			fmt.Printf("== restore: site %s holds the validator majority — bring up + seed the pinned RPC (local catch-up) ==\n", siteName(targetSite))
+			rpcUp := cloneIntents(current)
+			rpcUp[rpcIdx].Cordoned = false
+			cfg.prepareTarget(cfg.nodeIPs[rpcIdx], topo.MachineName(rpcIdx), snapMode, snapTar)
+			if err := saveIntents(cfg.stateFile, rpcUp); err != nil {
+				fatalf("%v", err)
+			}
+			printIntents(topo, rpcUp)
+			reconcile(cfg, rpcUp, false)
+			current = rpcUp
+		}
+	}
+
+	// Gate the pinned RPC to tip so "restore complete" doesn't paper over a stale
+	// ingress. Bounded + non-fatal: consensus is already restored, so if the RPC is
+	// still sync-bound under load we warn rather than block the operator.
+	if delayRPC {
+		fmt.Printf("waiting for site %s pinned RPC to sync to tip (within %d blocks)...\n", siteName(targetSite), syncToleranceBlocks)
+		if !cfg.waitForTargetSyncedT(current, []int{rpcIdx}, validatorMachineIdx(current), restoreRPCTimeout) {
+			fmt.Printf("WARN: site %s pinned RPC has not caught up within %s. Consensus is restored (validators %d/%d) but the RPC is still syncing — likely sync-bound under sustained load. Ease load and it will finish; re-run `reconcile verify` to confirm.\n", siteName(targetSite), restoreRPCTimeout, want, want)
+		}
 	}
 
 	fmt.Printf("\nrestore complete — validator set is active on site %s, chain held quorum throughout.\n", siteName(targetSite))
+
+	fmt.Println()
+	verifyAgreement(cfg)
 }
 
 // validatorDestIdx returns the machine indexes that will receive validator keys
@@ -213,6 +278,17 @@ func validatorDestIdx(topo Topology, targetSite int) []int {
 	return idx
 }
 
+// rpcMachineIdx returns the index of the pinned dedicated-RPC machine in the
+// given site (its home identity is an RPC key), or -1 if there is none.
+func rpcMachineIdx(topo Topology, site int) int {
+	for i := 0; i < topo.Size(); i++ {
+		if topo.Site(i) == site && isRPCKey(topo.HomeKey(i)) {
+			return i
+		}
+	}
+	return -1
+}
+
 // waitForTargetSynced polls until every validator-destination machine (destIdx) is
 // SERVING and within syncToleranceBlocks of the active tip. It gates only the
 // machines about to receive a validator key; spare/RPC trackers carry no vote and
@@ -220,7 +296,13 @@ func validatorDestIdx(topo Topology, targetSite int) []int {
 // that gap is GROWING it warns that write load is outpacing catch-up — the signal
 // that a graceful failback should wait for a lull (see docs/two-site-failover.md).
 func (c *config) waitForTargetSynced(intents []MachineIntent, destIdx, srcIdx []int) bool {
-	deadline := time.Now().Add(restoreSyncTimeout)
+	return c.waitForTargetSyncedT(intents, destIdx, srcIdx, restoreSyncTimeout)
+}
+
+// waitForTargetSyncedT is waitForTargetSynced with an explicit timeout (used for
+// the bounded pinned-RPC catch-up gate).
+func (c *config) waitForTargetSyncedT(intents []MachineIntent, destIdx, srcIdx []int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
 	prevWorst := -1
 	for {
 		res := c.checkHealth(intents)

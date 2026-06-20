@@ -51,18 +51,22 @@ fi
 echo "  OK."
 
 # ------------------------------------------------------------------------------
-# [2/5] Generate prometheus.yml — scrape every node in both sites, labeled by
-# site + machine + home role so the dashboards can group A vs B.
+# [2/5] Generate prometheus.yml — scrape every node in both sites. Each target
+# gets a friendly `instance` (so dashboards read "validator-1", "rpc-1" instead
+# of an IP:port), plus site / machine / role labels for grouping. Names are the
+# HOME role: after a failover a "backup-N" node is the one now validating — which
+# is exactly the story the dashboards show.
 # ------------------------------------------------------------------------------
 echo "[2/5] Generating prometheus.yml..."
 mkdir -p "$MON_DIR"
 
-emit_target() {  # ip site machine home_role
+emit_target() {  # ip site machine name role
     printf "      - targets: ['%s:9652']\n" "$1"
     printf "        labels:\n"
+    printf "          instance: %s\n" "$4"
     printf "          site: %s\n" "$2"
     printf "          machine: %s\n" "$3"
-    printf "          home_role: %s\n" "$4"
+    printf "          role: %s\n" "$5"
 }
 
 {
@@ -74,14 +78,16 @@ emit_target() {  # ip site machine home_role
     echo "  - job_name: 'avalanche-l1'"
     echo "    metrics_path: /ext/metrics"
     echo "    static_configs:"
+    A_NAMES=(validator-1 validator-2 validator-3 spare rpc-1)
     A_ROLES=(validator validator validator spare rpc)
     for i in "${!NODE_IPS_ARRAY[@]}"; do
-        emit_target "${NODE_IPS_ARRAY[$i]}" "a" "m$((i + 1))" "${A_ROLES[$i]}"
+        emit_target "${NODE_IPS_ARRAY[$i]}" "a" "m$((i + 1))" "${A_NAMES[$i]}" "${A_ROLES[$i]}"
     done
     if [ -n "$BACKUP_SITE_NODE_IPS" ]; then
+        B_NAMES=(backup-1 backup-2 backup-3 backup-4 rpc-2)
         B_ROLES=(tracker tracker tracker tracker rpc)
         for i in "${!BACKUP_SITE_IPS_ARRAY[@]}"; do
-            emit_target "${BACKUP_SITE_IPS_ARRAY[$i]}" "b" "b$((i + 1))" "${B_ROLES[$i]}"
+            emit_target "${BACKUP_SITE_IPS_ARRAY[$i]}" "b" "b$((i + 1))" "${B_NAMES[$i]}" "${B_ROLES[$i]}"
         done
     fi
 } > "$PROM_YML"
@@ -114,11 +120,16 @@ echo "  OK ($(ls "$DASH_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ') dashboards)
 # [4/5] (Re)start prometheus + grafana
 # ------------------------------------------------------------------------------
 echo "[4/5] Starting prometheus + grafana..."
-mkdir -p "$DATA_DIR/prometheus" "$DATA_DIR/grafana/logs" "$DATA_DIR/grafana/plugins"
-
 pkill -f "$SCRIPT_DIR/bin/prometheus" 2>/dev/null || true
 pkill -f "$GRAFANA_HOME/bin/grafana" 2>/dev/null || true
 sleep 1
+
+# Fresh Prometheus TSDB each run. When a target's labels change (e.g. switching
+# from IP to friendly instance names), Prometheus keeps the OLD series under the
+# old labels, so a dashboard shows both the IP-named and friendly-named lines at
+# once. Wiping guarantees the board reflects only the current label set.
+rm -rf "$DATA_DIR/prometheus"
+mkdir -p "$DATA_DIR/prometheus" "$DATA_DIR/grafana/logs" "$DATA_DIR/grafana/plugins"
 
 nohup "$PROM_BIN" \
     --config.file="$PROM_YML" \

@@ -85,16 +85,22 @@ time**, keeping the chain at ≥2/3 throughout — the operational answer to
 
 It runs in two phases:
 
-1. **Wipe + trackers + sync gate** — wipe each recovering node's chain data so it
-   rejoins with a clean slate, then uncordon the target site so its nodes rejoin as
-   zero-weight trackers and **state-sync the L1 to the live tip** (within
-   `syncToleranceBlocks`) before any stake moves. The wipe is what makes the failback
-   fork-proof: a node that kept its stale post-failover data would resurrect a frontier
-   the live validators never had and never converge. Only the machines about
-   to take a validator key are gated: the spare and pinned-RPC trackers carry no
-   vote, so they finish syncing on their own and can't fork — or block — the
-   restore. No stake moves until those targets are at tip, so no node is ever
-   promoted onto a stale/divergent branch — this is what eliminates the fork.
+1. **Seed + trackers + sync gate** — seed each recovering node from a fresh **DB
+   snapshot of the live source site** (the default; `RESTORE_MODE=state-sync` forces a
+   from-scratch state-sync, which is also the automatic fallback when no snapshot
+   source is available), discarding the node's stale chain data first. Then uncordon
+   the target site so its nodes rejoin as zero-weight trackers and catch up the small
+   remaining delta to the live tip (within `syncToleranceBlocks`) before any stake
+   moves. Discarding the stale data is what makes the failback fork-proof: a node that
+   kept its stale post-failover data would resurrect a frontier the live validators
+   never had and never converge. The snapshot source is the zero-weight sync tracker
+   (b4) or spare (m4) — stopped briefly for a consistent on-disk copy, so neither
+   quorum nor ingress is touched — and it is provenance-gated to the canonical active
+   site so a stale frontier can never be re-imported. Only the machines about to take a
+   validator key are gated: the spare and pinned-RPC trackers carry no vote, so they
+   finish syncing on their own and can't fork — or block — the restore. No stake moves
+   until those targets are at tip, so no node is ever promoted onto a stale/divergent
+   branch — this is what eliminates the fork.
 2. **Rolling swap** — move v1, then v2, then v3 onto the target site, one key at
    a time, with a health gate (`waitForFullValidatorSet`) between each. Dropping
    one validator leaves 2/3 live, so the chain never halts; the promoted node's
@@ -119,14 +125,15 @@ order (all stops before any starts) holds across the whole pool — so all three
 validators come up on site B together, satisfying the 75%-stake bootstrap latch
 in one shot rather than stalling on it.
 
-**Failback is sync-bound under sustained load.** The gate above only clears once
-the validator destinations reach the tip, so a graceful failback completes quickly
-only when the rejoining site is at (or near) tip. If write load produces blocks
-faster than the recovering DC can replay them — measured on 4-vCPU nodes, where a
-saturated tracker replays at a fraction of the production rate — the gate holds
-until load eases. Operationally: **fail back during a lull.** The structural fix is
-deterministic EVM state-sync to a chosen height (request #8) rather than full block
-replay; until then the gate's per-poll log warns when a target is losing ground.
+**Snapshot seeding makes failback load-tolerant.** Because each target starts from a
+recent DB snapshot, it only replays the few blocks accumulated since the copy, so the
+sync gate clears in seconds rather than racing the tip. This is the structural fix for
+the old "failback is sync-bound under sustained load" problem: recovering nodes
+formerly pulled the whole state trie from peers that were themselves under ingress
+load and could lose ground to the tip indefinitely (and, on memory-tight boxes, thrash
+hard enough to wedge). The from-scratch `RESTORE_MODE=state-sync` fallback is still
+sync-bound under heavy write load — **fail back during a lull** when using it — and the
+gate's per-poll log warns when a target is losing ground.
 
 ## Benchmark across a failover
 

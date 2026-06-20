@@ -140,6 +140,40 @@ Stops every node (local P-chain and all pool machines), removes the remote
 deployment directories, and deletes the local `network.env`. To start over, go
 back to step 1.
 
+## Monitoring (Prometheus + Grafana)
+
+`04_monitoring.sh` runs Prometheus + Grafana **on the control host** — not on a
+pool node, since a pool node disappears during a site failover — and scrapes
+every node's `:9652/ext/metrics`, so the dashboards keep recording the survivors
+as a site drops out.
+
+```bash
+make monitoring-deps     # one-time: fetch prometheus + grafana (linux-amd64)
+./04_monitoring.sh       # generate scrape config, start both, print URLs
+```
+
+It discovers the fleet from `.env` (all of `NODE_IPS`, plus `BACKUP_SITE_NODE_IPS`
+in two-site mode) and labels each target by `site` (`a`/`b`) and `machine`
+(`m1`-`m5`, `b1`-`b5`). Two dashboards are provisioned:
+
+- **Avalanche Benchmark** (`/d/avalanche-benchmark`) — per-node TPS, consensus,
+  and verification panels.
+- **Avalanche Failover** (`/d/avalanche-failover`) — built for this demo:
+  per-node last-accepted (finalized) height, the **A→B finalized gap**, node
+  up/down, and block-acceptance rate. Watch site A flatline and site B take over
+  live.
+
+Grafana is on `:3000`, Prometheus on `:9090` (anonymous admin, no login). If
+those ports aren't open to you, tunnel over SSH:
+
+```bash
+ssh -i <key> -L3000:localhost:3000 -L9090:localhost:9090 <user>@<control-host>
+# then open http://localhost:3000
+```
+
+Re-runnable (kills + restarts cleanly). Works in single-site mode too — the A→B
+gap panel is just empty without a backup site.
+
 ## End-to-End Failover Test Under Constant Load
 
 This is the full acceptance test: drive the L1 with steady traffic, then fail
