@@ -140,7 +140,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max(avalanche_snowman_last_accepted_height{site=\"a\",chain!~\"C|P|X|all\"}) - max(avalanche_snowman_last_accepted_height{site=\"b\",chain!~\"C|P|X|all\"})",
+          "expr": "clamp_min(max(avalanche_snowman_last_accepted_height{site=\"a\",chain!~\"C|P|X|all\"}) - max(avalanche_snowman_last_accepted_height{site=\"b\",chain!~\"C|P|X|all\"}), 0)",
           "legendFormat": "A - B",
           "range": true,
           "refId": "A"

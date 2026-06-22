@@ -9,7 +9,7 @@ source "$SCRIPT_DIR/_common.sh"
 # validator that goes DOWN during a site-A failover, so hosting the monitor
 # there would blind you exactly when the failover happens. The control host is
 # the one machine that stays up across both site outages and already reaches
-# every node's :9652 (bombard does). It scrapes all 10 nodes' /ext/metrics and
+# every node's :9652 (bombard does). It scrapes all 12 nodes' /ext/metrics and
 # keeps recording the survivors as a site drops out.
 #
 #   bin/prometheus            fetched by `make monitoring-deps` (linux-amd64)
@@ -78,14 +78,14 @@ emit_target() {  # ip site machine name role
     echo "  - job_name: 'avalanche-l1'"
     echo "    metrics_path: /ext/metrics"
     echo "    static_configs:"
-    A_NAMES=(validator-1 validator-2 validator-3 spare rpc-1)
-    A_ROLES=(validator validator validator spare rpc)
+    A_NAMES=(validator-1 validator-2 validator-3 spare rpc-1 rpc-2)
+    A_ROLES=(validator validator validator spare rpc rpc)
     for i in "${!NODE_IPS_ARRAY[@]}"; do
         emit_target "${NODE_IPS_ARRAY[$i]}" "a" "m$((i + 1))" "${A_NAMES[$i]}" "${A_ROLES[$i]}"
     done
     if [ -n "$BACKUP_SITE_NODE_IPS" ]; then
-        B_NAMES=(backup-1 backup-2 backup-3 backup-4 rpc-2)
-        B_ROLES=(tracker tracker tracker tracker rpc)
+        B_NAMES=(backup-1 backup-2 backup-3 backup-4 rpc-3 rpc-4)
+        B_ROLES=(tracker tracker tracker tracker rpc rpc)
         for i in "${!BACKUP_SITE_IPS_ARRAY[@]}"; do
             emit_target "${BACKUP_SITE_IPS_ARRAY[$i]}" "b" "b$((i + 1))" "${B_NAMES[$i]}" "${B_ROLES[$i]}"
         done
@@ -170,7 +170,8 @@ echo "=== Monitoring ready ==="
 echo "Prometheus: http://$PUBLIC_IP:$PROM_PORT"
 echo "Grafana:    http://$PUBLIC_IP:$GRAFANA_PORT   (anonymous admin, no login)"
 echo "  Failover board:  http://$PUBLIC_IP:$GRAFANA_PORT/d/avalanche-failover?refresh=5s&from=now-15m&to=now"
+echo "  Consensus board: http://$PUBLIC_IP:$GRAFANA_PORT/d/avalanche-consensus?refresh=5s&from=now-15m&to=now"
 echo "  Benchmark board: http://$PUBLIC_IP:$GRAFANA_PORT/d/avalanche-benchmark?refresh=5s"
 echo ""
-echo "Scraping $TARGET_COUNT node(s) at :9652/ext/metrics (site a = m1-m5, site b = b1-b5)."
+echo "Scraping $TARGET_COUNT node(s) at :9652/ext/metrics (site a = m1-m6, site b = b1-b6)."
 echo "Stop with:  kill \$(cat $DATA_DIR/prometheus.pid $DATA_DIR/grafana.pid)"

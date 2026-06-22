@@ -58,25 +58,25 @@ fi
 if [ -z "$NODE_IPS" ]; then
     echo "ERROR: NODE_IPS not set in .env"
     echo ""
-    echo "Set NODE_IPS to exactly five comma-separated benchmark node IPs."
+    echo "Set NODE_IPS to exactly six comma-separated benchmark node IPs."
     exit 1
 fi
 
 IFS=',' read -ra NODE_IPS_ARRAY <<< "$NODE_IPS"
 NODE_COUNT=${#NODE_IPS_ARRAY[@]}
 
-if [ "$NODE_COUNT" -ne 5 ]; then
-    echo "ERROR: NODE_IPS must contain exactly five benchmark node IPs"
+if [ "$NODE_COUNT" -ne 6 ]; then
+    echo "ERROR: NODE_IPS must contain exactly six benchmark node IPs"
     exit 1
 fi
 
 # Optional backup site (site B) for two-site failover. When set it must be
-# exactly five more IPs: b1-b4 zero-weight syncing trackers + b5 backup RPC.
+# exactly six more IPs: b1-b3 zero-weight syncing trackers, b4 spare, b5/b6 archive RPCs.
 BACKUP_SITE_NODE_IPS="${BACKUP_SITE_NODE_IPS:-}"
 if [ -n "$BACKUP_SITE_NODE_IPS" ]; then
     IFS=',' read -ra BACKUP_SITE_IPS_ARRAY <<< "$BACKUP_SITE_NODE_IPS"
-    if [ "${#BACKUP_SITE_IPS_ARRAY[@]}" -ne 5 ]; then
-        echo "ERROR: BACKUP_SITE_NODE_IPS must contain exactly five backup-site node IPs"
+    if [ "${#BACKUP_SITE_IPS_ARRAY[@]}" -ne 6 ]; then
+        echo "ERROR: BACKUP_SITE_NODE_IPS must contain exactly six backup-site node IPs"
         exit 1
     fi
 fi
