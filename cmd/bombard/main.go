@@ -5,12 +5,14 @@ import (
 	"crypto/ecdsa"
 	"flag"
 	"fmt"
+	"math"
 	"math/big"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -69,9 +71,10 @@ type tracker struct {
 	inflight map[uint64]*txState    // nonce -> state, present until mined
 	byHash   map[common.Hash]uint64 // tx hash -> nonce, for the watcher
 
-	issued atomic.Uint64 // nonces released by the issuer
-	mined  atomic.Uint64 // nonces observed in a block
-	resent atomic.Uint64 // resubmissions
+	issued  atomic.Uint64 // nonces released by the issuer
+	mined   atomic.Uint64 // nonces observed in a block
+	resent  atomic.Uint64 // resubmissions
+	dropped atomic.Uint64 // in-flight txs abandoned on a nonce resync (frontier regression)
 
 	latSince []time.Duration // total latencies since the last report tick
 }
@@ -114,9 +117,42 @@ func (t *tracker) onMined(hash common.Hash, observedAt time.Time) {
 	t.mined.Add(1)
 }
 
-// inFlight is how many nonces we are ahead of the last-mined nonce.
+// inFlight is how many nonces we are ahead of the last-mined nonce. Abandoned
+// (dropped) txs don't count — they're no longer waiting to mine, so the in-flight
+// cap unblocks the moment a resync drops the stranded set.
 func (t *tracker) inFlight() uint64 {
-	return t.issued.Load() - t.mined.Load()
+	return t.issued.Load() - t.mined.Load() - t.dropped.Load()
+}
+
+// lowestInflightNonce returns the smallest nonce still in flight, and whether any
+// exist. The chain must mine exactly this nonce next; if its frontier sits BELOW
+// this, our in-flight set is stranded above an unfillable gap (see monitorNonce).
+func (t *tracker) lowestInflightNonce() (uint64, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.inflight) == 0 {
+		return 0, false
+	}
+	min := uint64(math.MaxUint64)
+	for n := range t.inflight {
+		if n < min {
+			min = n
+		}
+	}
+	return min, true
+}
+
+// dropInflight abandons every in-flight tx (used on a nonce resync after a frontier
+// regression) and accounts for them as dropped so the in-flight cap unblocks and
+// the resubmit loop stops re-sending the stranded set. Returns how many were dropped.
+func (t *tracker) dropInflight() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	n := len(t.inflight)
+	t.inflight = make(map[uint64]*txState)
+	t.byHash = make(map[common.Hash]uint64)
+	t.dropped.Add(uint64(n))
+	return n
 }
 
 // dueForResubmit returns the signed txs still in flight whose last send is
@@ -137,6 +173,24 @@ func (t *tracker) dueForResubmit(interval time.Duration, now time.Time) []*types
 }
 
 var track = newTracker()
+
+// throttleRPS is an externally-imposed ingress cap in rps (0 = none). `reconcile
+// restore` writes a reduced rps to the throttle file while a rejoining site is
+// catching up, so the issuer eases off automatically and the failback converges,
+// then removes the file when caught up — restoring full rate. No permanent change
+// to the configured target. Path is shared with cmd/reconcile (defaultThrottleFile
+// / BOMBARD_THROTTLE_FILE).
+var throttleRPS atomic.Int64
+
+const defaultThrottleFile = "/tmp/bombard.throttle"
+
+// resyncPending/resyncTarget let monitorNonce ask the issuer to jump to a live
+// frontier nonce after a failover/reorg strands our in-flight nonces above the
+// chain. The monitor sets the target, then the flag; the issuer consumes both.
+var (
+	resyncPending atomic.Bool
+	resyncTarget  atomic.Uint64
+)
 
 const (
 	// in-flight cap = rps / inflightDivisor nonces ahead of last-mined. A
@@ -399,16 +453,16 @@ func main() {
 		}()
 	}
 
-	ratePerSec := float64(*rps) * (1 + *overshootFlag)
-	burst := float64(*rps) // rolling ~1s window: bounded catch-up
-	go issuer(ctx, sendCh, ratePerSec, burst, uint64(cap), startNonce)
+	go watchThrottle(ctx, throttleFilePath(), *rps)
+	go monitorNonce(ctx, bc, address)
+	go issuer(ctx, sendCh, float64(*rps), *overshootFlag, uint64(cap), startNonce)
 
 	<-ctx.Done()
 	close(sendCh)
 	wg.Wait()
 	<-reportDone
-	fmt.Printf("FINAL issued=%d mined=%d inflight=%d resubmits=%d\n",
-		track.issued.Load(), track.mined.Load(), track.inFlight(), track.resent.Load())
+	fmt.Printf("FINAL issued=%d mined=%d inflight=%d resubmits=%d dropped=%d\n",
+		track.issued.Load(), track.mined.Load(), track.inFlight(), track.resent.Load(), track.dropped.Load())
 
 	if *runDuration > 0 {
 		endSnaps := scrapeAllNodes(scrapeURLs)
@@ -417,12 +471,14 @@ func main() {
 }
 
 // issuer releases nonces under a rolling token bucket and the in-flight cap.
-// Tokens accrue at ratePerSec (already includes any overshoot) and are capped at
-// `burst` (= 1 second's worth), so the issuer makes up a deficit from the
-// trailing ~1s instead of dropping the tail of each wall-second the way a
-// per-second-reset budget did — while the burst cap keeps a long stall from
-// triggering an unbounded catch-up flood.
-func issuer(ctx context.Context, sendCh chan<- uint64, ratePerSec, burst float64, cap, startNonce uint64) {
+// Tokens accrue at the effective rate (configured rps×overshoot, unless an
+// external throttle caps it lower) and are bounded by `burst` (= 1 second's
+// worth), so the issuer makes up a deficit from the trailing ~1s instead of
+// dropping the tail of each wall-second — while the burst cap keeps a long stall
+// from triggering an unbounded catch-up flood. The rate is recomputed each tick,
+// so a throttle (set by `reconcile restore` during a failback) eases ingress
+// promptly and lifts the moment it clears.
+func issuer(ctx context.Context, sendCh chan<- uint64, baseRPS, overshoot float64, cap, startNonce uint64) {
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
 
@@ -437,7 +493,31 @@ func issuer(ctx context.Context, sendCh chan<- uint64, ratePerSec, burst float64
 		case <-ticker.C:
 		}
 
+		// Frontier-regression rescue: a hard failover to a site that was behind the
+		// old tip leaves our in-flight nonces stranded above the chain's frontier,
+		// where they can never mine. monitorNonce detects that and requests a resync;
+		// jump to the live frontier and abandon the stranded txs so we mine again
+		// with no manual restart.
+		if resyncPending.Load() {
+			rt := resyncTarget.Load()
+			n := track.dropInflight()
+			nextNonce = rt
+			tokens = 0 // don't burst the catch-up right after a resync
+			resyncPending.Store(false)
+			fmt.Fprintf(os.Stderr, "\nnonce: resynced issuer to live frontier %d, abandoned %d stranded tx(s)\n", rt, n)
+		}
+
 		now := time.Now()
+
+		// Effective target rps: the configured rate unless an external throttle
+		// caps it lower (recomputed each tick so it takes effect promptly).
+		target := baseRPS
+		if th := float64(throttleRPS.Load()); th > 0 && th < target {
+			target = th
+		}
+		ratePerSec := target * (1 + overshoot)
+		burst := target // rolling ~1s window: bounded catch-up
+
 		tokens += ratePerSec * now.Sub(last).Seconds()
 		last = now
 		if tokens > burst {
@@ -460,6 +540,118 @@ func issuer(ctx context.Context, sendCh chan<- uint64, ratePerSec, burst float64
 			}
 		}
 	}
+}
+
+// throttleFilePath is where the issuer looks for an external ingress cap (written
+// by `reconcile restore` during a failback). Override with BOMBARD_THROTTLE_FILE.
+func throttleFilePath() string {
+	if p := os.Getenv("BOMBARD_THROTTLE_FILE"); p != "" {
+		return p
+	}
+	return defaultThrottleFile
+}
+
+// watchThrottle polls the throttle file and publishes any positive rps below the
+// configured rate as the issuer's cap; an absent/empty/invalid file means full
+// rate. Polled (not inotify-watched) so it's robust to the file being created and
+// removed repeatedly across a run.
+func watchThrottle(ctx context.Context, path string, fullRPS int) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	var last int64 = -1
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		var n int64
+		if b, err := os.ReadFile(path); err == nil {
+			if v, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); err == nil && v > 0 {
+				n = v
+			}
+		}
+		throttleRPS.Store(n)
+		if n != last {
+			switch {
+			case n > 0:
+				fmt.Fprintf(os.Stderr, "\nthrottle: ingress capped at %d rps (restore catch-up)\n", n)
+			case last > 0:
+				fmt.Fprintf(os.Stderr, "\nthrottle: lifted — back to %d rps\n", fullRPS)
+			}
+			last = n
+		}
+	}
+}
+
+// monitorNonce rescues bombard from a frontier regression. A hard failover (or any
+// reorg) can leave the chain's accepted nonce BELOW our lowest in-flight nonce: the
+// chain then expects a nonce we already "mined" on the old frontier and will never
+// see, so it can never mine our in-flight txs (an unfillable gap) and we wedge
+// at-cap forever — issuing, resubmitting, mining nothing. When the live frontier
+// sits below our lowest in-flight nonce for two consecutive checks (so a momentary
+// race can't trigger it), we request a resync to the live frontier; the issuer then
+// jumps there and abandons the stranded set. This is what lets bombard ride through
+// a hard failover without a restart.
+//
+// A clean failover (new site already at the old tip) keeps frontier == lowest
+// in-flight, so this never fires — only a genuine regression does.
+func monitorNonce(ctx context.Context, bc *broadcaster, address common.Address) {
+	ticker := time.NewTicker(4 * time.Second)
+	defer ticker.Stop()
+	gapChecks := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		low, have := track.lowestInflightNonce()
+		if !have {
+			gapChecks = 0
+			continue
+		}
+		frontier, ok := maxAcceptedNonce(ctx, bc, address)
+		if !ok {
+			continue // nothing reachable (e.g. mid-cutover) — never act on no data
+		}
+		if frontier < low {
+			gapChecks++
+			if gapChecks >= 2 {
+				resyncTarget.Store(frontier)
+				resyncPending.Store(true)
+				fmt.Fprintf(os.Stderr, "\nnonce: live frontier %d below lowest in-flight %d (failover gap) — requesting resync\n", frontier, low)
+				gapChecks = 0
+			}
+		} else {
+			gapChecks = 0
+		}
+	}
+}
+
+// maxAcceptedNonce reads the issuer account's accepted (latest-block) nonce from
+// every HEALTHY node and returns the max — the live chain frontier. Healthy-only so
+// a downed/lagging site (e.g. the one we just failed away from) can't report a
+// stale-high nonce and mask a regression. Returns false if nothing is reachable.
+func maxAcceptedNonce(ctx context.Context, bc *broadcaster, address common.Address) (uint64, bool) {
+	var max uint64
+	got := false
+	for _, n := range bc.nodes {
+		if !n.healthy.Load() {
+			continue
+		}
+		nctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		nn, err := n.client.NonceAt(nctx, address, nil) // nil = latest accepted block
+		cancel()
+		if err != nil {
+			continue
+		}
+		got = true
+		if nn > max {
+			max = nn
+		}
+	}
+	return max, got
 }
 
 func sendWorker(
