@@ -12,12 +12,14 @@ import (
 // non-validating tracker that bombard targets; it is never promoted to a
 // validator, so ingress survives failover.
 //
-// Two-site mode (BACKUP_SITE_NODE_IPS set) adds a backup data center of 5
-// machines (b1-b5) that run as live zero-weight syncing trackers, plus unique
-// "home" identities so every live machine has a distinct NodeID:
+// Two-site mode (BACKUP_SITE_NODE_IPS set) adds a backup data center of 6
+// machines (b1-b6) that run as live zero-weight syncing trackers, plus unique
+// "home" identities so every live machine has a distinct NodeID. Each site is
+// 3 validators + 1 spare + TWO archive RPCs (the second RPC is the redundancy
+// that lets restore snapshot one RPC while its twin keeps serving ingress):
 //
-//	m1-m3 park on 11-13 when displaced, m4 spare=9, m5 rpc=10 (pinned)
-//	b1-b4 sync on 14-17,                          b5 rpc=18 (pinned)
+//	m1-m3 park on 11-13 when displaced, m4 spare=9, m5 rpc=10, m6 rpc=19 (pinned)
+//	b1-b3 sync on 14-16, b4 spare=17,               b5 rpc=18, b6 rpc=20 (pinned)
 //
 // Validator keys (6-8) only cross sites via an explicit site-failover — a
 // single-machine cordon never promotes a backup-site machine (consensus stays
@@ -26,11 +28,13 @@ const (
 	valKeyLo = 6
 	valKeyHi = 8
 	nvKey    = 9  // non-validating home (m4 spare; shared by free machines in single-site mode)
-	rpcKey   = 10 // site-A pinned RPC (m5)
+	rpcKey   = 10 // site-A pinned RPC #1 (m5)
+	rpcKey2  = 19 // site-A pinned RPC #2 (m6)
 
-	rpcKeyB = 18 // site-B pinned RPC (b5)
+	rpcKeyB  = 18 // site-B pinned RPC #1 (b5)
+	rpcKeyB2 = 20 // site-B pinned RPC #2 (b6)
 
-	sitePoolSize = 5
+	sitePoolSize = 6 // per site: 3 validators + 1 spare + 2 archive RPCs
 )
 
 const (
@@ -38,8 +42,8 @@ const (
 	siteB = 1
 )
 
-// Topology describes the machine pool: one site of 5 (legacy single-site mode)
-// or two sites of 5 (primary A + backup B).
+// Topology describes the machine pool: one site of 6 (legacy single-site mode)
+// or two sites of 6 (primary A + backup B).
 type Topology struct {
 	TwoSite bool
 }
@@ -59,7 +63,7 @@ func (t Topology) Site(i int) int {
 	return siteA
 }
 
-// MachineName renders the operator-facing name: m1-m5 (site A), b1-b5 (site B).
+// MachineName renders the operator-facing name: m1-m6 (site A), b1-b6 (site B).
 func (t Topology) MachineName(i int) string {
 	if t.Site(i) == siteB {
 		return "b" + strconv.Itoa(i-sitePoolSize+1)
@@ -70,7 +74,7 @@ func (t Topology) MachineName(i int) string {
 // twoSiteHomes maps machine index -> the non-validating identity it wears when
 // not hosting a validator key. Unique per machine: a backup site means several
 // live non-validating trackers at once, which can't share a NodeID.
-var twoSiteHomes = []int{11, 12, 13, nvKey, rpcKey, 14, 15, 16, 17, rpcKeyB}
+var twoSiteHomes = []int{11, 12, 13, nvKey, rpcKey, rpcKey2, 14, 15, 16, 17, rpcKeyB, rpcKeyB2}
 
 // HomeKey is the identity machine i falls back to when cordoned or free. In
 // single-site mode this is the shared nv key (at most one free machine is ever
@@ -85,9 +89,9 @@ func (t Topology) HomeKey(i int) int {
 // AllKeys lists every committed key index a pool machine must be provisioned with.
 func (t Topology) AllKeys() []int {
 	if t.TwoSite {
-		return []int{6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}
+		return []int{6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}
 	}
-	return []int{6, 7, 8, 9, 10}
+	return []int{6, 7, 8, 9, 10, 19}
 }
 
 // SiteFromName parses an operator site argument ("a" or "b").
@@ -106,7 +110,7 @@ func (t Topology) SiteFromName(s string) (int, bool) {
 
 // isRPCKey reports whether k is a pinned dedicated-RPC identity. An rpc machine
 // is sticky on this key and is never a promotion target (never joins `free`).
-func isRPCKey(k int) bool { return k == rpcKey || k == rpcKeyB }
+func isRPCKey(k int) bool { return k == rpcKey || k == rpcKeyB || k == rpcKey2 || k == rpcKeyB2 }
 
 func validatorKeys() []int { return []int{6, 7, 8} }
 
@@ -120,8 +124,8 @@ type MachineIntent struct {
 }
 
 // seedIntents is the default mapping a fresh deploy resets to:
-// m1=v1(6), m2=v2(7), m3=v3(8), m4=spare(9), m5=rpc(10), all uncordoned —
-// plus, in two-site mode, b1-b4 syncing on 14-17 and b5=rpc(18).
+// m1=v1(6), m2=v2(7), m3=v3(8), m4=spare(9), m5=rpc(10), m6=rpc(19), all uncordoned —
+// plus, in two-site mode, b1-b3 syncing on 14-16, b4=spare(17), b5=rpc(18), b6=rpc(20).
 func seedIntents(topo Topology) []MachineIntent {
 	intents := []MachineIntent{
 		{Cordoned: false, Key: 6},
@@ -129,6 +133,7 @@ func seedIntents(topo Topology) []MachineIntent {
 		{Cordoned: false, Key: 8},
 		{Cordoned: false, Key: 9},
 		{Cordoned: false, Key: 10},
+		{Cordoned: false, Key: rpcKey2},
 	}
 	if topo.TwoSite {
 		intents = append(intents,
@@ -137,6 +142,7 @@ func seedIntents(topo Topology) []MachineIntent {
 			MachineIntent{Cordoned: false, Key: 16},
 			MachineIntent{Cordoned: false, Key: 17},
 			MachineIntent{Cordoned: false, Key: rpcKeyB},
+			MachineIntent{Cordoned: false, Key: rpcKeyB2},
 		)
 	}
 	return intents

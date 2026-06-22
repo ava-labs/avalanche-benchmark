@@ -80,9 +80,9 @@ func main() {
 			fatalf("%v", err)
 		}
 		if topo.TwoSite {
-			fmt.Println("== reconcile fresh: reseeded intentions to {m1:6, m2:7, m3:8, m4:9(spare), m5:10(rpc), b1-b4:14-17(sync), b5:18(rpc)} ==")
+			fmt.Println("== reconcile fresh: reseeded intentions to {m1:6, m2:7, m3:8, m4:9(spare), m5:10(rpc), m6:19(rpc), b1-b3:14-16(sync), b4:17(spare), b5:18(rpc), b6:20(rpc)} ==")
 		} else {
-			fmt.Println("== reconcile fresh: reseeded intentions to {m1:6, m2:7, m3:8, m4:9(spare), m5:10(rpc)} ==")
+			fmt.Println("== reconcile fresh: reseeded intentions to {m1:6, m2:7, m3:8, m4:9(spare), m5:10(rpc), m6:19(rpc)} ==")
 		}
 
 	case "down", "up":
@@ -120,6 +120,12 @@ func main() {
 			fatalf("%v", err)
 		}
 		fmt.Printf("== reconcile site-failover %s ==\n", os.Args[2])
+		// Hard cutover assumes the old site is gone: make the surviving SITE
+		// height-consistent (clone the most-advanced node's DB onto any node — validator,
+		// RPC, or spare — that is too far behind) BEFORE they are started, so a quorum can
+		// form AND the pinned RPC serves ingress at the tip instead of stale state. No-op
+		// when the site is already a synced hot standby.
+		cfg.reconcileBackupHeights(intents, target)
 
 	case "apply":
 		var err error

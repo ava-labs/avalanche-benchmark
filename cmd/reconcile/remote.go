@@ -349,13 +349,43 @@ func (c *config) provisioned(host string) bool {
 	return out == "OK"
 }
 
+// nodeIndex returns the pool index of host, or -1 if it is not a known pool machine.
+func (c *config) nodeIndex(host string) int {
+	for i, h := range c.nodeIPs {
+		if h == host {
+			return i
+		}
+	}
+	return -1
+}
+
+// isArchiveNode reports whether machine i is a pinned dedicated-RPC node — the LAST
+// TWO slots of each site (m5/m6, and b5/b6 in two-site mode). RPC nodes run as ARCHIVE
+// (chain-config-rpc.json: pruning-enabled=false, state-sync-enabled=false) so they
+// hold full historical state and can serve arbitrary-height eth_ queries. Every
+// other machine — the 3 validators and the spare — runs the default chain-config.json
+// (state-sync + pruning) for fast, light sync. Index-based (slot within site >= the
+// first RPC slot), so it holds in both single- and two-site mode. Safe for i<0 (no match).
+func (c *config) isArchiveNode(i int) bool {
+	if i < 0 {
+		return false
+	}
+	return i%sitePoolSize >= sitePoolSize-2
+}
+
 // upload pushes all artifacts a pool machine needs. Pass 0 of reconcile.
 func (c *config) upload(host string) {
 	c.ssh(host, fmt.Sprintf("mkdir -p %s/bin %s/plugins %s/staking/l1", c.remoteDir, c.remoteDir, c.remoteDir))
 	c.scp(c.repoDir+"/bin/avalanchego", host, c.remoteDir+"/bin/", false)
 	c.scp(c.repoDir+"/bin/"+c.subnetEVMID, host, c.remoteDir+"/plugins/", false)
 	c.scp(c.repoDir+"/node-config.json", host, c.remoteDir+"/", false)
-	c.scp(c.repoDir+"/chain-config.json", host, c.remoteDir+"/", false)
+	// Role-based chain config: archive on the pinned RPC, light (state-sync+pruning)
+	// elsewhere. Both land as chain-config.json on the node, so startScript is unchanged.
+	chainCfg := "chain-config.json"
+	if c.isArchiveNode(c.nodeIndex(host)) {
+		chainCfg = "chain-config-rpc.json"
+	}
+	c.scp(c.repoDir+"/"+chainCfg, host, c.remoteDir+"/chain-config.json", false)
 	c.scp(c.repoDir+"/subnet-config.json", host, c.remoteDir+"/", false)
 	for _, k := range c.topo.AllKeys() {
 		c.scp(fmt.Sprintf("%s/staking/l1/%d", c.repoDir, k), host, c.remoteDir+"/staking/l1/", true)

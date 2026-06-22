@@ -170,17 +170,19 @@ func rollingRestore(cfg *config, targetSite int) {
 	trackerStep, keySteps := RestorePlan(topo, prev, targetSite)
 	destIdx := validatorDestIdx(topo, targetSite) // machines that will receive a validator key (gate only these)
 
-	// Hold the pinned RPC back until the target site holds the validator MAJORITY,
-	// so it state-syncs from same-site validators instead of racing a cross-region
-	// sync (off the still-active remote site) under ingress load (see package doc).
-	// rpcAfter = majority count; the RPC comes up right after that many validators land.
-	rpcIdx := rpcMachineIdx(topo, targetSite)
+	// Hold the pinned RPCs back until the target site holds the validator MAJORITY,
+	// so they catch up from same-site validators instead of racing a cross-region sync
+	// (off the still-active remote site) under ingress load (see package doc). rpcAfter
+	// = majority count; the RPCs come up right after that many validators land.
+	rpcIdxs := rpcMachineIdxs(topo, targetSite)
 	rpcAfter := want/2 + 1
-	delayRPC := rpcIdx >= 0 && rpcAfter <= len(keySteps)
+	delayRPC := len(rpcIdxs) > 0 && rpcAfter <= len(keySteps)
 	if delayRPC {
-		trackerStep[rpcIdx].Cordoned = true
-		for i := range keySteps {
-			keySteps[i][rpcIdx].Cordoned = i < rpcAfter
+		for _, ri := range rpcIdxs {
+			trackerStep[ri].Cordoned = true
+			for i := range keySteps {
+				keySteps[i][ri].Cordoned = i < rpcAfter
+			}
 		}
 	}
 	srcIdx := validatorMachineIdx(trackerStep) // currently-active validators (the source site = the tip)
@@ -199,6 +201,24 @@ func rollingRestore(cfg *config, targetSite int) {
 			snapMode = false
 		}
 	}
+	// The recovering site's pinned RPCs are ARCHIVE nodes (pruning + state-sync disabled,
+	// see chain-config-rpc.json). They are NOT seeded from the pruning tracker snapshot — a
+	// pruned DB would strip their history — nor left to bootstrap from genesis (which wedges
+	// under load). Instead they are seeded from a full ARCHIVE snapshot of the SOURCE site's
+	// REDUNDANT (2nd) RPC: restore stops that one RPC for a consistent copy while its twin
+	// keeps serving ingress, so there is no blip. If no archive source is available they
+	// fall back to a from-genesis bootstrap. RPCs carry no validator vote, so they never gate
+	// the restore (it waits only on validator destinations); the gate at the end warns
+	// (does not block) if an RPC is still syncing.
+	var archiveTar string
+	if snapMode {
+		if tar, ok := cfg.takeArchiveSnapshot(trackerStep, otherSite(targetSite)); ok {
+			archiveTar = tar
+			defer cleanupSnapshot(archiveTar)
+		} else {
+			fmt.Println("WARN: no usable archive snapshot source — recovering RPCs will full-bootstrap from genesis.")
+		}
+	}
 
 	// Phase 1 — seed the target site's validators (+ spare), bring them up as
 	// trackers, and wait until the validator destinations reach the tip. The pinned
@@ -214,7 +234,11 @@ func rollingRestore(cfg *config, targetSite int) {
 
 	for i := range trackerStep {
 		if topo.Site(i) == targetSite && !trackerStep[i].Cordoned {
-			cfg.prepareTarget(cfg.nodeIPs[i], topo.MachineName(i), snapMode, snapTar)
+			tar, snap := snapTar, snapMode
+			if cfg.isArchiveNode(i) { // archive RPC: full-state archive seed, never the pruned snapshot
+				tar, snap = archiveTar, archiveTar != ""
+			}
+			cfg.prepareTarget(cfg.nodeIPs[i], topo.MachineName(i), snap, tar)
 		}
 	}
 
@@ -244,10 +268,14 @@ func rollingRestore(cfg *config, targetSite int) {
 		current = step
 
 		if delayRPC && n+1 == rpcAfter {
-			fmt.Printf("== restore: site %s holds the validator majority — bring up + seed the pinned RPC (local catch-up) ==\n", siteName(targetSite))
+			fmt.Printf("== restore: site %s holds the validator majority — bring up + seed %d archive RPC(s) from the source site's redundant-RPC snapshot ==\n", siteName(targetSite), len(rpcIdxs))
 			rpcUp := cloneIntents(current)
-			rpcUp[rpcIdx].Cordoned = false
-			cfg.prepareTarget(cfg.nodeIPs[rpcIdx], topo.MachineName(rpcIdx), snapMode, snapTar)
+			for _, ri := range rpcIdxs {
+				rpcUp[ri].Cordoned = false
+				// Seed each recovering archive RPC from the source site's redundant-RPC
+				// archive snapshot (full state, near-tip); falls back to genesis bootstrap.
+				cfg.prepareTarget(cfg.nodeIPs[ri], topo.MachineName(ri), archiveTar != "", archiveTar)
+			}
 			if err := saveIntents(cfg.stateFile, rpcUp); err != nil {
 				fatalf("%v", err)
 			}
@@ -257,13 +285,13 @@ func rollingRestore(cfg *config, targetSite int) {
 		}
 	}
 
-	// Gate the pinned RPC to tip so "restore complete" doesn't paper over a stale
-	// ingress. Bounded + non-fatal: consensus is already restored, so if the RPC is
+	// Gate the pinned RPCs to tip so "restore complete" doesn't paper over a stale
+	// ingress. Bounded + non-fatal: consensus is already restored, so if an RPC is
 	// still sync-bound under load we warn rather than block the operator.
 	if delayRPC {
-		fmt.Printf("waiting for site %s pinned RPC to sync to tip (within %d blocks)...\n", siteName(targetSite), syncToleranceBlocks)
-		if !cfg.waitForTargetSyncedT(current, []int{rpcIdx}, validatorMachineIdx(current), restoreRPCTimeout) {
-			fmt.Printf("WARN: site %s pinned RPC has not caught up within %s. Consensus is restored (validators %d/%d) but the RPC is still syncing — likely sync-bound under sustained load. Ease load and it will finish; re-run `reconcile verify` to confirm.\n", siteName(targetSite), restoreRPCTimeout, want, want)
+		fmt.Printf("waiting for site %s pinned RPCs to sync to tip (within %d blocks)...\n", siteName(targetSite), syncToleranceBlocks)
+		if !cfg.waitForTargetSyncedT(current, rpcIdxs, validatorMachineIdx(current), restoreRPCTimeout) {
+			fmt.Printf("WARN: site %s pinned RPC(s) have not caught up within %s. Consensus is restored (validators %d/%d) but an RPC is still syncing — likely sync-bound under sustained load. Ease load and it will finish; re-run `reconcile verify` to confirm.\n", siteName(targetSite), restoreRPCTimeout, want, want)
 		}
 	}
 
@@ -288,15 +316,29 @@ func validatorDestIdx(topo Topology, targetSite int) []int {
 	return idx
 }
 
-// rpcMachineIdx returns the index of the pinned dedicated-RPC machine in the
-// given site (its home identity is an RPC key), or -1 if there is none.
-func rpcMachineIdx(topo Topology, site int) int {
+// rpcMachineIdxs returns the indexes of the pinned dedicated-RPC machines in the given
+// site (their home identity is an RPC key), in ascending order — so [0] is the primary
+// (1st) RPC and the last is the redundant (2nd) RPC. Empty if the site has none.
+func rpcMachineIdxs(topo Topology, site int) []int {
+	var idx []int
 	for i := 0; i < topo.Size(); i++ {
 		if topo.Site(i) == site && isRPCKey(topo.HomeKey(i)) {
-			return i
+			idx = append(idx, i)
 		}
 	}
-	return -1
+	return idx
+}
+
+// redundantRPCMachineIdx returns the site's REDUNDANT (last) RPC machine — the one safe
+// to stop for a consistent archive snapshot because the primary RPC keeps serving
+// ingress. -1 if the site has fewer than one RPC. (With a single RPC it returns that
+// one, which a caller stopping it should treat as an ingress-affecting fallback.)
+func redundantRPCMachineIdx(topo Topology, site int) int {
+	idx := rpcMachineIdxs(topo, site)
+	if len(idx) == 0 {
+		return -1
+	}
+	return idx[len(idx)-1]
 }
 
 // waitForTargetSynced polls until every validator-destination machine (destIdx) is
