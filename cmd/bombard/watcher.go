@@ -50,17 +50,48 @@ func hexToUint64(hex string) uint64 {
 	return val
 }
 
-// watchBlocks polls for new blocks and marks each of our transactions mined as
-// it appears. It is intentionally tolerant: any RPC error just sleeps and
-// retries, so a node hiccup never crashes the watcher (resubmission keeps the
-// txs alive in the meantime).
-func watchBlocks(ctx context.Context, rpcClient *rpc.Client, pollInterval time.Duration) {
-	var block blockInfo
-	if err := rpcClient.CallContext(ctx, &block, "eth_getBlockByNumber", "latest", false); err != nil {
-		fmt.Printf("Watcher: failed to get latest block: %v\n", err)
+// watchBlocks polls a node for new blocks and marks each of our transactions
+// mined as it appears. It OWNS its websocket connection and RECONNECTS when the
+// connection drops — essential across a failover/restore, where the watched node
+// restarts. The old version dialed once and, on a dead connection, spun on the
+// dead socket forever (and died outright if the very first call failed); bombard
+// was then left detecting mines only via a surviving watcher — which after a
+// restore is a cross-region tracker lagging the tip, inflating observed
+// mine-latency and throttling throughput via the in-flight cap until a manual
+// restart. Now any RPC error redials a fresh socket and retries; resubmission
+// keeps txs alive in the meantime. lastBlock is preserved across reconnects, so
+// blocks produced during the gap are still marked once the node catches back up.
+func watchBlocks(ctx context.Context, wsURL string, pollInterval time.Duration) {
+	// dial (re)establishes the websocket, retrying until connected or ctx ends.
+	dial := func() *rpc.Client {
+		for {
+			select {
+			case <-ctx.Done():
+				return nil
+			default:
+			}
+			if c, err := rpc.DialWebsocket(ctx, wsURL, ""); err == nil {
+				return c
+			}
+			time.Sleep(time.Second)
+		}
+	}
+	// getBlock fetches a block under a bounded per-call timeout, so a half-open
+	// socket can't hang the watcher (it errors out and triggers a redial).
+	getBlock := func(c *rpc.Client, out *blockInfo, tag string) error {
+		cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		return c.CallContext(cctx, out, "eth_getBlockByNumber", tag, false)
+	}
+
+	client := dial()
+	if client == nil {
 		return
 	}
-	lastBlock := hexToUint64(block.Number)
+	defer func() { client.Close() }()
+
+	var lastBlock uint64
+	haveLast := false
 
 	for {
 		select {
@@ -70,15 +101,23 @@ func watchBlocks(ctx context.Context, rpcClient *rpc.Client, pollInterval time.D
 		}
 
 		var block blockInfo
-		err := rpcClient.CallContext(ctx, &block, "eth_getBlockByNumber", "latest", false)
+		err := getBlock(client, &block, "latest")
 		observedAt := time.Now()
 		if err != nil {
-			time.Sleep(pollInterval)
+			client.Close() // socket likely dropped (node restart) — redial, don't spin on it
+			if client = dial(); client == nil {
+				return
+			}
 			continue
 		}
 
 		num := hexToUint64(block.Number)
-		if num <= lastBlock {
+		switch {
+		case !haveLast:
+			lastBlock, haveLast = num, true
+			time.Sleep(pollInterval)
+			continue
+		case num <= lastBlock:
 			time.Sleep(pollInterval)
 			continue
 		}
@@ -86,7 +125,7 @@ func watchBlocks(ctx context.Context, rpcClient *rpc.Client, pollInterval time.D
 		for n := lastBlock + 1; n <= num; n++ {
 			var b blockInfo
 			if n < num {
-				if err := rpcClient.CallContext(ctx, &b, "eth_getBlockByNumber", fmt.Sprintf("0x%x", n), false); err != nil {
+				if err := getBlock(client, &b, fmt.Sprintf("0x%x", n)); err != nil {
 					continue
 				}
 				observedAt = time.Now()

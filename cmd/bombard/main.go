@@ -315,22 +315,13 @@ func main() {
 	fmt.Printf("Broadcasting to %d node(s) over HTTP (%d conns/node, %s send timeout)\n",
 		len(bc.nodes), sendConcPerNode, sendTimeoutFlag.String())
 
-	// One watcher per reachable endpoint; first to see a tx in a block records
-	// it. Unreachable endpoints are skipped (a dead node must not abort the run).
-	watchers := 0
+	// One self-reconnecting watcher per endpoint; first to see a tx in a block
+	// records it. Each owns and re-dials its own websocket, so a node restarting
+	// (failover/restore) no longer permanently kills its watcher. A node that's
+	// unreachable at startup is retried until it comes up rather than skipped; the
+	// setup connection below still aborts the run if nothing is reachable at all.
 	for _, ws := range wsURLs {
-		watcherRPC, err := rpc.DialWebsocket(ctx, ws, "")
-		if err != nil {
-			fmt.Printf("Watcher endpoint unavailable, skipping: %s (%v)\n", ws, err)
-			continue
-		}
-		defer watcherRPC.Close()
-		go watchBlocks(ctx, watcherRPC, pollInterval)
-		watchers++
-	}
-	if watchers == 0 {
-		fmt.Println("No reachable watcher endpoints")
-		os.Exit(1)
+		go watchBlocks(ctx, ws, pollInterval)
 	}
 
 	// Setup connection (chain ID + start nonce): use the first reachable endpoint.
