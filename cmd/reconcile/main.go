@@ -217,6 +217,10 @@ func reconcile(cfg *config, intents []MachineIntent, fresh bool) {
 		}
 	}
 
+	// Publish the active site's RPCs so bombard routes ingress to the data center
+	// that now holds the validators (and switches as failover/restore moves them).
+	cfg.writeActiveRPCs(intents)
+
 	// No blocking health wait — watch live state with status.sh in another window.
 	fmt.Println("\nApplied. Watch live node state in another window with:")
 	fmt.Println("  watch -n 2 ./scripts/failover/status.sh")

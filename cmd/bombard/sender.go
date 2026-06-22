@@ -51,6 +51,7 @@ type nodeSender struct {
 	client  *ethclient.Client
 	queue   chan *types.Transaction
 	healthy atomic.Bool // routed ingress only while caught up to tip
+	active  atomic.Bool // routed ingress only while on the active (validator) site
 }
 
 // newBroadcaster dials every rpcURL (lazily, over HTTP — a down node is included
@@ -89,6 +90,7 @@ func newBroadcaster(ctx context.Context, rpcURLs []string, sendTimeout time.Dura
 			queue:  make(chan *types.Transaction, sendQueueLen),
 		}
 		ns.healthy.Store(true)
+		ns.active.Store(true) // all endpoints active until an active-rpcs file narrows it
 		b.nodes = append(b.nodes, ns)
 		for i := 0; i < sendConcPerNode; i++ {
 			go ns.run(ctx, sendTimeout)
@@ -120,6 +122,9 @@ func (n *nodeSender) run(ctx context.Context, timeout time.Duration) {
 // full (it is down or lagging) the send is dropped for that node only.
 func (b *broadcaster) broadcast(signed *types.Transaction) {
 	for _, n := range b.nodes {
+		if !n.active.Load() {
+			continue // not on the active (validator) site — never spray the standby's RPC
+		}
 		if !n.healthy.Load() {
 			continue // behind tip / not caught up — out of ingress rotation
 		}
