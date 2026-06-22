@@ -588,34 +588,54 @@ func watchThrottle(ctx context.Context, path string, fullRPS int) {
 // A clean failover (new site already at the old tip) keeps frontier == lowest
 // in-flight, so this never fires — only a genuine regression does.
 func monitorNonce(ctx context.Context, bc *broadcaster, address common.Address) {
-	ticker := time.NewTicker(4 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	gapChecks := 0
+	lastMined := track.mined.Load()
+	stalls := 0
+	resync := func(frontier uint64, why string) {
+		resyncTarget.Store(frontier)
+		resyncPending.Store(true)
+		fmt.Fprintf(os.Stderr, "\nnonce: %s — resyncing issuer to live frontier %d\n", why, frontier)
+		stalls = 0
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
-		low, have := track.lowestInflightNonce()
-		if !have {
-			gapChecks = 0
-			continue
-		}
+
+		mined := track.mined.Load()
+		inflight := track.inFlight()
 		frontier, ok := maxAcceptedNonce(ctx, bc, address)
-		if !ok {
-			continue // nothing reachable (e.g. mid-cutover) — never act on no data
-		}
-		if frontier < low {
-			gapChecks++
-			if gapChecks >= 2 {
-				resyncTarget.Store(frontier)
-				resyncPending.Store(true)
-				fmt.Fprintf(os.Stderr, "\nnonce: live frontier %d below lowest in-flight %d (failover gap) — requesting resync\n", frontier, low)
-				gapChecks = 0
+
+		// Fast path: we're AHEAD of the frontier (a gap — e.g. failover to a site
+		// behind the old tip). Our in-flight can never mine; resync down to it now.
+		if ok && inflight > 0 {
+			if low, have := track.lowestInflightNonce(); have && frontier < low {
+				resync(frontier, fmt.Sprintf("frontier %d below lowest in-flight %d (failover gap)", frontier, low))
+				lastMined = mined
+				continue
 			}
+		}
+
+		// General path: mined FROZEN while we still hold in-flight work is a stall —
+		// our nonce view has desynced from the chain (e.g. the watcher missed mines
+		// during node churn, leaving already-accepted "zombie" nonces that pin the
+		// in-flight cap and starve new issuance). Confirm over a few ticks (so a
+		// normal cutover pause doesn't twitch it), then resync to the live frontier:
+		// jump the issuer there and drop the stale in-flight — the manual-restart
+		// recovery, automatic. (Resyncing during a benign pause is harmless: the same
+		// nonces re-issue to the same deterministic txs.)
+		if mined == lastMined && inflight > 0 {
+			stalls++
 		} else {
-			gapChecks = 0
+			stalls = 0
+		}
+		lastMined = mined
+		if stalls >= 3 && ok {
+			resync(frontier, fmt.Sprintf("stalled ~%ds with %d in-flight and 0 mined", stalls*5, inflight))
 		}
 	}
 }
