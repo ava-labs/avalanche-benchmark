@@ -1,6 +1,7 @@
 {
     "min-delay-target": 25,
     "push-gossip-frequency": "20ms",
+    "max-outbound-active-requests": 64,
     "state-sync-enabled": true,
     "state-sync-min-blocks": 10000,
     "pruning-enabled": true,

@@ -37,9 +37,15 @@ const (
 	// well under a second once promoted.
 	syncToleranceBlocks = 30
 	restorePollInterval = 3 * time.Second
-	restoreSyncTimeout  = 30 * time.Minute // generous: replaying a heavy post-failover backlog can take minutes (benign wait, logged each poll)
-	restoreSetTimeout   = 5 * time.Minute
-	restoreRPCTimeout   = 6 * time.Minute // bounded gate for the late pinned-RPC catch-up; warn (don't block) if it overruns
+
+	// restoreThrottleMinDelayMS slows the active site's block production during catch-up.
+	// A node replaying a backlog in bootstrap tops out ~14 blk/s; at the normal 40 blk/s
+	// (25ms) cadence a behind node never closes the gap, so we drop the producers to
+	// ~10 blk/s for the recovery. min-delay-target is read once at VM init, so applying it
+	// requires a node restart (see rollingSetMinDelay). Production returns to the normal
+	// cadence on its own once the key-roll moves the validators onto the un-throttled target
+	// site; the old source config is then reset to its role default for the next cycle.
+	restoreThrottleMinDelayMS = 100
 )
 
 func siteName(site int) string {
@@ -160,7 +166,15 @@ func rollingRestore(cfg *config, targetSite int) {
 	destIdx := validatorDestIdx(topo, targetSite) // machines that will receive a validator key (gate only these)
 
 	rpcIdxs := rpcMachineIdxs(topo, targetSite)
-	srcIdx := validatorMachineIdx(trackerStep) // currently-active validators (the source site = the tip)
+	srcIdx := validatorMachineIdx(trackerStep) // active (source) validators = the producers + tip reference
+
+	// Slow the active source site's block production so the recovering nodes can catch up to a
+	// near-static tip instead of a 40 blk/s one (see restoreThrottleMinDelayMS). Rolling-restart
+	// the source validators one at a time so the set never drops below quorum. Ctrl-C just exits —
+	// we deliberately do NOT roll-restart to undo on abort (re-running restore re-applies it).
+	fmt.Printf("== restore: slowing site %s block production to %dms (~%d blk/s) for catch-up ==\n",
+		siteName(otherSite(targetSite)), restoreThrottleMinDelayMS, 1000/restoreThrottleMinDelayMS)
+	cfg.rollingSetMinDelay(trackerStep, srcIdx, restoreThrottleMinDelayMS)
 
 	// Recovery strategy, by role — both seeded from a fresh DB SNAPSHOT of the live source site
 	// (captured AT the tip), so each recovering node replays only a tiny delta. State-sync was
@@ -216,37 +230,40 @@ func rollingRestore(cfg *config, targetSite int) {
 
 	reconcile(cfg, trackerStep, false)
 
-	fmt.Printf("waiting for site %s validator targets to sync to tip (within %d blocks)...\n", siteName(targetSite), syncToleranceBlocks)
-	if !cfg.waitForTargetSynced(trackerStep, destIdx, srcIdx) {
-		fatalf("site %s validator targets did not reach tip within %s; aborting. No stake moved — the site is a tracker, safe to retry.", siteName(targetSite), restoreSyncTimeout)
+	// Gate on ALL recovering nodes — validators, spare, AND archive RPCs — reaching tip, not just
+	// the validators. The RPCs are the slowest (full-trie writes), so they catch up last; gating
+	// them here means the whole site is at tip before any key moves.
+	allRecovering := append([]int{}, destIdx...)
+	if sp := spareDestIdx(topo, targetSite); sp >= 0 {
+		allRecovering = append(allRecovering, sp)
 	}
+	allRecovering = append(allRecovering, rpcIdxs...)
+	fmt.Printf("waiting for site %s recovering nodes (validators + spare + RPCs) to reach tip (within %d blocks)...\n", siteName(targetSite), syncToleranceBlocks)
+	cfg.waitForTargetSynced(trackerStep, allRecovering, srcIdx)
 
 	// Phase 2 — roll each validator key onto the target site, one at a time. The RPCs already
 	// came up (snapshot-seeded) in Phase 1, so there is no separate RPC bring-up step here.
 	current := trackerStep
 	for n, step := range keySteps {
 		fmt.Printf("== restore: migrate validator %d/%d to site %s ==\n", n+1, len(keySteps), siteName(targetSite))
-		if !cfg.waitForFullValidatorSet(current) {
-			fatalf("validator set not at %d/%d before migrating validator %d/%d; aborting without moving it (%d already migrated). Re-run restore once the set is healthy.", want, want, n+1, len(keySteps), n)
-		}
+		cfg.waitForFullValidatorSet(current)
 		if err := saveIntents(cfg.stateFile, step); err != nil {
 			fatalf("%v", err)
 		}
 		printIntents(topo, step)
 		reconcile(cfg, step, false)
-		if !cfg.waitForFullValidatorSet(step) {
-			fatalf("validator did not return to %d/%d after migrating a key; chain is at 2/3 (still live). Re-run `reconcile apply` once the node recovers, then re-run restore.", want, want)
-		}
+		cfg.waitForFullValidatorSet(step)
 		current = step
 	}
 
-	// Gate the pinned RPCs to tip so "restore complete" doesn't paper over a stale
-	// ingress. Bounded + non-fatal: consensus is already restored, so if an RPC is
-	// still sync-bound under load we warn rather than block the operator.
-	if len(rpcIdxs) > 0 {
-		fmt.Printf("waiting for site %s pinned RPCs to sync to tip (within %d blocks)...\n", siteName(targetSite), syncToleranceBlocks)
-		if !cfg.waitForTargetSyncedT(current, rpcIdxs, validatorMachineIdx(current), restoreRPCTimeout) {
-			fmt.Printf("WARN: site %s pinned RPC(s) have not caught up within %s. Consensus is restored (validators %d/%d) but an RPC is still syncing — likely sync-bound under sustained load. Ease load and it will finish; re-run `reconcile verify` to confirm.\n", siteName(targetSite), restoreRPCTimeout, want, want)
+	// The validators are now producing on the target site at the normal 25ms cadence (they were
+	// never throttled). Reset the old source validators' chain-config to their role default so a
+	// future failover brings them back up at the normal cadence, not the catch-up one. They are
+	// trackers now, so this is a lazy config rewrite — it takes effect on their next restart.
+	fmt.Printf("== restore: resetting site %s block production config to normal cadence ==\n", siteName(otherSite(targetSite)))
+	for _, i := range srcIdx {
+		if i >= 0 && i < len(cfg.nodeIPs) {
+			cfg.deployChainConfig(cfg.nodeIPs[i])
 		}
 	}
 
@@ -308,21 +325,11 @@ func redundantRPCMachineIdx(topo Topology, site int) int {
 	return idx[len(idx)-1]
 }
 
-// waitForTargetSynced polls until every validator-destination machine (destIdx) is
-// SERVING and within syncToleranceBlocks of the active tip. It gates only the
-// machines about to receive a validator key; spare/RPC trackers carry no vote and
-// catch up on their own. Every poll logs the tip and each target's gap, and when
-// that gap is GROWING it warns that write load is outpacing catch-up — the signal
-// that a graceful failback should wait for a lull (see docs/two-site-failover.md).
-func (c *config) waitForTargetSynced(intents []MachineIntent, destIdx, srcIdx []int) bool {
-	return c.waitForTargetSyncedT(intents, destIdx, srcIdx, restoreSyncTimeout)
-}
-
-// waitForTargetSyncedT is waitForTargetSynced with an explicit timeout (used for
-// the bounded pinned-RPC catch-up gate).
-func (c *config) waitForTargetSyncedT(intents []MachineIntent, destIdx, srcIdx []int, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	prevWorst := -1
+// waitForTargetSynced blocks until every recovering machine in destIdx is SERVING and within
+// syncToleranceBlocks of the active tip (sampled from srcIdx). Each poll prints the tip and each
+// target's height/gap so the operator can watch the catch-up; there is no timeout — it returns
+// only once the whole set is at tip.
+func (c *config) waitForTargetSynced(intents []MachineIntent, destIdx, srcIdx []int) {
 	for {
 		res := c.checkHealth(intents)
 		tip := tipBlock(res, srcIdx)
@@ -347,41 +354,77 @@ func (c *config) waitForTargetSyncedT(intents []MachineIntent, destIdx, srcIdx [
 			}
 			parts = append(parts, fmt.Sprintf("%s=%d(-%d)", name, res[i].block, gap))
 		}
-		fmt.Printf("  sync gate: tip=%d  %s\n", tip, strings.Join(parts, "  "))
+		fmt.Printf("  sync: tip=%d  %s\n", tip, strings.Join(parts, "  "))
 		if synced {
-			fmt.Printf("  validator targets synced (worst gap %d <= %d).\n", worst, syncToleranceBlocks)
-			return true
-		}
-		// Not converging — gap above tolerance and NOT shrinking (growing or stuck) —
-		// means live write load is outrunning the rejoining site's catch-up. Surface
-		// it so the operator can lower bombard's rate (or wait for a lull) if the gap
-		// won't close; the chain now keeps up at full rate, so this is rarely hit.
-		if worst > syncToleranceBlocks && prevWorst >= 0 && worst >= prevWorst {
-			fmt.Printf("  WARN: targets not converging (worst gap %d, was %d) — write load is outpacing catch-up; lower bombard rps if it won't close.\n", worst, prevWorst)
-		}
-		prevWorst = worst
-		if time.Now().After(deadline) {
-			return false
+			fmt.Printf("  synced — all recovering nodes within %d blocks of tip (worst gap %d).\n", syncToleranceBlocks, worst)
+			return
 		}
 		time.Sleep(restorePollInterval)
 	}
 }
 
-// waitForFullValidatorSet polls until every validator identity is SERVING.
-func (c *config) waitForFullValidatorSet(intents []MachineIntent) bool {
-	deadline := time.Now().Add(restoreSetTimeout)
+// waitForFullValidatorSet blocks until every validator identity is SERVING. No timeout.
+func (c *config) waitForFullValidatorSet(intents []MachineIntent) {
 	want := len(validatorKeys())
 	for {
 		res := c.checkHealth(intents)
 		got := servingValidatorCount(intents, res)
 		if got >= want {
 			fmt.Printf("  validators serving: %d/%d.\n", got, want)
-			return true
+			return
 		}
-		if time.Now().After(deadline) {
-			fmt.Printf("  validators serving: %d/%d (timeout).\n", got, want)
-			return false
+		time.Sleep(restorePollInterval)
+	}
+}
+
+// setMinDelay rewrites min-delay-target (ms) in the node's chain-config.json. A node restart is
+// required for it to take effect — the VM reads min-delay-target once at init (subnet-evm vm.go).
+func (c *config) setMinDelay(host string, ms int) {
+	c.ssh(host, fmt.Sprintf(`cd %s && sed -i 's/"min-delay-target": *[0-9]*/"min-delay-target": %d/' chain-config.json`, c.remoteDir, ms))
+}
+
+// rollingSetMinDelay rewrites min-delay-target on each machine and restarts it one at a time,
+// waiting for the set to be producing again before the next — so an active validator set never
+// drops below quorum while its block-production cadence is changed.
+func (c *config) rollingSetMinDelay(intents []MachineIntent, idxs []int, ms int) {
+	for _, i := range idxs {
+		if i < 0 || i >= len(c.nodeIPs) {
+			continue
 		}
+		ip := c.nodeIPs[i]
+		c.setMinDelay(ip, ms)
+		c.killNode(ip)
+		c.start(ip, ip)
+		c.waitSetProducing(intents, idxs)
+	}
+}
+
+// waitSetProducing blocks until every validator in idxs is SERVING AND the set's tip has advanced
+// between two consecutive polls — i.e. the chain has a working quorum and is minting blocks again,
+// not merely that the RPCs answer. A freshly-restarted validator serves eth_blockNumber (at its
+// last-accepted height) seconds before it has rejoined consensus; gating the NEXT restart on the
+// tip advancing guarantees only ever one validator is out at a time, so production just dips
+// (proposer misses) instead of stalling at 0 TPS (quorum lost).
+func (c *config) waitSetProducing(intents []MachineIntent, idxs []int) {
+	var lastTip uint64
+	havePrev := false
+	for {
+		res := c.checkHealth(intents)
+		allServing := true
+		var tip uint64
+		for _, i := range idxs {
+			if i < 0 || i >= len(res) || res[i].state != healthServing {
+				allServing = false
+				continue
+			}
+			if res[i].block > tip {
+				tip = res[i].block
+			}
+		}
+		if allServing && havePrev && tip > lastTip {
+			return // full set up and the tip moved -> quorum is producing
+		}
+		lastTip, havePrev = tip, true
 		time.Sleep(restorePollInterval)
 	}
 }
