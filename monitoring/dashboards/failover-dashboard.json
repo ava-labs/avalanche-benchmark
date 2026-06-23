@@ -97,7 +97,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Finalized-but-not-propagated window: how many finalized blocks one site leads the other by. Widens under partition; restore target is 0.",
+      "description": "Finalized-but-not-propagated window: signed gap A - B. Positive = A leads, negative = B leads; widens under partition, restore target is 0.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -140,13 +140,13 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "clamp_min(max(avalanche_snowman_last_accepted_height{site=\"a\",chain!~\"C|P|X|all\"}) - max(avalanche_snowman_last_accepted_height{site=\"b\",chain!~\"C|P|X|all\"}), 0)",
-          "legendFormat": "A - B",
+          "expr": "max(avalanche_snowman_last_accepted_height{site=\"a\",chain!~\"C|P|X|all\"}) - max(avalanche_snowman_last_accepted_height{site=\"b\",chain!~\"C|P|X|all\"})",
+          "legendFormat": "A \u2212 B",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Finalized gap  A - B (blocks)",
+      "title": "Finalized gap \u2014 A \u2212 B (blocks)",
       "type": "timeseries"
     },
     {
@@ -260,7 +260,7 @@
           "refId": "A"
         }
       ],
-      "title": "Throughput \u2014 A vs B (tx/s)",
+      "title": "TPS \u2014 A vs B (tx/s)",
       "type": "timeseries"
     },
     {
@@ -380,6 +380,291 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Consensus liveness per DC. Dips when a site loses its quorum / can't finalize.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 25
+      },
+      "id": 118,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(sum by (site) (increase(avalanche_snowman_polls_successful{chain!~\"C|P|X|all\"}[1m]))) / (sum by (site) (increase(avalanche_snowman_polls_successful{chain!~\"C|P|X|all\"}[1m])) + sum by (site) (increase(avalanche_snowman_polls_failed{chain!~\"C|P|X|all\"}[1m]))) * 100",
+          "legendFormat": "{{site}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Successful polls % \u2014 A vs B",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Per-block verify+execute time per DC. Rises sharply on a node that's I/O-bound or falling behind under load.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 25
+      },
+      "id": 122,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(sum by (site) (increase(avalanche_meterchainvm_verify_sum{chain!~\"C|P|X|all\"}[5m])) / sum by (site) (increase(avalanche_meterchainvm_verify_count{chain!~\"C|P|X|all\"}[5m]))) / 1e6",
+          "legendFormat": "{{site}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Avg block verification time \u2014 A vs B (ms)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Blocks that failed verification per DC (5m). Non-zero signals a fork/divergence or bad state.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 33
+      },
+      "id": 120,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (site) (increase(avalanche_meterchainvm_verify_err_count{chain!~\"C|P|X|all\"}[5m]))",
+          "legendFormat": "{{site}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Block verifications failed \u2014 A vs B",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Blocks rejected by consensus per DC (5m). A fork/divergence indicator \u2014 should stay 0 through failover/restore.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 33
+      },
+      "id": 123,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (site) (increase(avalanche_snowman_blks_rejected_count{chain!~\"C|P|X|all\"}[5m]))",
+          "legendFormat": "{{site}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Rejected blocks \u2014 A vs B",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Failed inbound consensus/sync requests per DC (5m). Spikes when nodes can't fetch blocks (catch-up starvation).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 41
+      },
+      "id": 121,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (site) (increase(avalanche_handler_messages{chain!~\"C|P|X|all\",op=~\".*_failed\"}[5m]))",
+          "legendFormat": "{{site}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Requests failed \u2014 A vs B",
+      "type": "timeseries"
+    },
+    {
       "type": "row",
       "collapsed": false,
       "title": "Site A (us-east-1) \u2014 per node",
@@ -387,7 +672,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 25
+        "y": 49
       },
       "id": 108,
       "panels": []
@@ -419,7 +704,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 26
+        "y": 50
       },
       "id": 109,
       "options": {
@@ -476,7 +761,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 26
+        "y": 50
       },
       "id": 110,
       "options": {
@@ -535,7 +820,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 34
+        "y": 58
       },
       "id": 111,
       "options": {
@@ -592,7 +877,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 34
+        "y": 58
       },
       "id": 112,
       "options": {
@@ -630,7 +915,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 42
+        "y": 66
       },
       "id": 113,
       "panels": []
@@ -662,7 +947,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 43
+        "y": 67
       },
       "id": 114,
       "options": {
@@ -719,7 +1004,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 43
+        "y": 67
       },
       "id": 115,
       "options": {
@@ -778,7 +1063,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 51
+        "y": 75
       },
       "id": 116,
       "options": {
@@ -835,7 +1120,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 51
+        "y": 75
       },
       "id": 117,
       "options": {
