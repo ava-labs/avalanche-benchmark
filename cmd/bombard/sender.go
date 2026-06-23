@@ -121,12 +121,24 @@ func (n *nodeSender) run(ctx context.Context, timeout time.Duration) {
 // broadcast enqueues signed to every node, non-blocking: if a node's queue is
 // full (it is down or lagging) the send is dropped for that node only.
 func (b *broadcaster) broadcast(signed *types.Transaction) {
+	// Prefer the active (validator) site's healthy endpoints. But if NONE are both active
+	// AND healthy — e.g. during a restore both of the active site's archive RPCs are briefly
+	// down while being reseeded — fall back to ANY healthy endpoint so ingress never drops
+	// to zero (a brief cross-region hop beats a stall). In steady state the active site's
+	// RPCs are healthy, so this never sprays the standby.
+	preferActive := false
 	for _, n := range b.nodes {
-		if !n.active.Load() {
-			continue // not on the active (validator) site — never spray the standby's RPC
+		if n.active.Load() && n.healthy.Load() {
+			preferActive = true
+			break
 		}
+	}
+	for _, n := range b.nodes {
 		if !n.healthy.Load() {
-			continue // behind tip / not caught up — out of ingress rotation
+			continue // behind tip / down — out of ingress rotation
+		}
+		if preferActive && !n.active.Load() {
+			continue // active-site endpoints are available; don't spray the standby
 		}
 		select {
 		case n.queue <- signed:

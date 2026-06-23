@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -173,16 +172,6 @@ func (t *tracker) dueForResubmit(interval time.Duration, now time.Time) []*types
 }
 
 var track = newTracker()
-
-// throttleRPS is an externally-imposed ingress cap in rps (0 = none). `reconcile
-// restore` writes a reduced rps to the throttle file while a rejoining site is
-// catching up, so the issuer eases off automatically and the failback converges,
-// then removes the file when caught up — restoring full rate. No permanent change
-// to the configured target. Path is shared with cmd/reconcile (defaultThrottleFile
-// / BOMBARD_THROTTLE_FILE).
-var throttleRPS atomic.Int64
-
-const defaultThrottleFile = "/tmp/bombard.throttle"
 
 // defaultActiveRPCsFile lists the RPC URLs of the data center that currently holds
 // the validator set. reconcile rewrites it on every failover/restore; watchActiveRPCs
@@ -511,7 +500,6 @@ func main() {
 		}()
 	}
 
-	go watchThrottle(ctx, throttleFilePath(), *rps)
 	go watchActiveRPCs(ctx, bc, activeRPCsFilePath())
 	go monitorNonce(ctx, bc, address)
 	go issuer(ctx, sendCh, float64(*rps), *overshootFlag, uint64(cap), startNonce)
@@ -530,16 +518,16 @@ func main() {
 }
 
 // issuer releases nonces under a rolling token bucket and the in-flight cap.
-// Tokens accrue at the effective rate (configured rps×overshoot, unless an
-// external throttle caps it lower) and are bounded by `burst` (= 1 second's
-// worth), so the issuer makes up a deficit from the trailing ~1s instead of
-// dropping the tail of each wall-second — while the burst cap keeps a long stall
-// from triggering an unbounded catch-up flood. The rate is recomputed each tick,
-// so a throttle (set by `reconcile restore` during a failback) eases ingress
-// promptly and lifts the moment it clears.
+// Tokens accrue at the configured rate (rps×overshoot) and are bounded by `burst`
+// (= 1 second's worth), so the issuer makes up a deficit from the trailing ~1s
+// instead of dropping the tail of each wall-second — while the burst cap keeps a
+// long stall from triggering an unbounded catch-up flood.
 func issuer(ctx context.Context, sendCh chan<- uint64, baseRPS, overshoot float64, cap, startNonce uint64) {
 	ticker := time.NewTicker(time.Millisecond)
 	defer ticker.Stop()
+
+	ratePerSec := baseRPS * (1 + overshoot)
+	burst := baseRPS // rolling ~1s window: bounded catch-up
 
 	nextNonce := startNonce
 	tokens := 0.0
@@ -568,15 +556,6 @@ func issuer(ctx context.Context, sendCh chan<- uint64, baseRPS, overshoot float6
 
 		now := time.Now()
 
-		// Effective target rps: the configured rate unless an external throttle
-		// caps it lower (recomputed each tick so it takes effect promptly).
-		target := baseRPS
-		if th := float64(throttleRPS.Load()); th > 0 && th < target {
-			target = th
-		}
-		ratePerSec := target * (1 + overshoot)
-		burst := target // rolling ~1s window: bounded catch-up
-
 		tokens += ratePerSec * now.Sub(last).Seconds()
 		last = now
 		if tokens > burst {
@@ -601,47 +580,6 @@ func issuer(ctx context.Context, sendCh chan<- uint64, baseRPS, overshoot float6
 	}
 }
 
-// throttleFilePath is where the issuer looks for an external ingress cap (written
-// by `reconcile restore` during a failback). Override with BOMBARD_THROTTLE_FILE.
-func throttleFilePath() string {
-	if p := os.Getenv("BOMBARD_THROTTLE_FILE"); p != "" {
-		return p
-	}
-	return defaultThrottleFile
-}
-
-// watchThrottle polls the throttle file and publishes any positive rps below the
-// configured rate as the issuer's cap; an absent/empty/invalid file means full
-// rate. Polled (not inotify-watched) so it's robust to the file being created and
-// removed repeatedly across a run.
-func watchThrottle(ctx context.Context, path string, fullRPS int) {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	var last int64 = -1
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-		var n int64
-		if b, err := os.ReadFile(path); err == nil {
-			if v, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); err == nil && v > 0 {
-				n = v
-			}
-		}
-		throttleRPS.Store(n)
-		if n != last {
-			switch {
-			case n > 0:
-				fmt.Fprintf(os.Stderr, "\nthrottle: ingress capped at %d rps (restore catch-up)\n", n)
-			case last > 0:
-				fmt.Fprintf(os.Stderr, "\nthrottle: lifted — back to %d rps\n", fullRPS)
-			}
-			last = n
-		}
-	}
-}
 
 // monitorNonce rescues bombard from a frontier regression. A hard failover (or any
 // reorg) can leave the chain's accepted nonce BELOW our lowest in-flight nonce: the

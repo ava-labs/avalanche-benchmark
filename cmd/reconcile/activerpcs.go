@@ -13,9 +13,9 @@ import (
 // risks stale-nonce rejections off the standby's slightly-behind view. reconcile
 // owns the failover, so it publishes the active site's archive-RPC URLs to a file;
 // bombard watches it and restricts ingress to those endpoints (see cmd/bombard
-// watchActiveRPCs). Same coordination as the throttle file: a local file on the
-// shared control host, simply ignored if bombard isn't running. The path must match
-// bombard's defaultActiveRPCsFile / the BOMBARD_ACTIVE_RPCS_FILE override.
+// watchActiveRPCs). Coordinated via a local file on the shared control host, simply
+// ignored if bombard isn't running. The path must match bombard's
+// defaultActiveRPCsFile / the BOMBARD_ACTIVE_RPCS_FILE override.
 
 func activeRPCsFilePath() string {
 	if p := os.Getenv("BOMBARD_ACTIVE_RPCS_FILE"); p != "" {

@@ -27,9 +27,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -145,14 +143,6 @@ func rollingRestore(cfg *config, targetSite int) {
 	if !topo.TwoSite {
 		fatalf("restore requires two-site mode (set BACKUP_SITE_NODE_IPS)")
 	}
-	clearThrottle()       // clear any stale ingress throttle left by an interrupted prior run
-	defer clearThrottle() // restore full ingress when the rolling restore completes
-	// A signal-driven exit (operator Ctrl-C) skips deferred cleanup, so clear the
-	// throttle on SIGINT/SIGTERM too — otherwise an aborted restore could leave
-	// bombard capped.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() { <-sigCh; clearThrottle(); os.Exit(130) }()
 	prev, err := loadIntents(cfg.stateFile, topo)
 	if err != nil {
 		fatalf("%v", err)
@@ -316,6 +306,18 @@ func validatorDestIdx(topo Topology, targetSite int) []int {
 	return idx
 }
 
+// spareDestIdx returns the index of the site's hot-standby spare — the slot immediately
+// after the validator destinations (layout per site is [v, v, v, spare, rpc, rpc]). The
+// spare is a state-sync node (same DB profile as the validators, not archive) held ready to
+// be promoted if a validator fails. -1 if the site has no spare slot.
+func spareDestIdx(topo Topology, targetSite int) int {
+	i := siteBase(targetSite) + len(validatorKeys())
+	if i >= topo.Size() {
+		return -1
+	}
+	return i
+}
+
 // rpcMachineIdxs returns the indexes of the pinned dedicated-RPC machines in the given
 // site (their home identity is an RPC key), in ascending order — so [0] is the primary
 // (1st) RPC and the last is the redundant (2nd) RPC. Empty if the site has none.
@@ -354,10 +356,8 @@ func (c *config) waitForTargetSynced(intents []MachineIntent, destIdx, srcIdx []
 // waitForTargetSyncedT is waitForTargetSynced with an explicit timeout (used for
 // the bounded pinned-RPC catch-up gate).
 func (c *config) waitForTargetSyncedT(intents []MachineIntent, destIdx, srcIdx []int, timeout time.Duration) bool {
-	defer clearThrottle() // lift any ingress throttle the moment this gate exits (synced or timeout)
 	deadline := time.Now().Add(timeout)
 	prevWorst := -1
-	throttle := 0 // current ingress cap we've imposed on the load generator (0 = full rate)
 	for {
 		res := c.checkHealth(intents)
 		tip := tipBlock(res, srcIdx)
@@ -387,30 +387,12 @@ func (c *config) waitForTargetSyncedT(intents []MachineIntent, destIdx, srcIdx [
 			fmt.Printf("  validator targets synced (worst gap %d <= %d).\n", worst, syncToleranceBlocks)
 			return true
 		}
-		// Losing ground means live write load is outrunning the rejoining site's
-		// catch-up. Automatically ease ingress (bombard honors the throttle file)
-		// so the failback converges, stepping the cap down until it does; the
-		// throttle lifts the instant the gate clears (deferred above). No permanent
-		// change to the benchmark target.
 		// Not converging — gap above tolerance and NOT shrinking (growing or stuck) —
-		// means live write load is outrunning the rejoining site's catch-up. Ease
-		// ingress (bombard honors the throttle file), stepping the cap down until the
-		// gap actually shrinks; it lifts the instant the gate clears (deferred). No
-		// permanent change to the benchmark target. Stepping on "not shrinking" (not
-		// just "growing") keeps it from getting pinned at a too-high cap.
-		floor := throttleFloor()
+		// means live write load is outrunning the rejoining site's catch-up. Surface
+		// it so the operator can lower bombard's rate (or wait for a lull) if the gap
+		// won't close; the chain now keeps up at full rate, so this is rarely hit.
 		if worst > syncToleranceBlocks && prevWorst >= 0 && worst >= prevWorst {
-			switch {
-			case throttle == 0:
-				throttle = initialThrottleRPS()
-			case throttle > floor:
-				throttle -= restoreThrottleStep
-				if throttle < floor {
-					throttle = floor
-				}
-			}
-			setThrottle(throttle)
-			fmt.Printf("  WARN: targets not converging (worst gap %d, was %d) — easing ingress to %d rps so the site can catch up (auto-lifts when synced).\n", worst, prevWorst, throttle)
+			fmt.Printf("  WARN: targets not converging (worst gap %d, was %d) — write load is outpacing catch-up; lower bombard rps if it won't close.\n", worst, prevWorst)
 		}
 		prevWorst = worst
 		if time.Now().After(deadline) {
