@@ -373,19 +373,27 @@ func (c *config) isArchiveNode(i int) bool {
 	return i%sitePoolSize >= sitePoolSize-2
 }
 
+// deployChainConfig writes host's ROLE-appropriate chain-config to ~/chain-config.json (which
+// the start script copies into place): the archive profile (pruning + state-sync disabled) for
+// the pinned RPC nodes, the light profile (state-sync + pruning) for validators and the spare.
+// Both land as chain-config.json so startScript is unchanged. Re-applied on restore so a node's
+// pruning/state-sync mode is reset to match its role-default DB source — undoing any archive
+// config a failover left behind when it cloned an archive RPC's DB onto a validator.
+func (c *config) deployChainConfig(host string) {
+	chainCfg := "chain-config.json"
+	if c.isArchiveNode(c.nodeIndex(host)) {
+		chainCfg = "chain-config-rpc.json"
+	}
+	c.scp(c.repoDir+"/"+chainCfg, host, c.remoteDir+"/chain-config.json", false)
+}
+
 // upload pushes all artifacts a pool machine needs. Pass 0 of reconcile.
 func (c *config) upload(host string) {
 	c.ssh(host, fmt.Sprintf("mkdir -p %s/bin %s/plugins %s/staking/l1", c.remoteDir, c.remoteDir, c.remoteDir))
 	c.scp(c.repoDir+"/bin/avalanchego", host, c.remoteDir+"/bin/", false)
 	c.scp(c.repoDir+"/bin/"+c.subnetEVMID, host, c.remoteDir+"/plugins/", false)
 	c.scp(c.repoDir+"/node-config.json", host, c.remoteDir+"/", false)
-	// Role-based chain config: archive on the pinned RPC, light (state-sync+pruning)
-	// elsewhere. Both land as chain-config.json on the node, so startScript is unchanged.
-	chainCfg := "chain-config.json"
-	if c.isArchiveNode(c.nodeIndex(host)) {
-		chainCfg = "chain-config-rpc.json"
-	}
-	c.scp(c.repoDir+"/"+chainCfg, host, c.remoteDir+"/chain-config.json", false)
+	c.deployChainConfig(host)
 	c.scp(c.repoDir+"/subnet-config.json", host, c.remoteDir+"/", false)
 	for _, k := range c.topo.AllKeys() {
 		c.scp(fmt.Sprintf("%s/staking/l1/%d", c.repoDir, k), host, c.remoteDir+"/staking/l1/", true)

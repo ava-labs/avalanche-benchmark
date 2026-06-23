@@ -265,11 +265,32 @@ func (c *config) loadSnapshot(host, tar string) {
 	c.snapshotPush(host, tar)
 }
 
+// seedFromSnapshot loads a snapshot AND sets the target's chain-config to srcCfg — the
+// chain-config of the node the snapshot came from. The on-disk DB records the pruning mode it
+// was built with, and coreth refuses to open it under a different mode ("node has operated
+// with pruning disabled, shutting down to prevent missing tries"). So a node seeded from an
+// archive RPC (pruning-disabled) must run the archive config, not its own role default — and
+// the start script copies ~/chain-config.json into place on launch, so that is the file to
+// overwrite. srcCfg empty (read failed) falls back to a plain load, preserving prior behavior.
+func (c *config) seedFromSnapshot(host, tar, srcCfg string) {
+	c.loadSnapshot(host, tar)
+	if srcCfg != "" {
+		c.sshStdin(host, fmt.Sprintf("cat > %s/chain-config.json", c.remoteDir), srcCfg)
+	}
+}
+
 // prepareTarget readies one recovering machine for restart: seed it from the
 // snapshot (default) or wipe it for a from-scratch state-sync (fallback). Used for
 // both the Phase-1 validator targets and the later-joined pinned RPC, so the two
 // paths stay identical.
 func (c *config) prepareTarget(host, name string, snap bool, tar string) {
+	// Reset the node to its ROLE-default chain-config so its pruning/state-sync mode matches
+	// the DB it is about to run: restore seeds validators/spare from a pruning tracker and the
+	// archive RPCs from an archive source, so the role default is always the right match. This
+	// also undoes any archive config a prior failover left on a validator (which would make
+	// coreth reject the pruning snapshot, or block the state-sync fallback that needs
+	// state-sync-enabled). See seedFromSnapshot / deployChainConfig.
+	c.deployChainConfig(host)
 	if snap {
 		fmt.Printf("  %s: stop + wipe + seed from snapshot\n", name)
 		c.loadSnapshot(host, tar)

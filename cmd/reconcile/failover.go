@@ -171,12 +171,19 @@ func (c *config) reconcileBackupHeights(intents []MachineIntent, targetSite int)
 	}
 	defer cleanupSnapshot(snapshotTar)
 
+	// Read the source's chain-config so every seeded node can be made to run it. The DB records
+	// the pruning mode it was built with, and coreth REFUSES to open it under a different mode
+	// ("node has operated with pruning disabled, shutting down to prevent missing tries"). So a
+	// node seeded from an archive RPC (pruning-disabled) must also run the archive config — not
+	// its own pruning config. seedFromSnapshot applies this on every clone below.
+	srcCfg := c.ssh(c.nodeIPs[src], "cat "+c.remoteDir+"/chain-config.json")
+
 	for _, i := range live {
 		if i == src {
 			continue
 		}
 		fmt.Printf("  %s: wipe + seed from %s's DB (was @%d)\n", topo.MachineName(i), topo.MachineName(src), res[i].block)
-		c.loadSnapshot(c.nodeIPs[i], snapshotTar)
+		c.seedFromSnapshot(c.nodeIPs[i], snapshotTar, srcCfg)
 	}
 
 	// Best-effort: also seed the hot-standby spare from the SAME snapshot so it boots at the
@@ -195,7 +202,7 @@ func (c *config) reconcileBackupHeights(intents []MachineIntent, targetSite int)
 			}
 			fmt.Printf("  %s (spare): wipe + seed from %s's DB so it is a hot standby at the tip (was %s)\n",
 				topo.MachineName(sp), topo.MachineName(src), was)
-			c.loadSnapshot(c.nodeIPs[sp], snapshotTar)
+			c.seedFromSnapshot(c.nodeIPs[sp], snapshotTar, srcCfg)
 		}
 	}
 
@@ -224,7 +231,7 @@ func (c *config) reconcileBackupHeights(intents []MachineIntent, targetSite int)
 			}
 			fmt.Printf("  %s (archive RPC): wipe + seed from archive source %s's DB, skipping a from-genesis bootstrap (was %s)\n",
 				topo.MachineName(i), topo.MachineName(src), was)
-			c.loadSnapshot(c.nodeIPs[i], snapshotTar)
+			c.seedFromSnapshot(c.nodeIPs[i], snapshotTar, srcCfg)
 		}
 	}
 
