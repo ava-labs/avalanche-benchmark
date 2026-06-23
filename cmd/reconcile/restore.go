@@ -159,34 +159,32 @@ func rollingRestore(cfg *config, targetSite int) {
 	trackerStep, keySteps := RestorePlan(topo, prev, targetSite)
 	destIdx := validatorDestIdx(topo, targetSite) // machines that will receive a validator key (gate only these)
 
-	// Hold the pinned RPCs back until the target site holds the validator MAJORITY,
-	// so they catch up from same-site validators instead of racing a cross-region sync
-	// (off the still-active remote site) under ingress load (see package doc). rpcAfter
-	// = majority count; the RPCs come up right after that many validators land.
 	rpcIdxs := rpcMachineIdxs(topo, targetSite)
-	rpcAfter := want/2 + 1
-	delayRPC := len(rpcIdxs) > 0 && rpcAfter <= len(keySteps)
-	if delayRPC {
-		for _, ri := range rpcIdxs {
-			trackerStep[ri].Cordoned = true
-			for i := range keySteps {
-				keySteps[i][ri].Cordoned = i < rpcAfter
-			}
-		}
-	}
 	srcIdx := validatorMachineIdx(trackerStep) // currently-active validators (the source site = the tip)
 
-	// Recovery strategy, by role:
-	//   - Validators + spare are recovered by STATE-SYNC: wipe data/validator and let the node
-	//     resync recent state to the live tip on start. They come up PRUNED (their role-default
-	//     config) with no DB clone, and all land at a common recent state-sync pivot — so the
-	//     promoted set agrees on a tip (no inconsistent-height deadlock) and there is no
-	//     pruning-mode mismatch to manage. The chain state is small, so the sync is fast.
-	//   - The pinned RPCs are ARCHIVE nodes (pruning + state-sync disabled) and CANNOT
-	//     state-sync, so they are seeded from a full ARCHIVE snapshot of the SOURCE site's
-	//     REDUNDANT (2nd) RPC (its twin keeps serving ingress, so no blip); failing that they
-	//     fall back to a from-genesis bootstrap. RPCs carry no vote, so they never gate the
-	//     restore (it waits only on validator destinations).
+	// Recovery strategy, by role — both seeded from a fresh DB SNAPSHOT of the live source site
+	// (captured AT the tip), so each recovering node replays only a tiny delta. State-sync was
+	// tried here and could NOT keep up: a graceful restore runs against the STILL-ACTIVE other
+	// site, so the tip keeps moving and the recovering validators never close the gap under
+	// load (measured: gap grew all night at 4000 TPS). A snapshot is a point-in-time copy at the
+	// tip, so the delta to replay is seconds, not a commit-interval pivot gap. Role-matched so
+	// each node's DB pruning-mode matches its role-default config (applied by prepareTarget) —
+	// safe now that FAILOVER keeps validators PRUNED (state-sync), so the source site's spare is
+	// genuinely a pruned tracker:
+	//   - validators + spare  <- a PRUNED snapshot of the source site's spare tracker;
+	//   - pinned RPCs          <- a full ARCHIVE snapshot of the source site's REDUNDANT (2nd) RPC
+	//                             (its twin keeps serving ingress, so no blip).
+	// Both snapshots are captured up front and EVERY target is seeded + started together in
+	// Phase 1 — the RPCs are NOT held back behind validator sync, since a near-tip archive
+	// snapshot needs no catch-up race. If a source is unavailable, that role falls back to
+	// wipe + state-sync (validators) / from-genesis bootstrap (RPCs).
+	var snapTar string
+	if tar, ok := cfg.takeSnapshot(trackerStep, otherSite(targetSite)); ok {
+		snapTar = tar
+		defer cleanupSnapshot(snapTar)
+	} else {
+		fmt.Println("WARN: no usable pruned snapshot source — recovering validators will wipe + state-sync.")
+	}
 	var archiveTar string
 	if tar, ok := cfg.takeArchiveSnapshot(trackerStep, otherSite(targetSite)); ok {
 		archiveTar = tar
@@ -195,12 +193,11 @@ func rollingRestore(cfg *config, targetSite int) {
 		fmt.Println("WARN: no usable archive snapshot source — recovering RPCs will full-bootstrap from genesis.")
 	}
 
-	// Phase 1 — seed the target site's validators (+ spare), bring them up as
-	// trackers, and wait until the validator destinations reach the tip. The pinned
-	// RPC is excluded here when delayRPC; it comes up in Phase 2. Each target's
-	// stale data is discarded first, so it can never resurrect the divergent
-	// post-failover frontier — identities (staking/active, staking/l1) live outside
-	// data/ and are preserved. See prepareTarget / wipeL1Data.
+	// Phase 1 — seed EVERY target-site node together (validators + spare from the pruned
+	// snapshot, RPCs from the archive snapshot), bring them all up as trackers, and wait until
+	// the validator destinations reach the tip. Each target's stale data is discarded first, so
+	// it can never resurrect a divergent post-failover frontier — identities (staking/active,
+	// staking/l1) live outside data/ and are preserved. See prepareTarget / wipeL1Data.
 	fmt.Printf("== restore: prepare + bring site %s up as trackers ==\n", siteName(targetSite))
 	if err := saveIntents(cfg.stateFile, trackerStep); err != nil {
 		fatalf("%v", err)
@@ -211,8 +208,8 @@ func rollingRestore(cfg *config, targetSite int) {
 		if topo.Site(i) == targetSite && !trackerStep[i].Cordoned {
 			if cfg.isArchiveNode(i) { // archive RPC: full-state archive clone (can't state-sync)
 				cfg.prepareTarget(cfg.nodeIPs[i], topo.MachineName(i), archiveTar != "", archiveTar)
-			} else { // validator / spare: wipe + state-sync to tip, stays pruned
-				cfg.prepareTarget(cfg.nodeIPs[i], topo.MachineName(i), false, "")
+			} else { // validator / spare: pruned snapshot clone (falls back to state-sync)
+				cfg.prepareTarget(cfg.nodeIPs[i], topo.MachineName(i), snapTar != "", snapTar)
 			}
 		}
 	}
@@ -224,8 +221,8 @@ func rollingRestore(cfg *config, targetSite int) {
 		fatalf("site %s validator targets did not reach tip within %s; aborting. No stake moved — the site is a tracker, safe to retry.", siteName(targetSite), restoreSyncTimeout)
 	}
 
-	// Phase 2 — roll each validator key onto the target site, one at a time; bring
-	// the pinned RPC up once the majority is local so it state-syncs from local peers.
+	// Phase 2 — roll each validator key onto the target site, one at a time. The RPCs already
+	// came up (snapshot-seeded) in Phase 1, so there is no separate RPC bring-up step here.
 	current := trackerStep
 	for n, step := range keySteps {
 		fmt.Printf("== restore: migrate validator %d/%d to site %s ==\n", n+1, len(keySteps), siteName(targetSite))
@@ -241,29 +238,12 @@ func rollingRestore(cfg *config, targetSite int) {
 			fatalf("validator did not return to %d/%d after migrating a key; chain is at 2/3 (still live). Re-run `reconcile apply` once the node recovers, then re-run restore.", want, want)
 		}
 		current = step
-
-		if delayRPC && n+1 == rpcAfter {
-			fmt.Printf("== restore: site %s holds the validator majority — bring up + seed %d archive RPC(s) from the source site's redundant-RPC snapshot ==\n", siteName(targetSite), len(rpcIdxs))
-			rpcUp := cloneIntents(current)
-			for _, ri := range rpcIdxs {
-				rpcUp[ri].Cordoned = false
-				// Seed each recovering archive RPC from the source site's redundant-RPC
-				// archive snapshot (full state, near-tip); falls back to genesis bootstrap.
-				cfg.prepareTarget(cfg.nodeIPs[ri], topo.MachineName(ri), archiveTar != "", archiveTar)
-			}
-			if err := saveIntents(cfg.stateFile, rpcUp); err != nil {
-				fatalf("%v", err)
-			}
-			printIntents(topo, rpcUp)
-			reconcile(cfg, rpcUp, false)
-			current = rpcUp
-		}
 	}
 
 	// Gate the pinned RPCs to tip so "restore complete" doesn't paper over a stale
 	// ingress. Bounded + non-fatal: consensus is already restored, so if an RPC is
 	// still sync-bound under load we warn rather than block the operator.
-	if delayRPC {
+	if len(rpcIdxs) > 0 {
 		fmt.Printf("waiting for site %s pinned RPCs to sync to tip (within %d blocks)...\n", siteName(targetSite), syncToleranceBlocks)
 		if !cfg.waitForTargetSyncedT(current, rpcIdxs, validatorMachineIdx(current), restoreRPCTimeout) {
 			fmt.Printf("WARN: site %s pinned RPC(s) have not caught up within %s. Consensus is restored (validators %d/%d) but an RPC is still syncing — likely sync-bound under sustained load. Ease load and it will finish; re-run `reconcile verify` to confirm.\n", siteName(targetSite), restoreRPCTimeout, want, want)
