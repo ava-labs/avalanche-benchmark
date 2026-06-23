@@ -1,6 +1,9 @@
-.PHONY: all clean deps build pack monitoring-deps
+.PHONY: all clean deps build pack monitoring-deps rpm
 
 .DEFAULT_GOAL := all
+
+# Release version for the RPM (RPM versions cannot contain '-'; use a dotted date).
+RELEASE_VERSION ?= $(shell date +%Y.%m.%d)
 
 AVALANCHEGO_REPO=https://github.com/ava-labs/avalanchego.git
 AVALANCHEGO_REF=configure-genesis-acp226-excess-50ms-window
@@ -91,3 +94,13 @@ pack: deps build monitoring-deps
 		staking/ \
 		.env.example \
 		README.md
+
+# Build the airgap RHEL/RPM. Reuses the exact `pack` payload (single source of
+# truth): stage the packed tarball into dist/pkgroot, then nfpm packages that tree
+# under /opt/avalanche-benchmark. Requires nfpm (https://nfpm.goreleaser.com).
+rpm: pack
+	rm -rf dist/pkgroot && mkdir -p dist/pkgroot
+	tar -xzf remote-benchmark.tar.gz -C dist/pkgroot
+	VERSION=$(RELEASE_VERSION) nfpm pkg --config nfpm.yaml --packager rpm \
+		--target avalanche-benchmark-$(RELEASE_VERSION).x86_64.rpm
+	@echo "Built avalanche-benchmark-$(RELEASE_VERSION).x86_64.rpm"

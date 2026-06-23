@@ -1,0 +1,24 @@
+# nfpm config for the airgap RHEL/RPM build of the failover-benchmark kit.
+# Packages the SAME payload as `make pack` (remote-benchmark.tar.gz) into an RPM
+# that installs the self-contained kit under /opt/avalanche-benchmark. No runtime
+# dependencies are declared on purpose: the kit bundles its own avalanchego,
+# subnet-evm plugin, prometheus and grafana, so it installs cleanly on an airgapped
+# RHEL host. Build with `make rpm` (which stages the packed tarball, then runs nfpm).
+name: avalanche-benchmark
+arch: amd64
+platform: linux
+version: ${VERSION}
+section: utils
+maintainer: "Owen Wahlgren <owen.wahlgren@avalabs.org>"
+description: |
+  Avalanche L1 two-datacenter validator failover/recovery benchmark kit.
+  Self-contained, airgap-ready: bundles avalanchego + subnet-evm, the reconcile/
+  bombard/create-l1 tools, the Prometheus/Grafana monitoring stack, and the
+  failover/restore scripts. Installs under /opt/avalanche-benchmark.
+license: BSD-3-Clause
+# Single source of truth: `make rpm` extracts remote-benchmark.tar.gz into
+# dist/pkgroot, so the RPM contents are byte-identical to the tarball release.
+contents:
+  - src: ./dist/pkgroot/
+    dst: /opt/avalanche-benchmark
+    type: tree

@@ -21,6 +21,9 @@
 # Deployment packages
 /remote-benchmark.tar.gz
 /avalanche-benchmark-*.tar.gz
+/avalanche-benchmark-*.rpm
+# RPM staging tree (make rpm)
+/dist/
 
 # Runtime data and logs
 /data/
