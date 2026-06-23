@@ -3,7 +3,14 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 )
+
+// failoverSettleTimeout bounds how long a failover waits for the surviving site to finish
+// recovering before it picks a clone source (see waitForSiteSettled). Short, because the
+// common case is a node restart that serves within seconds; the bound keeps a genuinely
+// long bootstrap from stalling the cutover.
+const failoverSettleTimeout = 90 * time.Second
 
 // Hard-site-failover quorum reconciliation.
 //
@@ -71,8 +78,12 @@ func (c *config) reconcileBackupHeights(intents []MachineIntent, targetSite int)
 		return // 0 or 1 validator destination live — nothing to equalize
 	}
 
-	// Probe heights while the nodes still run as trackers.
-	res := c.checkHealth(intents)
+	// Give the surviving site a bounded window to finish recovering before choosing the clone
+	// source. A failover fired right after a restore can catch the site's archive RPCs still
+	// coming up — not yet SERVING, or SERVING but still climbing to their retained tip. Picking
+	// the source then would miss the at-tip RPC and fall back to a laggard validator, forcing
+	// the multi-thousand-block replay stall this whole routine exists to avoid.
+	res := c.waitForSiteSettled(intents, targetSite, failoverSettleTimeout)
 
 	// Clone SOURCE: the most-advanced SERVING node on the surviving site across ALL roles —
 	// validators, spare, AND archive RPCs. The standby RPCs routinely track the dying active
@@ -221,6 +232,55 @@ func (c *config) reconcileBackupHeights(intents []MachineIntent, targetSite int)
 	// swaps their validator key in and starts them, so the promoted set agrees on the tip.
 	fmt.Printf("  validator set equalized at block %d (%s); reconcile will promote them consistent.\n",
 		srcBlock, humanSize(snapshotTar))
+}
+
+// waitForSiteSettled gives the surviving site a bounded window to finish recovering before a
+// failover selects its clone source, then returns the settled health snapshot. A failover
+// fired right after a restore can catch the site's archive RPCs still bootstrapping: not yet
+// SERVING, or SERVING but still climbing to their retained tip. If the source were chosen in
+// that instant the at-tip RPC would be invisible and the set would be cloned from a laggard
+// validator — forcing a multi-thousand-block replay stall (measured 2026-06-23: validators
+// cloned @177884 while the RPCs held 184552, then froze re-executing ~6.6k fat blocks).
+//
+// In a hard failover the old site is gone, so no new blocks are minted and the surviving
+// nodes' heights converge to the highest retained tip. We poll until that max height holds
+// steady across two consecutive reads (every node done climbing) with at least two nodes
+// serving, then return — or return the latest snapshot once the timeout elapses. Best-effort:
+// a node that never serves simply isn't a candidate, exactly as before; the wait only ensures
+// a quickly-restarting at-tip node is given the chance to reappear.
+func (c *config) waitForSiteSettled(intents []MachineIntent, targetSite int, timeout time.Duration) []healthResult {
+	deadline := time.Now().Add(timeout)
+	haveMax := false
+	var prevMax uint64
+	var res []healthResult
+	for {
+		res = c.checkHealth(intents)
+		var maxH uint64
+		serving := 0
+		for i := 0; i < c.topo.Size(); i++ {
+			if c.topo.Site(i) != targetSite || i >= len(intents) || intents[i].Cordoned {
+				continue
+			}
+			if i >= len(res) || res[i].state != healthServing {
+				continue
+			}
+			serving++
+			if res[i].block > maxH {
+				maxH = res[i].block
+			}
+		}
+		// Settled: enough of the site is serving and the highest retained tip stopped moving.
+		if serving >= 2 && maxH > 0 && haveMax && maxH == prevMax {
+			fmt.Printf("failover: surviving site settled — %d node(s) serving, tip %d.\n", serving, maxH)
+			return res
+		}
+		if time.Now().After(deadline) {
+			fmt.Printf("failover: settle window (%s) elapsed — proceeding with %d serving node(s), tip %d.\n", timeout, serving, maxH)
+			return res
+		}
+		prevMax, haveMax = maxH, true
+		time.Sleep(restorePollInterval)
+	}
 }
 
 // onSameBranch reports whether two nodes share the same block hash at a recent common
