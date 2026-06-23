@@ -3,258 +3,91 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
-// failoverSettleTimeout bounds how long a failover waits for the surviving site to finish
-// recovering before it picks a clone source (see waitForSiteSettled). Short, because the
-// common case is a node restart that serves within seconds; the bound keeps a genuinely
-// long bootstrap from stalling the cutover.
+// failoverSettleTimeout bounds how long a failover waits for the surviving site to settle
+// before it reads the live tip (see waitForSiteSettled). Short, because the common case is a
+// node restart that serves within seconds; the bound keeps a genuinely long bootstrap from
+// stalling the cutover.
 const failoverSettleTimeout = 90 * time.Second
 
-// Hard-site-failover quorum reconciliation.
+// Hard-site-failover recovery.
 //
-// A hard `site-failover` assumes the old site is GONE (nuked) and cuts the whole validator
-// set over to the surviving site in one shot. The hazard: the surviving site's machines are
-// trackers that may sit at different heights — one that kept up next to others wedged blocks
-// back (cross-region trackers don't self-heal under load; see standby lag notes). Promote
-// them at inconsistent heights and consensus can't form a quorum on ANY tip — the ahead node
-// can't get votes for a block the others lack, the behind nodes can't vote on blocks they
-// don't have — so the chain DEADLOCKS even though every node reports "SERVING" (measured
-// 2026-06-22: 659k/426k/412k produced zero blocks; 2026-06-23: a validator left ~40k behind
-// after a clone-then-drift re-split).
+// A hard `site-failover` assumes the old site is GONE and cuts the validator set over to the
+// surviving site. The surviving site's would-be validators are trackers that may sit behind
+// the tip (cross-region lag) or at inconsistent heights. Promote them as-is at WILDLY
+// different heights and consensus can't form a quorum on any tip — the chain DEADLOCKS even
+// though every node reports SERVING (measured 2026-06-22: 659k/426k/412k produced zero blocks).
 //
-// reconcileBackupHeights (below) makes the promoted validator set boot byte-identical by
-// stopping every validator destination up front and cloning the most-advanced SERVING node's
-// DB onto them — and that source may be ANY role on the surviving site, including an archive
-// RPC, since the standby RPCs commonly retain a higher tip than the standby validators. The
-// chain resumes from the highest surviving height; blocks the old site finalized above that
-// (and never delivered to the surviving site) are the unavoidable RPO of losing it.
-
-// reconcileBackupHeights makes a hard site-failover leave a WORKING quorum by guaranteeing
-// the promoted validator set boots at an IDENTICAL height. Promoted validators must agree
-// on a tip; if they boot at different heights, consensus can't form a quorum and the chain
-// DEADLOCKS until the laggards re-sync (measured 2026-06-23: b1 promoted @104990 while
-// b2/b3 sat @101031 — the chain halted and one validator stayed ~40k blocks behind).
+// reconcileBackupHeights recovers the validators+spare by STATE-SYNC: any one that is behind
+// the live tip by more than syncToleranceBlocks (or down) is wiped and reset to its pruned
+// role-default config, so reconcile's start resyncs it to the tip. State-sync lands every
+// wiped node at a common recent pivot, so the promoted set agrees on a tip (no inconsistent-
+// height deadlock) and stays PRUNED — no DB clone, no archive-config flip, no pruning-mode
+// mismatch (the failure modes the clone approach kept hitting). The surviving site's archive
+// RPCs (which retain the tip) serve the state-sync; the chain state is small and, because the
+// old site is gone, the tip is static, so the sync converges quickly. A validator already
+// within tolerance of the tip is left as-is and simply promoted (fast path — at a healthy
+// cadence the standby keeps up, so this is the common case).
 //
-// The earlier version cloned only onto >tolerance "laggards" and left the others running.
-// That re-split the set: a validator that was at the tip kept following the old site and
-// drifted further ahead between the snapshot and the cert swap, so the promoted set was
-// inconsistent anyway. This version instead:
-//   1. STOPS every validator-destination node up front — including ones already at the tip
-//      — so none can advance between snapshot and promotion;
-//   2. picks the most-advanced SERVING node on the surviving site (ANY role — validator,
-//      spare, or archive RPC — whichever retained the highest tip, verified on-branch);
-//   3. clones its DB (identity-agnostic: data/validator only, staking creds live outside it)
-//      onto ALL the validator destinations, unconditionally.
-// So every promoted validator boots byte-identical AT THE HIGHEST RETAINED TIP, a quorum
-// forms immediately, and there is no forward-replay stall (the failure mode that motivated
-// sourcing from any role: a laggard-validator clone forces the set to re-execute up to the
-// tip an RPC already held — minutes of zero mining).
-//
-// The validator destinations are the only REQUIRED writes (quorum). Two best-effort writes
-// follow, neither of which can strip an archive RPC's history: the hot-standby spare is
-// seeded so it is instantly promotable, and a far-behind archive RPC is reseeded ONLY when
-// the clone source is itself archive (an archive->archive copy preserves full history). A
-// pruned source never touches an archive RPC — that is the hazard the graceful-restore path
-// guards, and gating the RPC reseed on an archive source keeps it impossible here. A
-// non-validator (RPC/spare) may be the read source too — copied stopped, then restarted so
-// RPC ingress resumes. Runs BEFORE the reconcile pass starts the nodes. Best-effort: on a
-// snapshot failure it logs and lets reconcile start the set as-is rather than aborting.
+// The archive RPCs themselves CANNOT state-sync (pruning + state-sync disabled); a far-behind
+// one is reseeded from the most-advanced archive RPC on the site (archive->archive, so full
+// history is preserved). Runs BEFORE the reconcile pass starts the nodes.
 func (c *config) reconcileBackupHeights(intents []MachineIntent, targetSite int) {
 	topo := c.topo
 
-	// The quorum-critical set: the machines that will hold validator keys on the surviving
-	// site. These — and ONLY these — are the clone DESTINATIONS; they must boot at an
-	// identical height for a quorum to form. RPCs are never written to here (they are
-	// reseeded only by a graceful restore), so this can never strip an archive RPC's history.
-	var live []int
-	for _, i := range validatorDestIdx(topo, targetSite) {
-		if i < len(intents) && !intents[i].Cordoned {
-			live = append(live, i)
-		}
-	}
-	if len(live) < 2 {
-		return // 0 or 1 validator destination live — nothing to equalize
-	}
-
-	// Give the surviving site a bounded window to finish recovering before choosing the clone
-	// source. A failover fired right after a restore can catch the site's archive RPCs still
-	// coming up — not yet SERVING, or SERVING but still climbing to their retained tip. Picking
-	// the source then would miss the at-tip RPC and fall back to a laggard validator, forcing
-	// the multi-thousand-block replay stall this whole routine exists to avoid.
+	// Let the surviving site settle (RPCs serving, heights stable) so the tip read below is the
+	// true retained tip, not a momentarily-recovering node's partial height.
 	res := c.waitForSiteSettled(intents, targetSite, failoverSettleTimeout)
 
-	// Clone SOURCE: the most-advanced SERVING node on the surviving site across ALL roles —
-	// validators, spare, AND archive RPCs. The standby RPCs routinely track the dying active
-	// site FURTHER than the standby validators (they do no consensus work and are not stopped
-	// for equalization), so they hold the true retained tip. Cloning the highest such node —
-	// instead of the highest validator — boots the promoted set at the tip, so the quorum
-	// forms there immediately and there is NO multi-thousand-block re-execution stall while
-	// the validators replay forward to the tip the RPC already had (measured 2026-06-23:
-	// validators cloned to a laggard @99679 re-executed up to 103065, ~4 minutes of zero
-	// mining while the RPC sat at the tip the whole time).
-	//
-	// Using an archive RPC as the source is safe: its full-history DB is a SUPERSET of a
-	// pruned validator DB, so a validator booting on it just carries extra history (its
-	// pruning/state-sync config only governs go-forward behavior, and state-sync never
-	// re-triggers on a DB already at the tip). The dangerous direction — a pruned DB landing
-	// on an archive RPC and stripping its history — never happens here: RPCs are sources,
-	// never destinations.
-	src, bestVal := -1, -1
+	// Live tip = highest block any SERVING node on the site holds (the archive RPCs hold it).
+	var tip uint64
 	for i := 0; i < topo.Size(); i++ {
-		if topo.Site(i) != targetSite || i >= len(intents) || intents[i].Cordoned {
+		if topo.Site(i) == targetSite && i < len(res) && res[i].state == healthServing && res[i].block > tip {
+			tip = res[i].block
+		}
+	}
+
+	// Validators + spare: state-sync any that are behind the tip (or down); leave the rest.
+	targets := append([]int{}, validatorDestIdx(topo, targetSite)...)
+	if sp := spareDestIdx(topo, targetSite); sp >= 0 {
+		targets = append(targets, sp)
+	}
+	var promote, resync []string
+	for _, i := range targets {
+		if i >= len(intents) || intents[i].Cordoned {
 			continue
 		}
-		if i >= len(res) || res[i].state != healthServing {
+		serving := i < len(res) && res[i].state == healthServing
+		if serving && tip > 0 && tip-res[i].block <= uint64(syncToleranceBlocks) {
+			promote = append(promote, topo.MachineName(i)) // current enough — promote as-is
 			continue
 		}
-		if src < 0 || res[i].block > res[src].block {
-			src = i
-		}
-		if containsInt(live, i) && (bestVal < 0 || res[i].block > res[bestVal].block) {
-			bestVal = i // highest SERVING validator destination (on-branch by construction)
-		}
+		c.deployChainConfig(c.nodeIPs[i]) // pruned + state-sync-enabled, matches the wiped DB
+		c.wipeL1Data(c.nodeIPs[i])        // clear data/validator -> forces state-sync on start
+		resync = append(resync, topo.MachineName(i))
 	}
-	if src < 0 {
-		fmt.Println("failover: no SERVING node on the surviving site to clone from — skipping DB equalize; verify quorum via status.sh.")
-		return
-	}
+	fmt.Printf("== failover: site %s recovery (tip %d) — promote-as-is: [%s]  state-sync: [%s] ==\n",
+		siteName(targetSite), tip, strings.Join(promote, " "), strings.Join(resync, " "))
 
-	// Branch safety: if the most-advanced node is NOT a validator destination (e.g. an
-	// archive RPC), confirm it is on the validators' branch before cloning it site-wide — a
-	// node wedged on a stale fork also reports SERVING, and cloning it would import a
-	// last-accepted the set never had (see snapshotSourceCanonical). Compare it to the
-	// highest SERVING validator destination; on any mismatch or unreadable reference, fall
-	// back to that destination (always on-branch).
-	if !containsInt(live, src) {
-		if bestVal < 0 {
-			fmt.Println("failover: no SERVING validator destination to validate the clone source against — skipping DB equalize.")
-			return
-		}
-		if !c.onSameBranch(c.nodeIPs[src], c.nodeIPs[bestVal]) {
-			fmt.Printf("failover: most-advanced node %s is off the validator branch — falling back to highest validator %s.\n",
-				topo.MachineName(src), topo.MachineName(bestVal))
-			src = bestVal
-		}
-	}
-
-	// CRITICAL: stop EVERY validator destination now — including ones already at the tip —
-	// so none keeps following the old site and drifts ahead before the cert swap. This is
-	// what prevents the post-clone re-split that previously deadlocked the failover.
-	for _, i := range live {
-		c.killNode(c.nodeIPs[i])
-	}
-
-	srcBlock := res[src].block
-	fmt.Printf("== failover: equalizing %d-validator set on site %s to %s @ block %d (stop-all -> clone -> promote) ==\n",
-		len(live), siteName(targetSite), topo.MachineName(src), srcBlock)
-	_ = os.Remove(snapshotTar)
-
-	// If the source is itself a validator destination it is already stopped (above) and stays
-	// stopped for the reconcile pass to start. If it is a non-destination (archive RPC /
-	// spare) it must be stopped for a consistent on-disk image, then restarted immediately so
-	// it keeps serving (e.g. RPC ingress) while the clone lands on the validators.
-	srcIsDest := containsInt(live, src)
-	if !srcIsDest {
-		c.killNode(c.nodeIPs[src])
-	}
-	if !c.snapshotPull(c.nodeIPs[src], snapshotTar) {
-		if !srcIsDest {
-			c.start(c.nodeIPs[src], c.nodeIPs[src]) // best-effort restart even if the copy failed
-		}
-		fmt.Printf("failover: WARNING snapshot of %s failed — reconcile will start the set as-is; it may deadlock until nodes re-sync (check status.sh).\n", topo.MachineName(src))
-		return
-	}
-	if !srcIsDest {
-		c.start(c.nodeIPs[src], c.nodeIPs[src]) // source downtime is just the copy
-	}
-	defer cleanupSnapshot(snapshotTar)
-
-	// Read the source's chain-config so every seeded node can be made to run it. The DB records
-	// the pruning mode it was built with, and coreth REFUSES to open it under a different mode
-	// ("node has operated with pruning disabled, shutting down to prevent missing tries"). So a
-	// node seeded from an archive RPC (pruning-disabled) must also run the archive config — not
-	// its own pruning config. seedFromSnapshot applies this on every clone below.
-	srcCfg := c.ssh(c.nodeIPs[src], "cat "+c.remoteDir+"/chain-config.json")
-
-	for _, i := range live {
-		if i == src {
-			continue
-		}
-		fmt.Printf("  %s: wipe + seed from %s's DB (was @%d)\n", topo.MachineName(i), topo.MachineName(src), res[i].block)
-		c.seedFromSnapshot(c.nodeIPs[i], snapshotTar, srcCfg)
-	}
-
-	// Best-effort: also seed the hot-standby spare from the SAME snapshot so it boots at the
-	// tip and is instantly promotable if a validator later fails. Left to sync on its own it
-	// could sit behind for a while, and promoting a behind spare would re-introduce the very
-	// lag/quorum hazard this function exists to prevent. The spare holds no validator key, so
-	// it never gates the quorum — a skipped/failed seed here just leaves it to catch up
-	// normally and never blocks the failover. Skip it if it is already at the source tip (the
-	// hot-standby-site no-op case) or is itself the clone source.
-	if sp := spareDestIdx(topo, targetSite); sp >= 0 && sp != src && sp < len(intents) && !intents[sp].Cordoned {
-		behind := sp >= len(res) || res[sp].state != healthServing || res[sp].block < srcBlock
-		if behind {
-			was := "down"
-			if sp < len(res) && res[sp].state == healthServing {
-				was = fmt.Sprintf("@%d", res[sp].block)
-			}
-			fmt.Printf("  %s (spare): wipe + seed from %s's DB so it is a hot standby at the tip (was %s)\n",
-				topo.MachineName(sp), topo.MachineName(src), was)
-			c.seedFromSnapshot(c.nodeIPs[sp], snapshotTar, srcCfg)
-		}
-	}
-
-	// Best-effort: if the clone source is itself an ARCHIVE node, reseed any far-behind
-	// archive RPC on the surviving site from the same snapshot. This is gated on the source
-	// being archive precisely because an archive->archive clone preserves full history — the
-	// hazard the graceful-restore path guards against is a PRUNED source stripping an archive
-	// RPC's history, which cannot happen when the source is archive. It saves a recovering
-	// RPC from a multi-hour from-genesis bootstrap (state-sync is disabled on archive nodes)
-	// and returns it to ingress rotation at the tip. Only reseed an RPC that is down or more
-	// than snapshotSourceMaxLag behind — a near-tip RPC catches up faster by delta-replay than
-	// by a full DB push. RPCs carry no vote, so a skipped/failed reseed never blocks failover.
-	if c.isArchiveNode(src) {
-		for _, i := range rpcMachineIdxs(topo, targetSite) {
-			if i == src || i >= len(intents) || intents[i].Cordoned {
-				continue
-			}
-			serving := i < len(res) && res[i].state == healthServing
-			behind := !serving || srcBlock > res[i].block+snapshotSourceMaxLag
-			if !behind {
-				continue
-			}
-			was := "down"
-			if serving {
-				was = fmt.Sprintf("@%d", res[i].block)
-			}
-			fmt.Printf("  %s (archive RPC): wipe + seed from archive source %s's DB, skipping a from-genesis bootstrap (was %s)\n",
-				topo.MachineName(i), topo.MachineName(src), was)
-			c.seedFromSnapshot(c.nodeIPs[i], snapshotTar, srcCfg)
-		}
-	}
-
-	// All validator destinations are left stopped on the identical DB; the reconcile pass
-	// swaps their validator key in and starts them, so the promoted set agrees on the tip.
-	fmt.Printf("  validator set equalized at block %d (%s); reconcile will promote them consistent.\n",
-		srcBlock, humanSize(snapshotTar))
+	// Archive RPCs can't state-sync; reseed a far-behind one from the most-advanced archive RPC.
+	c.reseedLaggingArchiveRPCs(intents, res, targetSite)
 }
 
 // waitForSiteSettled gives the surviving site a bounded window to finish recovering before a
-// failover selects its clone source, then returns the settled health snapshot. A failover
-// fired right after a restore can catch the site's archive RPCs still bootstrapping: not yet
-// SERVING, or SERVING but still climbing to their retained tip. If the source were chosen in
-// that instant the at-tip RPC would be invisible and the set would be cloned from a laggard
-// validator — forcing a multi-thousand-block replay stall (measured 2026-06-23: validators
-// cloned @177884 while the RPCs held 184552, then froze re-executing ~6.6k fat blocks).
+// failover reads the live tip, then returns the settled health snapshot. A failover fired
+// right after a restore can catch the site's archive RPCs still bootstrapping: not yet SERVING,
+// or SERVING but still climbing to their retained tip. If the tip were read in that instant the
+// at-tip RPC would be missed and behind-but-close validators would be promoted at a stale tip.
 //
-// In a hard failover the old site is gone, so no new blocks are minted and the surviving
-// nodes' heights converge to the highest retained tip. We poll until that max height holds
-// steady across two consecutive reads (every node done climbing) with at least two nodes
-// serving, then return — or return the latest snapshot once the timeout elapses. Best-effort:
-// a node that never serves simply isn't a candidate, exactly as before; the wait only ensures
-// a quickly-restarting at-tip node is given the chance to reappear.
+// In a hard failover the old site is gone, so no new blocks are minted and the surviving nodes'
+// heights converge to the highest retained tip. We poll until that max height holds steady
+// across two consecutive reads (every node done climbing) with at least two nodes serving, then
+// return — or return the latest snapshot once the timeout elapses. Best-effort: a node that
+// never serves simply isn't counted; the wait only gives a quickly-restarting node the chance
+// to reappear.
 func (c *config) waitForSiteSettled(intents []MachineIntent, targetSite int, timeout time.Duration) []healthResult {
 	deadline := time.Now().Add(timeout)
 	haveMax := false
@@ -290,29 +123,59 @@ func (c *config) waitForSiteSettled(intents []MachineIntent, targetSite int, tim
 	}
 }
 
-// onSameBranch reports whether two nodes share the same block hash at a recent common
-// height — i.e. they are on the same (canonical) chain, not divergent forks. Used to
-// confirm a non-validator clone source (e.g. an archive RPC that ran ahead) is on the
-// validators' branch before its DB is cloned site-wide. Conservative: any unreadable
-// tip/hash returns false so the caller falls back to a known on-branch source.
-func (c *config) onSameBranch(ipA, ipB string) bool {
-	tipA, _, okA := c.blockAt(ipA, "finalized")
-	tipB, _, okB := c.blockAt(ipB, "finalized")
-	if !okA || !okB {
-		return false
-	}
-	tag := fmt.Sprintf("0x%x", commonHeight(tipA, tipB))
-	_, hashA, okHA := c.blockAt(ipA, tag)
-	_, hashB, okHB := c.blockAt(ipB, tag)
-	return okHA && okHB && hashA != "" && hashA == hashB
-}
+// reseedLaggingArchiveRPCs clones the most-advanced SERVING archive RPC's DB onto any archive
+// RPC on the site that is down or more than snapshotSourceMaxLag behind. Archive nodes can't
+// state-sync, so a far-behind one would otherwise replay from genesis (hours); an
+// archive->archive clone gets it back to the tip with full history preserved. seedFromSnapshot
+// also copies the source's (archive) config so the destination's pruning mode matches the DB.
+// No-op if there is no suitable source or nothing is far enough behind. RPCs carry no vote, so
+// this never gates the failover.
+func (c *config) reseedLaggingArchiveRPCs(intents []MachineIntent, res []healthResult, targetSite int) {
+	topo := c.topo
+	rpcs := rpcMachineIdxs(topo, targetSite)
 
-// containsInt reports whether s contains v.
-func containsInt(s []int, v int) bool {
-	for _, x := range s {
-		if x == v {
-			return true
+	src := -1
+	for _, i := range rpcs {
+		if i >= len(intents) || intents[i].Cordoned || i >= len(res) || res[i].state != healthServing {
+			continue
+		}
+		if src < 0 || res[i].block > res[src].block {
+			src = i
 		}
 	}
-	return false
+	if src < 0 {
+		return // no serving archive RPC to clone from
+	}
+	srcBlock := res[src].block
+
+	var laggards []int
+	for _, i := range rpcs {
+		if i == src || i >= len(intents) || intents[i].Cordoned {
+			continue
+		}
+		serving := i < len(res) && res[i].state == healthServing
+		if !serving || srcBlock > res[i].block+snapshotSourceMaxLag {
+			laggards = append(laggards, i)
+		}
+	}
+	if len(laggards) == 0 {
+		return
+	}
+
+	_ = os.Remove(snapshotTar)
+	c.killNode(c.nodeIPs[src])
+	if !c.snapshotPull(c.nodeIPs[src], snapshotTar) {
+		c.start(c.nodeIPs[src], c.nodeIPs[src]) // best-effort restart even if the copy failed
+		fmt.Printf("failover: WARNING archive snapshot of %s failed — lagging RPC(s) will bootstrap from genesis.\n", topo.MachineName(src))
+		return
+	}
+	c.start(c.nodeIPs[src], c.nodeIPs[src]) // source downtime is just the copy
+	defer cleanupSnapshot(snapshotTar)
+
+	srcCfg := c.ssh(c.nodeIPs[src], "cat "+c.remoteDir+"/chain-config.json")
+	for _, i := range laggards {
+		fmt.Printf("  %s (archive RPC): reseed from %s @ %d (archive->archive)\n",
+			topo.MachineName(i), topo.MachineName(src), srcBlock)
+		c.seedFromSnapshot(c.nodeIPs[i], snapshotTar, srcCfg)
+	}
 }

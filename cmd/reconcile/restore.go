@@ -26,7 +26,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"time"
 )
@@ -177,37 +176,23 @@ func rollingRestore(cfg *config, targetSite int) {
 	}
 	srcIdx := validatorMachineIdx(trackerStep) // currently-active validators (the source site = the tip)
 
-	// Choose the seeding strategy. Default: a DB snapshot of the live source site,
-	// so targets replay only a tiny delta. RESTORE_MODE=state-sync forces the
-	// from-scratch path; an unavailable snapshot source falls back to it too.
-	snapMode := os.Getenv("RESTORE_MODE") != "state-sync"
-	var snapTar string
-	if snapMode {
-		if tar, ok := cfg.takeSnapshot(trackerStep, otherSite(targetSite)); ok {
-			snapTar = tar
-			defer cleanupSnapshot(snapTar)
-		} else {
-			fmt.Println("WARN: no usable snapshot source — falling back to wipe + state-sync.")
-			snapMode = false
-		}
-	}
-	// The recovering site's pinned RPCs are ARCHIVE nodes (pruning + state-sync disabled,
-	// see chain-config-rpc.json). They are NOT seeded from the pruning tracker snapshot — a
-	// pruned DB would strip their history — nor left to bootstrap from genesis (which wedges
-	// under load). Instead they are seeded from a full ARCHIVE snapshot of the SOURCE site's
-	// REDUNDANT (2nd) RPC: restore stops that one RPC for a consistent copy while its twin
-	// keeps serving ingress, so there is no blip. If no archive source is available they
-	// fall back to a from-genesis bootstrap. RPCs carry no validator vote, so they never gate
-	// the restore (it waits only on validator destinations); the gate at the end warns
-	// (does not block) if an RPC is still syncing.
+	// Recovery strategy, by role:
+	//   - Validators + spare are recovered by STATE-SYNC: wipe data/validator and let the node
+	//     resync recent state to the live tip on start. They come up PRUNED (their role-default
+	//     config) with no DB clone, and all land at a common recent state-sync pivot — so the
+	//     promoted set agrees on a tip (no inconsistent-height deadlock) and there is no
+	//     pruning-mode mismatch to manage. The chain state is small, so the sync is fast.
+	//   - The pinned RPCs are ARCHIVE nodes (pruning + state-sync disabled) and CANNOT
+	//     state-sync, so they are seeded from a full ARCHIVE snapshot of the SOURCE site's
+	//     REDUNDANT (2nd) RPC (its twin keeps serving ingress, so no blip); failing that they
+	//     fall back to a from-genesis bootstrap. RPCs carry no vote, so they never gate the
+	//     restore (it waits only on validator destinations).
 	var archiveTar string
-	if snapMode {
-		if tar, ok := cfg.takeArchiveSnapshot(trackerStep, otherSite(targetSite)); ok {
-			archiveTar = tar
-			defer cleanupSnapshot(archiveTar)
-		} else {
-			fmt.Println("WARN: no usable archive snapshot source — recovering RPCs will full-bootstrap from genesis.")
-		}
+	if tar, ok := cfg.takeArchiveSnapshot(trackerStep, otherSite(targetSite)); ok {
+		archiveTar = tar
+		defer cleanupSnapshot(archiveTar)
+	} else {
+		fmt.Println("WARN: no usable archive snapshot source — recovering RPCs will full-bootstrap from genesis.")
 	}
 
 	// Phase 1 — seed the target site's validators (+ spare), bring them up as
@@ -224,11 +209,11 @@ func rollingRestore(cfg *config, targetSite int) {
 
 	for i := range trackerStep {
 		if topo.Site(i) == targetSite && !trackerStep[i].Cordoned {
-			tar, snap := snapTar, snapMode
-			if cfg.isArchiveNode(i) { // archive RPC: full-state archive seed, never the pruned snapshot
-				tar, snap = archiveTar, archiveTar != ""
+			if cfg.isArchiveNode(i) { // archive RPC: full-state archive clone (can't state-sync)
+				cfg.prepareTarget(cfg.nodeIPs[i], topo.MachineName(i), archiveTar != "", archiveTar)
+			} else { // validator / spare: wipe + state-sync to tip, stays pruned
+				cfg.prepareTarget(cfg.nodeIPs[i], topo.MachineName(i), false, "")
 			}
-			cfg.prepareTarget(cfg.nodeIPs[i], topo.MachineName(i), snap, tar)
 		}
 	}
 
