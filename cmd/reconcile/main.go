@@ -120,11 +120,18 @@ func main() {
 			fatalf("%v", err)
 		}
 		fmt.Printf("== reconcile site-failover %s ==\n", os.Args[2])
-		// Hard cutover assumes the old site is gone: make the surviving SITE
-		// height-consistent (clone the most-advanced node's DB onto any node — validator,
-		// RPC, or spare — that is too far behind) BEFORE they are started, so a quorum can
-		// form AND the pinned RPC serves ingress at the tip instead of stale state. No-op
-		// when the site is already a synced hot standby.
+		// Model a real disaster: NUKE the down site first — hard-kill every node on it
+		// at once — so its tip is frozen at the instant of failure before anything else
+		// happens. The surviving site is a live tracker; it now reconciles ITSELF on
+		// whatever blocks it already holds (no data is ever pulled from the dead site),
+		// which both fixes the true RPO boundary and lets waitForSiteSettled converge on a
+		// static tip instead of chasing the old site's still-advancing one.
+		downSite := otherSite(target)
+		fmt.Printf("== site-failover: nuking site %s (parallel SIGKILL — simulated outage) ==\n", siteName(downSite))
+		cfg.nukeSite(downSite)
+		// Make the surviving site internally consistent (promote validators already at the
+		// tip as-is; resync any laggard from the site's OWN archive RPC) so a quorum forms
+		// without the inconsistent-height deadlock. No-op when the site is a synced hot standby.
 		cfg.reconcileBackupHeights(intents, target)
 
 	case "apply":

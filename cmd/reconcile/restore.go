@@ -33,9 +33,12 @@ import (
 const (
 	// syncToleranceBlocks: a target tracker is "synced enough" to take a
 	// validator key when within this many blocks of the active tip. Its data/
-	// is preserved across the key swap, so it closes a small residual gap in
-	// well under a second once promoted.
-	syncToleranceBlocks = 30
+	// is preserved across the key swap, and avalanchego self-heals a gap this
+	// small via normal bootstrap/consensus gossip in well under a second once
+	// promoted. Only a tracker further behind than this is wiped + state-synced
+	// (the external fix for the inconsistent-height deadlock — see
+	// reconcileBackupHeights). Set generously: a tight hot-standby never trips it.
+	syncToleranceBlocks = 100
 	restorePollInterval = 3 * time.Second
 )
 

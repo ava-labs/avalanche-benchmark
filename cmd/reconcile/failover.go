@@ -4,8 +4,33 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
+
+// nukeSite models a real site loss — a region outage / power cut, not a graceful drain.
+// Every avalanchego on the given site is hard-killed (SIGKILL) CONCURRENTLY, so the whole
+// site dies at once instead of being staggered by the sequential stop-swap loop. It runs
+// BEFORE reconcileBackupHeights so the surviving site's retained tip is frozen at the true
+// RPO boundary: the survivor then forms consensus on whatever blocks it already holds,
+// pulling zero state from the dead site. (We kill the process, not the box, so the boxes
+// stay SSH-reachable for the test harness — the chain-level effect, loss of the dead site's
+// validators and a frozen tip, is identical to a real outage.)
+func (c *config) nukeSite(site int) {
+	var wg sync.WaitGroup
+	for i := 0; i < c.topo.Size(); i++ {
+		if c.topo.Site(i) != site {
+			continue
+		}
+		wg.Add(1)
+		go func(host, name string) {
+			defer wg.Done()
+			fmt.Printf("  nuke %s (%s): SIGKILL\n", name, host)
+			c.killNode(host)
+		}(c.nodeIPs[i], c.topo.MachineName(i))
+	}
+	wg.Wait()
+}
 
 // failoverSettleTimeout bounds how long a failover waits for the surviving site to settle
 // before it reads the live tip (see waitForSiteSettled). Short, because the common case is a
@@ -61,16 +86,29 @@ func (c *config) reconcileBackupHeights(intents []MachineIntent, targetSite int)
 			continue
 		}
 		serving := i < len(res) && res[i].state == healthServing
+		gap := "DOWN"
+		if serving && res[i].block <= tip {
+			gap = fmt.Sprintf("%d blocks behind tip", tip-res[i].block)
+		}
 		if serving && tip > 0 && tip-res[i].block <= uint64(syncToleranceBlocks) {
+			fmt.Printf("  %s: %s — within %d-block tolerance, PROMOTE AS-IS (avalanchego self-heals the gap)\n",
+				topo.MachineName(i), gap, syncToleranceBlocks)
 			promote = append(promote, topo.MachineName(i)) // current enough — promote as-is
 			continue
 		}
+		fmt.Printf("  !! %s: %s — beyond %d-block tolerance: WIPE + STATE-SYNC from site's own archive RPC (deadlock guard)\n",
+			topo.MachineName(i), gap, syncToleranceBlocks)
 		c.deployChainConfig(c.nodeIPs[i]) // pruned + state-sync-enabled, matches the wiped DB
 		c.wipeL1Data(c.nodeIPs[i])        // clear data/validator -> forces state-sync on start
 		resync = append(resync, topo.MachineName(i))
 	}
-	fmt.Printf("== failover: site %s recovery (tip %d) — promote-as-is: [%s]  state-sync: [%s] ==\n",
-		siteName(targetSite), tip, strings.Join(promote, " "), strings.Join(resync, " "))
+	if len(resync) == 0 {
+		fmt.Printf("== failover: site %s recovery (tip %d) — all validators within tolerance, clean hot-standby promote, NO resync ==\n",
+			siteName(targetSite), tip)
+	} else {
+		fmt.Printf("== failover: site %s recovery (tip %d) — promote-as-is: [%s]  WIPED+state-sync: [%s] ==\n",
+			siteName(targetSite), tip, strings.Join(promote, " "), strings.Join(resync, " "))
+	}
 
 	// Archive RPCs can't state-sync; reseed a far-behind one from the most-advanced archive RPC.
 	c.reseedLaggingArchiveRPCs(intents, res, targetSite)
