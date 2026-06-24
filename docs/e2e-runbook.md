@@ -262,5 +262,3 @@ directories, and deletes the local `network.env`.
   single-site failover model (taking validators down/up within one site).
 - [throughput-tuning-and-benchmarks.md](throughput-tuning-and-benchmarks.md) —
   the 4000-rps profile and how block cadence drives throughput.
-</content>
-</invoke>
