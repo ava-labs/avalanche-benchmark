@@ -37,15 +37,6 @@ const (
 	// well under a second once promoted.
 	syncToleranceBlocks = 30
 	restorePollInterval = 3 * time.Second
-
-	// restoreThrottleMinDelayMS slows the active site's block production during catch-up.
-	// A node replaying a backlog in bootstrap tops out ~14 blk/s; at the normal 40 blk/s
-	// (25ms) cadence a behind node never closes the gap, so we drop the producers to
-	// ~10 blk/s for the recovery. min-delay-target is read once at VM init, so applying it
-	// requires a node restart (see rollingSetMinDelay). Production returns to the normal
-	// cadence on its own once the key-roll moves the validators onto the un-throttled target
-	// site; the old source config is then reset to its role default for the next cycle.
-	restoreThrottleMinDelayMS = 100
 )
 
 func siteName(site int) string {
@@ -168,13 +159,10 @@ func rollingRestore(cfg *config, targetSite int) {
 	rpcIdxs := rpcMachineIdxs(topo, targetSite)
 	srcIdx := validatorMachineIdx(trackerStep) // active (source) validators = the producers + tip reference
 
-	// Slow the active source site's block production so the recovering nodes can catch up to a
-	// near-static tip instead of a 40 blk/s one (see restoreThrottleMinDelayMS). Rolling-restart
-	// the source validators one at a time so the set never drops below quorum. Ctrl-C just exits —
-	// we deliberately do NOT roll-restart to undo on abort (re-running restore re-applies it).
-	fmt.Printf("== restore: slowing site %s block production to %dms (~%d blk/s) for catch-up ==\n",
-		siteName(otherSite(targetSite)), restoreThrottleMinDelayMS, 1000/restoreThrottleMinDelayMS)
-	cfg.rollingSetMinDelay(trackerStep, srcIdx, restoreThrottleMinDelayMS)
+	// No block-production throttle here: the backup site (B) is configured to produce at
+	// backupSiteMinDelayMS (~10 blk/s) whenever it holds the validator set — see deployChainConfig.
+	// So during a B->A restore the source is already producing slowly enough for the recovering
+	// nodes to out-pace it, with no mid-restore rolling restart to apply or undo.
 
 	// Recovery strategy, by role — both seeded from a fresh DB SNAPSHOT of the live source site
 	// (captured AT the tip), so each recovering node replays only a tiny delta. State-sync was
@@ -256,16 +244,8 @@ func rollingRestore(cfg *config, targetSite int) {
 		current = step
 	}
 
-	// The validators are now producing on the target site at the normal 25ms cadence (they were
-	// never throttled). Reset the old source validators' chain-config to their role default so a
-	// future failover brings them back up at the normal cadence, not the catch-up one. They are
-	// trackers now, so this is a lazy config rewrite — it takes effect on their next restart.
-	fmt.Printf("== restore: resetting site %s block production config to normal cadence ==\n", siteName(otherSite(targetSite)))
-	for _, i := range srcIdx {
-		if i >= 0 && i < len(cfg.nodeIPs) {
-			cfg.deployChainConfig(cfg.nodeIPs[i])
-		}
-	}
+	// Nothing to reset: site A produces at its 25ms config, site B keeps its
+	// backupSiteMinDelayMS config (dormant while it tracks). No throttle was applied.
 
 	fmt.Printf("\nrestore complete — validator set is active on site %s, chain held quorum throughout.\n", siteName(targetSite))
 
@@ -373,58 +353,6 @@ func (c *config) waitForFullValidatorSet(intents []MachineIntent) {
 			fmt.Printf("  validators serving: %d/%d.\n", got, want)
 			return
 		}
-		time.Sleep(restorePollInterval)
-	}
-}
-
-// setMinDelay rewrites min-delay-target (ms) in the node's chain-config.json. A node restart is
-// required for it to take effect — the VM reads min-delay-target once at init (subnet-evm vm.go).
-func (c *config) setMinDelay(host string, ms int) {
-	c.ssh(host, fmt.Sprintf(`cd %s && sed -i 's/"min-delay-target": *[0-9]*/"min-delay-target": %d/' chain-config.json`, c.remoteDir, ms))
-}
-
-// rollingSetMinDelay rewrites min-delay-target on each machine and restarts it one at a time,
-// waiting for the set to be producing again before the next — so an active validator set never
-// drops below quorum while its block-production cadence is changed.
-func (c *config) rollingSetMinDelay(intents []MachineIntent, idxs []int, ms int) {
-	for _, i := range idxs {
-		if i < 0 || i >= len(c.nodeIPs) {
-			continue
-		}
-		ip := c.nodeIPs[i]
-		c.setMinDelay(ip, ms)
-		c.killNode(ip)
-		c.start(ip, ip)
-		c.waitSetProducing(intents, idxs)
-	}
-}
-
-// waitSetProducing blocks until every validator in idxs is SERVING AND the set's tip has advanced
-// between two consecutive polls — i.e. the chain has a working quorum and is minting blocks again,
-// not merely that the RPCs answer. A freshly-restarted validator serves eth_blockNumber (at its
-// last-accepted height) seconds before it has rejoined consensus; gating the NEXT restart on the
-// tip advancing guarantees only ever one validator is out at a time, so production just dips
-// (proposer misses) instead of stalling at 0 TPS (quorum lost).
-func (c *config) waitSetProducing(intents []MachineIntent, idxs []int) {
-	var lastTip uint64
-	havePrev := false
-	for {
-		res := c.checkHealth(intents)
-		allServing := true
-		var tip uint64
-		for _, i := range idxs {
-			if i < 0 || i >= len(res) || res[i].state != healthServing {
-				allServing = false
-				continue
-			}
-			if res[i].block > tip {
-				tip = res[i].block
-			}
-		}
-		if allServing && havePrev && tip > lastTip {
-			return // full set up and the tip moved -> quorum is producing
-		}
-		lastTip, havePrev = tip, true
 		time.Sleep(restorePollInterval)
 	}
 }

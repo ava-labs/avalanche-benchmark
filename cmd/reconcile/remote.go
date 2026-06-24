@@ -373,18 +373,37 @@ func (c *config) isArchiveNode(i int) bool {
 	return i%sitePoolSize >= sitePoolSize-2
 }
 
-// deployChainConfig writes host's ROLE-appropriate chain-config to ~/chain-config.json (which
-// the start script copies into place): the archive profile (pruning + state-sync disabled) for
-// the pinned RPC nodes, the light profile (state-sync + pruning) for validators and the spare.
-// Both land as chain-config.json so startScript is unchanged. Re-applied on restore so a node's
-// pruning/state-sync mode is reset to match its role-default DB source — undoing any archive
-// config a failover left behind when it cloned an archive RPC's DB onto a validator.
+// backupSiteMinDelayMS is the block-production cadence the BACKUP site (B) runs at whenever it
+// holds the validator set — i.e. after a failover. min-delay-target only affects a node while it
+// is PRODUCING (proposing); a tracker applying another site's blocks ignores it. So site B still
+// tracks the primary at full 25ms cadence during normal operation, and only its OWN production
+// (post-failover) is slowed to ~10 blk/s — below the ~14 blk/s replay ceiling, so a recovering
+// primary's tip stays catchable WITHOUT any mid-restore rolling restart. The throttle is simply
+// baked into site B's config; the primary (A) keeps chain-config.json's 25ms.
+const backupSiteMinDelayMS = 100
+
+// deployChainConfig writes host's ROLE-appropriate chain-config to ~/chain-config.json (which the
+// start script copies into place): the archive profile (pruning + state-sync disabled) for the
+// pinned RPC nodes, the light profile (state-sync + pruning) for validators and the spare. Both
+// land as chain-config.json so startScript is unchanged. On the BACKUP site it also lowers
+// min-delay-target to backupSiteMinDelayMS so that site produces slowly when it takes over.
+// Re-applied on restore so a node's pruning/state-sync mode is reset to match its role-default DB.
 func (c *config) deployChainConfig(host string) {
 	chainCfg := "chain-config.json"
-	if c.isArchiveNode(c.nodeIndex(host)) {
+	i := c.nodeIndex(host)
+	if c.isArchiveNode(i) {
 		chainCfg = "chain-config-rpc.json"
 	}
 	c.scp(c.repoDir+"/"+chainCfg, host, c.remoteDir+"/chain-config.json", false)
+	if c.topo.Site(i) == siteB {
+		c.setMinDelay(host, backupSiteMinDelayMS)
+	}
+}
+
+// setMinDelay rewrites min-delay-target (ms) in the node's chain-config.json. Takes effect on the
+// node's next (re)start — the VM reads min-delay-target once at init (subnet-evm vm.go).
+func (c *config) setMinDelay(host string, ms int) {
+	c.ssh(host, fmt.Sprintf(`cd %s && sed -i 's/"min-delay-target": *[0-9]*/"min-delay-target": %d/' chain-config.json`, c.remoteDir, ms))
 }
 
 // upload pushes all artifacts a pool machine needs. Pass 0 of reconcile.
