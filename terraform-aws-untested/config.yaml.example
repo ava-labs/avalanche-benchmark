@@ -1,3 +1,4 @@
 prefix: "your-name"
 # Public key imported as the EC2 key pair in both regions (us-west-1 + us-west-2).
 public_key_path: "~/.ssh/your-key.pub"
+owner: "you@avalabs.org"  # required by org SCP (Owner tag on instances)

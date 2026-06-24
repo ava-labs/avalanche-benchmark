@@ -12,13 +12,13 @@ terraform {
 
 provider "aws" {
   region = "us-west-1" # site A + control
-  default_tags { tags = { Project = "avalanche-benchmark" } }
+  default_tags { tags = { Project = "avalanche-benchmark", Owner = local.owner } }
 }
 
 provider "aws" {
   alias  = "usw2"
   region = "us-west-2" # site B
-  default_tags { tags = { Project = "avalanche-benchmark" } }
+  default_tags { tags = { Project = "avalanche-benchmark", Owner = local.owner } }
 }
 
 # Public IP of the machine running Terraform (the operator), for SSH ingress.
@@ -29,25 +29,16 @@ data "http" "my_ip" {
 locals {
   config      = yamldecode(file("${path.module}/config.yaml"))
   prefix      = local.config.prefix
+  owner       = local.config.owner # required by org SCP: instances must carry an Owner tag
   app_name    = "benchmark"
   site_count  = 6 # per site: 3 validators + 1 spare + 2 archive RPCs
   public_key  = file(pathexpand(local.config.public_key_path))
   operator_ip = "${chomp(data.http.my_ip.response_body)}/32"
 }
 
-# ---- IAM (global) -----------------------------------------------------------
-resource "aws_iam_role" "ec2" {
-  name = "${local.prefix}-${local.app_name}-ec2"
-  assume_role_policy = jsonencode({
-    Version   = "2012-10-17"
-    Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "ec2.amazonaws.com" } }]
-  })
-}
-
-resource "aws_iam_instance_profile" "ec2" {
-  name = "${local.prefix}-${local.app_name}-ec2"
-  role = aws_iam_role.ec2.name
-}
+# No IAM instance profile: the benchmark nodes need no AWS API access, and the org
+# SCP denies iam:CreateRole for this role anyway. (The previous role had no policies
+# attached, so it granted nothing.)
 
 # ---- Key pairs (one per region; same public key) ----------------------------
 resource "aws_key_pair" "a" {
@@ -124,7 +115,6 @@ resource "aws_instance" "control" {
   ami                    = data.aws_ami.ubuntu_a.id
   instance_type          = "m6a.4xlarge"
   key_name               = aws_key_pair.a.key_name
-  iam_instance_profile   = aws_iam_instance_profile.ec2.name
   vpc_security_group_ids = [aws_security_group.control.id]
 
   metadata_options {
@@ -224,7 +214,6 @@ resource "aws_instance" "site_a" {
   ami                    = data.aws_ami.ubuntu_a.id
   instance_type          = "m6a.4xlarge" # 16 vCPU, 64GB RAM, AMD EPYC
   key_name               = aws_key_pair.a.key_name
-  iam_instance_profile   = aws_iam_instance_profile.ec2.name
   vpc_security_group_ids = [aws_security_group.site_a.id]
 
   metadata_options {
@@ -247,7 +236,6 @@ resource "aws_instance" "site_b" {
   ami                    = data.aws_ami.ubuntu_b.id
   instance_type          = "m6a.4xlarge"
   key_name               = aws_key_pair.b.key_name
-  iam_instance_profile   = aws_iam_instance_profile.ec2.name
   vpc_security_group_ids = [aws_security_group.site_b.id]
 
   metadata_options {
