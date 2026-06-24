@@ -1,17 +1,27 @@
 terraform {
   required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
+    aws  = { source = "hashicorp/aws", version = "~> 5.0" }
+    http = { source = "hashicorp/http" }
   }
 }
 
+# Two-region failover topology:
+#   site A (primary) + control  -> us-west-1
+#   site B (backup)             -> us-west-2
+# Every resource is tagged Project=avalanche-benchmark (teardown/safety filters key on it).
+
 provider "aws" {
-  region = "ap-northeast-1" # Tokyo
+  region = "us-west-1" # site A + control
+  default_tags { tags = { Project = "avalanche-benchmark" } }
 }
 
-# Get the public IP of the machine running Terraform
+provider "aws" {
+  alias  = "usw2"
+  region = "us-west-2" # site B
+  default_tags { tags = { Project = "avalanche-benchmark" } }
+}
+
+# Public IP of the machine running Terraform (the operator), for SSH ingress.
 data "http" "my_ip" {
   url = "https://checkip.amazonaws.com"
 }
@@ -19,23 +29,18 @@ data "http" "my_ip" {
 locals {
   config      = yamldecode(file("${path.module}/config.yaml"))
   prefix      = local.config.prefix
-  key_name    = local.config.key_name
   app_name    = "benchmark"
-  node_count  = 5
+  site_count  = 6 # per site: 3 validators + 1 spare + 2 archive RPCs
+  public_key  = file(pathexpand(local.config.public_key_path))
   operator_ip = "${chomp(data.http.my_ip.response_body)}/32"
 }
 
-# IAM Role for EC2
+# ---- IAM (global) -----------------------------------------------------------
 resource "aws_iam_role" "ec2" {
   name = "${local.prefix}-${local.app_name}-ec2"
-
   assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Action    = "sts:AssumeRole"
-      Effect    = "Allow"
-      Principal = { Service = "ec2.amazonaws.com" }
-    }]
+    Version   = "2012-10-17"
+    Statement = [{ Action = "sts:AssumeRole", Effect = "Allow", Principal = { Service = "ec2.amazonaws.com" } }]
   })
 }
 
@@ -44,111 +49,232 @@ resource "aws_iam_instance_profile" "ec2" {
   role = aws_iam_role.ec2.name
 }
 
-# Security Group - benchmark nodes
-resource "aws_security_group" "app" {
-  name        = "${local.prefix}-${local.app_name}"
-  description = "Benchmark nodes"
-
-  tags = {
-    Name = "${local.prefix}-${local.app_name}"
-  }
+# ---- Key pairs (one per region; same public key) ----------------------------
+resource "aws_key_pair" "a" {
+  key_name   = "${local.prefix}-key"
+  public_key = local.public_key
 }
 
-resource "aws_security_group_rule" "operator_ssh_ingress" {
-  type              = "ingress"
-  from_port         = 22
-  to_port           = 22
-  protocol          = "tcp"
-  security_group_id = aws_security_group.app.id
-  cidr_blocks       = [local.operator_ip]
-  description       = "Allow SSH ingress from operator"
+resource "aws_key_pair" "b" {
+  provider   = aws.usw2
+  key_name   = "${local.prefix}-key"
+  public_key = local.public_key
 }
 
-resource "aws_security_group_rule" "l1_ingress" {
-  type              = "ingress"
-  from_port         = 9652
-  to_port           = 9653
-  protocol          = "tcp"
-  security_group_id = aws_security_group.app.id
-  cidr_blocks       = ["0.0.0.0/0"]
-  description       = "Allow L1 RPC and staking ingress"
-}
-
-resource "aws_security_group_rule" "egress" {
-  type              = "egress"
-  from_port         = 0
-  to_port           = 0
-  protocol          = "-1"
-  security_group_id = aws_security_group.app.id
-  cidr_blocks       = ["0.0.0.0/0"]
-  description       = "Allow all outbound traffic"
-}
-
-# Ubuntu 24.04 AMI
-data "aws_ami" "ubuntu" {
+# ---- AMIs (per region; IDs differ) ------------------------------------------
+data "aws_ami" "ubuntu_a" {
   most_recent = true
   owners      = ["099720109477"] # Canonical
-
   filter {
     name   = "name"
     values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
   }
+}
 
+data "aws_ami" "ubuntu_b" {
+  provider    = aws.usw2
+  most_recent = true
+  owners      = ["099720109477"]
   filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
   }
 }
 
-# EC2 Instances - nodes with 64GB RAM
-resource "aws_instance" "node" {
-  count = local.node_count
+# ---- Control box (us-west-1): runs the P-chain primaries + orchestration ----
+# Its own SG (no dependency on the node SGs) so the node SGs can reference its IP
+# for SSH without a cycle. Avalanchego ports are open broadly so cross-region
+# nodes can bootstrap the primary network off it.
+resource "aws_security_group" "control" {
+  name        = "${local.prefix}-${local.app_name}-control"
+  description = "Benchmark control box"
+}
 
-  ami                    = data.aws_ami.ubuntu.id
-  instance_type          = "m6a.4xlarge" # 16 vCPU, 64GB RAM, AMD EPYC
-  key_name               = local.key_name
+resource "aws_security_group_rule" "control_ssh" {
+  type              = "ingress"
+  from_port         = 22
+  to_port           = 22
+  protocol          = "tcp"
+  security_group_id = aws_security_group.control.id
+  cidr_blocks       = [local.operator_ip]
+  description       = "SSH from operator"
+}
+
+resource "aws_security_group_rule" "control_avax" {
+  type              = "ingress"
+  from_port         = 9650
+  to_port           = 9700
+  protocol          = "tcp"
+  security_group_id = aws_security_group.control.id
+  cidr_blocks       = ["0.0.0.0/0"]
+  description       = "Avalanchego API/staking/primary-bootstrap (cross-region)"
+}
+
+resource "aws_security_group_rule" "control_egress" {
+  type              = "egress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  security_group_id = aws_security_group.control.id
+  cidr_blocks       = ["0.0.0.0/0"]
+  description       = "All outbound"
+}
+
+resource "aws_instance" "control" {
+  ami                    = data.aws_ami.ubuntu_a.id
+  instance_type          = "m6a.4xlarge"
+  key_name               = aws_key_pair.a.key_name
   iam_instance_profile   = aws_iam_instance_profile.ec2.name
-  vpc_security_group_ids = [aws_security_group.app.id]
+  vpc_security_group_ids = [aws_security_group.control.id]
 
   metadata_options {
     http_endpoint               = "enabled"
     http_tokens                 = "required"
     http_put_response_hop_limit = 2
   }
-
   root_block_device {
     volume_size = 200
     volume_type = "gp3"
     iops        = 6000
     throughput  = 500
   }
+  tags = { Name = "${local.prefix}-control" }
+}
 
-  tags = {
-    Name = "${local.prefix}-${local.app_name}-node-${count.index + 1}"
+# ---- Per-site security groups -----------------------------------------------
+# SSH from the operator AND the control box; avalanchego ports open broadly so
+# node<->node P2P works cross-region and nodes can reach the control primaries.
+resource "aws_security_group" "site_a" {
+  name        = "${local.prefix}-${local.app_name}-a"
+  description = "Benchmark site A nodes"
+}
+
+resource "aws_security_group_rule" "a_ssh" {
+  type              = "ingress"
+  from_port         = 22
+  to_port           = 22
+  protocol          = "tcp"
+  security_group_id = aws_security_group.site_a.id
+  cidr_blocks       = [local.operator_ip, "${aws_instance.control.public_ip}/32"]
+  description       = "SSH from operator + control"
+}
+
+resource "aws_security_group_rule" "a_avax" {
+  type              = "ingress"
+  from_port         = 9650
+  to_port           = 9700
+  protocol          = "tcp"
+  security_group_id = aws_security_group.site_a.id
+  cidr_blocks       = ["0.0.0.0/0"]
+  description       = "Avalanchego API/staking/P2P (cross-region)"
+}
+
+resource "aws_security_group_rule" "a_egress" {
+  type              = "egress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  security_group_id = aws_security_group.site_a.id
+  cidr_blocks       = ["0.0.0.0/0"]
+  description       = "All outbound"
+}
+
+resource "aws_security_group" "site_b" {
+  provider    = aws.usw2
+  name        = "${local.prefix}-${local.app_name}-b"
+  description = "Benchmark site B nodes"
+}
+
+resource "aws_security_group_rule" "b_ssh" {
+  provider          = aws.usw2
+  type              = "ingress"
+  from_port         = 22
+  to_port           = 22
+  protocol          = "tcp"
+  security_group_id = aws_security_group.site_b.id
+  cidr_blocks       = [local.operator_ip, "${aws_instance.control.public_ip}/32"]
+  description       = "SSH from operator + control"
+}
+
+resource "aws_security_group_rule" "b_avax" {
+  provider          = aws.usw2
+  type              = "ingress"
+  from_port         = 9650
+  to_port           = 9700
+  protocol          = "tcp"
+  security_group_id = aws_security_group.site_b.id
+  cidr_blocks       = ["0.0.0.0/0"]
+  description       = "Avalanchego API/staking/P2P (cross-region)"
+}
+
+resource "aws_security_group_rule" "b_egress" {
+  provider          = aws.usw2
+  type              = "egress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  security_group_id = aws_security_group.site_b.id
+  cidr_blocks       = ["0.0.0.0/0"]
+  description       = "All outbound"
+}
+
+# ---- Nodes ------------------------------------------------------------------
+resource "aws_instance" "site_a" {
+  count                  = local.site_count
+  ami                    = data.aws_ami.ubuntu_a.id
+  instance_type          = "m6a.4xlarge" # 16 vCPU, 64GB RAM, AMD EPYC
+  key_name               = aws_key_pair.a.key_name
+  iam_instance_profile   = aws_iam_instance_profile.ec2.name
+  vpc_security_group_ids = [aws_security_group.site_a.id]
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
   }
+  root_block_device {
+    volume_size = 200
+    volume_type = "gp3"
+    iops        = 6000
+    throughput  = 500
+  }
+  tags = { Name = "${local.prefix}-a${count.index + 1}" }
 }
 
-# Public IPs - for operator access (SSH, API)
-output "node1_ip" {
-  value = aws_instance.node[0].public_ip
+resource "aws_instance" "site_b" {
+  provider               = aws.usw2
+  count                  = local.site_count
+  ami                    = data.aws_ami.ubuntu_b.id
+  instance_type          = "m6a.4xlarge"
+  key_name               = aws_key_pair.b.key_name
+  iam_instance_profile   = aws_iam_instance_profile.ec2.name
+  vpc_security_group_ids = [aws_security_group.site_b.id]
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+  }
+  root_block_device {
+    volume_size = 200
+    volume_type = "gp3"
+    iops        = 6000
+    throughput  = 500
+  }
+  tags = { Name = "${local.prefix}-b${count.index + 1}" }
 }
 
-output "node2_ip" {
-  value = aws_instance.node[1].public_ip
-}
-
-output "node3_ip" {
-  value = aws_instance.node[2].public_ip
-}
-
-output "node4_ip" {
-  value = aws_instance.node[3].public_ip
-}
-
-output "node5_ip" {
-  value = aws_instance.node[4].public_ip
+# ---- Outputs (formatted for _common.sh / .env) ------------------------------
+output "control_ip" {
+  value = aws_instance.control.public_ip
 }
 
 output "node_ips" {
-  value = aws_instance.node[*].public_ip
+  description = "NODE_IPS — site A, comma-separated"
+  value       = join(",", aws_instance.site_a[*].public_ip)
+}
+
+output "backup_site_node_ips" {
+  description = "BACKUP_SITE_NODE_IPS — site B, comma-separated"
+  value       = join(",", aws_instance.site_b[*].public_ip)
 }
