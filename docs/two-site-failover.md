@@ -1,7 +1,7 @@
 # Two-Site Failover (Site A/B Simulation)
 
 Extension of the [single-site failover simulation](failover-recovery-simulation.md)
-that adds a **backup data center (site B)**: a second fixed pool of 5 machines
+that adds a **backup data center (site B)**: a second fixed pool of 6 machines
 running as **live zero-weight syncing trackers**, onto which the whole validator
 set can be swapped when the primary site (site A) suffers a full outage —
 mirroring the production design where consensus runs in one DC and a backup DC
@@ -13,36 +13,72 @@ deltas. Single-site mode (no `BACKUP_SITE_NODE_IPS`) is byte-for-byte unchanged.
 
 ## Topology
 
-- **Site A (primary)** = `NODE_IPS` (5 machines): `m1-m3` weighted validators,
-  `m4` hot spare, `m5` pinned dedicated RPC. Unchanged.
-- **Site B (backup)** = `BACKUP_SITE_NODE_IPS` (5 machines): `b1-b4` zero-weight
-  syncing trackers, `b5` pinned dedicated RPC for the backup site. For realistic
-  results put site B in a different region/DC so the cross-site sync latency is
-  real (e.g. site A in us-east-1, site B in us-east-2 ≈ NY/NJ↔Chicago).
+Each site is **6 machines** (`sitePoolSize = 6`): 3 validators + 1 spare + 2 pinned
+archive RPCs.
+
+- **Site A (primary)** = `NODE_IPS` (6 machines): `m1-m3` weighted validators,
+  `m4` hot spare, `m5`/`m6` pinned dedicated archive RPCs.
+- **Site B (backup)** = `BACKUP_SITE_NODE_IPS` (6 machines): `b1-b3` zero-weight
+  syncing trackers, `b4` spare, `b5`/`b6` pinned dedicated archive RPCs. For
+  realistic results put site B in a different region/DC so the cross-site sync
+  latency is real (e.g. site A in us-east-1, site B in us-east-2).
+- The two RPCs per site are **archive** nodes (`chain-config-rpc.json`:
+  pruning + state-sync disabled) so they hold full historical state and a second
+  one keeps serving ingress while the first is briefly stopped for a snapshot.
+  The validators and spare run the light profile (`chain-config.json`:
+  state-sync + pruning).
 - Site B nodes are **never registered on the P-chain**. They track the subnet
   exactly like `m4`/`m5` do — full chain state, no consensus weight — which is
   what makes site failover fast: their `data/` is already at tip when the
   validator keys arrive.
 
+## Block cadence and the failover throttle
+
+The two sites run **different block cadences**, set in their chain-config at deploy
+time (`deployChainConfig`, keyed on site):
+
+- **Site A (primary): 25 ms** (`min-delay-target` in `chain-config.json`) — the hot,
+  ~40 blk/s headline profile.
+- **Site B (backup): 100 ms** (`backupSiteMinDelayMS`) — ~10 blk/s **whenever it
+  produces**, i.e. only after a failover.
+
+`min-delay-target` governs a node *only while it is producing* (proposing); a tracker
+applying another site's blocks ignores it. So site B tracks A's 25 ms blocks at full
+speed during normal operation, and only its **own** production (post-failover) runs at
+100 ms. That matters because a node replaying a backlog tops out at ~14 blk/s
+(subnet-evm's own figure): at the primary's 40 blk/s a recovering site could never
+close the gap, but at 100 ms (10 blk/s, below the ~14 ceiling) it converges. Baking
+the slow cadence into site B's config means the restore catch-up needs **no
+block-production throttle and no rolling restart** — the source is already slow. The
+tradeoff is that while you are failed over and living on B (a DR posture) the chain
+runs at 10 blk/s; TPS is unaffected (same data, bigger blocks). On failback to A the
+validators land on A's 25 ms config and the hot profile resumes on its own.
+
+Recovering nodes also fetch faster thanks to a raised inbound bandwidth allowance in
+`node-config.json` (`throttler-inbound-bandwidth-refill-rate` 8 MiB/s, burst 16 MiB)
+so a behind node isn't capped at the 512 KiB/s-per-peer default while pulling the
+backlog.
+
 ## Identity map (keys, conserved)
 
-The single-site model's "5 keys" grows to 13. Every machine always holds
-exactly one identity; no two **live** machines ever share one:
+The single-site model's "6 keys" grows to 15 (indices 6-20). Every machine always
+holds exactly one identity; no two **live** machines ever share one:
 
 | Key | Role |
 |-----|------|
 | 6-8 | `v1-v3` — the only P-chain-registered validator identities. Move between machines; cross sites **only** via `site-failover`. |
 | 9 | `m4`'s home: site-A spare |
-| 10 | `m5`'s pinned RPC identity (never promoted) |
+| 10, 19 | `m5`/`m6` pinned RPC identities, site A (never promoted) |
 | 11-13 | `m1-m3`'s home identities — worn when displaced (e.g. while site B is active) |
-| 14-17 | `b1-b4`'s home identities — zero-weight sync trackers |
-| 18 | `b5`'s pinned RPC identity (never promoted) |
+| 14-16 | `b1-b3`'s home identities — zero-weight sync trackers |
+| 17 | `b4`'s home: site-B spare |
+| 18, 20 | `b5`/`b6` pinned RPC identities, site B (never promoted) |
 
-Unique homes (vs. the single shared `nv` key 9) exist because a backup site
-means several live non-validating machines at once, and live machines can't
-share a NodeID. In single-site mode the shared-9 behavior is preserved
-unchanged. Identities 11-18 were generated with `go run ./cmd/genstaking 11 18`
-(NodeIDs in `staking/node-ids.env`).
+(See `twoSiteHomes` in `cmd/reconcile/plan.go` for the machine→home mapping.) Unique
+homes (vs. the single shared `nv` key 9) exist because a backup site means several
+live non-validating machines at once, and live machines can't share a NodeID. In
+single-site mode the shared-9 behavior is preserved unchanged. Identities 11-20 were
+generated with `go run ./cmd/genstaking 11 20` (NodeIDs in `staking/node-ids.env`).
 
 ## Mapping policy delta
 
@@ -56,7 +92,7 @@ One rule is added to the sticky mapping in `cmd/reconcile/plan.go`:
 
 ## Commands
 
-Most existing wrappers work over the 10-machine pool (`down.sh 7` cordons `b2`)
+Most existing wrappers work over the 12-machine pool (`down.sh 8` cordons `b2`)
 because they delegate to the topology-aware reconcile binary. The exception is
 `clean.sh`, which indexes `NODE_IPS` directly and so operates on site A only.
 One new wrapper:
@@ -148,7 +184,7 @@ window end-to-end.
 A full demo cycle:
 
 ```bash
-./03_wipe_and_deploy_l1.sh              # deploys all 10 machines
+./03_wipe_and_deploy_l1.sh              # deploys all 12 machines
 ./05_benchmark.sh                       # in one window
 ./scripts/failover/site-failover.sh b   # in another: kill site A mid-load
 watch -n 2 ./scripts/failover/status.sh # watch B bootstrap + serve
@@ -156,6 +192,12 @@ watch -n 2 ./scripts/failover/status.sh # watch B bootstrap + serve
 ```
 
 ## Validated run (2026-06-12, us-east-1 ↔ us-east-2)
+
+> Historical: this run predates the current 6-machine/site topology, the 25 ms/100 ms
+> A/B cadence split, and the 4000 TPS profile. The measured findings below — recovery
+> time and especially the failback rollback hazard — still hold; the hazard is now
+> handled automatically by the graceful `restore` command (see above), and recovery
+> under sustained load is handled by snapshot seeding + the slow backup cadence.
 
 10× m6a.xlarge (+1 control), ~1000 rps bombard via both pinned RPCs:
 
@@ -182,8 +224,8 @@ watch -n 2 ./scripts/failover/status.sh # watch B bootstrap + serve
 
 **Failback procedure (until state hand-back is automated):**
 
-1. Bring site A up as *trackers first* while B still validates: `up.sh 1..5`
-   (they wear home identities 11-13/9/10 and sync the B-tenure history).
+1. Bring site A up as *trackers first* while B still validates: `up.sh 1..6`
+   (they wear home identities 11-13/9/10/19 and sync the B-tenure history).
 2. Wait until site A is at tip (`status.sh` heights match).
 3. Then `site-failover.sh a` — no history is lost, no rollback.
 
@@ -217,5 +259,7 @@ deterministic-EVM-sync protocol ask (request #8) closes.
   height-advancing check so a post-failback stall is visible.
 - **Terraform:** `terraform-aws-untested/` provisions one site; parameterize a
   second region for site B.
-- **Configurable site sizes:** both sites are pinned at 5 machines; production
+- **Configurable site sizes:** both sites are pinned at 6 machines; production
   asks may want asymmetric sites (e.g. 4 backup trackers, no backup spare).
+- **`staking/node-ids.env` is stale:** it lists only identities 6-18 (the old
+  5/site map); regenerate it to cover 19-20 (`m6`/`b6`) and refresh the comment.
