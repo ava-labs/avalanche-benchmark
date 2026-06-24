@@ -1,5 +1,6 @@
 # Local operator config and generated run metadata
 /.env
+**/.env
 /network.env
 /network-info.env
 
