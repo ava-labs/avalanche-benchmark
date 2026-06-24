@@ -1,16 +1,25 @@
 # Avalanche L1 Failover Benchmark
 
-Tools to stand up an Avalanche L1, drive it with transaction load, and **simulate
-validator failover** — taking validators "offline" and recovering them — on a
-fixed pool of machines, without ever adding or removing machines from the fleet.
+Tools to stand up an Avalanche L1 across **two data centers**, drive it with
+transaction load, and **simulate cross-region validator failover** — losing a
+whole site and recovering the validator set onto the backup — on a fixed pool of
+machines, without ever adding or removing machines from the fleet.
 
-**Pool:** 5 remote machines run the L1 as **3 validators + 1 hot spare + 1
-dedicated RPC node**. Validator identities (staking keys) move between machines
-on failover, so the L1 keeps quorum when a machine goes offline. The 5th machine
-(`m5`) is a **pinned non-validating RPC node** — the load generator's ingress
-target; it is never promoted to a validator, so the benchmark ingress survives
-failover events. The local dev machine runs 5 P-chain (primary network)
-validators that the L1 bootstraps against.
+**Topology:** two sites of **6 machines** each, plus a control host. Site A
+(primary) runs **3 validators + 1 hot spare + 2 pinned archive RPC nodes**; site
+B (backup) runs **3 zero-weight syncing trackers + 1 spare + 2 pinned archive RPC
+nodes**. The three validator identities (staking keys) are *conserved* — they
+move between machines, and across sites on a `site-failover`, but are never
+duplicated, so the chain stays a single branch. The pinned RPC nodes are never
+promoted to validators, so the load generator's ingress survives failover. The
+control host runs the 5 P-chain (primary network) validators the L1 bootstraps
+against, the load generator, and the monitoring stack — it holds no L1 node, so
+it keeps coordinating through a full-site outage. Single-site mode (no backup) is
+supported unchanged — just leave `BACKUP_SITE_NODE_IPS` unset.
+
+> **Want the full end-to-end drill in one place?** See
+> **[docs/e2e-runbook.md](docs/e2e-runbook.md)** — install → configure → deploy →
+> benchmark → site failover → graceful failback, start to finish.
 
 ## Ports
 
@@ -21,16 +30,21 @@ Open the following ports on your remote nodes:
 | 22 | SSH | Yes | Remote access |
 | 9652-9653 | AvalancheGo | Yes | L1 HTTP (RPC) / staking ports |
 
-The five local P-chain validators run on the dev machine on ports `9650/9651`,
+The five local P-chain validators run on the control host on ports `9650/9651`,
 `9660/9661`, `9670/9671`, `9680/9681`, and `9690/9691`.
 
-## Build
+## Install
 
-Binaries are built from source on a Linux machine (requires Go and git):
+The release ships prebuilt and airgap-ready — no Go toolchain or network access
+needed on the control host:
 
 ```bash
-make          # builds pinned avalanchego + subnet-evm + local tools
+sudo rpm -i avalanche-benchmark-2026.06.23.x86_64.rpm   # installs to /opt/avalanche-benchmark
+cd /opt/avalanche-benchmark
 ```
+
+(Or extract `remote-benchmark.tar.gz` on a non-RHEL control host.) To build from
+source instead (Linux, requires Go and git): `make`.
 
 ## Configure
 
@@ -38,107 +52,49 @@ make          # builds pinned avalanchego + subnet-evm + local tools
 cp .env.example .env
 # Edit .env:
 #   SSH_USER=ubuntu
-#   NODE_IPS=1.2.3.1,1.2.3.2,1.2.3.3,1.2.3.4,1.2.3.5   # exactly 5: m1-3 validators, m4 hot spare, m5 dedicated RPC
-#   BACKUP_SITE_NODE_IPS=...                            # optional: 5 more IPs = backup site (b1-b4 sync, b5 RPC)
+#   SSH_KEY_PATH=/path/to/your-fleet-key
+#   NODE_IPS=...               # exactly 6 — site A: m1-m3 validators, m4 spare, m5/m6 archive RPC
+#   BACKUP_SITE_NODE_IPS=...   # exactly 6 — site B: b1-b3 trackers, b4 spare, b5/b6 archive RPC
 ```
 
-Setting `BACKUP_SITE_NODE_IPS` enables **two-site mode**: a backup data center
-of zero-weight syncing trackers the validator set can be swapped onto when the
-whole primary site goes down (`./scripts/failover/site-failover.sh b`). To return
-once the primary is healthy, use the graceful `restore.sh a` — it rolls the set
-back one validator at a time with no chain downtime; `site-failover.sh a` is the
-hard-cutover failback for a true outage (see the rollback caveat in
+`.env.example` documents each position. Setting `BACKUP_SITE_NODE_IPS` enables
+**two-site mode**: a backup data center of zero-weight syncing trackers the
+validator set can be swapped onto when the whole primary site goes down
+(`./scripts/failover/site-failover.sh b`). To return once the primary is healthy,
+use the graceful `restore.sh a` — it rolls the set back one validator at a time
+with no chain downtime; `site-failover.sh a` is the hard-cutover failback for a
+true outage (see the rollback caveat in
 [docs/two-site-failover.md](docs/two-site-failover.md)). Single-site behavior is
 unchanged when it is unset.
 
-## Full Walkthrough
+## Quick start
 
-A complete cycle: **start the chain → benchmark → fail a validator over → stall
-the chain and recover it → wipe the slate clean.** Run from the dev machine.
-
-### 1. Start the local P-chain
-
-```bash
-./01_bootstrap_primary_network.sh
-```
-Starts 5 local primary-network validators. The L1 validators bootstrap through
-these, so leave them running for the whole session.
-
-### 2. Create the L1 (one time per chain)
+Run from the kit root on the control host. This is the condensed sequence; the
+full walkthrough — with what to expect at each step — is in
+[docs/e2e-runbook.md](docs/e2e-runbook.md).
 
 ```bash
-./02_create_l1.sh
+./01_bootstrap_primary_network.sh   # 5 local P-chain validators (leave running)
+./02_create_l1.sh                   # one-time: register validators, write network.env
+./03_wipe_and_deploy_l1.sh          # deploy all 12 nodes, start chain from genesis (destructive)
+./04_monitoring.sh                  # Prometheus + Grafana on the control host
+./scripts/failover/status.sh        # expect all nodes SERVING, "validators serving: 3/3"
+./05_benchmark.sh                   # drive ~4000 tx/s at the pinned RPC nodes
 ```
-Registers the 3 validator identities (`staking/l1/6,7,8`) on the P-chain and
-writes `network.env` with the new `SUBNET_ID` / `CHAIN_ID`.
 
-### 3. Deploy the validator pool
+Then run the failover drill (separate terminal, benchmark left running):
 
 ```bash
-./03_wipe_and_deploy_l1.sh
+./scripts/failover/site-failover.sh b   # nuke site A, fail the validator set onto B
+./scripts/failover/restore.sh a         # graceful rolling failback to A (no chain downtime)
 ```
-Uploads binaries/plugin/keys to all 5 pool machines and starts **3 validators + 1
-hot spare + 1 dedicated RPC node**. **Destructive:** it wipes node data and (re)starts the chain from
-genesis (block 0). Re-run any time to reset to a clean chain — the L1's P-chain
-registration is preserved, so you do **not** re-run `01`/`02`. Editing
-`chain-config.json` and re-running this is how you apply a new chain config.
 
-### 4. Check health
-
-```bash
-./scripts/failover/status.sh
-```
-Read-only. Expect all five nodes `SERVING` (m1-3 validators, m4 spare, m5 rpc) and `validators serving: 3/3`.
-
-### 5. Run a benchmark
-
-```bash
-./05_benchmark.sh            # fixed failover target
-```
-Sends load to the dedicated RPC node `m5` (pinned non-validator, never promoted),
-so ingress is unaffected by validator failover. See
-[Benchmark Script](#benchmark-script).
-
-### 6. Fail a validator over (safe — chain keeps running)
-
-```bash
-./scripts/failover/down.sh 2   # take machine 2 offline; the hot spare assumes its identity
-./scripts/failover/status.sh   # still 3 validators serving — the identity moved to the spare
-./scripts/failover/up.sh 2     # machine 2 returns to service as the new spare
-```
-The chain keeps producing throughout. You can run `05_benchmark.sh` during a
-failover to measure the impact. See
-[Recovering From a Stalled Chain](#recovering-from-a-stalled-chain) for what
-happens as you remove more validators.
-
-### 7. Stall the chain, then recover it
-
-```bash
-# After a fresh deploy the layout is m1=v1, m2=v2, m3=v3, m4=spare.
-./scripts/failover/down.sh 1   # spare (m4) takes over v1 -> still 3/3
-./scripts/failover/down.sh 2   # no spare left -> 2 of 3 (slower, still alive)
-./scripts/failover/down.sh 3   # 1 of 3 -> chain HALTS (expected)
-./scripts/failover/status.sh   # validators serving: 1/3, HALTED warning
-
-# Recover: you must bring ALL THREE validators back online.
-./scripts/failover/up.sh 1
-./scripts/failover/up.sh 2     # the chain resumes once the third validator connects
-./scripts/failover/up.sh 3     # restores the hot spare
-./scripts/failover/status.sh   # back to 3/3 SERVING
-```
-**Important:** once the chain has halted, bringing back only *one* validator is
-**not** enough and is **not** a bug — a restarting validator needs ~75% of the
-validator set (all 3) online before it can bootstrap. Watch `status.sh`: a node
-waiting on this shows as `BOOTSTRAPPING`. Full explanation below.
-
-### 8. Wipe the slate clean
-
-```bash
-./06_cleanup.sh
-```
-Stops every node (local P-chain and all pool machines), removes the remote
-deployment directories, and deletes the local `network.env`. To start over, go
-back to step 1.
+`03_wipe_and_deploy_l1.sh` is **destructive** — it wipes node data and restarts
+the chain from genesis (block 0). Re-run any time to reset to a clean chain; the
+P-chain registration is preserved, so you don't re-run `01`/`02`. Editing
+`chain-config.json` and re-running `03` is how you apply a new chain config. A
+fresh chain sits at block 0 until the benchmark drives load — Avalanche produces
+blocks on demand.
 
 ## Monitoring (Prometheus + Grafana)
 
@@ -148,13 +104,13 @@ every node's `:9652/ext/metrics`, so the dashboards keep recording the survivors
 as a site drops out.
 
 ```bash
-make monitoring-deps     # one-time: fetch prometheus + grafana (linux-amd64)
+make monitoring-deps     # one-time (source builds only): fetch prometheus + grafana
 ./04_monitoring.sh       # generate scrape config, start both, print URLs
 ```
 
 It discovers the fleet from `.env` (all of `NODE_IPS`, plus `BACKUP_SITE_NODE_IPS`
 in two-site mode) and labels each target by `site` (`a`/`b`) and `machine`
-(`m1`-`m5`, `b1`-`b5`). Two dashboards are provisioned:
+(`m1`-`m6`, `b1`-`b6`). Two dashboards are provisioned:
 
 - **Avalanche Benchmark** (`/d/avalanche-benchmark`) — per-node TPS, consensus,
   and verification panels.
@@ -174,125 +130,33 @@ ssh -i <key> -L3000:localhost:3000 -L9090:localhost:9090 <user>@<control-host>
 Re-runnable (kills + restarts cleanly). Works in single-site mode too — the A→B
 gap panel is just empty without a backup site.
 
-## End-to-End Failover Test Under Constant Load
+## Failover commands
 
-This is the full acceptance test: drive the L1 with steady traffic, then fail
-validators down to a halt and recover them, watching the benchmark react in real
-time and confirming no validator identity is ever duplicated. Use **two terminals**
-on the dev machine.
-
-Start from a healthy cluster (`status.sh` shows `3/3 SERVING`, layout
-`m1=v1, m2=v2, m3=v3, m4=spare`).
-
-**Terminal A — constant load (leave running the whole time):**
+`scripts/failover/` moves validator identities across the fixed pool. Within a
+site the hot spare covers a downed validator; a `site-failover` moves the whole
+set across sites. See
+[docs/failover-recovery-simulation.md](docs/failover-recovery-simulation.md)
+(single-site) and [docs/two-site-failover.md](docs/two-site-failover.md)
+(two-site) for the design.
 
 ```bash
-./05_benchmark.sh
-```
-The script runs a fixed ~1000 TPS target at 100ms blocks, with `-resubmit 3s`
-set internally. That keeps the resubmit interval above the worst-case proposer
-stall so a single down validator doesn't trigger a resubmit storm. The benchmark
-backs off on its own (in-flight cap) and resubmits in-flight txs, so it is the
-live witness for chain health.
-
-Current limit: run failover tests at **1000 transactions per second**. Higher
-rates are not reliable through failover right now; above this target, the
-benchmark or chain can fail to recover cleanly during the failover sequence.
-
-**Terminal B — the failover sequence:**
-
-```bash
-# 1. Fail one validator. The hot spare assumes its identity -> still 3/3.
-./scripts/failover/down.sh 1
-./scripts/failover/status.sh        # 3/3 SERVING; v1's identity now on the old spare
-#   Terminal A: a brief stall while the spare boots into the validator role
-#   (chain is at 2/3 during that window), then load resumes. Degradation here
-#   is expected.
-
-# 2. Fail a second validator. No spare left -> 2 of 3.
-./scripts/failover/down.sh 2
-./scripts/failover/status.sh        # 2/3 SERVING; chain keeps producing, slower
-#   Terminal A: lower TPS / higher tail latency, but still landing blocks.
-
-# 3. Fail the third validator -> 1 of 3 -> chain HALTS (expected).
-./scripts/failover/down.sh 3
-./scripts/failover/status.sh        # 1/3, "HALTED" warning; block height frozen
-#   Terminal A: minedTps -> 0, "no landings this tick". The benchmark is stalled
-#   because the chain is, not because of a bug.
-
-# 4. Bring back ONE validator. NOT enough -> chain stays halted.
-./scripts/failover/up.sh 1
-./scripts/failover/status.sh        # the rejoining node shows BOOTSTRAPPING,
-                                    # "validators serving: 1/3 (intended up: 2/3)"
-#   Two validators online is only 66% < the 75% a rejoining validator needs to
-#   bootstrap, so it sits in BOOTSTRAPPING and the chain does NOT recover.
-#   Terminal A: still stalled. This is expected — see "Recovering From a Stalled
-#   Chain" below.
-
-# 5. Bring back a second machine. The 3rd validator clears the latch.
-./scripts/failover/up.sh 2
-./scripts/failover/status.sh        # 3/3 SERVING; block height jumps forward
-#   Terminal A: the chain resumes within seconds and the benchmark drains its
-#   backlog back to ~1000 TPS. (Txs that waited out the halt carry a large
-#   one-time latency tail as they finally land — that drains and clears.)
-
-# 6. Restore the hot spare to return to the canonical baseline.
-./scripts/failover/up.sh 3
-./scripts/failover/status.sh        # back to 3/3 SERVING + spare
-```
-
-`up.sh` reassigns each rejoining machine the lowest orphaned **validator** key
-automatically (so a returning machine becomes a validator, not a second spare) —
-this is the "switch the keys to make it a validator" behavior.
-
-**Verify no duplicate identities** (each staking key on exactly one live machine,
-all NodeIDs distinct):
-
-```bash
-source network.env
-for ip in $(echo "$NODE_IPS" | tr ',' ' '); do
-  curl -s -X POST --data '{"jsonrpc":"2.0","id":1,"method":"info.getNodeID"}' \
-    -H 'content-type:application/json' "http://$ip:9652/ext/info" \
-    | grep -o '"nodeID":"[^"]*"'
-done | sort | uniq -c
-```
-Every NodeID should appear exactly once. During a halt, multiple **down** machines
-may hold the spare key on disk, but only one node ever runs a given key at a time —
-the failover tool never starts two nodes on the same identity.
-
-> **Note on the benchmark as a witness:** `05_benchmark.sh` is a single-issuer
-> load generator that sends to the pinned RPC node `m5`. Because `m5` is never
-> promoted, its endpoint stays up across validator failover — but while the chain
-> itself is mid-transition (a validator going down, the spare booting into its
-> role) block production briefly stalls, so the strict nonce line can look
-> "stuck" momentarily even after the chain is healthy again. Treat `status.sh` /
-> node health as the source of truth for chain state during transitions; the
-> benchmark fully recovers once the chain is back to `3/3`. (`bombard` can also be
-> pointed at multiple RPCs for ingress redundancy, in which case a downed
-> endpoint just drops out of the fan-out.)
-
-## Failover Commands
-
-`scripts/failover/` simulates validators going offline and recovering on the
-fixed 5-machine pool by moving validator identities between m1–m4 (m5 is a
-pinned RPC tracker that never validates). See
-`docs/failover-recovery-simulation.md` for the design.
-
-```bash
-./scripts/failover/down.sh <m>   # cordon machine m (take it "offline")
+./scripts/failover/status.sh     # read-only: each node's ACTUAL state + honest validators-serving count
+./scripts/failover/verify.sh     # read-only: prove the live network is ONE branch + quorum healthy
+./scripts/failover/down.sh <m>   # cordon machine m (take it "offline") — within-site failover
 ./scripts/failover/up.sh <m>     # uncordon machine m (return it to service)
-./scripts/failover/failover.sh   # re-apply current intent (recover an interrupted run)
-./scripts/failover/status.sh     # read-only: show each node's ACTUAL state
 ./scripts/failover/clean.sh <m>  # wipe machine m's chain data and re-bootstrap it clean
 
 # Two-site mode (requires BACKUP_SITE_NODE_IPS):
-./scripts/failover/site-failover.sh <a|b>  # hard cutover: swap the whole validator set to site a/b (for a real outage)
-./scripts/failover/restore.sh <a|b>        # graceful rolling failback: one validator at a time, no chain downtime
+./scripts/failover/site-failover.sh <a|b>  # hard cutover: nuke the other site, swap the whole set here
+./scripts/failover/restore.sh <a|b>        # graceful rolling failback: one validator at a time, no downtime
 ```
 
-`status.sh` reports every node as `SERVING@block` / `BOOTSTRAPPING` / `DOWN` and
-an honest `validators serving: X/3`, so you see what is *actually* happening
-rather than what was *intended*.
+`site-failover` models a real outage: it **hard-kills every node on the down site
+at once** (freezing its tip at the true data-loss boundary), then the surviving
+site forms consensus on the blocks it already holds — no state is pulled from the
+dead site. `status.sh` reports every node as `SERVING@block` / `BOOTSTRAPPING` /
+`DOWN` and an honest `validators serving: X/3`, so you see what is *actually*
+happening rather than what was *intended*.
 
 ## Recovering From a Stalled Chain
 
@@ -379,51 +243,54 @@ validators. Quorum is unaffected when you clean the spare; if you must clean an
 active validator, do it while the other two are serving so the chain keeps
 producing.
 
-## Benchmark Script
+## Benchmark profile
 
-`05_benchmark.sh` intentionally accepts no command-line flags. The failover demo
+`05_benchmark.sh` intentionally accepts no command-line flags — the failover demo
 uses one fixed profile:
 
-- target rate: `1000 rps`
-- resubmit interval: `3s`
-- ingress: the dedicated RPC node `m5` (pinned non-validator, never promoted)
+- target rate: **4000 rps**, with a 1% overshoot so *mined* TPS lands at or above
+  target
+- in-flight cap: **2000** (sized to the block cadence so the rps limiter binds,
+  not the cap)
+- resubmit interval: **5s**
+- ingress: the **pinned archive RPC nodes** — `m5`/`m6` on site A, plus `b5`/`b6`
+  on site B in two-site mode. These are never promoted to validators, so ingress
+  survives a failover; bombard fans across all reachable RPCs and resubmits
+  in-flight txs, so it rides straight through a `site-failover`.
 
-To change the profile, edit the constants in `05_benchmark.sh`.
+To change the profile, edit the constants at the top of `05_benchmark.sh`. See
+[docs/throughput-tuning-and-benchmarks.md](docs/throughput-tuning-and-benchmarks.md)
+for why block cadence — not rps — sets the throughput ceiling, and the reasoning
+behind these values.
 
-### Failover Throughput Limit
+If you pushed too hard and need to restart, wait 60 seconds for the mempool to
+clear before starting a new benchmark (mempool expiration is 1 minute).
 
-1000 rps is the current supported target for the failover workflow. Do not run
-the failover demo above 1000 transactions per second and treat higher-rate
-failover attempts as unsupported until the throughput path is fixed.
+## Block time
 
-If you pushed too hard and need to restart, wait 60 seconds for the mempool to clear before starting a new benchmark (mempool expiration is set to 1 minute).
+Genesis is configured with ACP-226 excess-gas parameters for fast block
+production from the start, and the packaged AvalancheGo build pins a 1s
+proposer-window branch. The two sites run **different cadences**, applied at
+deploy time:
 
-### Block Time
+- **Site A (primary): 25 ms** (`min-delay-target` in `chain-config.json`) — the
+  hot ~40 blk/s profile.
+- **Site B (backup): 100 ms** — ~10 blk/s, and only while it *produces* (i.e.
+  after a failover). `min-delay-target` governs a node only while it proposes, so
+  B tracks A's 25 ms blocks at full speed during normal operation; the slower
+  backup cadence is what lets a recovering site converge without a rolling
+  restart. See [docs/two-site-failover.md](docs/two-site-failover.md).
 
-Genesis is configured with ACP-226 excess gas parameters (`graniteTimestamp: 0`,
-`initialMinDelayMS: 5`) for fast block production from the start. The chain
-config sets `min-delay-target: 5`, and the packaged AvalancheGo build pins a
-1s proposer window branch. To tune further, edit `min-delay-target` in
-`chain-config.json` and re-run `./03_wipe_and_deploy_l1.sh` (which resets the
-chain to genesis — see step 3).
+To tune, edit `min-delay-target` in `chain-config.json` and re-run
+`./03_wipe_and_deploy_l1.sh` (which resets the chain to genesis).
 
-## Topology
+## Further reading
 
-- **Local dev machine:** 5 P-chain (primary network) validators using committed
-  `staking/l1/1..5`.
-- **Pool (remote machines 1–4):** 3 L1 validators using committed
-  `staking/l1/6,7,8` plus 1 hot spare using `staking/l1/9`. Validator identities
-  move between these 4 machines on failover.
-- **Machine 5:** the dedicated RPC node, a pinned non-validating tracker using
-  committed `staking/l1/10`. Never promoted to a validator, so the benchmark
-  ingress survives failover. (In production this tier has 2+ RPC machines; here
-  it is one.)
-- **Benchmark traffic:** `05_benchmark.sh` sends to the `m5` dedicated RPC (port
-  `9652`) and skips any node that is offline.
-
-### Reference Benchmark
-
-On the 4-machine failover pool with 3 validators + 1 hot spare, a constant
-`./05_benchmark.sh` run recovered to ~990-1014 mined TPS after the full
-down/down/down/up/up/up sequence, with steady-state p50 ~= 82ms, p95 ~= 129ms,
-and p99 ~= 137ms.
+- [docs/e2e-runbook.md](docs/e2e-runbook.md) — the full end-to-end failover &
+  recovery drill.
+- [docs/two-site-failover.md](docs/two-site-failover.md) — two-site design,
+  identity map, and what is simulated vs. production.
+- [docs/failover-recovery-simulation.md](docs/failover-recovery-simulation.md) —
+  the single-site failover model and stalled-chain recovery theory.
+- [docs/throughput-tuning-and-benchmarks.md](docs/throughput-tuning-and-benchmarks.md)
+  — the 4000-rps profile and block-cadence tuning.

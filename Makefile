@@ -93,7 +93,8 @@ pack: deps build monitoring-deps
 		genesis.json \
 		staking/ \
 		.env.example \
-		README.md
+		README.md \
+		docs/
 
 # Build the airgap RHEL/RPM. Reuses the exact `pack` payload (single source of
 # truth): stage the packed tarball into dist/pkgroot, then nfpm packages that tree
