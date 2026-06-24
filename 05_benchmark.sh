@@ -68,10 +68,16 @@ RPC_LIST="$(IFS=,; echo "${RPC_URLS[*]}")"
 # INFLIGHT must scale with per-tx latency, not stay at the fast-block value. By Little's
 # law mined_tps = inflight / latency; the 30ms cadence raised submit->mined latency to
 # ~330ms, so the old 750 cap throttled to ~2300 tps (chain starved, mempool ~empty).
-# 2000 gives mined headroom (~6000) so the rps limiter — not the inflight cap — binds.
+# By mined_tps = inflight/latency, the cap must cover the WORST-latency window, not just
+# the fast same-site path. On site A (25ms, same-region) latency ~0.33s, so 2000 already
+# clears 4000. But during failover the validators run on the cross-region backup at 100ms,
+# pushing submit->mined latency to ~0.8s — there 2000/0.8 ≈ 2400 and the cap throttles
+# mined below target. 8000 keeps the rps limiter binding (8000/0.8 ≈ 10000 headroom) so
+# mined holds ~4000 through the failover too. Blocks are ~1% full at 4000 rps, so the chain
+# absorbs the bigger inflight fine. Resubmit set above the worst failover proposer stall.
 TARGET_RPS=4000
-INFLIGHT=2000
-RESUBMIT_INTERVAL=5s
+INFLIGHT=8000
+RESUBMIT_INTERVAL=8s
 # Issue 1% over target. The rolling token-bucket pacer no longer leaks the tail
 # of each second, but mined still reads a hair under target because ~240 txs are
 # always in flight at any instant (mined = issued - inflight). A 1% overshoot
