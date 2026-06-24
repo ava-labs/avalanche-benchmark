@@ -26,7 +26,9 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -40,6 +42,16 @@ const (
 	// reconcileBackupHeights). Set generously: a tight hot-standby never trips it.
 	syncToleranceBlocks = 100
 	restorePollInterval = 3 * time.Second
+
+	// consensusReadyMinConnected: a validator must be connected to at least this
+	// fraction of the L1 validator stake (AvalancheGo /ext/health percentConnected)
+	// before it counts as ready to vote. ~1.0 == the whole set; we require
+	// effectively all of it so the next key never moves until the just-promoted
+	// validator has rejoined the consensus mesh — not merely answered eth_blockNumber.
+	consensusReadyMinConnected = 0.999
+	// consensusMaxProcessing: if the oldest in-flight block has been undecided for
+	// longer than this, consensus is stalled (not just slow) — treat as not-ready.
+	consensusMaxProcessing = 2 * time.Second
 )
 
 func siteName(site int) string {
@@ -183,19 +195,28 @@ func rollingRestore(cfg *config, targetSite int) {
 	// Phase 1 — the RPCs are NOT held back behind validator sync, since a near-tip archive
 	// snapshot needs no catch-up race. If a source is unavailable, that role falls back to
 	// wipe + state-sync (validators) / from-genesis bootstrap (RPCs).
-	var snapTar string
-	if tar, ok := cfg.takeSnapshot(trackerStep, otherSite(targetSite)); ok {
-		snapTar = tar
-		defer cleanupSnapshot(snapTar)
+	// RESTORE_SKIP_SEED=1 resumes a restore whose Phase-1 seed already finished: skip
+	// the slow, destructive snapshot + wipe and reuse the target site exactly as it is.
+	// Safe only when the target is ALREADY up as in-sync trackers (e.g. a prior restore
+	// that synced but was interrupted in the swap phase). The sync gate below still runs,
+	// so a target that isn't actually at tip won't be promoted.
+	skipSeed := os.Getenv("RESTORE_SKIP_SEED") == "1" || strings.EqualFold(os.Getenv("RESTORE_SKIP_SEED"), "true")
+	var snapTar, archiveTar string
+	if skipSeed {
+		fmt.Printf("== restore: RESTORE_SKIP_SEED set — skipping snapshot + wipe; reusing site %s as-is (sync gate still verifies it is at tip) ==\n", siteName(targetSite))
 	} else {
-		fmt.Println("WARN: no usable pruned snapshot source — recovering validators will wipe + state-sync.")
-	}
-	var archiveTar string
-	if tar, ok := cfg.takeArchiveSnapshot(trackerStep, otherSite(targetSite)); ok {
-		archiveTar = tar
-		defer cleanupSnapshot(archiveTar)
-	} else {
-		fmt.Println("WARN: no usable archive snapshot source — recovering RPCs will full-bootstrap from genesis.")
+		if tar, ok := cfg.takeSnapshot(trackerStep, otherSite(targetSite)); ok {
+			snapTar = tar
+			defer cleanupSnapshot(snapTar)
+		} else {
+			fmt.Println("WARN: no usable pruned snapshot source — recovering validators will wipe + state-sync.")
+		}
+		if tar, ok := cfg.takeArchiveSnapshot(trackerStep, otherSite(targetSite)); ok {
+			archiveTar = tar
+			defer cleanupSnapshot(archiveTar)
+		} else {
+			fmt.Println("WARN: no usable archive snapshot source — recovering RPCs will full-bootstrap from genesis.")
+		}
 	}
 
 	// Phase 1 — seed EVERY target-site node together (validators + spare from the pruned
@@ -209,14 +230,26 @@ func rollingRestore(cfg *config, targetSite int) {
 	}
 	printIntents(topo, trackerStep)
 
-	for i := range trackerStep {
-		if topo.Site(i) == targetSite && !trackerStep[i].Cordoned {
-			if cfg.isArchiveNode(i) { // archive RPC: full-state archive clone (can't state-sync)
-				cfg.prepareTarget(cfg.nodeIPs[i], topo.MachineName(i), archiveTar != "", archiveTar)
-			} else { // validator / spare: pruned snapshot clone (falls back to state-sync)
-				cfg.prepareTarget(cfg.nodeIPs[i], topo.MachineName(i), snapTar != "", snapTar)
+	if !skipSeed {
+		// Seed every target CONCURRENTLY. Each is a separate stream to a different
+		// host, so overlapping them both removes the sequential wait and fills the
+		// high-latency cross-region link far better than one transfer at a time.
+		var wg sync.WaitGroup
+		for i := range trackerStep {
+			if topo.Site(i) != targetSite || trackerStep[i].Cordoned {
+				continue
 			}
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				if cfg.isArchiveNode(idx) { // archive RPC: full-state archive clone (can't state-sync)
+					cfg.prepareTarget(cfg.nodeIPs[idx], topo.MachineName(idx), archiveTar != "", archiveTar)
+				} else { // validator / spare: pruned snapshot clone (falls back to state-sync)
+					cfg.prepareTarget(cfg.nodeIPs[idx], topo.MachineName(idx), snapTar != "", snapTar)
+				}
+			}(i)
 		}
+		wg.Wait()
 	}
 
 	reconcile(cfg, trackerStep, false)
@@ -237,13 +270,13 @@ func rollingRestore(cfg *config, targetSite int) {
 	current := trackerStep
 	for n, step := range keySteps {
 		fmt.Printf("== restore: migrate validator %d/%d to site %s ==\n", n+1, len(keySteps), siteName(targetSite))
-		cfg.waitForFullValidatorSet(current)
+		cfg.waitForValidatorsReady(current)
 		if err := saveIntents(cfg.stateFile, step); err != nil {
 			fatalf("%v", err)
 		}
 		printIntents(topo, step)
 		reconcile(cfg, step, false)
-		cfg.waitForFullValidatorSet(step)
+		cfg.waitForValidatorsReady(step)
 		current = step
 	}
 
@@ -356,6 +389,68 @@ func (c *config) waitForFullValidatorSet(intents []MachineIntent) {
 			fmt.Printf("  validators serving: %d/%d.\n", got, want)
 			return
 		}
+		time.Sleep(restorePollInterval)
+	}
+}
+
+// waitForValidatorsReady is the consensus-aware between-swap gate. Where
+// waitForFullValidatorSet only checked that each validator answers eth_blockNumber
+// (true within seconds of a restart, long before it rejoins consensus — which let
+// the rolling restore fire the next swap while the chain was still limping from the
+// last one, compounding the dips into a deep stall), this waits until EVERY
+// validator is genuinely back in consensus AND the chain is actually advancing:
+//   - SERVING (answers eth_blockNumber), and
+//   - connected to ~100% of the validator stake (/ext/health percentConnected), and
+//   - no block stuck in consensus (longestProcessingBlock < consensusMaxProcessing),
+//   - and the accepted tip advanced since the previous poll (production resumed).
+//
+// No timeout — like the other restore gates it waits as long as recovery takes.
+func (c *config) waitForValidatorsReady(intents []MachineIntent) {
+	want := len(validatorKeys())
+	var prevTip uint64
+	havePrev := false
+	for {
+		res := c.checkHealth(intents)
+		ready := 0
+		var tip uint64
+		parts := make([]string, 0, want)
+		for i, in := range intents {
+			if in.Cordoned || !isValidatorKey(in.Key) || i >= len(res) {
+				continue
+			}
+			name := c.topo.MachineName(i)
+			if res[i].state != healthServing {
+				parts = append(parts, name+" down")
+				continue
+			}
+			pc, longest, h, ok := c.consensusHealth(c.nodeIPs[i])
+			if h > tip {
+				tip = h
+			}
+			switch {
+			case !ok:
+				parts = append(parts, name+" ?")
+			case pc >= consensusReadyMinConnected && longest < consensusMaxProcessing:
+				ready++
+				parts = append(parts, fmt.Sprintf("%s %.0f%%", name, pc*100))
+			case longest >= consensusMaxProcessing:
+				parts = append(parts, fmt.Sprintf("%s %.0f%% (block stuck)", name, pc*100))
+			default:
+				parts = append(parts, fmt.Sprintf("%s %.0f%%", name, pc*100))
+			}
+		}
+		advancing := havePrev && tip > prevTip
+		motion := "flat"
+		if advancing {
+			motion = "rising"
+		}
+		fmt.Printf("  gate: %d/%d ready | tip %d %s | %s\n",
+			ready, want, tip, motion, strings.Join(parts, ", "))
+		if ready >= want && advancing {
+			fmt.Printf("  gate: %d/%d ready, tip rising — proceeding to next swap.\n", ready, want)
+			return
+		}
+		prevTip, havePrev = tip, true
 		time.Sleep(restorePollInterval)
 	}
 }

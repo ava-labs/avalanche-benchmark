@@ -162,8 +162,10 @@ func (c *config) scp(localPath, host, remotePath string, recursive bool) {
 // chain data dir into a local file on the control box. The source MUST be stopped
 // first (killNode) so the on-disk pebble/EVM state is a consistent point-in-time
 // image — copying a live DB yields a torn, unopenable snapshot. The output is
-// streamed to a file, never buffered in memory (the DB is many GB). gzip -1 keeps
-// the cross-region pull fast without pegging CPU on the (idle, stopped) source.
+// streamed to a file, never buffered in memory (the DB is many GB). zstd -T0 uses
+// all cores on the (idle, stopped) source — much faster than single-threaded gzip
+// and a better ratio, so fewer bytes cross the slow cross-region link. (If a node
+// lacks zstd the pull fails cleanly and restore falls back to state-sync.)
 func (c *config) snapshotPull(host, localTar string) bool {
 	f, err := os.Create(localTar)
 	if err != nil {
@@ -171,7 +173,7 @@ func (c *config) snapshotPull(host, localTar string) bool {
 		return false
 	}
 	defer f.Close()
-	cmd := exec.Command("ssh", c.sshArgs(host, fmt.Sprintf("cd %s && tar -cf - data/validator | gzip -1", c.remoteDir))...)
+	cmd := exec.Command("ssh", c.sshArgs(host, fmt.Sprintf("cd %s && tar -cf - data/validator | zstd -3 -T0", c.remoteDir))...)
 	cmd.Stdout = f
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -191,7 +193,7 @@ func (c *config) snapshotPush(host, localTar string) {
 		fatalf("snapshot: open %s: %v", localTar, err)
 	}
 	defer f.Close()
-	cmd := exec.Command("ssh", c.sshArgs(host, fmt.Sprintf("cd %s && gzip -dc | tar -xf -", c.remoteDir))...)
+	cmd := exec.Command("ssh", c.sshArgs(host, fmt.Sprintf("cd %s && zstd -dc | tar -xf -", c.remoteDir))...)
 	cmd.Stdin = f
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {

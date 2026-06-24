@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -85,6 +86,69 @@ func probe(client *http.Client, url string) healthResult {
 	b, _ := io.ReadAll(resp.Body)
 	st, bn := classifyHealth(false, resp.StatusCode, string(b))
 	return healthResult{st, bn}
+}
+
+// consensusHealth probes a node's AvalancheGo /ext/health for the L1 chain and
+// returns the signals that actually indicate "ready to participate in consensus" —
+// far stronger than classifyHealth's bare eth_blockNumber answer:
+//   - percentConnected: fraction of the chain's validator STAKE this node is
+//     connected to (1.0 == it sees the whole validator set; a just-restarted
+//     validator answers eth_blockNumber within seconds but climbs from <1 here as
+//     it re-handshakes the consensus mesh — this is the gap that let the rolling
+//     restore fire the next swap too early);
+//   - longestProcessing: how long the oldest undecided block has been in flight
+//     (grows when consensus is stalled);
+//   - lastAccepted: the consensus-accepted tip (advances only while producing).
+//
+// ok is false if the endpoint is unreachable or the L1 chain's check is absent
+// (node still coming up) — callers treat that as not-ready. A 503 (node-unhealthy)
+// still carries the JSON body, so the per-chain numbers are parsed regardless.
+func (c *config) consensusHealth(ip string) (percentConnected float64, longestProcessing time.Duration, lastAccepted uint64, ok bool) {
+	client := &http.Client{Timeout: 4 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://%s:9652/ext/health/health", ip))
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body) // a 503 (unhealthy) still carries the JSON body
+	return parseConsensusHealth(body, c.chainID)
+}
+
+// parseConsensusHealth extracts the L1 chain's consensus signals from an
+// /ext/health/health body. It decodes the chain's check ON ITS OWN (via
+// json.RawMessage) because the checks map mixes message shapes — an object for a
+// chain, a bare string for "bls" ("node is not a validator"), an empty array for
+// "bootstrapped" — so decoding the whole map into one typed struct fails on those
+// non-object messages and reports every node as unreadable. Pure + unit-tested.
+func parseConsensusHealth(body []byte, chainID string) (percentConnected float64, longestProcessing time.Duration, lastAccepted uint64, ok bool) {
+	var top struct {
+		Checks map[string]json.RawMessage `json:"checks"`
+	}
+	if json.Unmarshal(body, &top) != nil {
+		return 0, 0, 0, false
+	}
+	raw, found := top.Checks[chainID]
+	if !found {
+		return 0, 0, 0, false
+	}
+	var chk struct {
+		Message struct {
+			Engine struct {
+				Consensus struct {
+					LastAcceptedHeight     uint64 `json:"lastAcceptedHeight"`
+					LongestProcessingBlock string `json:"longestProcessingBlock"`
+				} `json:"consensus"`
+			} `json:"engine"`
+			Networking struct {
+				PercentConnected float64 `json:"percentConnected"`
+			} `json:"networking"`
+		} `json:"message"`
+	}
+	if json.Unmarshal(raw, &chk) != nil {
+		return 0, 0, 0, false
+	}
+	lp, _ := time.ParseDuration(chk.Message.Engine.Consensus.LongestProcessingBlock)
+	return chk.Message.Networking.PercentConnected, lp, chk.Message.Engine.Consensus.LastAcceptedHeight, true
 }
 
 // checkHealth probes every uncordoned machine's RPC once, in parallel, and returns
