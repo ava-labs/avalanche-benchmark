@@ -9,19 +9,28 @@ holds non-voting nodes that are BLS/cert-swapped into the active set on a
 full-site failure.
 
 Everything from the single-site doc still applies; this doc only covers the
-deltas. Single-site mode (no `BACKUP_SITE_NODE_IPS`) is byte-for-byte unchanged.
+deltas. Single-site mode (no `BACKUP_*` lists) is byte-for-byte unchanged.
 
 ## Topology
 
-Each site is **6 machines** (`sitePoolSize = 6`): 3 validators + 1 spare + 2 pinned
-archive RPCs.
+Each site is **N validators + S spares + R pinned archive RPCs**, set per site by
+the `.env` per-role lists (`VALIDATOR_IPS`/`SPARE_IPS`/`RPC_IPS` and the
+`BACKUP_*` equivalents) — list length = count, values = placement, and a repeated
+IP co-locates nodes on one machine. Both sites must share the same shape, since
+the validator set migrates between them on failover. The default (and the worked
+example throughout this doc) is **3 validators + 1 spare + 2 RPCs** = 6 machines
+per site; the slot layout per site is always `[validators…, spares…, rpcs…]`.
 
-- **Site A (primary)** = `NODE_IPS` (6 machines): `m1-m3` weighted validators,
-  `m4` hot spare, `m5`/`m6` pinned dedicated archive RPCs.
-- **Site B (backup)** = `BACKUP_SITE_NODE_IPS` (6 machines): `b1-b3` zero-weight
-  syncing trackers, `b4` spare, `b5`/`b6` pinned dedicated archive RPCs. For
-  realistic results put site B in a different region/DC so the cross-site sync
-  latency is real (e.g. site A in us-east-1, site B in us-east-2).
+- **Site A (primary)** = `VALIDATOR_IPS` + `SPARE_IPS` + `RPC_IPS`: `m1`-`m3`
+  weighted validators, `m4` hot spare, `m5`/`m6` pinned dedicated archive RPCs
+  (for the default shape).
+- **Site B (backup)** = the `BACKUP_*` lists: `b1`-`b3` zero-weight syncing
+  trackers, `b4` spare, `b5`/`b6` pinned dedicated archive RPCs. For realistic
+  results put site B in a different region/DC so the cross-site sync latency is
+  real (e.g. site A in us-east-1, site B in us-east-2). Co-locating sites on the
+  same boxes (the single-network POC case) works for exercising the orchestration
+  but removes fault isolation — `site-failover` then kills the down site's
+  *processes*, not its boxes.
 - The two RPCs per site are **archive** nodes (`chain-config-rpc.json`:
   pruning + state-sync disabled) so they hold full historical state and a second
   one keeps serving ingress while the first is briefly stopped for a snapshot.
@@ -92,10 +101,11 @@ One rule is added to the sticky mapping in `cmd/reconcile/plan.go`:
 
 ## Commands
 
-Most existing wrappers work over the 12-machine pool (`down.sh 8` cordons `b2`)
-because they delegate to the topology-aware reconcile binary. The exception is
-`clean.sh`, which indexes `NODE_IPS` directly and so operates on site A only.
-One new wrapper:
+All wrappers work over the full pool by machine number (`down.sh 8` cordons `b2`)
+because they delegate to the topology-aware reconcile binary — including
+`clean.sh`, which now calls `reconcile clean <m>` and so handles any machine on
+either site (and is co-location-safe: it wipes only that instance's data, not its
+housemates'). One new wrapper:
 
 ```bash
 ./scripts/failover/site-failover.sh b   # full site-A outage: cordon all of A,

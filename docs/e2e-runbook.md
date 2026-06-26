@@ -63,17 +63,29 @@ cp .env.example .env
 # then edit .env
 ```
 
-Fill in four values (`.env.example` documents each position):
+Fill in the SSH settings and the per-role IP lists (`.env.example` documents every
+field and shows alternate shapes):
 
 ```ini
 SSH_USER=ubuntu
 SSH_KEY_PATH=/path/to/your-fleet-key
-NODE_IPS=A1,A2,A3,A4,A5,A6              # site A: m1-m3 val, m4 spare, m5/m6 RPC
-BACKUP_SITE_NODE_IPS=B1,B2,B3,B4,B5,B6  # site B: b1-b3 trackers, b4 spare, b5/b6 RPC
+
+# Site A — list LENGTH is the count, VALUES are the placement (repeat an IP to
+# co-locate). VALIDATOR_IPS >= 3, RPC_IPS >= 1 (2+ recommended), SPARE_IPS >= 0.
+VALIDATOR_IPS=A1,A2,A3
+SPARE_IPS=A4
+RPC_IPS=A5,A6
+
+# Site B (backup) — set these to enable two-site mode; same shape as A.
+BACKUP_VALIDATOR_IPS=B1,B2,B3
+BACKUP_SPARE_IPS=B4
+BACKUP_RPC_IPS=B5,B6
 ```
 
-Order matters — the first three IPs of each site are the validators, the fourth
-is the spare, the last two are the pinned RPC nodes.
+The counts are whatever you list — the example above is the default 3 validators
++ 1 spare + 2 RPCs. Run `./bin/reconcile endpoints` after editing to print the
+resulting per-node layout before deploying. (The legacy positional `NODE_IPS` /
+`BACKUP_SITE_NODE_IPS` — exactly 6 each — still works if `VALIDATOR_IPS` is unset.)
 
 ---
 
@@ -98,8 +110,10 @@ bootstrap through these, so leave them running for the whole session.
 ./02_create_l1.sh
 ```
 
-Registers the three validator identities on the P-chain and writes
-`network.env` (the new `SUBNET_ID` / `CHAIN_ID`).
+Registers the validator identities (the count from `VALIDATOR_IPS`; 3 by default)
+on the P-chain and writes `network.env` (the new `SUBNET_ID` / `CHAIN_ID`). It
+also pre-flights that enough committed staking keys exist for the configured
+topology, printing the exact `genstaking` command if more are needed.
 
 ### Step 3 — deploy the L1 across both sites
 

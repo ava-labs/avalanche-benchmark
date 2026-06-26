@@ -24,6 +24,10 @@ if [ -f "$NETWORK_ENV" ]; then
     fi
 fi
 
+# Pre-flight: every committed staking identity the configured topology references
+# must exist (they are generated locally with cmd/genstaking and shipped in the kit).
+ensure_staking_keys
+
 # ------------------------------------------------------------------------------
 # Create L1 (subnet + chain + convert)
 # ------------------------------------------------------------------------------

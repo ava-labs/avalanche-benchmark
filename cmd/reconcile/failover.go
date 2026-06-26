@@ -23,11 +23,11 @@ func (c *config) nukeSite(site int) {
 			continue
 		}
 		wg.Add(1)
-		go func(host, name string) {
+		go func(i int) {
 			defer wg.Done()
-			fmt.Printf("  nuke %s (%s): SIGKILL\n", name, host)
-			c.killNode(host)
-		}(c.nodeIPs[i], c.topo.MachineName(i))
+			fmt.Printf("  nuke %s (%s): SIGKILL\n", c.topo.MachineName(i), c.nodeIPs[i])
+			c.killNode(i)
+		}(i)
 	}
 	wg.Wait()
 }
@@ -75,11 +75,9 @@ func (c *config) reconcileBackupHeights(intents []MachineIntent, targetSite int)
 		}
 	}
 
-	// Validators + spare: state-sync any that are behind the tip (or down); leave the rest.
+	// Validators + spares: state-sync any that are behind the tip (or down); leave the rest.
 	targets := append([]int{}, validatorDestIdx(topo, targetSite)...)
-	if sp := spareDestIdx(topo, targetSite); sp >= 0 {
-		targets = append(targets, sp)
-	}
+	targets = append(targets, spareDestIdxs(topo, targetSite)...)
 	var promote, resync []string
 	for _, i := range targets {
 		if i >= len(intents) || intents[i].Cordoned {
@@ -98,8 +96,8 @@ func (c *config) reconcileBackupHeights(intents []MachineIntent, targetSite int)
 		}
 		fmt.Printf("  !! %s: %s — beyond %d-block tolerance: WIPE + STATE-SYNC from site's own archive RPC (deadlock guard)\n",
 			topo.MachineName(i), gap, syncToleranceBlocks)
-		c.deployChainConfig(c.nodeIPs[i]) // pruned + state-sync-enabled, matches the wiped DB
-		c.wipeL1Data(c.nodeIPs[i])        // clear data/validator -> forces state-sync on start
+		c.deployChainConfig(i) // pruned + state-sync-enabled, matches the wiped DB
+		c.wipeL1Data(i)        // clear data dir -> forces state-sync on start
 		resync = append(resync, topo.MachineName(i))
 	}
 	if len(resync) == 0 {
@@ -201,19 +199,19 @@ func (c *config) reseedLaggingArchiveRPCs(intents []MachineIntent, res []healthR
 	}
 
 	_ = os.Remove(snapshotTar)
-	c.killNode(c.nodeIPs[src])
-	if !c.snapshotPull(c.nodeIPs[src], snapshotTar) {
-		c.start(c.nodeIPs[src], c.nodeIPs[src]) // best-effort restart even if the copy failed
+	c.killNode(src)
+	if !c.snapshotPull(src, snapshotTar) {
+		c.start(src) // best-effort restart even if the copy failed
 		fmt.Printf("failover: WARNING archive snapshot of %s failed — lagging RPC(s) will bootstrap from genesis.\n", topo.MachineName(src))
 		return
 	}
-	c.start(c.nodeIPs[src], c.nodeIPs[src]) // source downtime is just the copy
+	c.start(src) // source downtime is just the copy
 	defer cleanupSnapshot(snapshotTar)
 
-	srcCfg := c.ssh(c.nodeIPs[src], "cat "+c.remoteDir+"/chain-config.json")
+	srcCfg := c.ssh(c.nodeIPs[src], "cat "+c.remoteDir+"/"+c.instances[src].chainCfg)
 	for _, i := range laggards {
 		fmt.Printf("  %s (archive RPC): reseed from %s @ %d (archive->archive)\n",
 			topo.MachineName(i), topo.MachineName(src), srcBlock)
-		c.seedFromSnapshot(c.nodeIPs[i], snapshotTar, srcCfg)
+		c.seedFromSnapshot(i, snapshotTar, srcCfg)
 	}
 }

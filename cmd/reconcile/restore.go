@@ -61,9 +61,9 @@ func siteName(site int) string {
 	return "a"
 }
 
-func siteBase(site int) int {
+func siteBase(topo Topology, site int) int {
 	if site == siteB {
-		return sitePoolSize
+		return topo.sitePool()
 	}
 	return 0
 }
@@ -79,7 +79,7 @@ func cloneIntents(in []MachineIntent) []MachineIntent {
 func validatorKeysInSite(intents []MachineIntent, topo Topology, site int, liveOnly bool) int {
 	n := 0
 	for i, in := range intents {
-		if topo.Site(i) != site || !isValidatorKey(in.Key) {
+		if topo.Site(i) != site || !topo.isValidatorKey(in.Key) {
 			continue
 		}
 		if liveOnly && in.Cordoned {
@@ -92,10 +92,10 @@ func validatorKeysInSite(intents []MachineIntent, topo Topology, site int, liveO
 
 // validatorMachineIdx returns the pool indexes of uncordoned machines holding a
 // validator key (the currently-active validator set).
-func validatorMachineIdx(intents []MachineIntent) []int {
+func validatorMachineIdx(topo Topology, intents []MachineIntent) []int {
 	var idx []int
 	for i, in := range intents {
-		if !in.Cordoned && isValidatorKey(in.Key) {
+		if !in.Cordoned && topo.isValidatorKey(in.Key) {
 			idx = append(idx, i)
 		}
 	}
@@ -114,7 +114,7 @@ func validatorMachineIdx(intents []MachineIntent) []int {
 // move), the chain holds >=2/3 throughout and the end state equals the steady
 // seed with targetSite active. Pure function — caller does the I/O.
 func RestorePlan(topo Topology, prev []MachineIntent, targetSite int) (trackerStep []MachineIntent, keySteps [][]MachineIntent) {
-	base := siteBase(targetSite)
+	base := siteBase(topo, targetSite)
 
 	// Step 0: uncordon the target site. Keys are left untouched — after a
 	// site-failover the target machines already wear their tracker home keys (and
@@ -129,8 +129,8 @@ func RestorePlan(topo Topology, prev []MachineIntent, targetSite int) (trackerSt
 
 	// Steps 1..N: move each validator key onto the target site, one at a time.
 	cur := cloneIntents(trackerStep)
-	for slot := 0; slot < len(validatorKeys()); slot++ {
-		k := valKeyLo + slot
+	for slot := 0; slot < topo.NVal; slot++ {
+		k := l1KeyBase + slot
 		dest := base + slot
 		next := cloneIntents(cur)
 		for i := range next {
@@ -159,7 +159,7 @@ func rollingRestore(cfg *config, targetSite int) {
 		fatalf("%v", err)
 	}
 
-	want := len(validatorKeys())
+	want := topo.NVal
 	if validatorKeysInSite(prev, topo, targetSite, true) == want {
 		fmt.Printf("site %s already holds the full validator set — nothing to restore.\n", siteName(targetSite))
 		return
@@ -172,7 +172,7 @@ func rollingRestore(cfg *config, targetSite int) {
 	destIdx := validatorDestIdx(topo, targetSite) // machines that will receive a validator key (gate only these)
 
 	rpcIdxs := rpcMachineIdxs(topo, targetSite)
-	srcIdx := validatorMachineIdx(trackerStep) // active (source) validators = the producers + tip reference
+	srcIdx := validatorMachineIdx(topo, trackerStep) // active (source) validators = the producers + tip reference
 
 	// No block-production throttle here: the backup site (B) is configured to produce at
 	// backupSiteMinDelayMS (~10 blk/s) whenever it holds the validator set — see deployChainConfig.
@@ -243,9 +243,9 @@ func rollingRestore(cfg *config, targetSite int) {
 			go func(idx int) {
 				defer wg.Done()
 				if cfg.isArchiveNode(idx) { // archive RPC: full-state archive clone (can't state-sync)
-					cfg.prepareTarget(cfg.nodeIPs[idx], topo.MachineName(idx), archiveTar != "", archiveTar)
+					cfg.prepareTarget(idx, archiveTar != "", archiveTar)
 				} else { // validator / spare: pruned snapshot clone (falls back to state-sync)
-					cfg.prepareTarget(cfg.nodeIPs[idx], topo.MachineName(idx), snapTar != "", snapTar)
+					cfg.prepareTarget(idx, snapTar != "", snapTar)
 				}
 			}(i)
 		}
@@ -258,9 +258,7 @@ func rollingRestore(cfg *config, targetSite int) {
 	// the validators. The RPCs are the slowest (full-trie writes), so they catch up last; gating
 	// them here means the whole site is at tip before any key moves.
 	allRecovering := append([]int{}, destIdx...)
-	if sp := spareDestIdx(topo, targetSite); sp >= 0 {
-		allRecovering = append(allRecovering, sp)
-	}
+	allRecovering = append(allRecovering, spareDestIdxs(topo, targetSite)...)
 	allRecovering = append(allRecovering, rpcIdxs...)
 	fmt.Printf("waiting for site %s recovering nodes (validators + spare + RPCs) to reach tip (within %d blocks)...\n", siteName(targetSite), syncToleranceBlocks)
 	cfg.waitForTargetSynced(trackerStep, allRecovering, srcIdx)
@@ -290,39 +288,40 @@ func rollingRestore(cfg *config, targetSite int) {
 }
 
 // validatorDestIdx returns the machine indexes that will receive validator keys
-// when the set is rolled onto targetSite — the first len(validatorKeys()) machines
-// of that site (base+0..). These are the ONLY machines whose sync state gates
-// promotion: a behind validator is the fork risk, so it must be at tip before it
-// votes. The spare and pinned-RPC trackers never take a vote, so they finish
-// syncing on their own and must not block (or deadlock) the restore.
+// when the set is rolled onto targetSite — the first NVal machines of that site
+// (base+0..). These are the ONLY machines whose sync state gates promotion: a behind
+// validator is the fork risk, so it must be at tip before it votes. The spares and
+// pinned-RPC trackers never take a vote, so they finish syncing on their own and must
+// not block (or deadlock) the restore.
 func validatorDestIdx(topo Topology, targetSite int) []int {
-	base := siteBase(targetSite)
-	idx := make([]int, len(validatorKeys()))
+	base := siteBase(topo, targetSite)
+	idx := make([]int, topo.NVal)
 	for i := range idx {
 		idx[i] = base + i
 	}
 	return idx
 }
 
-// spareDestIdx returns the index of the site's hot-standby spare — the slot immediately
-// after the validator destinations (layout per site is [v, v, v, spare, rpc, rpc]). The
-// spare is a state-sync node (same DB profile as the validators, not archive) held ready to
-// be promoted if a validator fails. -1 if the site has no spare slot.
-func spareDestIdx(topo Topology, targetSite int) int {
-	i := siteBase(targetSite) + len(validatorKeys())
-	if i >= topo.Size() {
-		return -1
+// spareDestIdxs returns the indexes of the site's hot-standby spares — the NSpare slots
+// immediately after the validator destinations (per-site layout [v..., spare..., rpc...]).
+// A spare is a state-sync node (same DB profile as the validators, not archive) held ready
+// to be promoted if a validator fails. Empty if the site has no spare slots.
+func spareDestIdxs(topo Topology, targetSite int) []int {
+	base := siteBase(topo, targetSite) + topo.NVal
+	idx := make([]int, 0, topo.NSpare)
+	for s := 0; s < topo.NSpare; s++ {
+		idx = append(idx, base+s)
 	}
-	return i
+	return idx
 }
 
 // rpcMachineIdxs returns the indexes of the pinned dedicated-RPC machines in the given
 // site (their home identity is an RPC key), in ascending order — so [0] is the primary
-// (1st) RPC and the last is the redundant (2nd) RPC. Empty if the site has none.
+// RPC and the last is the redundant RPC. Empty if the site has none.
 func rpcMachineIdxs(topo Topology, site int) []int {
 	var idx []int
 	for i := 0; i < topo.Size(); i++ {
-		if topo.Site(i) == site && isRPCKey(topo.HomeKey(i)) {
+		if topo.Site(i) == site && topo.isRPCKey(topo.HomeKey(i)) {
 			idx = append(idx, i)
 		}
 	}
@@ -381,10 +380,10 @@ func (c *config) waitForTargetSynced(intents []MachineIntent, destIdx, srcIdx []
 
 // waitForFullValidatorSet blocks until every validator identity is SERVING. No timeout.
 func (c *config) waitForFullValidatorSet(intents []MachineIntent) {
-	want := len(validatorKeys())
+	want := c.topo.NVal
 	for {
 		res := c.checkHealth(intents)
-		got := servingValidatorCount(intents, res)
+		got := servingValidatorCount(c.topo, intents, res)
 		if got >= want {
 			fmt.Printf("  validators serving: %d/%d.\n", got, want)
 			return
@@ -406,7 +405,7 @@ func (c *config) waitForFullValidatorSet(intents []MachineIntent) {
 //
 // No timeout — like the other restore gates it waits as long as recovery takes.
 func (c *config) waitForValidatorsReady(intents []MachineIntent) {
-	want := len(validatorKeys())
+	want := c.topo.NVal
 	var prevTip uint64
 	havePrev := false
 	for {
@@ -415,7 +414,7 @@ func (c *config) waitForValidatorsReady(intents []MachineIntent) {
 		var tip uint64
 		parts := make([]string, 0, want)
 		for i, in := range intents {
-			if in.Cordoned || !isValidatorKey(in.Key) || i >= len(res) {
+			if in.Cordoned || !c.topo.isValidatorKey(in.Key) || i >= len(res) {
 				continue
 			}
 			name := c.topo.MachineName(i)
@@ -423,7 +422,7 @@ func (c *config) waitForValidatorsReady(intents []MachineIntent) {
 				parts = append(parts, name+" down")
 				continue
 			}
-			pc, longest, h, ok := c.consensusHealth(c.nodeIPs[i])
+			pc, longest, h, ok := c.consensusHealth(i)
 			if h > tip {
 				tip = h
 			}
@@ -457,13 +456,13 @@ func (c *config) waitForValidatorsReady(intents []MachineIntent) {
 
 // servingValidatorCount counts distinct validator identities SERVING under the
 // given intents + health snapshot.
-func servingValidatorCount(intents []MachineIntent, results []healthResult) int {
+func servingValidatorCount(topo Topology, intents []MachineIntent, results []healthResult) int {
 	n := 0
 	for i, in := range intents {
 		if i >= len(results) {
 			break
 		}
-		if !in.Cordoned && isValidatorKey(in.Key) && results[i].state == healthServing {
+		if !in.Cordoned && topo.isValidatorKey(in.Key) && results[i].state == healthServing {
 			n++
 		}
 	}

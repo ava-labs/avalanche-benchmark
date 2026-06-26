@@ -11,9 +11,6 @@ import (
 	"time"
 )
 
-// totalValidators is the fixed L1 validator set size (keys 6,7,8).
-const totalValidators = valKeyHi - valKeyLo + 1
-
 // nodeHealth is the ACTUAL state of a node, observed read-only over its RPC —
 // distinct from intent. This is what makes the summary honest: a node can be
 // "intended up" yet still BOOTSTRAPPING (alive but not voting/serving).
@@ -64,15 +61,22 @@ func classifyHealth(connErr bool, status int, body string) (nodeHealth, uint64) 
 // (re)starting validator to clear avalanchego's bootstrap startup latch:
 // ceil(75% of the validator set) — see chains/manager.go NewStartup(...,(3*W+3)/4)
 // and the wiki note on recovering a fully-stalled L1. For 3 validators this is 3.
-func neededOnlineToRejoin() int { return (3*totalValidators + 3) / 4 }
+func neededOnlineToRejoin(nVal int) int { return (3*nVal + 3) / 4 }
+
+// quorumNeeded is the minimum validators that must be serving for the chain to
+// keep producing — ceil(2/3 of the set). For 3 validators this is 2.
+func quorumNeeded(nVal int) int { return (2*nVal + 2) / 3 }
 
 type healthResult struct {
 	state nodeHealth
 	block uint64
 }
 
-func (c *config) rpcURL(ip string) string {
-	return fmt.Sprintf("http://%s:9652/ext/bc/%s/rpc", ip, c.chainID)
+// rpcURL is the L1 RPC endpoint for pool slot i, on that instance's HTTP port
+// (9652 for a normal node, bumped for a co-located one).
+func (c *config) rpcURL(i int) string {
+	in := c.instances[i]
+	return fmt.Sprintf("http://%s:%d/ext/bc/%s/rpc", in.host, in.httpPort, c.chainID)
 }
 
 func probe(client *http.Client, url string) healthResult {
@@ -103,9 +107,10 @@ func probe(client *http.Client, url string) healthResult {
 // ok is false if the endpoint is unreachable or the L1 chain's check is absent
 // (node still coming up) — callers treat that as not-ready. A 503 (node-unhealthy)
 // still carries the JSON body, so the per-chain numbers are parsed regardless.
-func (c *config) consensusHealth(ip string) (percentConnected float64, longestProcessing time.Duration, lastAccepted uint64, ok bool) {
+func (c *config) consensusHealth(i int) (percentConnected float64, longestProcessing time.Duration, lastAccepted uint64, ok bool) {
+	in := c.instances[i]
 	client := &http.Client{Timeout: 4 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://%s:9652/ext/health/health", ip))
+	resp, err := client.Get(fmt.Sprintf("http://%s:%d/ext/health/health", in.host, in.httpPort))
 	if err != nil {
 		return 0, 0, 0, false
 	}
@@ -164,10 +169,10 @@ func (c *config) checkHealth(intents []MachineIntent) []healthResult {
 			continue
 		}
 		wg.Add(1)
-		go func(i int, ip string) {
+		go func(i int) {
 			defer wg.Done()
-			results[i] = probe(client, c.rpcURL(ip))
-		}(i, c.nodeIPs[i])
+			results[i] = probe(client, c.rpcURL(i))
+		}(i)
 	}
 	wg.Wait()
 	return results
@@ -183,7 +188,7 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 	for i, in := range intents {
 		ip := cfg.nodeIPs[i]
 		name := cfg.topo.MachineName(i)
-		label := roleLabel(in.Key)
+		label := cfg.topo.roleLabel(in.Key)
 		if in.Cordoned {
 			fmt.Printf("  %s (%s): cordoned       %-9s (down by intent)\n", name, ip, label)
 			continue
@@ -197,7 +202,7 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 		default:
 			fmt.Printf("  %s (%s): DOWN           %-9s (uncordoned but not responding!)\n", name, ip, label)
 		}
-		if isValidatorKey(in.Key) {
+		if cfg.topo.isValidatorKey(in.Key) {
 			intendedValidators++
 			switch r.state {
 			case healthServing:
@@ -212,15 +217,16 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 		}
 	}
 
+	nVal := cfg.topo.NVal
 	fmt.Printf("validators serving: %d/%d (intended up: %d/%d)\n",
-		servingValidators, totalValidators, intendedValidators, totalValidators)
+		servingValidators, nVal, intendedValidators, nVal)
 
-	if servingValidators < 2 {
-		fmt.Println("WARNING: fewer than 2 validators serving — chain lacks quorum and is HALTED until restored.")
+	if servingValidators < quorumNeeded(nVal) {
+		fmt.Printf("WARNING: fewer than %d validators serving — chain lacks quorum and is HALTED until restored.\n", quorumNeeded(nVal))
 	}
-	if bootstrappingValidator && intendedValidators < neededOnlineToRejoin() {
+	if bootstrappingValidator && intendedValidators < neededOnlineToRejoin(nVal) {
 		fmt.Printf("HINT: a rejoining validator needs >=%d of %d validators connected to clear the bootstrap\n",
-			neededOnlineToRejoin(), totalValidators)
+			neededOnlineToRejoin(nVal), nVal)
 		fmt.Println("      startup latch. Bring up the remaining validator machine(s) so they recover together.")
 	}
 	if downUncordoned {
@@ -228,17 +234,25 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 	}
 }
 
-func roleLabel(key int) string {
+// roleLabel renders the operator-facing role for a committed key: a live validator
+// identity ("v1"..), or a non-validating home identity classified by the slot it
+// belongs to — pinned RPC, hot spare, a site-B syncing tracker, or a displaced
+// site-A validator-slot parked on its home identity.
+func (t Topology) roleLabel(key int) string {
+	if t.isValidatorKey(key) {
+		return fmt.Sprintf("v%d", key-l1KeyBase+1)
+	}
+	slot := key - t.homeBase()
 	switch {
-	case isValidatorKey(key):
-		return fmt.Sprintf("v%d", key-valKeyLo+1)
-	case isRPCKey(key):
+	case slot < 0 || slot >= t.Size():
+		return "nv"
+	case t.isRPCSlot(slot):
 		return "rpc(nv)"
-	case key >= 11 && key <= 13:
-		return "idle(nv)" // displaced site-A machine parked on its home identity
-	case key >= 14 && key <= 17:
+	case t.isSpareSlot(slot):
+		return "spare(nv)"
+	case t.Site(slot) == siteB:
 		return "sync(nv)" // site-B zero-weight syncing tracker
 	default:
-		return "spare(nv)"
+		return "idle(nv)" // displaced site-A validator-slot on its home identity
 	}
 }

@@ -14,7 +14,8 @@ import (
 // planner needs none of this; only the I/O orchestration does.
 type config struct {
 	topo         Topology
-	nodeIPs      []string // pool machines: site A (first 5 of NODE_IPS), then site B (BACKUP_SITE_NODE_IPS) if configured
+	nodeIPs      []string   // pool machines: site A (NODE_IPS), then site B (BACKUP_SITE_NODE_IPS) if configured
+	instances    []instance // one per pool slot, parallel to nodeIPs; carries ports + dirs (co-location aware)
 	sshUser      string
 	sshKey       string
 	remoteDir    string // e.g. ~/avalanche-benchmark (tilde expanded remotely)
@@ -35,26 +36,94 @@ func mustEnv(key string) string {
 	return v
 }
 
-func loadConfig() *config {
-	ips := strings.Split(mustEnv("NODE_IPS"), ",")
-	if len(ips) < sitePoolSize {
-		fatalf("NODE_IPS has %d entries, need at least %d pool machines", len(ips), sitePoolSize)
+// splitIPs parses a comma-separated IP list, trimming blanks and dropping empties.
+func splitIPs(csv string) []string {
+	var out []string
+	for _, s := range strings.Split(csv, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
 	}
-	pool := ips[:sitePoolSize]
+	return out
+}
 
-	topo := Topology{}
+// loadPool derives the topology, ordered pool, and per-slot instances from the
+// per-role IP env. Each site is defined by three lists whose LENGTHS set the
+// counts and whose VALUES set placement (a repeated IP co-locates another process
+// on that box):
+//
+//	VALIDATOR_IPS / SPARE_IPS / RPC_IPS                 (site A)
+//	BACKUP_VALIDATOR_IPS / BACKUP_SPARE_IPS / BACKUP_RPC_IPS (site B, optional)
+//
+// Per site the pool is laid out [validators..., spares..., rpcs...]. Validators
+// must be >=3 (hard error) and RPCs >=1 (warn if <2 — restore's snapshot-the-twin
+// trick degrades with a single ingress node). The two sites must share the same
+// shape, since the registered validator set moves between them on failover.
+//
+// Back-compat: if VALIDATOR_IPS is unset, fall back to the legacy positional
+// NODE_IPS / BACKUP_SITE_NODE_IPS as the fixed 3 validators + 1 spare + 2 RPCs.
+// Split out from loadConfig so `endpoints` can run with just the IP env.
+func loadPool() (Topology, []string, []instance) {
+	if os.Getenv("VALIDATOR_IPS") == "" {
+		return loadPoolPositional()
+	}
+
+	valA := splitIPs(mustEnv("VALIDATOR_IPS"))
+	spareA := splitIPs(os.Getenv("SPARE_IPS"))
+	rpcA := splitIPs(os.Getenv("RPC_IPS"))
+	if len(valA) < 3 {
+		fatalf("VALIDATOR_IPS has %d IP(s); a live L1 needs at least 3 validators", len(valA))
+	}
+	if len(rpcA) < 1 {
+		fatalf("RPC_IPS is empty; need at least 1 RPC node for ingress")
+	} // the <2 RPC heads-up is emitted by warnColocation (state-changing commands only)
+
+	topo := Topology{NVal: len(valA), NSpare: len(spareA), NRPC: len(rpcA)}
+	pool := append(append(append([]string{}, valA...), spareA...), rpcA...)
+
+	if os.Getenv("BACKUP_VALIDATOR_IPS") != "" {
+		valB := splitIPs(mustEnv("BACKUP_VALIDATOR_IPS"))
+		spareB := splitIPs(os.Getenv("BACKUP_SPARE_IPS"))
+		rpcB := splitIPs(os.Getenv("BACKUP_RPC_IPS"))
+		if len(valB) != topo.NVal || len(spareB) != topo.NSpare || len(rpcB) != topo.NRPC {
+			fatalf("backup site shape (%dv/%ds/%dr) must match primary (%dv/%ds/%dr) — the validator set moves between sites on failover",
+				len(valB), len(spareB), len(rpcB), topo.NVal, topo.NSpare, topo.NRPC)
+		}
+		topo.TwoSite = true
+		pool = append(pool, valB...)
+		pool = append(pool, spareB...)
+		pool = append(pool, rpcB...)
+	}
+	return topo, pool, buildInstances(pool)
+}
+
+// loadPoolPositional is the legacy fixed 3/1/2 layout from NODE_IPS /
+// BACKUP_SITE_NODE_IPS, preserved so existing deploys behave identically.
+func loadPoolPositional() (Topology, []string, []instance) {
+	const legacyPool = 6 // 3 validators + 1 spare + 2 RPCs
+	topo := Topology{NVal: 3, NSpare: 1, NRPC: 2}
+	ips := strings.Split(mustEnv("NODE_IPS"), ",")
+	if len(ips) < legacyPool {
+		fatalf("NODE_IPS has %d entries, need at least %d pool machines", len(ips), legacyPool)
+	}
+	pool := ips[:legacyPool]
 	if backup := os.Getenv("BACKUP_SITE_NODE_IPS"); backup != "" {
 		bips := strings.Split(backup, ",")
-		if len(bips) != sitePoolSize {
-			fatalf("BACKUP_SITE_NODE_IPS has %d entries, need exactly %d backup-site machines", len(bips), sitePoolSize)
+		if len(bips) != legacyPool {
+			fatalf("BACKUP_SITE_NODE_IPS has %d entries, need exactly %d backup-site machines", len(bips), legacyPool)
 		}
 		topo.TwoSite = true
 		pool = append(pool, bips...)
 	}
+	return topo, pool, buildInstances(pool)
+}
 
+func loadConfig() *config {
+	topo, pool, insts := loadPool()
 	return &config{
 		topo:         topo,
 		nodeIPs:      pool,
+		instances:    insts,
 		sshUser:      mustEnv("SSH_USER"),
 		sshKey:       mustEnv("SSH_KEY_PATH"),
 		remoteDir:    envOr("REMOTE_DIR", "~/avalanche-benchmark"),
@@ -166,18 +235,24 @@ func (c *config) scp(localPath, host, remotePath string, recursive bool) {
 // all cores on the (idle, stopped) source — much faster than single-threaded gzip
 // and a better ratio, so fewer bytes cross the slow cross-region link. (If a node
 // lacks zstd the pull fails cleanly and restore falls back to state-sync.)
-func (c *config) snapshotPull(host, localTar string) bool {
+func (c *config) snapshotPull(srcIdx int, localTar string) bool {
+	in := c.instances[srcIdx]
 	f, err := os.Create(localTar)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "snapshot: create %s: %v\n", localTar, err)
 		return false
 	}
 	defer f.Close()
-	cmd := exec.Command("ssh", c.sshArgs(host, fmt.Sprintf("cd %s && tar -cf - data/validator | zstd -3 -T0", c.remoteDir))...)
+	// Tar the CONTENTS of the data dir (relative "./db", "./logs", …) rather than the
+	// dir itself, so a snapshot from one instance can be extracted into a target whose
+	// data dir has a different name (e.g. data/validator -> data/validator-1 when the
+	// recovering node is co-located). For a normal (non-co-located) restore this is the
+	// same bytes as before, just relative paths.
+	cmd := exec.Command("ssh", c.sshArgs(in.host, fmt.Sprintf("cd %s/%s && tar -cf - . | zstd -3 -T0", c.remoteDir, in.dataDir))...)
 	cmd.Stdout = f
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "snapshot pull from %s failed: %v\n", host, err)
+		fmt.Fprintf(os.Stderr, "snapshot pull from %s failed: %v\n", in.host, err)
 		return false
 	}
 	return true
@@ -187,25 +262,36 @@ func (c *config) snapshotPull(host, localTar string) bool {
 // data/validator from the source's committed state. The target MUST be stopped and
 // its data/validator removed first (loadSnapshot does this) so nothing stale merges
 // with the extracted image.
-func (c *config) snapshotPush(host, localTar string) {
+func (c *config) snapshotPush(dstIdx int, localTar string) {
+	in := c.instances[dstIdx]
 	f, err := os.Open(localTar)
 	if err != nil {
 		fatalf("snapshot: open %s: %v", localTar, err)
 	}
 	defer f.Close()
-	cmd := exec.Command("ssh", c.sshArgs(host, fmt.Sprintf("cd %s && zstd -dc | tar -xf -", c.remoteDir))...)
+	// Extract the relative-path image (see snapshotPull) INTO this instance's own data
+	// dir, whatever it is named — decoupling source and destination dir names.
+	cmd := exec.Command("ssh", c.sshArgs(in.host, fmt.Sprintf("mkdir -p %s/%s && cd %s/%s && zstd -dc | tar -xf -", c.remoteDir, in.dataDir, c.remoteDir, in.dataDir))...)
 	cmd.Stdin = f
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		fatalf("snapshot push to %s failed: %v", host, err)
+		fatalf("snapshot push to %s failed: %v", in.host, err)
 	}
 }
 
-// observe reads liveness (pgrep) and the active key marker (cat) in one round trip.
-func (c *config) observe(host string) Observed {
-	out := c.ssh(host, fmt.Sprintf(
-		"pgrep -x avalanchego >/dev/null && echo A || echo D; cat %s/staking/active/key_index 2>/dev/null || echo 0",
-		c.remoteDir))
+// observe reads liveness (pgrep) and the active key marker (cat) for pool slot i in
+// one round trip. On a normal (one-process) box liveness is the exact-name `pgrep -x
+// avalanchego` it always was; on a co-located box it matches THIS instance by its
+// unique HTTP port so a housemate process isn't mistaken for this one.
+func (c *config) observe(i int) Observed {
+	in := c.instances[i]
+	live := "pgrep -x avalanchego >/dev/null"
+	if in.shared {
+		live = fmt.Sprintf("pgrep -f -- '%s' >/dev/null", in.procPat)
+	}
+	out := c.ssh(in.host, fmt.Sprintf(
+		"%s && echo A || echo D; cat %s/%s/key_index 2>/dev/null || echo 0",
+		live, c.remoteDir, in.activeDir))
 	lines := strings.Split(out, "\n")
 	ob := Observed{}
 	if len(lines) > 0 {
@@ -223,93 +309,126 @@ func (c *config) observe(host string) Observed {
 // does not), avoiding self-termination of the SSH session.
 const pluginPat = "avalanche-benchmark/[p]lugins/"
 
-// killNode kills avalanchego AND its orphaned subnet-evm plugin children, then
-// waits for both to disappear. avalanchego runs the VM as a go-plugin child
-// process; SIGKILLing the parent orphans the child, which keeps the plugin binary
-// open (ETXTBSY) and blocks re-upload — and these orphans accumulate across
-// failover cycles. So every stop must reap the plugin too.
-func (c *config) killNode(host string) {
-	c.ssh(host, "pkill -KILL -x avalanchego || true; pkill -KILL -f '"+pluginPat+"' || true")
-	for i := 0; i < 40; i++ {
-		out := c.ssh(host,
-			"{ pgrep -x avalanchego >/dev/null || pgrep -f '"+pluginPat+"' >/dev/null; } && echo A || echo D")
-		if out == "D" {
+// killNode kills the avalanchego for pool slot i AND its orphaned subnet-evm plugin
+// child, then waits for it to disappear. avalanchego runs the VM as a go-plugin child
+// process; SIGKILLing the parent orphans the child, which keeps the plugin binary open
+// (ETXTBSY) and blocks re-upload — and these orphans accumulate across failover cycles.
+// So every stop must reap the plugin too.
+//
+// On a normal (one-process) box this is the exact-name reap it always was: kill every
+// avalanchego + every plugin on the host. On a CO-LOCATED box that broad reap would
+// take down the housemate processes, so we instead target THIS instance by its unique
+// HTTP port and reap only its own plugin child (pgrep -P on that pid).
+func (c *config) killNode(i int) {
+	in := c.instances[i]
+	kill, alive := c.killCmds(in)
+	c.ssh(in.host, kill)
+	for k := 0; k < 40; k++ {
+		if c.ssh(in.host, alive) == "D" {
 			return
 		}
-		c.ssh(host, "pkill -KILL -x avalanchego || true; pkill -KILL -f '"+pluginPat+"' || true")
+		c.ssh(in.host, kill)
 		time.Sleep(250 * time.Millisecond)
 	}
-	fatalf("avalanchego/plugin on %s did not exit after pkill", host)
+	fatalf("avalanchego/plugin for %s on %s did not exit after pkill", c.topo.MachineName(i), in.host)
+}
+
+// killCmds returns the (kill, liveness-probe) shell commands for an instance, choosing
+// the broad host-wide reap for a single-process box and a PID-scoped reap for a
+// co-located one. Split out so killNode stays a simple kill/wait loop.
+func (c *config) killCmds(in instance) (kill, alive string) {
+	if !in.shared {
+		kill = "pkill -KILL -x avalanchego || true; pkill -KILL -f '" + pluginPat + "' || true"
+		alive = "{ pgrep -x avalanchego >/dev/null || pgrep -f '" + pluginPat + "' >/dev/null; } && echo A || echo D"
+		return kill, alive
+	}
+	// Co-located: find this instance's avalanchego by its unique http-port, kill it and
+	// its direct children (the go-plugin process), leaving housemates untouched.
+	kill = fmt.Sprintf(
+		"for pid in $(pgrep -f -- '%s'); do kids=$(pgrep -P \"$pid\" 2>/dev/null || true); kill -KILL \"$pid\" $kids 2>/dev/null || true; done",
+		in.procPat)
+	alive = fmt.Sprintf("pgrep -f -- '%s' >/dev/null && echo A || echo D", in.procPat)
+	return kill, alive
 }
 
 // stop kills the node and waits for it to actually exit.
-func (c *config) stop(host string) {
-	c.killNode(host)
+func (c *config) stop(i int) {
+	c.killNode(i)
 }
 
 // swap wipes staking/active and copies the committed key set for the given index
 // in, then rewrites the key_index marker. Wipe-before-write: a crash mid-swap
 // leaves the key missing (re-run re-copies), never duplicated.
-func (c *config) swap(host string, keyIdx int) {
-	c.ssh(host, fmt.Sprintf(
-		"cd %s && rm -rf staking/active && mkdir -p staking/active && "+
-			"cp staking/l1/%d/staker.crt staking/l1/%d/staker.key staking/l1/%d/signer.key staking/active/ && "+
-			"echo %d > staking/active/key_index",
-		c.remoteDir, keyIdx, keyIdx, keyIdx, keyIdx))
+func (c *config) swap(i, keyIdx int) {
+	in := c.instances[i]
+	c.ssh(in.host, fmt.Sprintf(
+		"cd %s && rm -rf %s && mkdir -p %s && "+
+			"cp staking/l1/%d/staker.crt staking/l1/%d/staker.key staking/l1/%d/signer.key %s/ && "+
+			"echo %d > %s/key_index",
+		c.remoteDir, in.activeDir, in.activeDir, keyIdx, keyIdx, keyIdx, in.activeDir, keyIdx, in.activeDir))
 }
 
-// startScript renders the identity-agnostic launch script. Identity lives in the
-// files under staking/active (swapped in pass 1), so this command is byte-identical
-// regardless of which validator the machine hosts. data/ is preserved (never wiped
-// here) so a hot spare rejoins in seconds.
-func (c *config) startScript(nodeIP string) string {
+// startScript renders the identity-agnostic launch script for pool slot i. Identity
+// lives in the files under the instance's staking/active dir (swapped in pass 1), so
+// this command is the same regardless of which validator the machine hosts. The data
+// dir is preserved (never wiped here) so a hot spare rejoins in seconds. All ports and
+// paths come from the instance, so a co-located 2nd process lands on its own ports and
+// dirs; for a normal node these are the original 9652/9653 + data/validator values.
+func (c *config) startScript(i int) string {
+	in := c.instances[i]
 	return fmt.Sprintf(`#!/bin/bash
 set -e
 cd %[1]s
 
-mkdir -p "data/validator/configs/chains/%[2]s" "data/validator/configs/subnets" "data/validator/db" "data/validator/logs"
-cp chain-config.json "data/validator/configs/chains/%[2]s/config.json"
-cp subnet-config.json "data/validator/configs/subnets/%[3]s.json"
+mkdir -p "%[7]s/configs/chains/%[2]s" "%[7]s/configs/subnets" "%[7]s/db" "%[7]s/logs"
+cp %[8]s "%[7]s/configs/chains/%[2]s/config.json"
+cp subnet-config.json "%[7]s/configs/subnets/%[3]s.json"
 
 setsid ./bin/avalanchego \
-    --http-port=9652 \
-    --staking-port=9653 \
+    --http-port=%[9]d \
+    --staking-port=%[10]d \
     --http-host=0.0.0.0 \
     --public-ip=%[4]s \
-    --db-dir=data/validator/db \
-    --log-dir=data/validator/logs \
-    --data-dir=data/validator \
+    --db-dir=%[7]s/db \
+    --log-dir=%[7]s/logs \
+    --data-dir=%[7]s \
     --network-id=local \
-    --staking-tls-cert-file=staking/active/staker.crt \
-    --staking-tls-key-file=staking/active/staker.key \
-    --staking-signer-key-file=staking/active/signer.key \
+    --staking-tls-cert-file=%[11]s/staker.crt \
+    --staking-tls-key-file=%[11]s/staker.key \
+    --staking-signer-key-file=%[11]s/signer.key \
     --plugin-dir=$(pwd)/plugins \
     --config-file=node-config.json \
-    --chain-config-dir=data/validator/configs/chains \
-    --subnet-config-dir=data/validator/configs/subnets \
+    --chain-config-dir=%[7]s/configs/chains \
+    --subnet-config-dir=%[7]s/configs/subnets \
     --track-subnets="%[3]s" \
     --bootstrap-ips=%[5]s \
     --bootstrap-ids=%[6]s \
-    >data/validator/logs/avalanchego.out 2>&1 < /dev/null &
-`, c.remoteDir, c.chainID, c.subnetID, nodeIP, c.bootstrapIPs, c.bootstrapIDs)
+    >%[7]s/logs/avalanchego.out 2>&1 < /dev/null &
+`, c.remoteDir, c.chainID, c.subnetID, in.host, c.bootstrapIPs, c.bootstrapIDs,
+		in.dataDir, in.chainCfg, in.httpPort, in.stakingPort, in.activeDir)
 }
 
-func (c *config) start(host, nodeIP string) {
-	script := c.startScript(nodeIP)
-	remoteScript := c.remoteDir + "/start-l1-validator.sh"
-	c.sshStdin(host,
+func (c *config) start(i int) {
+	in := c.instances[i]
+	script := c.startScript(i)
+	remoteScript := c.remoteDir + "/" + in.startScript
+	c.sshStdin(in.host,
 		fmt.Sprintf("cat > %s && chmod +x %s && %s", remoteScript, remoteScript, remoteScript),
 		script)
 }
 
-// freshClean kills the process and wipes data/ + staking/active so the next
-// observe reads dead + key 0. Used only by `reconcile fresh`.
-func (c *config) freshClean(host string) {
-	c.killNode(host)
-	c.ssh(host, fmt.Sprintf(
-		"cd %s 2>/dev/null && rm -rf data staking/active || true; "+
+// freshClean kills the process for pool slot i and wipes ITS data + staking/active
+// dirs so the next observe reads dead + key 0. Used only by `reconcile fresh`. Only
+// this instance's dirs are removed (not the whole data/ tree), so co-located
+// housemates on the same box are left intact; the shared base dirs are ensured to
+// exist for the subsequent upload.
+func (c *config) freshClean(i int) {
+	in := c.instances[i]
+	c.killNode(i)
+	c.ssh(in.host, fmt.Sprintf(
+		"cd %s 2>/dev/null && rm -rf %s %s || true; "+
 			"mkdir -p %s/bin %s/plugins %s/staking/l1",
-		c.remoteDir, c.remoteDir, c.remoteDir, c.remoteDir))
+		c.remoteDir, in.dataDir, in.activeDir, c.remoteDir, c.remoteDir, c.remoteDir))
 }
 
 // wipeL1Data stops the node and deletes its entire data/validator directory so it
@@ -331,34 +450,30 @@ func (c *config) freshClean(host string) {
 // unaffected. On restart the node re-bootstraps the primary network from the dev
 // machine and state-syncs the L1 to tip (state-sync-enabled in chain-config.json);
 // startScript re-creates the dirs and re-copies configs.
-func (c *config) wipeL1Data(host string) {
-	c.killNode(host)
-	c.ssh(host, fmt.Sprintf("cd %s && rm -rf data/validator || true", c.remoteDir))
+func (c *config) wipeL1Data(i int) {
+	in := c.instances[i]
+	c.killNode(i)
+	c.ssh(in.host, fmt.Sprintf("cd %s && rm -rf %s || true", c.remoteDir, in.dataDir))
 }
 
-// provisioned reports whether the machine already has binary, plugin, configs and
-// every committed key set the topology can assign to it.
+// provisioned reports whether the box already has binary, plugin, shared configs,
+// every committed key set the topology can assign to it, AND the role chain-config for
+// every instance it hosts (so adding a co-located 2nd instance to a previously
+// single-process box re-triggers an upload for that box's new chain-config-N.json).
 func (c *config) provisioned(host string) bool {
-	var keyChecks strings.Builder
+	var checks strings.Builder
 	for _, k := range c.topo.AllKeys() {
-		fmt.Fprintf(&keyChecks, "test -d staking/l1/%d && ", k)
+		fmt.Fprintf(&checks, "test -d staking/l1/%d && ", k)
+	}
+	for _, i := range c.instancesOnHost(host) {
+		fmt.Fprintf(&checks, "test -f %s && ", c.instances[i].chainCfg)
 	}
 	out := c.ssh(host, fmt.Sprintf(
 		"cd %s 2>/dev/null && test -f bin/avalanchego && test -f plugins/%s && "+
-			"test -f node-config.json && test -f chain-config.json && test -f subnet-config.json && "+
+			"test -f node-config.json && test -f subnet-config.json && "+
 			"%secho OK || echo MISSING",
-		c.remoteDir, c.subnetEVMID, keyChecks.String()))
+		c.remoteDir, c.subnetEVMID, checks.String()))
 	return out == "OK"
-}
-
-// nodeIndex returns the pool index of host, or -1 if it is not a known pool machine.
-func (c *config) nodeIndex(host string) int {
-	for i, h := range c.nodeIPs {
-		if h == host {
-			return i
-		}
-	}
-	return -1
 }
 
 // isArchiveNode reports whether machine i is a pinned dedicated-RPC node — the LAST
@@ -372,7 +487,7 @@ func (c *config) isArchiveNode(i int) bool {
 	if i < 0 {
 		return false
 	}
-	return i%sitePoolSize >= sitePoolSize-2
+	return c.topo.isRPCSlot(i)
 }
 
 // backupSiteMinDelayMS is the block-production cadence the BACKUP site (B) runs at whenever it
@@ -384,39 +499,47 @@ func (c *config) isArchiveNode(i int) bool {
 // baked into site B's config; the primary (A) keeps chain-config.json's 25ms.
 const backupSiteMinDelayMS = 100
 
-// deployChainConfig writes host's ROLE-appropriate chain-config to ~/chain-config.json (which the
-// start script copies into place): the archive profile (pruning + state-sync disabled) for the
-// pinned RPC nodes, the light profile (state-sync + pruning) for validators and the spare. Both
-// land as chain-config.json so startScript is unchanged. On the BACKUP site it also lowers
+// deployChainConfig writes pool slot i's ROLE-appropriate chain-config to its instance
+// config file (which the start script copies into place): the archive profile (pruning
+// + state-sync disabled) for the pinned RPC nodes, the light profile (state-sync +
+// pruning) for validators and the spare. For a normal node the file is chain-config.json
+// (startScript unchanged); a co-located instance gets chain-config-N.json so housemates
+// with different roles don't clobber each other. On the BACKUP site it also lowers
 // min-delay-target to backupSiteMinDelayMS so that site produces slowly when it takes over.
 // Re-applied on restore so a node's pruning/state-sync mode is reset to match its role-default DB.
-func (c *config) deployChainConfig(host string) {
-	chainCfg := "chain-config.json"
-	i := c.nodeIndex(host)
+func (c *config) deployChainConfig(i int) {
+	in := c.instances[i]
+	src := "chain-config.json"
 	if c.isArchiveNode(i) {
-		chainCfg = "chain-config-rpc.json"
+		src = "chain-config-rpc.json"
 	}
-	c.scp(c.repoDir+"/"+chainCfg, host, c.remoteDir+"/chain-config.json", false)
+	c.scp(c.repoDir+"/"+src, in.host, c.remoteDir+"/"+in.chainCfg, false)
 	if c.topo.Site(i) == siteB {
-		c.setMinDelay(host, backupSiteMinDelayMS)
+		c.setMinDelay(i, backupSiteMinDelayMS)
 	}
 }
 
-// setMinDelay rewrites min-delay-target (ms) in the node's chain-config.json. Takes effect on the
-// node's next (re)start — the VM reads min-delay-target once at init (subnet-evm vm.go).
-func (c *config) setMinDelay(host string, ms int) {
-	c.ssh(host, fmt.Sprintf(`cd %s && sed -i 's/"min-delay-target": *[0-9]*/"min-delay-target": %d/' chain-config.json`, c.remoteDir, ms))
+// setMinDelay rewrites min-delay-target (ms) in pool slot i's chain-config file. Takes effect on
+// the node's next (re)start — the VM reads min-delay-target once at init (subnet-evm vm.go).
+func (c *config) setMinDelay(i, ms int) {
+	in := c.instances[i]
+	c.ssh(in.host, fmt.Sprintf(`cd %s && sed -i 's/"min-delay-target": *[0-9]*/"min-delay-target": %d/' %s`, c.remoteDir, ms, in.chainCfg))
 }
 
-// upload pushes all artifacts a pool machine needs. Pass 0 of reconcile.
+// upload pushes all artifacts a box needs. Pass 0 of reconcile. The binary, plugin,
+// shared configs and committed key sets are pushed ONCE per physical box; the
+// role chain-config is written per instance the box hosts (one for a normal box, one
+// per co-located process otherwise).
 func (c *config) upload(host string) {
 	c.ssh(host, fmt.Sprintf("mkdir -p %s/bin %s/plugins %s/staking/l1", c.remoteDir, c.remoteDir, c.remoteDir))
 	c.scp(c.repoDir+"/bin/avalanchego", host, c.remoteDir+"/bin/", false)
 	c.scp(c.repoDir+"/bin/"+c.subnetEVMID, host, c.remoteDir+"/plugins/", false)
 	c.scp(c.repoDir+"/node-config.json", host, c.remoteDir+"/", false)
-	c.deployChainConfig(host)
 	c.scp(c.repoDir+"/subnet-config.json", host, c.remoteDir+"/", false)
 	for _, k := range c.topo.AllKeys() {
 		c.scp(fmt.Sprintf("%s/staking/l1/%d", c.repoDir, k), host, c.remoteDir+"/staking/l1/", true)
+	}
+	for _, i := range c.instancesOnHost(host) {
+		c.deployChainConfig(i)
 	}
 }

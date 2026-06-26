@@ -29,8 +29,19 @@ var outputFile string
 const (
 	pchainURI             = "http://127.0.0.1:9650"
 	l1ValidatorStartIndex = 6
-	l1ValidatorCount      = 3
+	minValidators         = 3
 )
+
+// splitTrim parses a comma-separated list, trimming blanks and dropping empties.
+func splitTrim(csv string) []string {
+	var out []string
+	for _, s := range strings.Split(csv, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
 
 func main() {
 	flag.StringVar(&outputFile, "output", "", "Write SUBNET_ID and CHAIN_ID to this file")
@@ -53,22 +64,25 @@ func run() error {
 		return fmt.Errorf("failed to load .env: %w", err)
 	}
 
-	nodeIPsRaw := os.Getenv("NODE_IPS")
-	if nodeIPsRaw == "" {
-		return fmt.Errorf("NODE_IPS not set in .env (comma-separated list of IPs)")
+	// Validator set: prefer the per-role VALIDATOR_IPS (its length is the validator
+	// count), else fall back to the legacy positional NODE_IPS (first 3 = validators).
+	// The IPs are display-only — registration is by committed staking key (NodeID),
+	// IP-agnostic — so the count is what matters here.
+	var nodeIPs []string
+	if v := os.Getenv("VALIDATOR_IPS"); v != "" {
+		nodeIPs = splitTrim(v)
+	} else if raw := os.Getenv("NODE_IPS"); raw != "" {
+		nodeIPs = splitTrim(raw)
+		if len(nodeIPs) > minValidators {
+			nodeIPs = nodeIPs[:minValidators]
+		}
+	} else {
+		return fmt.Errorf("set VALIDATOR_IPS (per-role) or NODE_IPS (legacy) in .env")
 	}
-
-	nodeIPs := strings.Split(nodeIPsRaw, ",")
-	for i := range nodeIPs {
-		nodeIPs[i] = strings.TrimSpace(nodeIPs[i])
+	if len(nodeIPs) < minValidators {
+		return fmt.Errorf("need at least %d validator IPs, got %d", minValidators, len(nodeIPs))
 	}
-	if len(nodeIPs) == 0 || nodeIPs[0] == "" {
-		return fmt.Errorf("NODE_IPS must contain at least one IP")
-	}
-	if len(nodeIPs) < l1ValidatorCount {
-		return fmt.Errorf("NODE_IPS must contain at least %d benchmark node IPs", l1ValidatorCount)
-	}
-	nodeIPs = nodeIPs[:l1ValidatorCount]
+	l1ValidatorCount := len(nodeIPs)
 
 	fmt.Println("=== Create L1 ===")
 	fmt.Printf("  P-chain API: %s\n", pchainURI)

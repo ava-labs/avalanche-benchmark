@@ -8,8 +8,8 @@ import (
 
 // loadIntents reads the intentions JSON. If the file is absent it returns the
 // default seed (first-ever run behaves like a fresh deploy of the mapping). A
-// single-site file (sitePoolSize machines) read in two-site mode is migrated by
-// appending the site-B seed (backup site joins as zero-weight trackers, A untouched).
+// single-site file (one site's worth of machines) read in two-site mode is migrated
+// by appending the site-B seed (backup site joins as zero-weight trackers, A untouched).
 func loadIntents(path string, topo Topology) ([]MachineIntent, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -22,8 +22,8 @@ func loadIntents(path string, topo Topology) ([]MachineIntent, error) {
 	if err := json.Unmarshal(data, &intents); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	if topo.TwoSite && len(intents) == sitePoolSize {
-		intents = append(intents, seedIntents(topo)[sitePoolSize:]...)
+	if topo.TwoSite && len(intents) == topo.sitePool() {
+		intents = append(intents, seedIntents(topo)[topo.sitePool():]...)
 	}
 	if len(intents) != topo.Size() {
 		return nil, fmt.Errorf("%s has %d machines, expected %d", path, len(intents), topo.Size())

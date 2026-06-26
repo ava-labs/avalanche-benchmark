@@ -6,12 +6,13 @@
 # under heavy load left it on an orphaned fork. A plain restart just re-FATALs on
 # the same bad data; this wipes the chain DB so it re-bootstraps from the network.
 #
-# It removes only data/ (chain DB, logs, generated chain configs). It does NOT
-# touch staking credentials (staking/active, staking/l1) or the uploaded
+# It removes only that node's data dir (chain DB, logs, generated chain configs).
+# It does NOT touch staking credentials (staking/active, staking/l1) or the uploaded
 # binaries/configs, so the node keeps its identity and comes back as the same
-# validator/spare.
+# validator/spare. On a co-located test box (a repeated IP in NODE_IPS) only the
+# targeted instance's data dir/process is wiped — its housemates are left running.
 #
-# Usage: ./clean.sh <machine 1-4>
+# Usage: ./clean.sh <machine number>
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -19,30 +20,10 @@ source "$SCRIPT_DIR/_failover_common.sh"
 
 M="$1"
 if [ -z "$M" ]; then
-    echo "usage: $0 <machine 1-4>" >&2
+    echo "usage: $0 <machine number>" >&2
     exit 2
 fi
 
-IP="${NODE_IPS_ARRAY[$((M - 1))]}"
-if [ -z "$IP" ]; then
-    echo "ERROR: no IP for machine $M (have ${#NODE_IPS_ARRAY[@]} nodes)" >&2
-    exit 1
-fi
-
-echo "== clean machine $M ($IP): wipe chain data, keep credentials =="
-
-# Kill avalanchego AND the subnet-evm plugin child (the [p] bracket stops the
-# pattern from matching this shell), then wipe only the data/ tree.
-ssh "$SSH_USER@$IP" "
-    pkill -KILL -x avalanchego 2>/dev/null || true
-    pkill -KILL -f 'avalanche-benchmark/[p]lugins/' 2>/dev/null || true
-    sleep 1
-    rm -rf $REMOTE_DIR/data
-    echo \"  wiped $REMOTE_DIR/data (staking/ left intact)\"
-"
-
-# Bring it back up clean via the normal reconcile pass: the node is now down with
-# its intent still 'up', so apply restarts it with its current key against a fresh
-# DB. Other nodes are a no-op.
-echo "== restarting clean via reconcile apply =="
-exec "$RECONCILE_BIN" apply
+# The reconcile binary owns the instance math (which process/port/data dir a machine
+# number maps to, including co-located boxes), so the clean is a single delegated call.
+exec "$RECONCILE_BIN" clean "$M"

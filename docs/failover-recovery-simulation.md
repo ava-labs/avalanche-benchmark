@@ -1,14 +1,19 @@
 # Failover Recovery Strategy (Simulation)
 
 Minimal toolset to simulate validator failover on a fixed fleet of machines
-running an Avalanche L1 with **3 validators**. Hard constraint: the L1 must keep
-functioning down to 2 live validators (quorum). We do **not** add validators to
-dilute the dead-node proposer fraction.
+running an Avalanche L1. This doc walks the default **3-validator** shape; the
+counts are configurable per site in `.env` (`VALIDATOR_IPS` ≥ 3, `SPARE_IPS`,
+`RPC_IPS` — length = count, values = placement), and the quorum / rejoin
+thresholds below scale with the validator count `N` (quorum `ceil(2/3·N)`, rejoin
+latch `ceil(75%·N)`). Hard constraint: the L1 must keep functioning down to a
+quorum of live validators. We do **not** add validators to dilute the dead-node
+proposer fraction.
 
 ## Topology
 
-- **Pool = machines 1–5** (`NODE_IPS` 1..5): 3 validators + 1 hot spare + 1
-  pinned dedicated-RPC node.
+- **Pool** = the per-role lists (default: 3 validators + 1 hot spare + 2 pinned
+  dedicated-RPC nodes). The worked example here uses the smaller 3/1/1 single-site
+  shape (machines 1–5):
 - Steady state after deploy: `m1=v1` (key `staking/l1/6`), `m2=v2` (key 7),
   `m3=v3` (key 8), `m4=spare` (non-validating key `staking/l1/9`), `m5=rpc`
   (pinned non-validating key `staking/l1/10`).

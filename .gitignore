@@ -58,3 +58,4 @@ nohup.out
 # Local editor/agent state
 /.claude/
 .DS_Store
+.linux-build/

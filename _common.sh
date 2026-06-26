@@ -54,29 +54,50 @@ if [ -z "$SSH_USER" ]; then
     exit 1
 fi
 
+# Topology config. PREFERRED: explicit per-role IP lists per data center —
+#   VALIDATOR_IPS / SPARE_IPS / RPC_IPS           (site A)
+#   BACKUP_VALIDATOR_IPS / BACKUP_SPARE_IPS / BACKUP_RPC_IPS  (site B, optional)
+# Each list's LENGTH sets that role's count; its VALUES set placement (repeat an IP
+# to co-locate another process on that box). We assemble the positional NODE_IPS /
+# BACKUP_SITE_NODE_IPS the rest of the tooling consumes (slot order: validators,
+# spares, rpcs) AND export the per-role vars so reconcile/create-l1 read the counts
+# directly. Validation (>=3 validators, >=1 rpc) lives in reconcile/loadPool.
+#
+# LEGACY fallback: if VALIDATOR_IPS is unset, NODE_IPS / BACKUP_SITE_NODE_IPS are
+# used as-is (the fixed 3 validators + 1 spare + 2 RPCs layout).
+if [ -n "${VALIDATOR_IPS:-}" ]; then
+    NODE_IPS="${VALIDATOR_IPS}${SPARE_IPS:+,${SPARE_IPS}}${RPC_IPS:+,${RPC_IPS}}"
+    if [ -n "${BACKUP_VALIDATOR_IPS:-}" ]; then
+        BACKUP_SITE_NODE_IPS="${BACKUP_VALIDATOR_IPS}${BACKUP_SPARE_IPS:+,${BACKUP_SPARE_IPS}}${BACKUP_RPC_IPS:+,${BACKUP_RPC_IPS}}"
+    fi
+    export VALIDATOR_IPS SPARE_IPS RPC_IPS BACKUP_VALIDATOR_IPS BACKUP_SPARE_IPS BACKUP_RPC_IPS
+    PER_ROLE_TOPOLOGY=1
+fi
+
 # Parse NODE_IPS into array
 if [ -z "$NODE_IPS" ]; then
-    echo "ERROR: NODE_IPS not set in .env"
+    echo "ERROR: no node IPs set in .env"
     echo ""
-    echo "Set NODE_IPS to exactly six comma-separated benchmark node IPs."
+    echo "Set per-role lists (VALIDATOR_IPS / SPARE_IPS / RPC_IPS), or the legacy NODE_IPS."
     exit 1
 fi
 
 IFS=',' read -ra NODE_IPS_ARRAY <<< "$NODE_IPS"
 NODE_COUNT=${#NODE_IPS_ARRAY[@]}
 
-if [ "$NODE_COUNT" -ne 6 ]; then
-    echo "ERROR: NODE_IPS must contain exactly six benchmark node IPs"
+# Legacy positional mode requires exactly the fixed 6-slot site. Per-role mode is
+# count-flexible (reconcile enforces >=3 validators / >=1 rpc).
+if [ -z "${PER_ROLE_TOPOLOGY:-}" ] && [ "$NODE_COUNT" -ne 6 ]; then
+    echo "ERROR: legacy NODE_IPS must contain exactly six node IPs (or use VALIDATOR_IPS/SPARE_IPS/RPC_IPS)"
     exit 1
 fi
 
-# Optional backup site (site B) for two-site failover. When set it must be
-# exactly six more IPs: b1-b3 zero-weight syncing trackers, b4 spare, b5/b6 archive RPCs.
+# Optional backup site (site B) for two-site failover.
 BACKUP_SITE_NODE_IPS="${BACKUP_SITE_NODE_IPS:-}"
 if [ -n "$BACKUP_SITE_NODE_IPS" ]; then
     IFS=',' read -ra BACKUP_SITE_IPS_ARRAY <<< "$BACKUP_SITE_NODE_IPS"
-    if [ "${#BACKUP_SITE_IPS_ARRAY[@]}" -ne 6 ]; then
-        echo "ERROR: BACKUP_SITE_NODE_IPS must contain exactly six backup-site node IPs"
+    if [ -z "${PER_ROLE_TOPOLOGY:-}" ] && [ "${#BACKUP_SITE_IPS_ARRAY[@]}" -ne 6 ]; then
+        echo "ERROR: legacy BACKUP_SITE_NODE_IPS must contain exactly six backup-site node IPs"
         exit 1
     fi
 fi
@@ -151,5 +172,41 @@ print_nodes() {
     for i in "${!NODE_IPS_ARRAY[@]}"; do
         local n=$((i + 1))
         echo "  Benchmark node $n: ${NODE_IPS_ARRAY[$i]}"
+    done
+}
+
+# _count returns the number of comma-separated entries in its argument (0 if empty).
+_count() {
+    local s="${1:-}"
+    [ -z "$s" ] && { echo 0; return; }
+    local arr
+    IFS=',' read -ra arr <<< "$s"
+    echo "${#arr[@]}"
+}
+
+# ensure_staking_keys verifies every committed staking identity the configured
+# topology will reference (staking/l1/6 .. 6+NVal+Size-1) actually exists. Keys are
+# generated with `go run ./cmd/genstaking` LOCALLY and committed/shipped in the kit —
+# the control box has no Go toolchain — so this is a pre-flight check with a clear
+# remedy, not a generator. Mirrors reconcile's key scheme (plan.go).
+ensure_staking_keys() {
+    local nval nspare nrpc sp size maxkey k
+    if [ -n "${PER_ROLE_TOPOLOGY:-}" ]; then
+        nval=$(_count "$VALIDATOR_IPS"); nspare=$(_count "$SPARE_IPS"); nrpc=$(_count "$RPC_IPS")
+    else
+        nval=3; nspare=1; nrpc=2
+    fi
+    sp=$((nval + nspare + nrpc))
+    size=$sp
+    [ -n "$BACKUP_SITE_NODE_IPS" ] && size=$((2 * sp))
+    maxkey=$((6 + nval + size - 1))
+
+    for k in $(seq 6 "$maxkey"); do
+        if [ ! -d "$STAKING_DIR/l1/$k" ]; then
+            echo "ERROR: topology (${nval}v/${nspare}s/${nrpc}r per site) needs committed staking key $k," >&2
+            echo "       but $STAKING_DIR/l1/$k is missing. Generate locally and rebuild the kit:" >&2
+            echo "         go run ./cmd/genstaking $k $maxkey >> staking/node-ids.env" >&2
+            exit 1
+        fi
     done
 }

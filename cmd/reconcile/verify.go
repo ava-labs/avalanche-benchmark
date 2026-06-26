@@ -12,10 +12,10 @@ import (
 
 // blockAt fetches the L1 block at the given tag ("finalized", "latest", or a hex
 // height like "0x1f4") from a node's RPC, returning (height, hash, ok).
-func (c *config) blockAt(ip, tag string) (uint64, string, bool) {
+func (c *config) blockAt(i int, tag string) (uint64, string, bool) {
 	client := &http.Client{Timeout: 6 * time.Second}
 	req := fmt.Sprintf(`{"jsonrpc":"2.0","id":1,"method":"eth_getBlockByNumber","params":["%s",false]}`, tag)
-	resp, err := client.Post(c.rpcURL(ip), "application/json", strings.NewReader(req))
+	resp, err := client.Post(c.rpcURL(i), "application/json", strings.NewReader(req))
 	if err != nil {
 		return 0, "", false
 	}
@@ -55,7 +55,7 @@ func verifyAgreement(cfg *config) bool {
 
 	type ninfo struct {
 		name  string
-		ip    string
+		idx   int
 		h     uint64
 		ok    bool
 		isVal bool
@@ -66,15 +66,14 @@ func verifyAgreement(cfg *config) bool {
 		if in.Cordoned {
 			continue
 		}
-		ip := cfg.nodeIPs[i]
-		h, _, ok := cfg.blockAt(ip, "finalized")
-		nodes = append(nodes, ninfo{topo.MachineName(i), ip, h, ok, isValidatorKey(in.Key)})
+		h, _, ok := cfg.blockAt(i, "finalized")
+		nodes = append(nodes, ninfo{topo.MachineName(i), i, h, ok, topo.isValidatorKey(in.Key)})
 		if ok && h > maxTip {
 			maxTip = h
 		}
 	}
 
-	want := len(validatorKeys())
+	want := topo.NVal
 	serving := 0
 	for _, n := range nodes {
 		if n.isVal && n.ok {
@@ -99,7 +98,7 @@ func verifyAgreement(cfg *config) bool {
 	byHash := map[string][]string{}
 	var behind []string
 	for _, n := range nodes {
-		_, hash, ok := cfg.blockAt(n.ip, tag)
+		_, hash, ok := cfg.blockAt(n.idx, tag)
 		if !ok || hash == "" {
 			behind = append(behind, n.name)
 			continue

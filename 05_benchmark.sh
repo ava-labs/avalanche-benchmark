@@ -30,30 +30,28 @@ if [ ! -x "$BOMBARD" ]; then
     exit 1
 fi
 
-# Bombard BOTH dedicated archive RPC nodes (m5+m6, keys 10+19 = zero-weight
-# non-validators that track the subnet and serve RPC). They are PINNED: the
-# failover engine never promotes them to validators, so this clean ingress path
-# survives failover events — unlike the hot spare m4 (key 9), which becomes a
-# validator whenever one of m1-m3 goes down. Ingress on the consensus-critical
-# validators (m1-m3) wedges/throttles consensus; routing all load through the
-# dedicated non-validating RPC nodes keeps the validators healthy and holds
-# ~4000 TPS glass-smooth (2026-06-04 submission-target comparison). See wiki:
+# Bombard the PINNED dedicated archive RPC nodes (role=rpc: m5+m6 on site A, plus
+# b5+b6 in two-site mode — keys 10/19/18/20, zero-weight non-validators that track
+# the subnet and serve RPC). The failover engine never promotes them to validators,
+# so this clean ingress path survives failover events — unlike the hot spare m4
+# (key 9), which becomes a validator whenever one of m1-m3 goes down. Ingress on the
+# consensus-critical validators (m1-m3) wedges/throttles consensus; routing all load
+# through the dedicated non-validating RPC nodes keeps the validators healthy and
+# holds ~4000 TPS glass-smooth (2026-06-04 submission-target comparison). Listing all
+# four pinned RPCs lets bombard (failover-native: fans sends, watches each endpoint,
+# resubmits in-flight txs) ride through a full site failover. See wiki:
 # why_bombard_the_non_validating_rpc_tracker_not_the_validator_and_it_must_be_sybil_on.
-RPC_URLS=(
-    "http://${NODE_IPS_ARRAY[4]}:9652/ext/bc/$CHAIN_ID/rpc"
-    "http://${NODE_IPS_ARRAY[5]}:9652/ext/bc/$CHAIN_ID/rpc"
-)
-
-# Two-site mode: also feed bombard the backup site's pinned archive RPCs (b5+b6).
-# Bombard is failover-native — it fans sends across reachable endpoints, runs a
-# watcher per endpoint, and resubmits in-flight txs — so with all four pinned RPCs
-# listed the benchmark rides through a full site failover and the latency
-# report captures the recovery window. See docs/two-site-failover.md.
-if [ -n "$BACKUP_SITE_NODE_IPS" ]; then
-    RPC_URLS+=(
-        "http://${BACKUP_SITE_IPS_ARRAY[4]}:9652/ext/bc/$CHAIN_ID/rpc"
-        "http://${BACKUP_SITE_IPS_ARRAY[5]}:9652/ext/bc/$CHAIN_ID/rpc"
-    )
+#
+# Endpoints come from `reconcile endpoints` (the single source of truth for the
+# co-location-aware ports), so a co-located RPC slot is targeted on its ACTUAL port
+# rather than a hardcoded :9652 (which would hit a validator on a shared box).
+RECONCILE_BIN="$SCRIPT_DIR/bin/reconcile"
+export NODE_IPS BACKUP_SITE_NODE_IPS
+mapfile -t RPC_URLS < <("$RECONCILE_BIN" endpoints | awk -F'\t' -v c="$CHAIN_ID" \
+    '$3=="rpc"{printf "http://%s:%s/ext/bc/%s/rpc\n", $4, $5, c}')
+if [ "${#RPC_URLS[@]}" -eq 0 ]; then
+    echo "ERROR: 'reconcile endpoints' returned no RPC nodes — check NODE_IPS/bin/reconcile." >&2
+    exit 1
 fi
 RPC_LIST="$(IFS=,; echo "${RPC_URLS[*]}")"
 

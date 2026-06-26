@@ -31,7 +31,7 @@ func activeRPCsFilePath() string {
 func activeSite(intents []MachineIntent, topo Topology) int {
 	var a, b int
 	for i, in := range intents {
-		if in.Cordoned || !isValidatorKey(in.Key) {
+		if in.Cordoned || !topo.isValidatorKey(in.Key) {
 			continue
 		}
 		if topo.Site(i) == siteB {
@@ -57,7 +57,8 @@ func (c *config) writeActiveRPCs(intents []MachineIntent) {
 	site := activeSite(intents, c.topo)
 	var urls []string
 	for _, i := range rpcMachineIdxs(c.topo, site) {
-		urls = append(urls, fmt.Sprintf("http://%s:9652/ext/bc/%s/rpc", c.nodeIPs[i], c.chainID))
+		in := c.instances[i]
+		urls = append(urls, fmt.Sprintf("http://%s:%d/ext/bc/%s/rpc", in.host, in.httpPort, c.chainID))
 	}
 	if len(urls) == 0 {
 		return

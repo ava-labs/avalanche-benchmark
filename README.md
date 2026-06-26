@@ -5,17 +5,28 @@ transaction load, and **simulate cross-region validator failover** — losing a
 whole site and recovering the validator set onto the backup — on a fixed pool of
 machines, without ever adding or removing machines from the fleet.
 
-**Topology:** two sites of **6 machines** each, plus a control host. Site A
-(primary) runs **3 validators + 1 hot spare + 2 pinned archive RPC nodes**; site
-B (backup) runs **3 zero-weight syncing trackers + 1 spare + 2 pinned archive RPC
-nodes**. The three validator identities (staking keys) are *conserved* — they
-move between machines, and across sites on a `site-failover`, but are never
+**Topology (configurable):** each site runs **N validators + S hot spares + R
+pinned archive RPC nodes**, plus a shared control host. The counts are set per
+site in `.env` via per-role IP lists — `VALIDATOR_IPS` (≥3), `SPARE_IPS` (≥0),
+`RPC_IPS` (≥1) — and the **length of each list is the count, the values are the
+placement**. An IP may repeat to **co-locate** multiple nodes on one machine
+(each on its own port + data dir), so node count is decoupled from machine count:
+the full topology can run on as few as one box, or one node per box. The default
+example is the validated shape — **3 validators + 1 spare + 2 RPC** per site (6
+machines), site B (backup) running the same shape as zero-weight syncing
+trackers. The validator identities (staking keys) are *conserved* — they move
+between machines, and across sites on a `site-failover`, but are never
 duplicated, so the chain stays a single branch. The pinned RPC nodes are never
 promoted to validators, so the load generator's ingress survives failover. The
 control host runs the 5 P-chain (primary network) validators the L1 bootstraps
 against, the load generator, and the monitoring stack — it holds no L1 node, so
 it keeps coordinating through a full-site outage. Single-site mode (no backup) is
-supported unchanged — just leave `BACKUP_SITE_NODE_IPS` unset.
+supported unchanged — just leave the `BACKUP_*` lists unset.
+
+> **Co-location is a TEST affordance**, not a production layout: stacking nodes
+> on one box removes fault isolation (one box loss takes them all), so a
+> representative DR test still wants each site's validators on separate machines,
+> ideally in two regions. The tooling warns when a box carries more than one node.
 
 > **Want the full end-to-end drill in one place?** See
 > **[docs/e2e-runbook.md](docs/e2e-runbook.md)** — install → configure → deploy →
@@ -50,22 +61,36 @@ source instead (Linux, requires Go and git): `make`.
 
 ```bash
 cp .env.example .env
-# Edit .env:
+# Edit .env — explicit per-role IP lists (length = count, values = placement;
+# repeat an IP to co-locate). VALIDATOR_IPS >= 3, RPC_IPS >= 1 (2+ recommended).
 #   SSH_USER=ubuntu
 #   SSH_KEY_PATH=/path/to/your-fleet-key
-#   NODE_IPS=...               # exactly 6 — site A: m1-m3 validators, m4 spare, m5/m6 archive RPC
-#   BACKUP_SITE_NODE_IPS=...   # exactly 6 — site B: b1-b3 trackers, b4 spare, b5/b6 archive RPC
+#   VALIDATOR_IPS=A1,A2,A3      # site A validators (>=3)
+#   SPARE_IPS=A4                # site A hot spares (any count, incl. 0)
+#   RPC_IPS=A5,A6              # site A pinned archive RPCs (>=1)
+#   BACKUP_VALIDATOR_IPS=B1,B2,B3   # site B — set these to enable two-site mode
+#   BACKUP_SPARE_IPS=B4
+#   BACKUP_RPC_IPS=B5,B6
 ```
 
-`.env.example` documents each position. Setting `BACKUP_SITE_NODE_IPS` enables
-**two-site mode**: a backup data center of zero-weight syncing trackers the
+`.env.example` documents every field and shows alternate shapes (e.g. the full
+topology co-located on 3 boxes, or everything on one). After editing, run
+`./bin/reconcile endpoints` to print the resulting per-node layout
+(name / site / role / host / port) before deploying. Setting the `BACKUP_*` lists
+enables **two-site mode**: a backup data center of zero-weight syncing trackers the
 validator set can be swapped onto when the whole primary site goes down
 (`./scripts/failover/site-failover.sh b`). To return once the primary is healthy,
 use the graceful `restore.sh a` — it rolls the set back one validator at a time
 with no chain downtime; `site-failover.sh a` is the hard-cutover failback for a
 true outage (see the rollback caveat in
 [docs/two-site-failover.md](docs/two-site-failover.md)). Single-site behavior is
-unchanged when it is unset.
+unchanged when the `BACKUP_*` lists are unset.
+
+> **Validator count > 3** needs more committed staking identities than the 20
+> shipped in `staking/l1/`. `02_create_l1.sh` pre-flights this and prints the exact
+> `go run ./cmd/genstaking <lo> <hi>` to run (locally, then rebuild the kit).
+> The legacy positional `NODE_IPS` / `BACKUP_SITE_NODE_IPS` (exactly 6 each, fixed
+> 3/1/2) still works if `VALIDATOR_IPS` is unset.
 
 ## Quick start
 
@@ -78,7 +103,7 @@ full walkthrough — with what to expect at each step — is in
 ./02_create_l1.sh                   # one-time: register validators, write network.env
 ./03_wipe_and_deploy_l1.sh          # deploy all 12 nodes, start chain from genesis (destructive)
 ./04_monitoring.sh                  # Prometheus + Grafana on the control host
-./scripts/failover/status.sh        # expect all nodes SERVING, "validators serving: 3/3"
+./scripts/failover/status.sh        # expect all nodes SERVING, "validators serving: N/N" (3/3 by default)
 ./05_benchmark.sh                   # drive ~4000 tx/s at the pinned RPC nodes
 ```
 
@@ -108,9 +133,11 @@ make monitoring-deps     # one-time (source builds only): fetch prometheus + gra
 ./04_monitoring.sh       # generate scrape config, start both, print URLs
 ```
 
-It discovers the fleet from `.env` (all of `NODE_IPS`, plus `BACKUP_SITE_NODE_IPS`
-in two-site mode) and labels each target by `site` (`a`/`b`) and `machine`
-(`m1`-`m6`, `b1`-`b6`). Two dashboards are provisioned:
+It discovers the fleet from `reconcile endpoints` (the single source of truth for
+the configured topology + co-location-aware ports) and labels each target by
+`site` (`a`/`b`), `machine` (`m1`…/`b1`…), and `role` (`validator`/`spare`/`rpc`/
+`tracker`) — so the dashboards track whatever counts you set. Two dashboards are
+provisioned:
 
 - **Avalanche Benchmark** (`/d/avalanche-benchmark`) — per-node TPS, consensus,
   and verification panels.
@@ -155,10 +182,15 @@ set across sites. See
 at once** (freezing its tip at the true data-loss boundary), then the surviving
 site forms consensus on the blocks it already holds — no state is pulled from the
 dead site. `status.sh` reports every node as `SERVING@block` / `BOOTSTRAPPING` /
-`DOWN` and an honest `validators serving: X/3`, so you see what is *actually*
+`DOWN` and an honest `validators serving: X/N`, so you see what is *actually*
 happening rather than what was *intended*.
 
 ## Recovering From a Stalled Chain
+
+> The worked example below uses the default **3 validators**; the thresholds
+> scale with the configured count `N` — quorum is `ceil(2/3·N)` and the bootstrap
+> rejoin latch is `ceil(75%·N)` (both = 3 when N = 3). `status.sh` computes them
+> from `N` and prints the right numbers for your topology.
 
 With 3 validators, the L1 behaves very differently depending on whether you are
 **taking a validator down** or **bringing one back up**. The asymmetry is not a

@@ -60,15 +60,22 @@ echo "  OK."
 echo "[2/5] Generating prometheus.yml..."
 mkdir -p "$MON_DIR"
 
-emit_target() {  # ip site machine name role
-    printf "      - targets: ['%s:9652']\n" "$1"
+emit_target() {  # host port site machine instance role
+    printf "      - targets: ['%s:%s']\n" "$1" "$2"
     printf "        labels:\n"
-    printf "          instance: %s\n" "$4"
-    printf "          site: %s\n" "$2"
-    printf "          machine: %s\n" "$3"
-    printf "          role: %s\n" "$5"
+    printf "          instance: %s\n" "$5"
+    printf "          site: %s\n" "$3"
+    printf "          machine: %s\n" "$4"
+    printf "          role: %s\n" "$6"
 }
 
+# Targets AND labels come ENTIRELY from `reconcile endpoints` (the single source
+# of truth), so monitoring tracks whatever topology is configured — any
+# validator/spare/RPC counts, any co-location — with correct per-node labels.
+# No hardcoded slot count or role names. Each endpoint line is:
+#   name <TAB> site <TAB> role <TAB> host <TAB> port
+# where name is the machine id (m1..mN, b1..bN) and role is v1..vN / spare / rpc.
+export NODE_IPS BACKUP_SITE_NODE_IPS
 {
     echo "global:"
     echo "  scrape_interval: 5s"
@@ -78,22 +85,22 @@ emit_target() {  # ip site machine name role
     echo "  - job_name: 'avalanche-l1'"
     echo "    metrics_path: /ext/metrics"
     echo "    static_configs:"
-    A_NAMES=(validator-1 validator-2 validator-3 spare rpc-1 rpc-2)
-    A_ROLES=(validator validator validator spare rpc rpc)
-    for i in "${!NODE_IPS_ARRAY[@]}"; do
-        emit_target "${NODE_IPS_ARRAY[$i]}" "a" "m$((i + 1))" "${A_NAMES[$i]}" "${A_ROLES[$i]}"
-    done
-    if [ -n "$BACKUP_SITE_NODE_IPS" ]; then
-        B_NAMES=(backup-1 backup-2 backup-3 backup-4 rpc-3 rpc-4)
-        B_ROLES=(tracker tracker tracker tracker rpc rpc)
-        for i in "${!BACKUP_SITE_IPS_ARRAY[@]}"; do
-            emit_target "${BACKUP_SITE_IPS_ARRAY[$i]}" "b" "b$((i + 1))" "${B_NAMES[$i]}" "${B_ROLES[$i]}"
-        done
-    fi
+    while IFS=$'\t' read -r name site role host port; do
+        [ -n "$host" ] || continue
+        # Map the slot role to the dashboard's role vocabulary. Site-A validator
+        # slots are live validators; the SAME slots on the backup site are
+        # zero-weight syncing trackers in steady state.
+        drole="$role"
+        case "$role" in
+        v*) [ "$site" = a ] && drole=validator || drole=tracker ;;
+        spare) [ "$site" = a ] && drole=spare || drole=tracker ;;
+        rpc) drole=rpc ;;
+        esac
+        emit_target "$host" "$port" "$site" "$name" "$name" "$drole"
+    done < <("$SCRIPT_DIR/bin/reconcile" endpoints)
 } > "$PROM_YML"
 
-TARGET_COUNT=${#NODE_IPS_ARRAY[@]}
-[ -n "$BACKUP_SITE_NODE_IPS" ] && TARGET_COUNT=$((TARGET_COUNT + ${#BACKUP_SITE_IPS_ARRAY[@]}))
+TARGET_COUNT=$(grep -c "      - targets:" "$PROM_YML")
 echo "  $PROM_YML ($TARGET_COUNT targets)."
 
 # ------------------------------------------------------------------------------
@@ -173,5 +180,5 @@ echo "  Failover board:  http://$PUBLIC_IP:$GRAFANA_PORT/d/avalanche-failover?re
 echo "  Consensus board: http://$PUBLIC_IP:$GRAFANA_PORT/d/avalanche-consensus?refresh=5s&from=now-15m&to=now"
 echo "  Benchmark board: http://$PUBLIC_IP:$GRAFANA_PORT/d/avalanche-benchmark?refresh=5s"
 echo ""
-echo "Scraping $TARGET_COUNT node(s) at :9652/ext/metrics (site a = m1-m6, site b = b1-b6)."
+echo "Scraping $TARGET_COUNT node(s) at /ext/metrics on their per-slot ports (site a = m1-m6, site b = b1-b6)."
 echo "Stop with:  kill \$(cat $DATA_DIR/prometheus.pid $DATA_DIR/grafana.pid)"

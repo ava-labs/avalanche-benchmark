@@ -35,8 +35,8 @@ func TestClassifyHealth(t *testing.T) {
 
 func TestNeededOnlineToRejoin(t *testing.T) {
 	// 3 equal validators: ceil(75%) = 3 (all must be online to clear the latch).
-	if got := neededOnlineToRejoin(); got != 3 {
-		t.Errorf("neededOnlineToRejoin() = %d, want 3", got)
+	if got := neededOnlineToRejoin(3); got != 3 {
+		t.Errorf("neededOnlineToRejoin(3) = %d, want 3", got)
 	}
 }
 

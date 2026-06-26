@@ -69,7 +69,7 @@ func snapshotSourceIdx(intents []MachineIntent, topo Topology, sourceSite int) i
 		if topo.Site(i) != sourceSite || in.Cordoned {
 			continue
 		}
-		if isValidatorKey(in.Key) || isRPCKey(in.Key) {
+		if topo.isValidatorKey(in.Key) || topo.isRPCKey(in.Key) {
 			continue
 		}
 		return i
@@ -115,9 +115,9 @@ func (c *config) takeArchiveSnapshot(intents []MachineIntent, sourceSite int) (s
 // snapshotProvenanceOK enforces the Provenance invariant: only snapshot a site that
 // currently holds the full live validator set — that is the canonical tip.
 func (c *config) snapshotProvenanceOK(intents []MachineIntent, sourceSite int) bool {
-	if got := validatorKeysInSite(intents, c.topo, sourceSite, true); got != len(validatorKeys()) {
+	if got := validatorKeysInSite(intents, c.topo, sourceSite, true); got != c.topo.NVal {
 		fmt.Printf("snapshot: source site %s holds %d/%d live validators — not canonical, cannot snapshot.\n",
-			siteName(sourceSite), got, len(validatorKeys()))
+			siteName(sourceSite), got, c.topo.NVal)
 		return false
 	}
 	return true
@@ -144,18 +144,17 @@ func (c *config) captureFrom(intents []MachineIntent, srcIdx int, tarPath string
 		return "", false
 	}
 
-	srcHost := c.nodeIPs[srcIdx]
 	tip := res[srcIdx].block
 
 	fmt.Printf("== restore: snapshot %s @ block %d -> %s (stop -> copy -> restart) ==\n",
 		topo.MachineName(srcIdx), tip, tarPath)
 	_ = os.Remove(tarPath)
-	c.killNode(srcHost) // stop for a consistent on-disk image
-	if !c.snapshotPull(srcHost, tarPath) {
-		c.start(srcHost, srcHost) // best-effort restart even if the copy failed
+	c.killNode(srcIdx) // stop for a consistent on-disk image
+	if !c.snapshotPull(srcIdx, tarPath) {
+		c.start(srcIdx) // best-effort restart even if the copy failed
 		return "", false
 	}
-	c.start(srcHost, srcHost) // restart immediately — source downtime is just the copy
+	c.start(srcIdx) // restart immediately — source downtime is just the copy
 	fmt.Printf("  snapshot captured: %s (%s); %s restarted.\n", tarPath, humanSize(tarPath), topo.MachineName(srcIdx))
 	return tarPath, true
 }
@@ -173,14 +172,15 @@ func (c *config) captureFrom(intents []MachineIntent, srcIdx int, tarPath string
 // comparison is same-region and fair:
 //   - freshness: the source is within snapshotSourceMaxLag blocks of the validator tip.
 //   - branch:    source and validator return the SAME block hash at a common recent
-//                height (the single-branch proof verifyAgreement uses).
+//     height (the single-branch proof verifyAgreement uses).
+//
 // On any staleness, fork, or unreadable reference we refuse (return false) so the caller
 // falls back to wipe + state-sync — which pulls the canonical branch from the validators
 // and cannot import a fork.
 func (c *config) snapshotSourceCanonical(intents []MachineIntent, srcIdx int) bool {
 	// Reference: a live, uncordoned validator on the source (canonical) site.
 	refIdx := -1
-	for _, i := range validatorMachineIdx(intents) {
+	for _, i := range validatorMachineIdx(c.topo, intents) {
 		if c.topo.Site(i) == c.topo.Site(srcIdx) {
 			refIdx = i
 			break
@@ -190,10 +190,8 @@ func (c *config) snapshotSourceCanonical(intents []MachineIntent, srcIdx int) bo
 		fmt.Println("  source check: no live validator to compare against — refusing (will state-sync).")
 		return false
 	}
-	refIP, srcIP := c.nodeIPs[refIdx], c.nodeIPs[srcIdx]
-
-	refTip, _, okR := c.blockAt(refIP, "finalized")
-	srcTip, _, okS := c.blockAt(srcIP, "finalized")
+	refTip, _, okR := c.blockAt(refIdx, "finalized")
+	srcTip, _, okS := c.blockAt(srcIdx, "finalized")
 	if !okR || !okS {
 		fmt.Println("  source check: could not read source/reference tip — refusing (will state-sync).")
 		return false
@@ -202,8 +200,8 @@ func (c *config) snapshotSourceCanonical(intents []MachineIntent, srcIdx int) bo
 	// Branch check at a common recent height (back off the tip to avoid sampling skew).
 	common := commonHeight(refTip, srcTip)
 	tag := fmt.Sprintf("0x%x", common)
-	_, refHash, okRH := c.blockAt(refIP, tag)
-	_, srcHash, okSH := c.blockAt(srcIP, tag)
+	_, refHash, okRH := c.blockAt(refIdx, tag)
+	_, srcHash, okSH := c.blockAt(srcIdx, tag)
 	if !okRH || !okSH || refHash == "" || srcHash == "" {
 		fmt.Printf("  source check: could not read block %d for branch comparison — refusing (will state-sync).\n", common)
 		return false
@@ -259,10 +257,11 @@ func shortHash(h string) string {
 // loadSnapshot stops the target, removes its (stale) chain data, and extracts the
 // snapshot in its place. The node is started later by reconcile, at which point it
 // opens the seeded DB and linear-replays only the small delta to the live tip.
-func (c *config) loadSnapshot(host, tar string) {
-	c.killNode(host)
-	c.ssh(host, fmt.Sprintf("cd %s && rm -rf data/validator", c.remoteDir))
-	c.snapshotPush(host, tar)
+func (c *config) loadSnapshot(i int, tar string) {
+	in := c.instances[i]
+	c.killNode(i)
+	c.ssh(in.host, fmt.Sprintf("cd %s && rm -rf %s", c.remoteDir, in.dataDir))
+	c.snapshotPush(i, tar)
 }
 
 // seedFromSnapshot loads a snapshot AND sets the target's chain-config to srcCfg — the
@@ -272,10 +271,11 @@ func (c *config) loadSnapshot(host, tar string) {
 // archive RPC (pruning-disabled) must run the archive config, not its own role default — and
 // the start script copies ~/chain-config.json into place on launch, so that is the file to
 // overwrite. srcCfg empty (read failed) falls back to a plain load, preserving prior behavior.
-func (c *config) seedFromSnapshot(host, tar, srcCfg string) {
-	c.loadSnapshot(host, tar)
+func (c *config) seedFromSnapshot(i int, tar, srcCfg string) {
+	in := c.instances[i]
+	c.loadSnapshot(i, tar)
 	if srcCfg != "" {
-		c.sshStdin(host, fmt.Sprintf("cat > %s/chain-config.json", c.remoteDir), srcCfg)
+		c.sshStdin(in.host, fmt.Sprintf("cat > %s/%s", c.remoteDir, in.chainCfg), srcCfg)
 	}
 }
 
@@ -283,21 +283,22 @@ func (c *config) seedFromSnapshot(host, tar, srcCfg string) {
 // snapshot (default) or wipe it for a from-scratch state-sync (fallback). Used for
 // both the Phase-1 validator targets and the later-joined pinned RPC, so the two
 // paths stay identical.
-func (c *config) prepareTarget(host, name string, snap bool, tar string) {
+func (c *config) prepareTarget(i int, snap bool, tar string) {
+	name := c.topo.MachineName(i)
 	// Reset the node to its ROLE-default chain-config so its pruning/state-sync mode matches
 	// the DB it is about to run: restore seeds validators/spare from a pruning tracker and the
 	// archive RPCs from an archive source, so the role default is always the right match. This
 	// also undoes any archive config a prior failover left on a validator (which would make
 	// coreth reject the pruning snapshot, or block the state-sync fallback that needs
 	// state-sync-enabled). See seedFromSnapshot / deployChainConfig.
-	c.deployChainConfig(host)
+	c.deployChainConfig(i)
 	if snap {
 		fmt.Printf("  %s: stop + wipe + seed from snapshot\n", name)
-		c.loadSnapshot(host, tar)
+		c.loadSnapshot(i, tar)
 		return
 	}
-	fmt.Printf("  %s: stop + wipe data/validator (state-sync)\n", name)
-	c.wipeL1Data(host)
+	fmt.Printf("  %s: stop + wipe data dir (state-sync)\n", name)
+	c.wipeL1Data(i)
 }
 
 // cleanupSnapshot removes the local snapshot tar once restore is done with it.
