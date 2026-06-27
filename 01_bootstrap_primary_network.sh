@@ -3,6 +3,10 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Load .env if present so PCHAIN_PUBLIC_IP (and other overrides) flow here too.
+# This script is otherwise standalone; the source is best-effort.
+[ -f "$SCRIPT_DIR/.env" ] && source "$SCRIPT_DIR/.env"
+
 STAKING_DIR="$SCRIPT_DIR/staking"
 NODE_IDS_FILE="$STAKING_DIR/node-ids.env"
 DATA_ROOT="$SCRIPT_DIR/data/pchain"
@@ -211,7 +215,7 @@ echo ""
 
 require_local_artifacts
 
-PCHAIN_PUBLIC_IP="$(discover_public_ip)"
+PCHAIN_PUBLIC_IP="${PCHAIN_PUBLIC_IP:-$(discover_public_ip)}"
 if [ -z "$PCHAIN_PUBLIC_IP" ]; then
     echo "ERROR: could not discover local public IP"
     exit 1

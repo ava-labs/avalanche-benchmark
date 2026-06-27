@@ -22,6 +22,11 @@ fi
 
 source "$ENV_FILE"
 
+# Export REMOTE_DIR so the reconcile child inherits the SAME deploy dir the shell
+# scripts use. Lets .env point the deploy at a dir OTHER than the repo — required
+# for a localhost run (REMOTE_DIR=repo would scp binaries onto themselves).
+export REMOTE_DIR
+
 SSH_KEY_PATH="${SSH_KEY_PATH:-$SSH_KEY_PATH_DEFAULT}"
 SSH_OPTS=(
     -i "$SSH_KEY_PATH"
@@ -155,6 +160,9 @@ pchain_node_ids_csv() {
 }
 
 pchain_public_ip() {
+    # .env may pin this (e.g. 127.0.0.1 for an all-loopback single-box run, where
+    # every node advertises loopback and the curl'd NAT IP would be unreachable).
+    [ -n "${PCHAIN_PUBLIC_IP:-}" ] && { echo "$PCHAIN_PUBLIC_IP"; return; }
     curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]'
 }
 

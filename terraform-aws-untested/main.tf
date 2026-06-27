@@ -30,9 +30,15 @@ locals {
   config      = yamldecode(file("${path.module}/config.yaml"))
   prefix      = local.config.prefix
   owner       = local.config.owner # required by org SCP: instances must carry an Owner tag
-  app_name    = "benchmark"
-  site_count  = 6 # per site: 3 validators + 1 spare + 2 archive RPCs
-  public_key  = file(pathexpand(local.config.public_key_path))
+  app_name = "benchmark"
+  # Per-DC machine counts (first-class config). Terraform only provisions N boxes
+  # per region; roles (validator/spare/RPC) are assigned later in the reconcile/.env
+  # layer. site_b_count = 0 => no EC2 spend in us-west-2 (the us-west-2 SG + key pair
+  # are free and stay; the backup_site_node_ips output collapses to ""). Defaults keep
+  # the validated 6-box site (3 validators + 1 spare + 2 archive RPCs).
+  site_a_count = try(local.config.site_a_count, 6)
+  site_b_count = try(local.config.site_b_count, 0)
+  public_key   = file(pathexpand(local.config.public_key_path))
   operator_ip = "${chomp(data.http.my_ip.response_body)}/32"
 }
 
@@ -210,7 +216,7 @@ resource "aws_security_group_rule" "b_egress" {
 
 # ---- Nodes ------------------------------------------------------------------
 resource "aws_instance" "site_a" {
-  count                  = local.site_count
+  count                  = local.site_a_count
   ami                    = data.aws_ami.ubuntu_a.id
   instance_type          = "m6a.4xlarge" # 16 vCPU, 64GB RAM, AMD EPYC
   key_name               = aws_key_pair.a.key_name
@@ -232,7 +238,7 @@ resource "aws_instance" "site_a" {
 
 resource "aws_instance" "site_b" {
   provider               = aws.usw2
-  count                  = local.site_count
+  count                  = local.site_b_count # 0 => single-DC (no us-west-2 EC2 spend); set site_b_count in config.yaml for two-site
   ami                    = data.aws_ami.ubuntu_b.id
   instance_type          = "m6a.4xlarge"
   key_name               = aws_key_pair.b.key_name

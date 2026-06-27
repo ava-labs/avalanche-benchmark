@@ -88,7 +88,13 @@ func watchBlocks(ctx context.Context, wsURL string, pollInterval time.Duration) 
 	if client == nil {
 		return
 	}
-	defer func() { client.Close() }()
+	defer func() {
+		// client is reassigned on redial and can be nil if a redial fails
+		// (e.g. ctx cancelled at shutdown), so guard before closing.
+		if client != nil {
+			client.Close()
+		}
+	}()
 
 	var lastBlock uint64
 	haveLast := false

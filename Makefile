@@ -6,8 +6,8 @@
 RELEASE_VERSION ?= $(shell date +%Y.%m.%d)
 
 AVALANCHEGO_REPO=https://github.com/ava-labs/avalanchego.git
-AVALANCHEGO_REF=configure-genesis-acp226-excess-50ms-window
-AVALANCHEGO_COMMIT=8497956cbc0851fab40bb7a587d3dd855b7bc770
+AVALANCHEGO_REF=containerman17/benchmark
+AVALANCHEGO_COMMIT=4265498f03135a5795850281b44514541b6d3cb5
 AVALANCHEGO_BUILD_DIR=/tmp/avalanchego-build-$(AVALANCHEGO_COMMIT)
 
 SUBNET_EVM_ID=srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
