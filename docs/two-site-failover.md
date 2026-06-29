@@ -156,6 +156,25 @@ End state equals the steady seed with the target site active. Because the chain
 never stops and the target is always at tip, **there is no fork and nothing to
 replay** — unlike the hard `site-failover` cutover.
 
+**Seed source depends on what's spare to stop.** A snapshot requires briefly
+stopping the source node, so restore only snapshots a node it can stop *without*
+touching live quorum or ingress; otherwise it seeds from scratch. The choice is
+made per role:
+
+| Source site has… | Validator/spare seed | RPC seed |
+|---|---|---|
+| spare + ≥2 RPCs | pruned snapshot (of the spare) | archive snapshot (of the redundant RPC) |
+| **no spare** | **state-sync** (automatic) | archive snapshot |
+
+This is why every site is **required to run ≥2 RPCs** (enforced in `loadPool`):
+restore always has a redundant RPC it can stop to snapshot while the twin keeps
+serving ingress — so there is never an ingress blip and never a snapshot-vs-fresh
+decision to make. The two RPCs **may be co-located on one box** (repeat the IP);
+what matters is two RPC *processes*, since we stop one and the other answers. The
+spare is the only variable left: it holds no vote and serves no ingress, so
+snapshotting it is always free — and when there's no spare, there's simply nothing
+safe to copy, so validators state-sync automatically.
+
 **What "no downtime" does and doesn't mean.** No *chain* downtime: quorum holds
 the whole time, so the ATS/settlement path (which talks to the RPC, not the
 validators) sees no interruption. It is *not* a live process hot-migration —

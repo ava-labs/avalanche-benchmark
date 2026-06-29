@@ -189,8 +189,10 @@ func rollingRestore(cfg *config, targetSite int) {
 	// safe now that FAILOVER keeps validators PRUNED (state-sync), so the source site's spare is
 	// genuinely a pruned tracker:
 	//   - validators + spare  <- a PRUNED snapshot of the source site's spare tracker;
-	//   - pinned RPCs          <- a full ARCHIVE snapshot of the source site's REDUNDANT (2nd) RPC
-	//                             (its twin keeps serving ingress, so no blip).
+	//   - pinned RPCs          <- a full ARCHIVE snapshot of the source site's REDUNDANT (last) RPC
+	//                             (its twin keeps serving ingress, so no blip). Every site runs
+	//                             >=2 RPCs (loadPool enforces it), so a redundant RPC always exists
+	//                             — they may be co-located on one box; what matters is two processes.
 	// Both snapshots are captured up front and EVERY target is seeded + started together in
 	// Phase 1 — the RPCs are NOT held back behind validator sync, since a near-tip archive
 	// snapshot needs no catch-up race. If a source is unavailable, that role falls back to
@@ -326,18 +328,6 @@ func rpcMachineIdxs(topo Topology, site int) []int {
 		}
 	}
 	return idx
-}
-
-// redundantRPCMachineIdx returns the site's REDUNDANT (last) RPC machine — the one safe
-// to stop for a consistent archive snapshot because the primary RPC keeps serving
-// ingress. -1 if the site has fewer than one RPC. (With a single RPC it returns that
-// one, which a caller stopping it should treat as an ingress-affecting fallback.)
-func redundantRPCMachineIdx(topo Topology, site int) int {
-	idx := rpcMachineIdxs(topo, site)
-	if len(idx) == 0 {
-		return -1
-	}
-	return idx[len(idx)-1]
 }
 
 // waitForTargetSynced blocks until every recovering machine in destIdx is SERVING and within

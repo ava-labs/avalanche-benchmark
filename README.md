@@ -62,12 +62,12 @@ source instead (Linux, requires Go and git): `make`.
 ```bash
 cp .env.example .env
 # Edit .env — explicit per-role IP lists (length = count, values = placement;
-# repeat an IP to co-locate). VALIDATOR_IPS >= 3, RPC_IPS >= 1 (2+ recommended).
+# repeat an IP to co-locate). VALIDATOR_IPS >= 3, RPC_IPS >= 2 (redundant RPC required).
 #   SSH_USER=ubuntu
 #   SSH_KEY_PATH=/path/to/your-fleet-key
 #   VALIDATOR_IPS=A1,A2,A3      # site A validators (>=3)
 #   SPARE_IPS=A4                # site A hot spares (any count, incl. 0)
-#   RPC_IPS=A5,A6              # site A pinned archive RPCs (>=1)
+#   RPC_IPS=A5,A6              # site A pinned archive RPCs (>=2; may co-locate)
 #   BACKUP_VALIDATOR_IPS=B1,B2,B3   # site B — set these to enable two-site mode
 #   BACKUP_SPARE_IPS=B4
 #   BACKUP_RPC_IPS=B5,B6

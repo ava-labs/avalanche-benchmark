@@ -115,13 +115,10 @@ func (t Topology) slotRoleName(i int) string {
 }
 
 // warnColocation prints a CONCISE heads-up (to stderr) when the topology trades away
-// fault isolation: co-located nodes, validators sharing a box, or a single RPC. Kept
-// to a couple of lines and stderr-only so it never buries command output; callers
-// skip it entirely for the read-only `status`/`verify` (often run under `watch`).
+// fault isolation: co-located nodes or validators sharing a box. Kept to a couple of
+// lines and stderr-only so it never buries command output; callers skip it entirely
+// for the read-only `status`/`verify` (often run under `watch`).
 func (c *config) warnColocation() {
-	if c.topo.NRPC < 2 {
-		fmt.Fprintln(os.Stderr, "note: 1 RPC/site — a restore briefly stops your only ingress node (2+ recommended).")
-	}
 	hosts, valShareHosts := 0, 0
 	seen := map[string]bool{}
 	for _, in := range c.instances {

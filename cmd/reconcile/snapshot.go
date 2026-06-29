@@ -95,20 +95,23 @@ func (c *config) takeSnapshot(intents []MachineIntent, sourceSite int) (string, 
 }
 
 // takeArchiveSnapshot captures a full (unpruned) ARCHIVE snapshot of the source site's
-// REDUNDANT (2nd) RPC for seeding the recovering site's archive RPCs. The 2nd RPC is the
-// one safe to stop — its twin (the 1st RPC) keeps serving ingress, so there is no blip,
-// unlike snapshotting a single pinned RPC. Same canonical gate as the pruning snapshot.
-// Returns ("", false) if the source site has no redundant RPC live or it is not a
-// canonical tip, in which case the recovering RPCs fall back to a from-genesis bootstrap.
+// REDUNDANT (last) RPC for seeding the recovering site's archive RPCs. Every site is
+// required to run >=2 RPCs (enforced in loadPool), so there is always a redundant RPC safe
+// to stop: its twin keeps serving ingress while we copy, so there is no blip — even when the
+// two RPCs are co-located on one box (we stop one process, the other answers). Same canonical
+// gate as the pruning snapshot. Returns ("", false) if the source is not a canonical tip, in
+// which case the recovering RPCs fall back to a from-genesis bootstrap.
 func (c *config) takeArchiveSnapshot(intents []MachineIntent, sourceSite int) (string, bool) {
 	if !c.snapshotProvenanceOK(intents, sourceSite) {
 		return "", false
 	}
-	srcIdx := redundantRPCMachineIdx(c.topo, sourceSite)
-	if srcIdx < 0 {
-		fmt.Printf("snapshot: site %s has no redundant RPC to take an archive snapshot from.\n", siteName(sourceSite))
+	rpcs := rpcMachineIdxs(c.topo, sourceSite)
+	if len(rpcs) < 2 {
+		// Shouldn't happen (loadPool enforces >=2), but never snapshot a lone RPC.
+		fmt.Printf("snapshot: site %s has %d RPC(s); need a redundant one to snapshot — recovering RPCs will full-bootstrap.\n", siteName(sourceSite), len(rpcs))
 		return "", false
 	}
+	srcIdx := rpcs[len(rpcs)-1] // redundant (last) RPC; its twin keeps serving ingress
 	return c.captureFrom(intents, srcIdx, snapshotArchiveTar)
 }
 
