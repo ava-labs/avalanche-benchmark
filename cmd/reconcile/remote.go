@@ -227,6 +227,25 @@ func (c *config) scp(localPath, host, remotePath string, recursive bool) {
 	}
 }
 
+// rsyncUpload pushes one file with rsync's delta+compress (near-instant when the
+// remote copy is unchanged). -e carries the SAME key/opts as scp (scpArgs returns
+// just `-i key -o ... -q`, all valid ssh flags; rsync word-splits it on spaces, the
+// same no-spaces assumption the existing scp/ssh helpers make). -p preserves the
+// source mode (executable bit on the binary); -t preserves mtime so an unchanged
+// file is skipped outright next time. rsync ships on the Ubuntu AMI; if it is
+// missing the transfer fails loudly via fatalf, same as scp().
+func (c *config) rsyncUpload(localPath, host, remotePath string) {
+	args := []string{
+		"-ztp", "-e", "ssh " + strings.Join(c.scpArgs(), " "),
+		localPath, fmt.Sprintf("%s@%s:%s", c.sshUser, host, remotePath),
+	}
+	cmd := exec.Command("rsync", args...)
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		fatalf("rsync %s -> %s:%s failed: %v", localPath, host, remotePath, err)
+	}
+}
+
 // snapshotPull streams a (lightly-compressed) tar of the already-stopped source's
 // chain data dir into a local file on the control box. The source MUST be stopped
 // first (killNode) so the on-disk pebble/EVM state is a consistent point-in-time
@@ -532,8 +551,8 @@ func (c *config) setMinDelay(i, ms int) {
 // per co-located process otherwise).
 func (c *config) upload(host string) {
 	c.ssh(host, fmt.Sprintf("mkdir -p %s/bin %s/plugins %s/staking/l1", c.remoteDir, c.remoteDir, c.remoteDir))
-	c.scp(c.repoDir+"/bin/avalanchego", host, c.remoteDir+"/bin/", false)
-	c.scp(c.repoDir+"/bin/"+c.subnetEVMID, host, c.remoteDir+"/plugins/", false)
+	c.rsyncUpload(c.repoDir+"/bin/avalanchego", host, c.remoteDir+"/bin/")
+	c.rsyncUpload(c.repoDir+"/bin/"+c.subnetEVMID, host, c.remoteDir+"/plugins/")
 	c.scp(c.repoDir+"/node-config.json", host, c.remoteDir+"/", false)
 	c.scp(c.repoDir+"/subnet-config.json", host, c.remoteDir+"/", false)
 	for _, k := range c.topo.AllKeys() {
