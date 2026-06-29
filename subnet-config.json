@@ -3,6 +3,6 @@
         "k": 20,
         "alpha": 11
     },
-    "proposerWindowMilliseconds": 50,
+    "proposerWindowMilliseconds": 100,
     "proposerMillisecondTimestamps": true
 }
