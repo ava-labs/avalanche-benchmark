@@ -35,6 +35,18 @@ const (
 	ingressDropBehind    = 200
 	ingressRejoinWithin  = 50
 	ingressCheckInterval = 3 * time.Second
+	// ingressAtTipWithin gates ISSUANCE (not just rotation): bombard only sends the
+	// sequential-nonce stream to an endpoint within this many blocks of the tip.
+	// "Healthy" (within ingressDropBehind) is the right bar for a load balancer, but
+	// fatal for sequential nonces — a tx whose nonce sits above a behind endpoint's
+	// accepted frontier is an UNFILLABLE GAP: the node queues it but cannot mine it
+	// until it catches up, pinning throughput at 0. This bit is what keeps a graceful
+	// restore from stalling bombard: when the validator majority (and thus the active
+	// RPC set) flips to the recovering site, its archive RPCs are still catching up —
+	// so we keep issuing to the at-tip site we are restoring FROM until the recovering
+	// RPCs are genuinely at tip, not merely "in rotation". Well above normal under-load
+	// lag, well below a restore catch-up backlog, so it neither flaps nor sends into a gap.
+	ingressAtTipWithin = 25
 )
 
 // broadcaster sends every tx to every node over HTTP. Each node drains its own
@@ -50,7 +62,8 @@ type nodeSender struct {
 	url     string
 	client  *ethclient.Client
 	queue   chan *types.Transaction
-	healthy atomic.Bool // routed ingress only while caught up to tip
+	healthy atomic.Bool // in send rotation while within ingressDropBehind of tip
+	atTip   atomic.Bool // within ingressAtTipWithin of tip — safe to issue nonces to
 	active  atomic.Bool // routed ingress only while on the active (validator) site
 }
 
@@ -90,6 +103,7 @@ func newBroadcaster(ctx context.Context, rpcURLs []string, sendTimeout time.Dura
 			queue:  make(chan *types.Transaction, sendQueueLen),
 		}
 		ns.healthy.Store(true)
+		ns.atTip.Store(true)  // assume at-tip until monitorIngress measures otherwise
 		ns.active.Store(true) // all endpoints active until an active-rpcs file narrows it
 		b.nodes = append(b.nodes, ns)
 		for i := 0; i < sendConcPerNode; i++ {
@@ -121,24 +135,44 @@ func (n *nodeSender) run(ctx context.Context, timeout time.Duration) {
 // broadcast enqueues signed to every node, non-blocking: if a node's queue is
 // full (it is down or lagging) the send is dropped for that node only.
 func (b *broadcaster) broadcast(signed *types.Transaction) {
-	// Prefer the active (validator) site's healthy endpoints. But if NONE are both active
-	// AND healthy — e.g. during a restore both of the active site's archive RPCs are briefly
-	// down while being reseeded — fall back to ANY healthy endpoint so ingress never drops
-	// to zero (a brief cross-region hop beats a stall). In steady state the active site's
-	// RPCs are healthy, so this never sprays the standby.
-	preferActive := false
+	// Pick the send pool in priority order. Sequential-nonce issuance must land on an
+	// endpoint AT THE TIP: a tx whose nonce is above a behind endpoint's accepted
+	// frontier is an unfillable gap that pins throughput at 0 (see ingressAtTipWithin).
+	//   1. active + at-tip — steady state, and the end state of a completed migration.
+	//   2. any at-tip      — covers the restore window: the active set has flipped to the
+	//                        recovering site whose RPCs aren't caught up yet, so keep
+	//                        issuing to the at-tip site we are restoring FROM.
+	//   3. any healthy     — nothing is fully at tip but something is in rotation; a brief
+	//                        small-gap hop beats a stall.
+	//   4. everything      — nothing looks caught up at all; spray all so ingress never
+	//                        hard-stops, and the resubmit loop retries as nodes recover.
+	activeAtTip, anyAtTip, anyHealthy := false, false, false
 	for _, n := range b.nodes {
-		if n.active.Load() && n.healthy.Load() {
-			preferActive = true
-			break
+		if n.atTip.Load() {
+			anyAtTip = true
+			if n.active.Load() {
+				activeAtTip = true
+			}
+		}
+		if n.healthy.Load() {
+			anyHealthy = true
+		}
+	}
+	eligible := func(n *nodeSender) bool {
+		switch {
+		case activeAtTip:
+			return n.active.Load() && n.atTip.Load()
+		case anyAtTip:
+			return n.atTip.Load()
+		case anyHealthy:
+			return n.healthy.Load()
+		default:
+			return true
 		}
 	}
 	for _, n := range b.nodes {
-		if !n.healthy.Load() {
-			continue // behind tip / down — out of ingress rotation
-		}
-		if preferActive && !n.active.Load() {
-			continue // active-site endpoints are available; don't spray the standby
+		if !eligible(n) {
+			continue
 		}
 		select {
 		case n.queue <- signed:
@@ -188,6 +222,14 @@ func (b *broadcaster) monitorIngress(ctx context.Context) {
 				case !n.healthy.Load() && behind <= ingressRejoinWithin:
 					n.healthy.Store(true)
 					fmt.Fprintf(os.Stderr, "ingress: %s back in rotation — caught up (%d behind)\n", n.url, behind)
+				}
+				// atTip is the stricter issuance gate (see ingressAtTipWithin). No
+				// hysteresis: a few blocks of lag is normal under load, so flapping
+				// across this boundary is harmless (it just shifts issuance between
+				// equally-at-tip endpoints), and a restore backlog is far past it.
+				atTip := behind <= ingressAtTipWithin
+				if n.atTip.Swap(atTip) != atTip && !atTip {
+					fmt.Fprintf(os.Stderr, "ingress: %s no longer at tip — %d behind (holding issuance off it)\n", n.url, behind)
 				}
 			}
 		}
