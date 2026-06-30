@@ -285,13 +285,13 @@ func rollingRestore(cfg *config, targetSite int) {
 	current := trackerStep
 	for n, step := range keySteps {
 		fmt.Printf("== restore: migrate validator %d/%d to site %s ==\n", n+1, len(keySteps), siteName(targetSite))
-		cfg.waitForValidatorsReady(current)
+		cfg.waitForValidatorsReady(current, targetSite)
 		if err := saveIntents(cfg.stateFile, step); err != nil {
 			fatalf("%v", err)
 		}
 		printIntents(topo, step)
 		reconcile(cfg, step, false)
-		cfg.waitForValidatorsReady(step)
+		cfg.waitForValidatorsReady(step, targetSite)
 		current = step
 	}
 
@@ -436,27 +436,38 @@ func (c *config) waitForFullValidatorSet(intents []MachineIntent) {
 // waitForFullValidatorSet only checked that each validator answers eth_blockNumber
 // (true within seconds of a restart, long before it rejoins consensus — which let
 // the rolling restore fire the next swap while the chain was still limping from the
-// last one, compounding the dips into a deep stall), this waits until EVERY
-// validator is genuinely back in consensus:
+// last one, compounding the dips into a deep stall), this waits until consensus is
+// genuinely healthy. A validator counts as ready when it is:
 //   - SERVING (answers eth_blockNumber), and
 //   - connected to ~100% of the validator stake (/ext/health percentConnected), and
 //   - no block stuck in consensus (longestProcessingBlock < consensusMaxProcessing).
 //
-// It then prefers live proof that production resumed (the accepted tip advanced
-// since the previous poll). But it does NOT require it: an idle chain with no load
-// produces no blocks, so once the fully-ready state holds flat for
-// idleReadyPollsNeeded consecutive polls it proceeds anyway (see that const) —
-// otherwise a restore that finishes while the chain is quiescent hangs forever.
+// The gate opens when (a) every validator that has LANDED on targetSite is ready —
+// so a just-promoted node has rejoined before the next swap fires — and (b) the ready
+// set meets quorum. It deliberately does NOT require the OUTGOING source-site
+// validators to be ready: their vote is about to move, so their health can't affect
+// the next swap's safety, and gating on them DEADLOCKS the rollover when the last
+// source validator can't keep pace with the now-fast target site (it drifts behind /
+// wedges and never reports ready — yet the swap onto its at-tip destination is exactly
+// what would relieve it). Quorum and fork-safety depend on the remaining validators
+// plus the at-tip destination, not on the validator that is leaving.
+//
+// It then prefers live proof that production resumed (the accepted tip advanced since
+// the previous poll). But it does NOT require it: an idle chain with no load produces
+// no blocks, so once the gate-open state holds flat for idleReadyPollsNeeded
+// consecutive polls it proceeds anyway (see that const) — otherwise a restore that
+// finishes while the chain is quiescent hangs forever.
 //
 // No timeout — like the other restore gates it waits as long as recovery takes.
-func (c *config) waitForValidatorsReady(intents []MachineIntent) {
+func (c *config) waitForValidatorsReady(intents []MachineIntent, targetSite int) {
 	want := c.topo.NVal
+	quorum := quorumNeeded(want)
 	var prevTip uint64
 	havePrev := false
 	idleReadyPolls := 0
 	for {
 		res := c.checkHealth(intents)
-		ready := 0
+		ready, targetCatchingUp := 0, 0
 		var tip uint64
 		parts := make([]string, 0, want)
 		for i, in := range intents {
@@ -464,24 +475,35 @@ func (c *config) waitForValidatorsReady(intents []MachineIntent) {
 				continue
 			}
 			name := c.topo.MachineName(i)
+			onTarget := c.topo.Site(i) == targetSite
+			isReady := false
 			if res[i].state != healthServing {
 				parts = append(parts, name+" down")
-				continue
-			}
-			pc, longest, h, ok := c.consensusHealth(i)
-			if h > tip {
-				tip = h
+			} else {
+				pc, longest, h, ok := c.consensusHealth(i)
+				if h > tip {
+					tip = h
+				}
+				switch {
+				case !ok:
+					parts = append(parts, name+" ?")
+				case pc >= consensusReadyMinConnected && longest < consensusMaxProcessing:
+					isReady = true
+					parts = append(parts, fmt.Sprintf("%s %.0f%%", name, pc*100))
+				case longest >= consensusMaxProcessing:
+					parts = append(parts, fmt.Sprintf("%s %.0f%% (block stuck)", name, pc*100))
+				default:
+					parts = append(parts, fmt.Sprintf("%s %.0f%%", name, pc*100))
+				}
 			}
 			switch {
-			case !ok:
-				parts = append(parts, name+" ?")
-			case pc >= consensusReadyMinConnected && longest < consensusMaxProcessing:
+			case isReady:
 				ready++
-				parts = append(parts, fmt.Sprintf("%s %.0f%%", name, pc*100))
-			case longest >= consensusMaxProcessing:
-				parts = append(parts, fmt.Sprintf("%s %.0f%% (block stuck)", name, pc*100))
-			default:
-				parts = append(parts, fmt.Sprintf("%s %.0f%%", name, pc*100))
+			case onTarget:
+				// A validator that has LANDED on the target site but hasn't rejoined —
+				// must wait for it (else we compound swaps). An OUTGOING source-site
+				// holder that isn't ready does NOT block: its key is about to move.
+				targetCatchingUp++
 			}
 		}
 		advancing := havePrev && tip > prevTip
@@ -489,19 +511,22 @@ func (c *config) waitForValidatorsReady(intents []MachineIntent) {
 		if advancing {
 			motion = "rising"
 		}
-		fmt.Printf("  gate: %d/%d ready | tip %d %s | %s\n",
-			ready, want, tip, motion, strings.Join(parts, ", "))
-		if ready >= want {
+		fmt.Printf("  gate: %d/%d ready (quorum %d; %d landed catching up) | tip %d %s | %s\n",
+			ready, want, quorum, targetCatchingUp, tip, motion, strings.Join(parts, ", "))
+		// Open when every landed target validator is in consensus AND the ready set
+		// meets quorum — NOT when all NVal are ready (outgoing source validators need
+		// not be, see above).
+		if targetCatchingUp == 0 && ready >= quorum {
 			if advancing {
-				fmt.Printf("  gate: %d/%d ready, tip rising — proceeding to next swap.\n", ready, want)
+				fmt.Printf("  gate: quorum healthy (%d ready), tip rising — proceeding to next swap.\n", ready)
 				return
 			}
-			// Fully ready (100% connected, no stuck block) but the tip is flat: the
-			// chain is idle, not limping. Proceed once that has held for a few polls
-			// rather than wait for a block only load would produce.
+			// Gate-open but the tip is flat: the chain is idle, not limping. Proceed
+			// once that has held for a few polls rather than wait for a block only
+			// load would produce.
 			idleReadyPolls++
 			if idleReadyPolls >= idleReadyPollsNeeded {
-				fmt.Printf("  gate: %d/%d ready, tip flat but consensus healthy (idle — no load) — proceeding to next swap.\n", ready, want)
+				fmt.Printf("  gate: quorum healthy (%d ready), tip flat but consensus healthy (idle — no load) — proceeding to next swap.\n", ready)
 				return
 			}
 		} else {
