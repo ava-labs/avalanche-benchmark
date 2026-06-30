@@ -5,13 +5,25 @@ Single-issuer throughput study on the 3-validator + 1-tracker L1 (Tokyo
 Goal: stable 4000 TPS, and understand every knob that moves (or doesn't move)
 the ceiling. All numbers from benchmarks on 2026-06-03.
 
+> **Update (2026-06-29): the proposer window is no longer fixed at 1s.** The
+> throughput numbers below stand, but the "never go below 1s" guidance was an
+> artifact of the old fork's whole-second timestamp grid, not a fundamental
+> limit. The fleet now runs `containerman17/benchmark` (@ `4265498f03`), which
+> makes the window a per-subnet config knob (`proposerWindowMilliseconds`) and
+> adds millisecond-granular proposerVM timestamps (`proposerMillisecondTimestamps`).
+> Ms-timestamps remove the 1-second slot boundary that used to unlock a competing
+> proposer, so a sub-second window is now safe — the two-DC failover fleet runs
+> **100ms** to shrink the per-slot failover stall ~10×. See the proposerVM
+> section below for the full mechanism.
+
 ---
 
 ## TL;DR — recommended SAFE config for stable 4000 TPS
 
 | Parameter | File | Value | Why |
 |---|---|---|---|
-| `WindowDuration` (proposer) | avalanchego fork `windower.go` | **1s** | Removes per-second proposer contention; same throughput as 5s, ~1s failover. **Never < 1s.** |
+| `proposerWindowMilliseconds` | `subnet-config.json` | **100** (failover) / 1000 (max throughput) | Per-subnet knob on the `containerman17/benchmark` fork. With `proposerMillisecondTimestamps: true`, sub-1s is safe (no competing proposer) and cuts the per-slot failover stall ~10×. Set `1000` only if you need the last few % of steady-state ceiling. Requires ms-timestamps — never set sub-1s without it. |
+| `proposerMillisecondTimestamps` | `subnet-config.json` | **true** | Ms-granular proposerVM timestamps. The enabler for any sub-1s window — without it the slot clock floors to whole seconds and a short window unlocks a second proposer. |
 | `beta` | `subnet-config.json` | **20 (default)** | Full finality safety. Do NOT lower for 4000 — unnecessary and the only real fork risk. |
 | `alpha` | `subnet-config.json` | **11** | Lowest per-poll latency (must be > k/2=10). |
 | `k` | `subnet-config.json` | 20 | Default. |
@@ -25,11 +37,18 @@ the ceiling. All numbers from benchmarks on 2026-06-03.
 This gives a **~4300 TPS smooth ceiling with zero forks and zero wedge risk**, so
 4000 sits comfortably under it. (The earlier `WindowDuration=700ms` build also
 reached ~4300 and sustained 4278 TPS for 10 min, but was twitchier with less
-margin; the packaged build now pins 1s.)
+margin — because 700ms had no ms-timestamps and so paid the competing-proposer
+penalty.) These numbers are from the old 1s-pinned build; the fleet now runs a
+100ms window with `proposerMillisecondTimestamps` (see the proposerVM section),
+which removes that penalty — re-benchmark for a current steady-state ceiling.
 
-**The forbidden combination:** `beta < ~8` **and** `WindowDuration < 1s` **and**
-overdrive **and** hard SIGKILLs. That is the recipe for a permanently diverged
-("forked") node (see *Fork/stall danger* below). The safe config does none of it.
+**The forbidden combination:** `beta < ~8` **and** a sub-1s window **without
+ms-timestamps** **and** overdrive **and** hard SIGKILLs. That is the recipe for a
+permanently diverged ("forked") node (see *Fork/stall danger* below). The
+competing-proposer half of that risk is what `proposerMillisecondTimestamps`
+removes: with ms-timestamps a sub-1s window keeps one proposer per height, so
+`100ms + beta 20 + ms-timestamps` is safe. The danger is sub-1s on the *old*
+whole-second grid, or stacking it with low beta. The safe config does none of it.
 
 ---
 
@@ -50,22 +69,39 @@ overdrive **and** hard SIGKILLs. That is the recipe for a permanently diverged
 
 ## Tunable parameters — what each does and whether it's binding
 
-### proposerVM `WindowDuration` — THE lever (avalanchego fork)
-- Proposer slot window. `slot = floor(secondsSinceParent / WindowDuration)`;
-  block timestamps are truncated to whole seconds (`Truncate(time.Second)`).
-- **Mechanism (why 700ms hurts even though blocks are ~7ms):** at each 1-second
-  timestamp boundary, a window `< 1s` advances the slot 0→1, which **unlocks a
-  second proposer for the same height** the slot-0 proposer is already building →
+### proposerVM window — THE lever (avalanchego fork)
+- Proposer slot window. `slot = floor(timeSinceParent / window)`. Set via
+  `proposerWindowMilliseconds` in `subnet-config.json` (was a compile-time
+  `WindowDuration` constant on the old fork).
+- **Why a short window used to hurt (the old whole-second grid):** the old fork
+  truncated block timestamps to whole seconds (`Truncate(time.Second)`). At each
+  1-second boundary a window `< 1s` advanced the slot 0→1, which **unlocked a
+  second proposer for the same height** the slot-0 proposer was already building →
   competing builds / dropped "wrong-proposer" blocks → throughput throttle. A
-  window `≥ 1s` keeps the slot at 0 across the whole second → one proposer per
-  height → no contention.
-- Measured smooth ceiling (inflight 750, tracker): **700ms ≈ 4300; 1s ≈ 5000–5500;
-  5s ≈ 5000–5400.** 1s and 5s are statistically indistinguishable (it's a
-  **threshold at 1s, not a gradient**). 700ms is strictly worst.
-- Failure mode differs: 700ms folds via `slot0%` dropping (slot-misses); ≥1s
-  folds via `txpool_pending` exploding (slot0% stays 100).
-- **Recommendation: 1s.** Upstream default is 5s; the fork lowered it to 700ms
-  for faster failover at a real steady-throughput cost. PR candidate.
+  window `≥ 1s` kept the slot at 0 across the whole second → one proposer per
+  height → no contention. This is why the 2026-06-03 numbers said "never < 1s".
+- **What changed (`containerman17/benchmark` @ `4265498f03`):**
+  `proposerMillisecondTimestamps: true` makes the slot clock millisecond-granular,
+  so the slot only advances when a *full window* of real time elapses — not at an
+  arbitrary 1-second tick. A sub-second window now keeps **one proposer per
+  height** the same way `≥1s` did, so the competing-proposer throttle is gone.
+  The throughput-vs-failover tradeoff that forced 1s is **decoupled**.
+- **Why this matters for failover:** when a proposer goes down, the chain stalls
+  for ~one window before the next validator's slot opens (the "~1s-per-slot"
+  failover finding). A rolling restore restarts three validators, so each one's
+  slots stall by a full window. 1s window ⇒ ~1s stalls; **100ms window ⇒ ~100ms
+  stalls — a ~10× shorter dip**, with no steady-state cost now that ms-timestamps
+  remove the contention penalty.
+- Measured smooth ceiling on the old fork (inflight 750, tracker): **700ms ≈ 4300;
+  1s ≈ 5000–5500; 5s ≈ 5000–5400** — a **threshold at 1s, not a gradient** (1s and
+  5s indistinguishable; 700ms strictly worst *because* of the whole-second grid the
+  new fork removes). Re-benchmark 100ms-with-ms-timestamps for a current ceiling.
+- Failure mode of a too-short window differs: it folds via `slot0%` dropping
+  (slot-misses); a long window folds via `txpool_pending` exploding (slot0% stays 100).
+- **Recommendation: `proposerWindowMilliseconds: 100` + `proposerMillisecondTimestamps:
+  true`** for the failover fleet (this is the deployed 2-DC config). Raise toward
+  `1000` only if a pure steady-state throughput run needs the last few percent.
+  Never set a sub-1s window without ms-timestamps (= the old fork's failure mode).
 
 ### `beta` (subnet-config.json) — finality margin / consensus latency
 - Consecutive successful polls required to finalize a block. Default **20**
@@ -74,10 +110,12 @@ overdrive **and** hard SIGKILLs. That is the recipe for a permanently diverged
   consensus `accept_lat` 16.6→7.5→**4.1ms** (4× lower). Fork-free at every step
   on this topology, and raised the *edge* ceiling ~20%.
 - **But it is the safety knob.** Lower beta = thinner margin against finalizing a
-  losing block if two blocks ever compete. Safe here only because `WindowDuration
-  ≥ 1s` means one proposer per height (no competing block). **Do not lower for
-  4000** — unnecessary, and dangerous if combined with a sub-1s window or
-  overdrive.
+  losing block if two blocks ever compete. Safe here only because we keep **one
+  proposer per height** — which on the new fork comes from
+  `proposerMillisecondTimestamps`, not from the window being ≥1s (so the 100ms
+  failover window does not erode this margin). **Do not lower beta for 4000** —
+  unnecessary, and dangerous if combined with a sub-1s window *without
+  ms-timestamps* or with overdrive.
 
 ### `alpha` (subnet-config.json) — per-poll quorum
 - Votes-per-poll needed (of k=20). Backwards-compat field setting both
@@ -157,13 +195,17 @@ overdrive **and** hard SIGKILLs. That is the recipe for a permanently diverged
   1. **Hard SIGKILL under load** (reconcile/03 use `pkill -KILL`) → proposerVM and
      inner-EVM DBs left at mismatched heights → dead VM on restart.
   2. **Genuine safety fork** — a node finalizes a block the majority orphans.
-     Made likely by `WindowDuration < 1s` (competing proposers each second) +
-     low `beta` (thin margin) + overdrive timing races.
+     Made likely by a sub-1s window **without `proposerMillisecondTimestamps`**
+     (competing proposers each second on the old whole-second grid) + low `beta`
+     (thin margin) + overdrive timing races. Ms-timestamps remove the
+     competing-proposer trigger, so `100ms + ms-timestamps + beta 20` is not in
+     this danger zone.
 - **Recovery:** a plain restart will not fix it. Wipe that node's chain DB to
   force re-bootstrap from the canonical chain, keeping its identity:
   `scripts/failover/clean.sh <m>` (one node) or `03_wipe_and_deploy_l1.sh` (all).
   After a hard wedge, allow ~25s settle + a low-rps warm-up before measuring.
-- **Rule:** never stack low-beta + sub-1s-window + overdrive + hard kills.
+- **Rule:** never stack low-beta + sub-1s-window-without-ms-timestamps + overdrive
+  + hard kills. (A sub-1s window *with* `proposerMillisecondTimestamps` is safe.)
 
 ---
 
