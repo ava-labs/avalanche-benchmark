@@ -214,19 +214,26 @@ func rollingRestore(cfg *config, targetSite int) {
 	// so a target that isn't actually at tip won't be promoted.
 	skipSeed := os.Getenv("RESTORE_SKIP_SEED") == "1" || strings.EqualFold(os.Getenv("RESTORE_SKIP_SEED"), "true")
 	forceStateSync := strings.EqualFold(os.Getenv("RESTORE_MODE"), "state-sync")
-	var snapTar, archiveTar string
+	var archiveTar string
 	switch {
 	case skipSeed:
 		fmt.Printf("== restore: RESTORE_SKIP_SEED set — skipping snapshot + wipe; reusing site %s as-is (sync gate still verifies it is at tip) ==\n", siteName(targetSite))
 	case forceStateSync:
 		fmt.Println("== restore: RESTORE_MODE=state-sync — seeding every target from scratch (no snapshot); validators state-sync, RPCs full-bootstrap from genesis ==")
 	default:
-		if tar, ok := cfg.takeSnapshot(trackerStep, otherSite(targetSite)); ok {
-			snapTar = tar
-			defer cleanupSnapshot(snapTar)
-		} else {
-			fmt.Println("WARN: no usable pruned snapshot source — recovering validators will wipe + state-sync.")
-		}
+		// DEFAULT: validators + spare STATE-SYNC (wipe, no pruned snapshot); archive RPCs clone
+		// an archive snapshot. Why the split: a pruned snapshot is captured at the START of the
+		// restore (the source's height then), so a node seeded from it must replay FORWARD to the
+		// live tip — through the failover/restore boundary, where a competing block at the swap
+		// height can trap it (observed: a recovering validator oscillating between two blocks at one
+		// height, "Resetting chain preference" repeatedly, never finalizing). State-sync instead
+		// jumps the node straight to a recent CANONICAL state summary, skipping that forward replay.
+		// (Trade-offs: under sustained ingress state-sync can be slow/heavy; and if the network has
+		// no state summary yet — fewer than StateSyncCommitInterval blocks — it falls back to a
+		// bootstrap replay, so this only helps once summaries exist.) Archive RPCs CANNOT state-sync
+		// (they need full history), so they still clone an archive snapshot, taken only from a source
+		// gated canonical (takeArchiveSnapshot) — a clone of an at-tip archive lands PAST the boundary.
+		fmt.Println("== restore: seed mode — validators/spare STATE-SYNC, archive RPCs SNAPSHOT ==")
 		if tar, ok := cfg.takeArchiveSnapshot(trackerStep, otherSite(targetSite)); ok {
 			archiveTar = tar
 			defer cleanupSnapshot(archiveTar)
@@ -235,8 +242,8 @@ func rollingRestore(cfg *config, targetSite int) {
 		}
 	}
 
-	// Phase 1 — seed EVERY target-site node together (validators + spare from the pruned
-	// snapshot, RPCs from the archive snapshot), bring them all up as trackers, and wait until
+	// Phase 1 — seed EVERY target-site node together (validators + spare via state-sync,
+	// RPCs from the archive snapshot), bring them all up as trackers, and wait until
 	// the validator destinations reach the tip. Each target's stale data is discarded first, so
 	// it can never resurrect a divergent post-failover frontier — identities (staking/active,
 	// staking/l1) live outside data/ and are preserved. See prepareTarget / wipeL1Data.
@@ -260,8 +267,8 @@ func rollingRestore(cfg *config, targetSite int) {
 				defer wg.Done()
 				if cfg.isArchiveNode(idx) { // archive RPC: full-state archive clone (can't state-sync)
 					cfg.prepareTarget(idx, archiveTar != "", archiveTar)
-				} else { // validator / spare: pruned snapshot clone (falls back to state-sync)
-					cfg.prepareTarget(idx, snapTar != "", snapTar)
+				} else { // validator / spare: state-sync (wipe, no snapshot) — see seed-mode note above
+					cfg.prepareTarget(idx, false, "")
 				}
 			}(i)
 		}
