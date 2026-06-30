@@ -66,7 +66,7 @@ fi
 # to co-locate another process on that box). We assemble the positional NODE_IPS /
 # BACKUP_SITE_NODE_IPS the rest of the tooling consumes (slot order: validators,
 # spares, rpcs) AND export the per-role vars so reconcile/create-l1 read the counts
-# directly. Validation (>=3 validators, >=1 rpc) lives in reconcile/loadPool.
+# directly. Validation (>=3 validators, >=2 rpc) lives in reconcile/loadPool.
 #
 # LEGACY fallback: if VALIDATOR_IPS is unset, NODE_IPS / BACKUP_SITE_NODE_IPS are
 # used as-is (the fixed 3 validators + 1 spare + 2 RPCs layout).
@@ -91,7 +91,7 @@ IFS=',' read -ra NODE_IPS_ARRAY <<< "$NODE_IPS"
 NODE_COUNT=${#NODE_IPS_ARRAY[@]}
 
 # Legacy positional mode requires exactly the fixed 6-slot site. Per-role mode is
-# count-flexible (reconcile enforces >=3 validators / >=1 rpc).
+# count-flexible (reconcile enforces >=3 validators / >=2 rpc).
 if [ -z "${PER_ROLE_TOPOLOGY:-}" ] && [ "$NODE_COUNT" -ne 6 ]; then
     echo "ERROR: legacy NODE_IPS must contain exactly six node IPs (or use VALIDATOR_IPS/SPARE_IPS/RPC_IPS)"
     exit 1

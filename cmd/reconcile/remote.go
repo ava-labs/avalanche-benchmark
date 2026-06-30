@@ -74,9 +74,11 @@ func loadPool() (Topology, []string, []instance) {
 	if len(valA) < 3 {
 		fatalf("VALIDATOR_IPS has %d IP(s); a live L1 needs at least 3 validators", len(valA))
 	}
-	if len(rpcA) < 1 {
-		fatalf("RPC_IPS is empty; need at least 1 RPC node for ingress")
-	} // the <2 RPC heads-up is emitted by warnColocation (state-changing commands only)
+	if len(rpcA) < 2 {
+		fatalf("RPC_IPS has %d IP(s); need at least 2 RPC nodes per site so one can be stopped "+
+			"for a restore snapshot while its twin keeps serving ingress. They MAY share a box "+
+			"(repeat the IP to co-locate) — what matters is two RPC processes, not two machines.", len(rpcA))
+	}
 
 	topo := Topology{NVal: len(valA), NSpare: len(spareA), NRPC: len(rpcA)}
 	pool := append(append(append([]string{}, valA...), spareA...), rpcA...)

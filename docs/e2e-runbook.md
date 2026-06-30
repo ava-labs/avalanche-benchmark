@@ -71,7 +71,8 @@ SSH_USER=ubuntu
 SSH_KEY_PATH=/path/to/your-fleet-key
 
 # Site A — list LENGTH is the count, VALUES are the placement (repeat an IP to
-# co-locate). VALIDATOR_IPS >= 3, RPC_IPS >= 1 (2+ recommended), SPARE_IPS >= 0.
+# co-locate). VALIDATOR_IPS >= 3, RPC_IPS >= 2 (a redundant RPC is required so one
+# can be snapshotted on restore while its twin serves), SPARE_IPS >= 0.
 VALIDATOR_IPS=A1,A2,A3
 SPARE_IPS=A4
 RPC_IPS=A5,A6
