@@ -30,6 +30,16 @@ DASH_DIR="$MON_DIR/dashboards"
 DATA_DIR="$SCRIPT_DIR/data"
 PROM_PORT=9090
 GRAFANA_PORT=3000
+BLOCKPROBE_BIN="$SCRIPT_DIR/bin/blockprobe"
+BLOCKPROBE_PORT=9101
+
+# blockprobe derives block-accurate TPS / inter-block gap straight from block
+# data (eth_getBlockByNumber on each site's RPC tracker) instead of the
+# scrape-sampled node counters — same source as bombard's live TUI. It needs the
+# L1 blockchain ID to build the RPC path; pull it from network.env if present.
+# Missing network.env (monitoring brought up before the L1) just disables the
+# probe — Prometheus + Grafana still come up.
+if [ -f "$NETWORK_ENV" ]; then source "$NETWORK_ENV"; fi
 
 echo "=== Monitoring (Prometheus + Grafana on this control host) ==="
 
@@ -98,10 +108,30 @@ export NODE_IPS BACKUP_SITE_NODE_IPS
         esac
         emit_target "$host" "$port" "$site" "$name" "$name" "$drole"
     done < <("$SCRIPT_DIR/bin/reconcile" endpoints)
+
+    # blockprobe self-scrape: one extra local target exposing the block-derived
+    # l1_tps / l1_block_gap_ms_* gauges (only added when the probe will run).
+    if [ -x "$BLOCKPROBE_BIN" ] && [ -n "${CHAIN_ID:-}" ]; then
+        echo "  - job_name: 'blockprobe'"
+        echo "    static_configs:"
+        echo "      - targets: ['localhost:$BLOCKPROBE_PORT']"
+    fi
 } > "$PROM_YML"
 
 TARGET_COUNT=$(grep -c "      - targets:" "$PROM_YML")
 echo "  $PROM_YML ($TARGET_COUNT targets)."
+
+# Build blockprobe -target args (site=rpcURL) from the role=rpc trackers. Every
+# RPC tracker on a site is passed; the probe dedupes same-site blocks, so it
+# rides through an RPC node restart during a failover.
+BLOCKPROBE_TARGETS=()
+if [ -x "$BLOCKPROBE_BIN" ] && [ -n "${CHAIN_ID:-}" ]; then
+    while IFS=$'\t' read -r name site role host port; do
+        [ -n "$host" ] || continue
+        [ "$role" = rpc ] || continue
+        BLOCKPROBE_TARGETS+=(--target "${site}=http://${host}:${port}/ext/bc/${CHAIN_ID}/rpc")
+    done < <("$SCRIPT_DIR/bin/reconcile" endpoints)
+fi
 
 # ------------------------------------------------------------------------------
 # [3/5] Grafana provisioning (datasource -> local prometheus; auto-load dashboards)
@@ -126,10 +156,23 @@ echo "  OK ($(ls "$DASH_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ') dashboards)
 # ------------------------------------------------------------------------------
 # [4/5] (Re)start prometheus + grafana
 # ------------------------------------------------------------------------------
-echo "[4/5] Starting prometheus + grafana..."
+echo "[4/5] Starting blockprobe + prometheus + grafana..."
+pkill -f "$BLOCKPROBE_BIN" 2>/dev/null || true
 pkill -f "$SCRIPT_DIR/bin/prometheus" 2>/dev/null || true
 pkill -f "$GRAFANA_HOME/bin/grafana" 2>/dev/null || true
 sleep 1
+
+# blockprobe (block-derived TPS / gap exporter). Skipped if not built or the L1
+# isn't up yet (no CHAIN_ID); Prometheus drops the scrape target accordingly.
+if [ "${#BLOCKPROBE_TARGETS[@]}" -gt 0 ]; then
+    mkdir -p "$DATA_DIR"
+    nohup "$BLOCKPROBE_BIN" --listen ":$BLOCKPROBE_PORT" "${BLOCKPROBE_TARGETS[@]}" \
+        >"$DATA_DIR/blockprobe.log" 2>&1 &
+    echo $! > "$DATA_DIR/blockprobe.pid"
+    echo "  blockprobe on :$BLOCKPROBE_PORT ($(( ${#BLOCKPROBE_TARGETS[@]} / 2 )) RPC target(s))."
+else
+    echo "  blockprobe skipped (binary missing or L1 not up — no CHAIN_ID)."
+fi
 
 # Fresh Prometheus TSDB each run. When a target's labels change (e.g. switching
 # from IP to friendly instance names), Prometheus keeps the OLD series under the
@@ -181,4 +224,4 @@ echo "  Consensus board: http://$PUBLIC_IP:$GRAFANA_PORT/d/avalanche-consensus?r
 echo "  Benchmark board: http://$PUBLIC_IP:$GRAFANA_PORT/d/avalanche-benchmark?refresh=5s"
 echo ""
 echo "Scraping $TARGET_COUNT node(s) at /ext/metrics on their per-slot ports (site a = m1-m6, site b = b1-b6)."
-echo "Stop with:  kill \$(cat $DATA_DIR/prometheus.pid $DATA_DIR/grafana.pid)"
+echo "Stop with:  kill \$(cat $DATA_DIR/prometheus.pid $DATA_DIR/grafana.pid $DATA_DIR/blockprobe.pid 2>/dev/null)"

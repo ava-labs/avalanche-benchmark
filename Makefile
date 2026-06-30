@@ -22,11 +22,15 @@ all: deps build
 	@echo "All ready."
 
 # Build Go tools
-build: bin/create-l1 bin/bombard bin/reconcile
+build: bin/create-l1 bin/bombard bin/reconcile bin/blockprobe
 
 bin/create-l1:
 	@mkdir -p bin
 	go build -o bin/create-l1 ./cmd/create-l1
+
+bin/blockprobe:
+	@mkdir -p bin
+	go build -o bin/blockprobe ./cmd/blockprobe
 
 bin/bombard:
 	@mkdir -p bin
