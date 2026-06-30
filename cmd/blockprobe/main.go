@@ -57,6 +57,15 @@ var (
 	}, []string{"site"})
 )
 
+// downAfterMs: a site whose latest block is older than this is treated as DOWN
+// (cordoned by a site-failover), not stalling — its gap/TPS series are broken
+// rather than reporting an ever-growing block-age as a fictitious proposer stall.
+// Set well above any legitimate cutover/stall (the worst consensus-timeout gap is
+// ~5-10s) so a real, slow failback still shows fully; only a truly silent (dead)
+// site is suppressed. The active site never goes quiet this long, so in practice
+// this only ever hides the failed-away DC's unbounded climb.
+const downAfterMs = 30000.0
+
 // blockRec is one observed block kept in the sliding window.
 type blockRec struct {
 	num        uint64
@@ -123,6 +132,22 @@ func (s *siteState) recomputeLocked(now time.Time) {
 	ageMs := float64(now.Sub(s.lastAt).Milliseconds())
 	blockAge.WithLabelValues(s.site).Set(ageMs)
 	height.WithLabelValues(s.site).Set(float64(s.maxNum))
+
+	// A site silent past downAfterMs is DOWN (e.g. cordoned by a site-failover),
+	// not merely stalling. Folding its ever-growing block-age into the max-gap
+	// would climb unbounded (a 3-min "proposer stall") and blow out the gap panel,
+	// burying the real cutover gap on the surviving site. So once a site crosses
+	// that line, BREAK its gap/TPS series (DeleteLabelValues → the panel line ends,
+	// reading as "down") instead of reporting a fictitious growing stall. blockAge
+	// and height keep updating, so "site X frozen at block N for T" is still visible
+	// on their own panels. The series resume automatically when the site produces
+	// again. A real stall/cutover (sub-downAfterMs) still folds in live age below.
+	if ageMs > downAfterMs {
+		gapMax.DeleteLabelValues(s.site)
+		gapLast.DeleteLabelValues(s.site)
+		tps.WithLabelValues(s.site).Set(0)
+		return
+	}
 
 	if len(s.blocks) < 2 {
 		// Not enough history for a rate yet; report 0 TPS but still surface a
