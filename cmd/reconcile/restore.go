@@ -52,6 +52,16 @@ const (
 	// consensusMaxProcessing: if the oldest in-flight block has been undecided for
 	// longer than this, consensus is stalled (not just slow) — treat as not-ready.
 	consensusMaxProcessing = 2 * time.Second
+	// idleReadyPollsNeeded: once every validator is fully ready (100% connected, no
+	// stuck block) the between-swap gate normally waits for the accepted tip to
+	// advance as live proof that production resumed. But an IDLE chain (no load to
+	// build blocks from) produces nothing, so the tip stays flat even though
+	// consensus is perfectly healthy — which would hang the gate forever (seen on a
+	// restore that finished after the bombard stopped). A *limping* chain is
+	// distinguishable: it shows a stuck block or <100% connected, which keeps
+	// ready<want. So after this many consecutive fully-ready polls with a flat tip,
+	// treat the chain as idle-but-healthy and proceed. ~3 polls (≈9s).
+	idleReadyPollsNeeded = 3
 )
 
 func siteName(site int) string {
@@ -427,17 +437,23 @@ func (c *config) waitForFullValidatorSet(intents []MachineIntent) {
 // (true within seconds of a restart, long before it rejoins consensus — which let
 // the rolling restore fire the next swap while the chain was still limping from the
 // last one, compounding the dips into a deep stall), this waits until EVERY
-// validator is genuinely back in consensus AND the chain is actually advancing:
+// validator is genuinely back in consensus:
 //   - SERVING (answers eth_blockNumber), and
 //   - connected to ~100% of the validator stake (/ext/health percentConnected), and
-//   - no block stuck in consensus (longestProcessingBlock < consensusMaxProcessing),
-//   - and the accepted tip advanced since the previous poll (production resumed).
+//   - no block stuck in consensus (longestProcessingBlock < consensusMaxProcessing).
+//
+// It then prefers live proof that production resumed (the accepted tip advanced
+// since the previous poll). But it does NOT require it: an idle chain with no load
+// produces no blocks, so once the fully-ready state holds flat for
+// idleReadyPollsNeeded consecutive polls it proceeds anyway (see that const) —
+// otherwise a restore that finishes while the chain is quiescent hangs forever.
 //
 // No timeout — like the other restore gates it waits as long as recovery takes.
 func (c *config) waitForValidatorsReady(intents []MachineIntent) {
 	want := c.topo.NVal
 	var prevTip uint64
 	havePrev := false
+	idleReadyPolls := 0
 	for {
 		res := c.checkHealth(intents)
 		ready := 0
@@ -475,9 +491,21 @@ func (c *config) waitForValidatorsReady(intents []MachineIntent) {
 		}
 		fmt.Printf("  gate: %d/%d ready | tip %d %s | %s\n",
 			ready, want, tip, motion, strings.Join(parts, ", "))
-		if ready >= want && advancing {
-			fmt.Printf("  gate: %d/%d ready, tip rising — proceeding to next swap.\n", ready, want)
-			return
+		if ready >= want {
+			if advancing {
+				fmt.Printf("  gate: %d/%d ready, tip rising — proceeding to next swap.\n", ready, want)
+				return
+			}
+			// Fully ready (100% connected, no stuck block) but the tip is flat: the
+			// chain is idle, not limping. Proceed once that has held for a few polls
+			// rather than wait for a block only load would produce.
+			idleReadyPolls++
+			if idleReadyPolls >= idleReadyPollsNeeded {
+				fmt.Printf("  gate: %d/%d ready, tip flat but consensus healthy (idle — no load) — proceeding to next swap.\n", ready, want)
+				return
+			}
+		} else {
+			idleReadyPolls = 0
 		}
 		prevTip, havePrev = tip, true
 		time.Sleep(restorePollInterval)
