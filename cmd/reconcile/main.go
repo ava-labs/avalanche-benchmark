@@ -32,8 +32,8 @@ func usage() {
                        validator at a time, chain stays >=2/3 throughout, no fork (two-site
                        mode); seeds targets from a live DB snapshot by default
                        (RESTORE_MODE=state-sync forces from-scratch; RESTORE_SKIP_SEED=1
-                       skips the snapshot+wipe to resume an already-synced target). Typically used to
-                       restore the original site after a site-failover
+                       skips the snapshot+wipe to resume an already-synced target).
+                       Typically used to restore the original site after a site-failover
   apply              pure reconcile against the existing intentions (no intent change)
   status             read-only health report (actual node state, no changes)
   verify             read-only proof the live network is ONE branch (no fork) + quorum healthy

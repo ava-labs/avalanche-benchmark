@@ -17,11 +17,11 @@ package main
 // is available). Either way the target's stale data is discarded first, so it can
 // never resurrect the divergent post-failover frontier (the rollback/fork hazard).
 //
-// The pinned RPC is held back until the target site holds the validator MAJORITY
-// (after the 2nd validator lands), then brought up + seeded so it catches up from
-// SAME-SITE validators rather than racing a cross-region sync (off the still-active
-// remote site) while also carrying ingress load. It is gated to tip before
-// completion, and the restore self-verifies (single branch + quorum) at the end.
+// The spare and pinned RPC are seeded and started alongside the validators in Phase 1, but the
+// rollover is gated ONLY on the validator destinations reaching tip — the spare and RPC hold no
+// vote, so they finish catching up on their own and never block (or stall) the failback. This is
+// what keeps a from-scratch RPC seed (e.g. RESTORE_MODE=state-sync) from holding consensus hostage
+// to a genesis bootstrap. The restore self-verifies (single branch + quorum) at the end.
 // See docs/two-site-failover.md.
 
 import (
@@ -203,10 +203,14 @@ func rollingRestore(cfg *config, targetSite int) {
 	// that synced but was interrupted in the swap phase). The sync gate below still runs,
 	// so a target that isn't actually at tip won't be promoted.
 	skipSeed := os.Getenv("RESTORE_SKIP_SEED") == "1" || strings.EqualFold(os.Getenv("RESTORE_SKIP_SEED"), "true")
+	forceStateSync := strings.EqualFold(os.Getenv("RESTORE_MODE"), "state-sync")
 	var snapTar, archiveTar string
-	if skipSeed {
+	switch {
+	case skipSeed:
 		fmt.Printf("== restore: RESTORE_SKIP_SEED set — skipping snapshot + wipe; reusing site %s as-is (sync gate still verifies it is at tip) ==\n", siteName(targetSite))
-	} else {
+	case forceStateSync:
+		fmt.Println("== restore: RESTORE_MODE=state-sync — seeding every target from scratch (no snapshot); validators state-sync, RPCs full-bootstrap from genesis ==")
+	default:
 		if tar, ok := cfg.takeSnapshot(trackerStep, otherSite(targetSite)); ok {
 			snapTar = tar
 			defer cleanupSnapshot(snapTar)
@@ -256,17 +260,18 @@ func rollingRestore(cfg *config, targetSite int) {
 
 	reconcile(cfg, trackerStep, false)
 
-	// Gate on ALL recovering nodes — validators, spare, AND archive RPCs — reaching tip, not just
-	// the validators. The RPCs are the slowest (full-trie writes), so they catch up last; gating
-	// them here means the whole site is at tip before any key moves.
-	allRecovering := append([]int{}, destIdx...)
-	allRecovering = append(allRecovering, spareDestIdxs(topo, targetSite)...)
-	allRecovering = append(allRecovering, rpcIdxs...)
-	fmt.Printf("waiting for site %s recovering nodes (validators + spare + RPCs) to reach tip (within %d blocks)...\n", siteName(targetSite), syncToleranceBlocks)
-	cfg.waitForTargetSynced(trackerStep, allRecovering, srcIdx)
+	// Gate ONLY the validator destinations to tip before any key moves. A behind validator is
+	// the fork risk — it must be at tip before it votes — but the spare and pinned RPC carry NO
+	// vote during the rollover, so they must NOT block it (per validatorDestIdx's contract). This
+	// matters most when the RPC is seeded from scratch (e.g. RESTORE_MODE=state-sync):
+	// gating consensus failback on a genesis-bootstrapping RPC could stall it for hours, while the
+	// other site's RPC keeps serving ingress the whole time. The spare and RPC keep syncing in the
+	// background and are reported (not gated) once the set is back.
+	fmt.Printf("waiting for site %s recovering validators to reach tip (within %d blocks)...\n", siteName(targetSite), syncToleranceBlocks)
+	cfg.waitForTargetSynced(trackerStep, destIdx, srcIdx)
 
-	// Phase 2 — roll each validator key onto the target site, one at a time. The RPCs already
-	// came up (snapshot-seeded) in Phase 1, so there is no separate RPC bring-up step here.
+	// Phase 2 — roll each validator key onto the target site, one at a time. The spare + RPCs
+	// came up (seeded) in Phase 1 and keep catching up in the background; they are never gated here.
 	current := trackerStep
 	for n, step := range keySteps {
 		fmt.Printf("== restore: migrate validator %d/%d to site %s ==\n", n+1, len(keySteps), siteName(targetSite))
@@ -285,8 +290,43 @@ func rollingRestore(cfg *config, targetSite int) {
 
 	fmt.Printf("\nrestore complete — validator set is active on site %s, chain held quorum throughout.\n", siteName(targetSite))
 
+	// One-shot readout of the un-gated nodes (spare + RPC). They hold no vote, so they were never
+	// gated; report where they are now so the operator knows whether the recovered site's standby
+	// and ingress are at tip yet. A freshly-seeded RPC may still be well behind — it catches up on
+	// its own and the other site's RPC keeps serving until it does.
+	cfg.reportBackgroundSync(current, append(spareDestIdxs(topo, targetSite), rpcIdxs...), destIdx)
+
 	fmt.Println()
 	verifyAgreement(cfg)
+}
+
+// reportBackgroundSync prints a single height/gap snapshot for nodes that were not gated during
+// the rollover (the spare and pinned RPC). It does not wait — these nodes hold no vote and finish
+// syncing on their own; this is a courtesy readout, with refIdx (the now-active validators) as the
+// tip reference.
+func (c *config) reportBackgroundSync(intents []MachineIntent, idxs, refIdx []int) {
+	if len(idxs) == 0 {
+		return
+	}
+	res := c.checkHealth(intents)
+	tip := tipBlock(res, refIdx)
+	parts := make([]string, 0, len(idxs))
+	for _, i := range idxs {
+		name := c.topo.MachineName(i)
+		switch {
+		case i >= len(res):
+			parts = append(parts, name+"=?")
+		case res[i].state != healthServing:
+			parts = append(parts, fmt.Sprintf("%s=%s", name, res[i].state))
+		default:
+			gap := 0
+			if tip > res[i].block {
+				gap = int(tip - res[i].block)
+			}
+			parts = append(parts, fmt.Sprintf("%s=%d(-%d)", name, res[i].block, gap))
+		}
+	}
+	fmt.Printf("background sync (un-gated; catching up on their own): tip=%d  %s\n", tip, strings.Join(parts, "  "))
 }
 
 // validatorDestIdx returns the machine indexes that will receive validator keys
