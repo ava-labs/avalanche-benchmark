@@ -372,9 +372,50 @@ func (c *config) killCmds(in instance) (kill, alive string) {
 	return kill, alive
 }
 
-// stop kills the node and waits for it to actually exit.
+// stop ends the node for a PLANNED operation (key swap, `down`): gracefully, so its
+// EVM state snapshot is flushed cleanly. See gracefulStop.
 func (c *config) stop(i int) {
+	c.gracefulStop(i)
+}
+
+// gracefulStopPolls bounds how long gracefulStop waits for a clean SIGTERM exit before
+// falling back to SIGKILL. avalanchego flushes pebbledb + its EVM state snapshot on
+// SIGTERM; under heavy load that can take a while, so the window is generous. The
+// fallback guarantees the stop still completes.
+const gracefulStopPolls = 120 // * 500ms = 60s
+
+// gracefulStop stops the node CLEANLY: SIGTERM so avalanchego flushes its EVM state
+// snapshot and reaps its own plugin child, then waits for a clean exit; falls back to
+// the hard SIGKILL reap (killNode) only if it doesn't exit within the grace window.
+// Used for every PLANNED stop (key swaps via stop(), snapshot sources, `down`). A
+// SIGKILL there leaves a "missing or corrupted snapshot" that the node regenerates and
+// — under load, after a reorg — can wedge on restart (observed: non-validators AND a
+// validator frozen post-failover/restore, recoverable only by a full `clean`). Graceful
+// shutdown also reaps the plugin child, avoiding the SIGKILL orphan/ETXTBSY problem.
+// site-failover keeps the hard killNode on purpose: it simulates a real outage.
+func (c *config) gracefulStop(i int) {
+	in := c.instances[i]
+	c.ssh(in.host, c.termCmd(in)) // SIGTERM — flush state + reap plugin
+	_, alive := c.killCmds(in)
+	for k := 0; k < gracefulStopPolls; k++ {
+		if c.ssh(in.host, alive) == "D" {
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	fmt.Printf("  %s: graceful stop didn't exit in %ds — SIGKILL fallback\n", c.topo.MachineName(i), gracefulStopPolls/2)
 	c.killNode(i)
+}
+
+// termCmd returns the SIGTERM command for an instance (host-wide for a single-process
+// box, PID-scoped by http-port for a co-located one). SIGTERM triggers avalanchego's
+// graceful shutdown, which flushes state and reaps its own plugin child, so we signal
+// only the parent.
+func (c *config) termCmd(in instance) string {
+	if !in.shared {
+		return "pkill -TERM -x avalanchego || true"
+	}
+	return fmt.Sprintf("for pid in $(pgrep -f -- '%s'); do kill -TERM \"$pid\" 2>/dev/null || true; done", in.procPat)
 }
 
 // swap wipes staking/active and copies the committed key set for the given index

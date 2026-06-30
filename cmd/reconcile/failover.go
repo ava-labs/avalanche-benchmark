@@ -199,7 +199,7 @@ func (c *config) reseedLaggingArchiveRPCs(intents []MachineIntent, res []healthR
 	}
 
 	_ = os.Remove(snapshotTar)
-	c.killNode(src)
+	c.gracefulStop(src) // SIGTERM: the snapshot source must flush a clean image, else seeded laggards wedge
 	if !c.snapshotPull(src, snapshotTar) {
 		c.start(src) // best-effort restart even if the copy failed
 		fmt.Printf("failover: WARNING archive snapshot of %s failed — lagging RPC(s) will bootstrap from genesis.\n", topo.MachineName(src))
