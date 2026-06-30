@@ -173,7 +173,8 @@ decision to make. The two RPCs **may be co-located on one box** (repeat the IP);
 what matters is two RPC *processes*, since we stop one and the other answers. The
 spare is the only variable left: it holds no vote and serves no ingress, so
 snapshotting it is always free — and when there's no spare, there's simply nothing
-safe to copy, so validators state-sync automatically.
+safe to copy, so validators state-sync automatically. `RESTORE_MODE=state-sync`
+overrides everything at once, forcing the from-scratch path for all roles.
 
 **What "no downtime" does and doesn't mean.** No *chain* downtime: quorum holds
 the whole time, so the ATS/settlement path (which talks to the RPC, not the
