@@ -21,7 +21,7 @@ package main
 // rollover is gated ONLY on the validator destinations reaching tip — the spare and RPC hold no
 // vote, so they finish catching up on their own and never block (or stall) the failback. This is
 // what keeps a from-scratch RPC seed (e.g. RESTORE_MODE=state-sync) from holding consensus hostage
-// to a genesis bootstrap. The restore self-verifies (single branch + quorum) at the end.
+// to its state-sync. The restore self-verifies (single branch + quorum) at the end.
 // See docs/two-site-failover.md.
 
 import (
@@ -189,24 +189,18 @@ func rollingRestore(cfg *config, targetSite int) {
 	// So during a B->A restore the source is already producing slowly enough for the recovering
 	// nodes to out-pace it, with no mid-restore rolling restart to apply or undo.
 
-	// Recovery strategy, by role — both seeded from a fresh DB SNAPSHOT of the live source site
-	// (captured AT the tip), so each recovering node replays only a tiny delta. State-sync was
-	// tried here and could NOT keep up: a graceful restore runs against the STILL-ACTIVE other
-	// site, so the tip keeps moving and the recovering validators never close the gap under
-	// load (measured: gap grew all night at 4000 TPS). A snapshot is a point-in-time copy at the
-	// tip, so the delta to replay is seconds, not a commit-interval pivot gap. Role-matched so
-	// each node's DB pruning-mode matches its role-default config (applied by prepareTarget) —
-	// safe now that FAILOVER keeps validators PRUNED (state-sync), so the source site's spare is
-	// genuinely a pruned tracker:
-	//   - validators + spare  <- a PRUNED snapshot of the source site's spare tracker;
-	//   - pinned RPCs          <- a full ARCHIVE snapshot of the source site's REDUNDANT (last) RPC
-	//                             (its twin keeps serving ingress, so no blip). Every site runs
-	//                             >=2 RPCs (loadPool enforces it), so a redundant RPC always exists
-	//                             — they may be co-located on one box; what matters is two processes.
-	// Both snapshots are captured up front and EVERY target is seeded + started together in
-	// Phase 1 — the RPCs are NOT held back behind validator sync, since a near-tip archive
-	// snapshot needs no catch-up race. If a source is unavailable, that role falls back to
-	// wipe + state-sync (validators) / from-genesis bootstrap (RPCs).
+	// Recovery strategy — EVERY target (validators, spare, and the pinned RPCs) is seeded from
+	// one fresh PRUNED DB SNAPSHOT of the live source site (captured AT the tip), so each
+	// recovering node replays only a tiny delta. State-sync was tried here and could NOT keep up:
+	// a graceful restore runs against the STILL-ACTIVE other site, so the tip keeps moving and
+	// the recovering validators never close the gap under load (measured: gap grew all night at
+	// 4000 TPS). A snapshot is a point-in-time copy at the tip, so the delta to replay is seconds,
+	// not a commit-interval pivot gap. One snapshot shape for all roles now that the RPCs run the
+	// same light (state-sync + pruning) profile as the validators and spare — the source-site
+	// snapshot tracker is a genuine pruned tracker, and coreth opens its DB on every target
+	// without a pruning-mode mismatch. The snapshot is captured up front and EVERY target is
+	// seeded + started together in Phase 1. If the source is unavailable, every role falls back
+	// to wipe + state-sync (the RPCs self-heal the same way now, no from-genesis archive bootstrap).
 	// RESTORE_SKIP_SEED=1 resumes a restore whose Phase-1 seed already finished: skip
 	// the slow, destructive snapshot + wipe and reuse the target site exactly as it is.
 	// Safe only when the target is ALREADY up as in-sync trackers (e.g. a prior restore
@@ -214,30 +208,24 @@ func rollingRestore(cfg *config, targetSite int) {
 	// so a target that isn't actually at tip won't be promoted.
 	skipSeed := os.Getenv("RESTORE_SKIP_SEED") == "1" || strings.EqualFold(os.Getenv("RESTORE_SKIP_SEED"), "true")
 	forceStateSync := strings.EqualFold(os.Getenv("RESTORE_MODE"), "state-sync")
-	var snapTar, archiveTar string
+	var snapTar string
 	switch {
 	case skipSeed:
 		fmt.Printf("== restore: RESTORE_SKIP_SEED set — skipping snapshot + wipe; reusing site %s as-is (sync gate still verifies it is at tip) ==\n", siteName(targetSite))
 	case forceStateSync:
-		fmt.Println("== restore: RESTORE_MODE=state-sync — seeding every target from scratch (no snapshot); validators state-sync, RPCs full-bootstrap from genesis ==")
+		fmt.Println("== restore: RESTORE_MODE=state-sync — seeding every target from scratch (no snapshot); all roles wipe + state-sync ==")
 	default:
 		if tar, ok := cfg.takeSnapshot(trackerStep, otherSite(targetSite)); ok {
 			snapTar = tar
 			defer cleanupSnapshot(snapTar)
 		} else {
-			fmt.Println("WARN: no usable pruned snapshot source — recovering validators will wipe + state-sync.")
-		}
-		if tar, ok := cfg.takeArchiveSnapshot(trackerStep, otherSite(targetSite)); ok {
-			archiveTar = tar
-			defer cleanupSnapshot(archiveTar)
-		} else {
-			fmt.Println("WARN: no usable archive snapshot source — recovering RPCs will full-bootstrap from genesis.")
+			fmt.Println("WARN: no usable pruned snapshot source — every recovering node will wipe + state-sync.")
 		}
 	}
 
-	// Phase 1 — seed EVERY target-site node together (validators + spare from the pruned
-	// snapshot, RPCs from the archive snapshot), bring them all up as trackers, and wait until
-	// the validator destinations reach the tip. Each target's stale data is discarded first, so
+	// Phase 1 — seed EVERY target-site node together (all roles from the one pruned snapshot),
+	// bring them all up as trackers, and wait until the validator destinations reach the tip.
+	// Each target's stale data is discarded first, so
 	// it can never resurrect a divergent post-failover frontier — identities (staking/active,
 	// staking/l1) live outside data/ and are preserved. See prepareTarget / wipeL1Data.
 	fmt.Printf("== restore: prepare + bring site %s up as trackers ==\n", siteName(targetSite))
@@ -258,11 +246,8 @@ func rollingRestore(cfg *config, targetSite int) {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
-				if cfg.isArchiveNode(idx) { // archive RPC: full-state archive clone (can't state-sync)
-					cfg.prepareTarget(idx, archiveTar != "", archiveTar)
-				} else { // validator / spare: pruned snapshot clone (falls back to state-sync)
-					cfg.prepareTarget(idx, snapTar != "", snapTar)
-				}
+				// Every role seeds from the one pruned snapshot (falls back to state-sync).
+				cfg.prepareTarget(idx, snapTar != "", snapTar)
 			}(i)
 		}
 		wg.Wait()
@@ -274,7 +259,7 @@ func rollingRestore(cfg *config, targetSite int) {
 	// the fork risk — it must be at tip before it votes — but the spare and pinned RPC carry NO
 	// vote during the rollover, so they must NOT block it (per validatorDestIdx's contract). This
 	// matters most when the RPC is seeded from scratch (e.g. RESTORE_MODE=state-sync):
-	// gating consensus failback on a genesis-bootstrapping RPC could stall it for hours, while the
+	// gating consensus failback on a state-syncing RPC could stall it, while the
 	// other site's RPC keeps serving ingress the whole time. The spare and RPC keep syncing in the
 	// background and are reported (not gated) once the set is back.
 	fmt.Printf("waiting for site %s recovering validators to reach tip (within %d blocks)...\n", siteName(targetSite), syncToleranceBlocks)
@@ -356,7 +341,7 @@ func validatorDestIdx(topo Topology, targetSite int) []int {
 
 // spareDestIdxs returns the indexes of the site's hot-standby spares — the NSpare slots
 // immediately after the validator destinations (per-site layout [v..., spare..., rpc...]).
-// A spare is a state-sync node (same DB profile as the validators, not archive) held ready
+// A spare is a state-sync node (same DB profile as every other role now) held ready
 // to be promoted if a validator fails. Empty if the site has no spare slots.
 func spareDestIdxs(topo Topology, targetSite int) []int {
 	base := siteBase(topo, targetSite) + topo.NVal

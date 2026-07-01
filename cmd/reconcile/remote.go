@@ -56,9 +56,10 @@ func splitIPs(csv string) []string {
 //	BACKUP_VALIDATOR_IPS / BACKUP_SPARE_IPS / BACKUP_RPC_IPS (site B, optional)
 //
 // Per site the pool is laid out [validators..., spares..., rpcs...]. Validators
-// must be >=3 (hard error) and RPCs >=1 (warn if <2 — restore's snapshot-the-twin
-// trick degrades with a single ingress node). The two sites must share the same
-// shape, since the registered validator set moves between them on failover.
+// must be >=3 (hard error) and RPCs >=1. (A single RPC is fine now that every role
+// state-syncs and restore seeds all roles from one pruned snapshot — no more
+// snapshot-the-redundant-RPC trick that needed a second ingress node.) The two sites
+// must share the same shape, since the registered validator set moves between them on failover.
 //
 // Back-compat: if VALIDATOR_IPS is unset, fall back to the legacy positional
 // NODE_IPS / BACKUP_SITE_NODE_IPS as the fixed 3 validators + 1 spare + 2 RPCs.
@@ -74,10 +75,8 @@ func loadPool() (Topology, []string, []instance) {
 	if len(valA) < 3 {
 		fatalf("VALIDATOR_IPS has %d IP(s); a live L1 needs at least 3 validators", len(valA))
 	}
-	if len(rpcA) < 2 {
-		fatalf("RPC_IPS has %d IP(s); need at least 2 RPC nodes per site so one can be stopped "+
-			"for a restore snapshot while its twin keeps serving ingress. They MAY share a box "+
-			"(repeat the IP to co-locate) — what matters is two RPC processes, not two machines.", len(rpcA))
+	if len(rpcA) < 1 {
+		fatalf("RPC_IPS has %d IP(s); need at least 1 RPC node per site to serve ingress.", len(rpcA))
 	}
 
 	topo := Topology{NVal: len(valA), NSpare: len(spareA), NRPC: len(rpcA)}
@@ -538,14 +537,14 @@ func (c *config) provisioned(host string) bool {
 	return out == "OK"
 }
 
-// isArchiveNode reports whether machine i is a pinned dedicated-RPC node — the LAST
-// TWO slots of each site (m5/m6, and b5/b6 in two-site mode). RPC nodes run as ARCHIVE
-// (chain-config-rpc.json: pruning-enabled=false, state-sync-enabled=false) so they
-// hold full historical state and can serve arbitrary-height eth_ queries. Every
-// other machine — the 3 validators and the spare — runs the default chain-config.json
-// (state-sync + pruning) for fast, light sync. Index-based (slot within site >= the
-// first RPC slot), so it holds in both single- and two-site mode. Safe for i<0 (no match).
-func (c *config) isArchiveNode(i int) bool {
+// isRPCNode reports whether machine i is a pinned dedicated-RPC node — the RPC slots of each
+// site (m5/m6, and b5/b6 in two-site mode). RPC nodes run chain-config-rpc.json, kept SEPARATE
+// from the validator/spare chain-config.json so RPC-only settings can be tuned independently.
+// Both files now carry the SAME sync rules (state-sync + pruning), so an RPC self-heals via
+// state-sync and seeds from the same pruned snapshot as every other role. (Previously the RPC
+// config was an archive profile — pruning + state-sync disabled — which held full history but
+// had no self-heal path.) Index-based, holds in single- and two-site mode. Safe for i<0.
+func (c *config) isRPCNode(i int) bool {
 	if i < 0 {
 		return false
 	}
@@ -561,18 +560,22 @@ func (c *config) isArchiveNode(i int) bool {
 // baked into site B's config; the primary (A) keeps chain-config.json's 25ms.
 const backupSiteMinDelayMS = 100
 
-// deployChainConfig writes pool slot i's ROLE-appropriate chain-config to its instance
-// config file (which the start script copies into place): the archive profile (pruning
-// + state-sync disabled) for the pinned RPC nodes, the light profile (state-sync +
-// pruning) for validators and the spare. For a normal node the file is chain-config.json
-// (startScript unchanged); a co-located instance gets chain-config-N.json so housemates
-// with different roles don't clobber each other. On the BACKUP site it also lowers
-// min-delay-target to backupSiteMinDelayMS so that site produces slowly when it takes over.
-// Re-applied on restore so a node's pruning/state-sync mode is reset to match its role-default DB.
+// deployChainConfig writes pool slot i's ROLE-appropriate chain-config to its instance config
+// file (which the start script copies into place): chain-config-rpc.json for the pinned RPC
+// nodes, chain-config.json for validators and the spare. The two files are kept SEPARATE so RPC
+// settings can be tuned independently, but they now carry the SAME sync rules (state-sync +
+// pruning) — so every role shares one snapshot shape and self-heals via state-sync if it falls
+// more than state-sync-min-blocks behind. (Previously the RPC file was an archive profile with
+// pruning + state-sync disabled for full history; RPCs no longer serve arbitrary-height eth_
+// queries, but they now recover by a plain resync instead of an archive->archive clone.) For a
+// normal node the file is chain-config.json (startScript unchanged); a co-located instance gets
+// chain-config-N.json so housemates with different roles don't clobber each other. On the BACKUP
+// site it also lowers min-delay-target to backupSiteMinDelayMS so that site produces slowly when
+// it takes over. Re-applied on restore so a node's pruning/state-sync mode is reset to match its DB.
 func (c *config) deployChainConfig(i int) {
 	in := c.instances[i]
 	src := "chain-config.json"
-	if c.isArchiveNode(i) {
+	if c.isRPCNode(i) {
 		src = "chain-config-rpc.json"
 	}
 	c.scp(c.repoDir+"/"+src, in.host, c.remoteDir+"/"+in.chainCfg, false)

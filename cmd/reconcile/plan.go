@@ -18,10 +18,10 @@ import (
 //     NodeID even when it is not currently hosting a validator key. A spare or
 //     pinned-RPC machine simply wears its home identity permanently.
 //
-// The counts (NVal validators, NSpare hot spares, NRPC pinned archive RPCs, per
+// The counts (NVal validators, NSpare hot spares, NRPC pinned dedicated RPCs, per
 // site) come from the per-role IP env (see loadPool); the layout, key numbers,
-// roles and restore steps are all derived from them. The 2nd+ RPC is the
-// redundancy that lets restore snapshot one RPC while its twin keeps serving.
+// roles and restore steps are all derived from them. A 2nd+ RPC is optional ingress
+// redundancy; one RPC per site is supported now that every role state-syncs.
 const l1KeyBase = 6
 
 const (
@@ -31,13 +31,13 @@ const (
 
 // Topology describes the machine pool: one site, or two (primary A + backup B).
 // Each site has the same fixed-by-config shape: NVal validators, NSpare hot
-// spares, NRPC pinned archive RPCs, laid out per site as
+// spares, NRPC pinned dedicated RPCs, laid out per site as
 // [v0..v(NVal-1), spare0..., rpc0...].
 type Topology struct {
 	TwoSite bool
 	NVal    int // validators per site (>=3)
 	NSpare  int // hot spares per site (>=0)
-	NRPC    int // pinned archive RPCs per site (>=1)
+	NRPC    int // pinned dedicated RPCs per site (>=1)
 }
 
 // sitePool is the number of slots in one site.

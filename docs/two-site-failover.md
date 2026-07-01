@@ -13,7 +13,7 @@ deltas. Single-site mode (no `BACKUP_*` lists) is byte-for-byte unchanged.
 
 ## Topology
 
-Each site is **N validators + S spares + R pinned archive RPCs**, set per site by
+Each site is **N validators + S spares + R pinned dedicated RPCs**, set per site by
 the `.env` per-role lists (`VALIDATOR_IPS`/`SPARE_IPS`/`RPC_IPS` and the
 `BACKUP_*` equivalents) — list length = count, values = placement, and a repeated
 IP co-locates nodes on one machine. Both sites must share the same shape, since
@@ -22,20 +22,24 @@ example throughout this doc) is **3 validators + 1 spare + 2 RPCs** = 6 machines
 per site; the slot layout per site is always `[validators…, spares…, rpcs…]`.
 
 - **Site A (primary)** = `VALIDATOR_IPS` + `SPARE_IPS` + `RPC_IPS`: `m1`-`m3`
-  weighted validators, `m4` hot spare, `m5`/`m6` pinned dedicated archive RPCs
+  weighted validators, `m4` hot spare, `m5`/`m6` pinned dedicated RPCs
   (for the default shape).
 - **Site B (backup)** = the `BACKUP_*` lists: `b1`-`b3` zero-weight syncing
-  trackers, `b4` spare, `b5`/`b6` pinned dedicated archive RPCs. For realistic
+  trackers, `b4` spare, `b5`/`b6` pinned dedicated RPCs. For realistic
   results put site B in a different region/DC so the cross-site sync latency is
   real (e.g. site A in us-east-1, site B in us-east-2). Co-locating sites on the
   same boxes (the single-network POC case) works for exercising the orchestration
   but removes fault isolation — `site-failover` then kills the down site's
   *processes*, not its boxes.
-- The two RPCs per site are **archive** nodes (`chain-config-rpc.json`:
-  pruning + state-sync disabled) so they hold full historical state and a second
-  one keeps serving ingress while the first is briefly stopped for a snapshot.
-  The validators and spare run the light profile (`chain-config.json`:
-  state-sync + pruning).
+- **Every role now uses the same sync rules** (state-sync + pruning). The RPCs keep
+  their own config file (`chain-config-rpc.json`, so RPC-only settings stay tunable
+  separately from the validators' `chain-config.json`), but that file is no longer an
+  archive profile — it's state-sync + pruning like the rest. So all nodes share one
+  snapshot shape, and any node (RPCs included) self-heals via state-sync if it falls
+  more than `state-sync-min-blocks` behind. Trade-off: the RPCs can't serve
+  arbitrary-height historical `eth_` queries anymore, but a borked RPC now recovers by
+  a plain resync instead of an archive→archive DB clone. One RPC per site is therefore
+  enough (a 2nd is optional ingress redundancy).
 - Site B nodes are **never registered on the P-chain**. They track the subnet
   exactly like `m4`/`m5` do — full chain state, no consensus weight — which is
   what makes site failover fast: their `data/` is already at tip when the
@@ -161,20 +165,19 @@ stopping the source node, so restore only snapshots a node it can stop *without*
 touching live quorum or ingress; otherwise it seeds from scratch. The choice is
 made per role:
 
-| Source site has… | Validator/spare seed | RPC seed |
-|---|---|---|
-| spare + ≥2 RPCs | pruned snapshot (of the spare) | archive snapshot (of the redundant RPC) |
-| **no spare** | **state-sync** (automatic) | archive snapshot |
+| Source site has… | Seed for ALL roles (validators, spare, RPCs) |
+|---|---|
+| spare | one pruned snapshot (of the spare) |
+| **no spare** | **state-sync** (automatic) |
 
-This is why every site is **required to run ≥2 RPCs** (enforced in `loadPool`):
-restore always has a redundant RPC it can stop to snapshot while the twin keeps
-serving ingress — so there is never an ingress blip and never a snapshot-vs-fresh
-decision to make. The two RPCs **may be co-located on one box** (repeat the IP);
-what matters is two RPC *processes*, since we stop one and the other answers. The
-spare is the only variable left: it holds no vote and serves no ingress, so
-snapshotting it is always free — and when there's no spare, there's simply nothing
-safe to copy, so validators state-sync automatically. `RESTORE_MODE=state-sync`
-overrides everything at once, forcing the from-scratch path for all roles.
+Every role now runs the same light (state-sync + pruning) profile, so restore seeds
+**every** target — validators, spare, and RPCs — from **one** pruned snapshot of the
+source site's spare tracker; there is no separate archive snapshot. The spare holds no
+vote and serves no ingress, so snapshotting it is always free — and when there's no
+spare, there's nothing safe to copy, so every role state-syncs automatically (RPCs
+included, since they self-heal now). This is why a single RPC per site is fine (the old
+≥2-RPC rule existed only so restore could snapshot one RPC while its twin served).
+`RESTORE_MODE=state-sync` overrides everything at once, forcing the from-scratch path.
 
 **What "no downtime" does and doesn't mean.** No *chain* downtime: quorum holds
 the whole time, so the ATS/settlement path (which talks to the RPC, not the
