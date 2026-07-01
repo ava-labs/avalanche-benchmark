@@ -152,7 +152,7 @@ func (c *config) captureFrom(intents []MachineIntent, srcIdx int, tarPath string
 	fmt.Printf("== restore: snapshot %s @ block %d -> %s (stop -> copy -> restart) ==\n",
 		topo.MachineName(srcIdx), tip, tarPath)
 	_ = os.Remove(tarPath)
-	c.killNode(srcIdx) // stop for a consistent on-disk image
+	c.gracefulStop(srcIdx) // SIGTERM so the snapshot is a CLEAN image (a SIGKILL'd source has a corrupted EVM snapshot that wedges every seeded target)
 	if !c.snapshotPull(srcIdx, tarPath) {
 		c.start(srcIdx) // best-effort restart even if the copy failed
 		return "", false
