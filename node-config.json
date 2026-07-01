@@ -1,5 +1,6 @@
 {
     "index-enabled": false,
+    "api-admin-enabled": true,
     "throttler-inbound-node-max-processing-msgs": 8192,
     "throttler-inbound-bandwidth-refill-rate": 8388608,
     "throttler-inbound-bandwidth-max-burst-size": 16777216
