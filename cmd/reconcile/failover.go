@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -46,20 +45,20 @@ const failoverSettleTimeout = 90 * time.Second
 // different heights and consensus can't form a quorum on any tip — the chain DEADLOCKS even
 // though every node reports SERVING (measured 2026-06-22: 659k/426k/412k produced zero blocks).
 //
-// reconcileBackupHeights recovers the validators+spare by STATE-SYNC: any one that is behind
-// the live tip by more than syncToleranceBlocks (or down) is wiped and reset to its pruned
-// role-default config, so reconcile's start resyncs it to the tip. State-sync lands every
-// wiped node at a common recent pivot, so the promoted set agrees on a tip (no inconsistent-
-// height deadlock) and stays PRUNED — no DB clone, no archive-config flip, no pruning-mode
-// mismatch (the failure modes the clone approach kept hitting). The surviving site's archive
-// RPCs (which retain the tip) serve the state-sync; the chain state is small and, because the
-// old site is gone, the tip is static, so the sync converges quickly. A validator already
-// within tolerance of the tip is left as-is and simply promoted (fast path — at a healthy
-// cadence the standby keeps up, so this is the common case).
+// reconcileBackupHeights recovers EVERY role — validators, spare, AND the pinned RPCs — by
+// STATE-SYNC: any node behind the live tip by more than syncToleranceBlocks (or down) is wiped
+// and reset to its light role-default config, so reconcile's start resyncs it to the tip.
+// State-sync lands every wiped node at a common recent pivot, so the promoted set agrees on a
+// tip (no inconsistent-height deadlock) and stays PRUNED — no DB clone, no archive-config flip,
+// no pruning-mode mismatch (the failure modes the clone approach kept hitting). The surviving
+// site's RPCs (which retain the tip) serve the state-sync; the chain state is small and, because
+// the old site is gone, the tip is static, so the sync converges quickly. A node already within
+// tolerance of the tip is left as-is (a promoted validator, or a serving RPC — fast path; at a
+// healthy cadence the standby keeps up, so this is the common case).
 //
-// The archive RPCs themselves CANNOT state-sync (pruning + state-sync disabled); a far-behind
-// one is reseeded from the most-advanced archive RPC on the site (archive->archive, so full
-// history is preserved). Runs BEFORE the reconcile pass starts the nodes.
+// The RPCs now run the same light (state-sync + pruning) profile as the validators, so a
+// far-behind RPC self-heals by the same wipe + state-sync — no archive->archive clone. It no
+// longer retains full history, but recovery is a plain resync. Runs BEFORE reconcile starts.
 func (c *config) reconcileBackupHeights(intents []MachineIntent, targetSite int) {
 	topo := c.topo
 
@@ -67,7 +66,7 @@ func (c *config) reconcileBackupHeights(intents []MachineIntent, targetSite int)
 	// true retained tip, not a momentarily-recovering node's partial height.
 	res := c.waitForSiteSettled(intents, targetSite, failoverSettleTimeout)
 
-	// Live tip = highest block any SERVING node on the site holds (the archive RPCs hold it).
+	// Live tip = highest block any SERVING node on the site holds (the RPCs hold it).
 	var tip uint64
 	for i := 0; i < topo.Size(); i++ {
 		if topo.Site(i) == targetSite && i < len(res) && res[i].state == healthServing && res[i].block > tip {
@@ -75,9 +74,11 @@ func (c *config) reconcileBackupHeights(intents []MachineIntent, targetSite int)
 		}
 	}
 
-	// Validators + spares: state-sync any that are behind the tip (or down); leave the rest.
+	// Every role — validators, spares, AND pinned RPCs: state-sync any that are behind the tip
+	// (or down); leave the rest. The RPCs run the same light profile now, so they resync too.
 	targets := append([]int{}, validatorDestIdx(topo, targetSite)...)
 	targets = append(targets, spareDestIdxs(topo, targetSite)...)
+	targets = append(targets, rpcMachineIdxs(topo, targetSite)...)
 	var promote, resync []string
 	for _, i := range targets {
 		if i >= len(intents) || intents[i].Cordoned {
@@ -94,7 +95,7 @@ func (c *config) reconcileBackupHeights(intents []MachineIntent, targetSite int)
 			promote = append(promote, topo.MachineName(i)) // current enough — promote as-is
 			continue
 		}
-		fmt.Printf("  !! %s: %s — beyond %d-block tolerance: WIPE + STATE-SYNC from site's own archive RPC (deadlock guard)\n",
+		fmt.Printf("  !! %s: %s — beyond %d-block tolerance: WIPE + STATE-SYNC to the site's live tip (deadlock guard)\n",
 			topo.MachineName(i), gap, syncToleranceBlocks)
 		c.deployChainConfig(i) // pruned + state-sync-enabled, matches the wiped DB
 		c.wipeL1Data(i)        // clear data dir -> forces state-sync on start
@@ -107,14 +108,11 @@ func (c *config) reconcileBackupHeights(intents []MachineIntent, targetSite int)
 		fmt.Printf("== failover: site %s recovery (tip %d) — promote-as-is: [%s]  WIPED+state-sync: [%s] ==\n",
 			siteName(targetSite), tip, strings.Join(promote, " "), strings.Join(resync, " "))
 	}
-
-	// Archive RPCs can't state-sync; reseed a far-behind one from the most-advanced archive RPC.
-	c.reseedLaggingArchiveRPCs(intents, res, targetSite)
 }
 
 // waitForSiteSettled gives the surviving site a bounded window to finish recovering before a
 // failover reads the live tip, then returns the settled health snapshot. A failover fired
-// right after a restore can catch the site's archive RPCs still bootstrapping: not yet SERVING,
+// right after a restore can catch the site's RPCs still bootstrapping: not yet SERVING,
 // or SERVING but still climbing to their retained tip. If the tip were read in that instant the
 // at-tip RPC would be missed and behind-but-close validators would be promoted at a stale tip.
 //
@@ -156,62 +154,5 @@ func (c *config) waitForSiteSettled(intents []MachineIntent, targetSite int, tim
 		}
 		prevMax, haveMax = maxH, true
 		time.Sleep(restorePollInterval)
-	}
-}
-
-// reseedLaggingArchiveRPCs clones the most-advanced SERVING archive RPC's DB onto any archive
-// RPC on the site that is down or more than snapshotSourceMaxLag behind. Archive nodes can't
-// state-sync, so a far-behind one would otherwise replay from genesis (hours); an
-// archive->archive clone gets it back to the tip with full history preserved. seedFromSnapshot
-// also copies the source's (archive) config so the destination's pruning mode matches the DB.
-// No-op if there is no suitable source or nothing is far enough behind. RPCs carry no vote, so
-// this never gates the failover.
-func (c *config) reseedLaggingArchiveRPCs(intents []MachineIntent, res []healthResult, targetSite int) {
-	topo := c.topo
-	rpcs := rpcMachineIdxs(topo, targetSite)
-
-	src := -1
-	for _, i := range rpcs {
-		if i >= len(intents) || intents[i].Cordoned || i >= len(res) || res[i].state != healthServing {
-			continue
-		}
-		if src < 0 || res[i].block > res[src].block {
-			src = i
-		}
-	}
-	if src < 0 {
-		return // no serving archive RPC to clone from
-	}
-	srcBlock := res[src].block
-
-	var laggards []int
-	for _, i := range rpcs {
-		if i == src || i >= len(intents) || intents[i].Cordoned {
-			continue
-		}
-		serving := i < len(res) && res[i].state == healthServing
-		if !serving || srcBlock > res[i].block+snapshotSourceMaxLag {
-			laggards = append(laggards, i)
-		}
-	}
-	if len(laggards) == 0 {
-		return
-	}
-
-	_ = os.Remove(snapshotTar)
-	c.gracefulStop(src) // SIGTERM: the snapshot source must flush a clean image, else seeded laggards wedge
-	if !c.snapshotPull(src, snapshotTar) {
-		c.start(src) // best-effort restart even if the copy failed
-		fmt.Printf("failover: WARNING archive snapshot of %s failed — lagging RPC(s) will bootstrap from genesis.\n", topo.MachineName(src))
-		return
-	}
-	c.start(src) // source downtime is just the copy
-	defer cleanupSnapshot(snapshotTar)
-
-	srcCfg := c.ssh(c.nodeIPs[src], "cat "+c.remoteDir+"/"+c.instances[src].chainCfg)
-	for _, i := range laggards {
-		fmt.Printf("  %s (archive RPC): reseed from %s @ %d (archive->archive)\n",
-			topo.MachineName(i), topo.MachineName(src), srcBlock)
-		c.seedFromSnapshot(i, snapshotTar, srcCfg)
 	}
 }

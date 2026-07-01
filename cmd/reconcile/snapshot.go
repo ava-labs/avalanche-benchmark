@@ -34,13 +34,6 @@ import (
 
 const snapshotTar = "/tmp/failover-restore-snapshot.tgz"
 
-// snapshotArchiveTar holds the role-matched ARCHIVE snapshot — a full (unpruned) copy
-// of the source site's REDUNDANT RPC. With two archive RPCs per site, restore stops the
-// 2nd RPC to take a consistent copy while the 1st keeps serving ingress (no blip), then
-// seeds BOTH recovering archive RPCs from it — so they start near-tip instead of
-// bootstrapping the whole chain from genesis (which wedges under load; 2026-06-22).
-const snapshotArchiveTar = "/tmp/failover-restore-archive.tgz"
-
 // snapshotSourceMaxLag bounds how far behind the live validator tip a snapshot source
 // may be. A dedicated tracker sits at the tip in steady state; the snapshot pull itself
 // then adds a few thousand blocks of delta (replayed on load), so a small lag at check
@@ -94,27 +87,6 @@ func (c *config) takeSnapshot(intents []MachineIntent, sourceSite int) (string, 
 	return c.captureFrom(intents, srcIdx, snapshotTar)
 }
 
-// takeArchiveSnapshot captures a full (unpruned) ARCHIVE snapshot of the source site's
-// REDUNDANT (last) RPC for seeding the recovering site's archive RPCs. Every site is
-// required to run >=2 RPCs (enforced in loadPool), so there is always a redundant RPC safe
-// to stop: its twin keeps serving ingress while we copy, so there is no blip — even when the
-// two RPCs are co-located on one box (we stop one process, the other answers). Same canonical
-// gate as the pruning snapshot. Returns ("", false) if the source is not a canonical tip, in
-// which case the recovering RPCs fall back to a from-genesis bootstrap.
-func (c *config) takeArchiveSnapshot(intents []MachineIntent, sourceSite int) (string, bool) {
-	if !c.snapshotProvenanceOK(intents, sourceSite) {
-		return "", false
-	}
-	rpcs := rpcMachineIdxs(c.topo, sourceSite)
-	if len(rpcs) < 2 {
-		// Shouldn't happen (loadPool enforces >=2), but never snapshot a lone RPC.
-		fmt.Printf("snapshot: site %s has %d RPC(s); need a redundant one to snapshot — recovering RPCs will full-bootstrap.\n", siteName(sourceSite), len(rpcs))
-		return "", false
-	}
-	srcIdx := rpcs[len(rpcs)-1] // redundant (last) RPC; its twin keeps serving ingress
-	return c.captureFrom(intents, srcIdx, snapshotArchiveTar)
-}
-
 // snapshotProvenanceOK enforces the Provenance invariant: only snapshot a site that
 // currently holds the full live validator set — that is the canonical tip.
 func (c *config) snapshotProvenanceOK(intents []MachineIntent, sourceSite int) bool {
@@ -128,8 +100,7 @@ func (c *config) snapshotProvenanceOK(intents []MachineIntent, sourceSite int) b
 
 // captureFrom takes a consistent DB snapshot of a specific source machine (by pool
 // index) into tarPath, enforcing the SERVING + canonical (Fidelity) gates and restarting
-// the source immediately after the copy. Shared by the pruning-tracker and archive-RPC
-// capture paths so both keep identical safety checks.
+// the source immediately after the copy.
 func (c *config) captureFrom(intents []MachineIntent, srcIdx int, tarPath string) (string, bool) {
 	topo := c.topo
 
@@ -267,33 +238,16 @@ func (c *config) loadSnapshot(i int, tar string) {
 	c.snapshotPush(i, tar)
 }
 
-// seedFromSnapshot loads a snapshot AND sets the target's chain-config to srcCfg — the
-// chain-config of the node the snapshot came from. The on-disk DB records the pruning mode it
-// was built with, and coreth refuses to open it under a different mode ("node has operated
-// with pruning disabled, shutting down to prevent missing tries"). So a node seeded from an
-// archive RPC (pruning-disabled) must run the archive config, not its own role default — and
-// the start script copies ~/chain-config.json into place on launch, so that is the file to
-// overwrite. srcCfg empty (read failed) falls back to a plain load, preserving prior behavior.
-func (c *config) seedFromSnapshot(i int, tar, srcCfg string) {
-	in := c.instances[i]
-	c.loadSnapshot(i, tar)
-	if srcCfg != "" {
-		c.sshStdin(in.host, fmt.Sprintf("cat > %s/%s", c.remoteDir, in.chainCfg), srcCfg)
-	}
-}
-
 // prepareTarget readies one recovering machine for restart: seed it from the
 // snapshot (default) or wipe it for a from-scratch state-sync (fallback). Used for
-// both the Phase-1 validator targets and the later-joined pinned RPC, so the two
-// paths stay identical.
+// every role (validators, spare, RPCs), so the paths stay identical.
 func (c *config) prepareTarget(i int, snap bool, tar string) {
 	name := c.topo.MachineName(i)
-	// Reset the node to its ROLE-default chain-config so its pruning/state-sync mode matches
-	// the DB it is about to run: restore seeds validators/spare from a pruning tracker and the
-	// archive RPCs from an archive source, so the role default is always the right match. This
-	// also undoes any archive config a prior failover left on a validator (which would make
-	// coreth reject the pruning snapshot, or block the state-sync fallback that needs
-	// state-sync-enabled). See seedFromSnapshot / deployChainConfig.
+	// Reset the node to its role-default chain-config so its pruning/state-sync mode matches
+	// the DB it is about to run. Every role now runs the same light (state-sync + pruning)
+	// profile and restore seeds from one pruned snapshot, so coreth opens the DB without a
+	// pruning-mode mismatch, and the state-sync fallback (which needs state-sync-enabled) is
+	// always available. See deployChainConfig.
 	c.deployChainConfig(i)
 	if snap {
 		fmt.Printf("  %s: stop + wipe + seed from snapshot\n", name)

@@ -11,7 +11,7 @@ import (
 // never both sites at once. Sending to the standby site's RPC injects txs that then
 // have to be gossiped cross-region to the active validators (added latency) and
 // risks stale-nonce rejections off the standby's slightly-behind view. reconcile
-// owns the failover, so it publishes the active site's archive-RPC URLs to a file;
+// owns the failover, so it publishes the active site's RPC URLs to a file;
 // bombard watches it and restricts ingress to those endpoints (see cmd/bombard
 // watchActiveRPCs). Coordinated via a local file on the shared control host, simply
 // ignored if bombard isn't running. The path must match bombard's
@@ -46,7 +46,7 @@ func activeSite(intents []MachineIntent, topo Topology) int {
 	return siteA
 }
 
-// writeActiveRPCs publishes the active site's archive-RPC URLs so bombard routes
+// writeActiveRPCs publishes the active site's RPC URLs so bombard routes
 // ingress to that site only — and re-points when the validator set moves. Best-effort
 // (a no-op if bombard isn't running). Single-site mode keeps bombard's default
 // (all RPCs), so it is skipped there.

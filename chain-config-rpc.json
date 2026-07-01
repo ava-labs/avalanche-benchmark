@@ -1,9 +1,9 @@
 {
-    "min-delay-target": 25,
     "push-gossip-frequency": "20ms",
     "max-outbound-active-requests": 64,
-    "state-sync-enabled": false,
-    "pruning-enabled": false,
+    "state-sync-enabled": true,
+    "state-sync-min-blocks": 10000,
+    "pruning-enabled": true,
     "tx-pool-account-slots": 131072,
     "tx-pool-global-slots": 262144,
     "tx-pool-account-queue": 131072,
