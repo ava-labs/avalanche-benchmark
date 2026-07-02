@@ -6,15 +6,19 @@ import (
 )
 
 func TestComputeMapping(t *testing.T) {
-	// Key scheme (see plan.go): validators are 6..5+NVal; every slot then has a
-	// unique home identity HomeKey(i) = 6+NVal+i. For the topologies below:
-	//   3v/1s (4 slots):   homes m1=9 m2=10 m3=11 m4=12
+	// Key scheme (see plan.go): registered validators are 6..5+totalValidators
+	// (NVal per site, both sites active); every slot then has a unique home
+	// identity HomeKey(i) = homeBase+i. For the topologies below:
+	//   3v/1s (4 slots):    validators 6-8, homes m1=9 m2=10 m3=11 m4=12
 	//   3v/1s/1r (5 slots): homes ... m5=13 (rpc, pinned)
-	//   3v/1s/2r ×2 sites (12 slots): homes m1..m6=9..14, b1..b6=15..20
-	//     (site-A rpc homes 13,14; site-B rpc homes 19,20 are pinned)
+	//   3v/1s/2r ×2 sites (12 slots): validators A=6-8 B=9-11,
+	//     homes m1..m6=12..17, b1..b6=18..23 (rpc homes 16,17 / 22,23 pinned)
+	//   2v/0s/2r ×2 sites (8 slots, the 2x2): validators A=6,7 B=8,9,
+	//     homes m1..m4=10..13, b1..b4=14..17 (rpc homes 12,13 / 16,17 pinned)
 	topo4 := Topology{NVal: 3, NSpare: 1}          // 3 validators + 1 spare
 	topo5 := Topology{NVal: 3, NSpare: 1, NRPC: 1} // + 1 pinned rpc
 	topo2 := Topology{TwoSite: true, NVal: 3, NSpare: 1, NRPC: 2}
+	topo22 := Topology{TwoSite: true, NVal: 2, NRPC: 2} // the 2x2: no spares
 
 	tests := []struct {
 		name      string
@@ -102,52 +106,52 @@ func TestComputeMapping(t *testing.T) {
 			want:     []int{6, 7, 8, 12, 13}, // cordoned rpc still keeps key 13 (just goes down)
 		},
 		{
-			name:      "two-site steady state: backup trackers untouched",
+			name:      "two-site active-active steady state: both DCs' validators sticky",
 			topo:      topo2,
 			preferred: siteA,
 			cordoned:  []bool{false, false, false, false, false, false, false, false, false, false, false, false},
-			prevKey:   []int{6, 7, 8, 12, 13, 14, 15, 16, 17, 18, 19, 20},
-			want:      []int{6, 7, 8, 12, 13, 14, 15, 16, 17, 18, 19, 20},
+			prevKey:   []int{6, 7, 8, 15, 16, 17, 9, 10, 11, 21, 22, 23},
+			want:      []int{6, 7, 8, 15, 16, 17, 9, 10, 11, 21, 22, 23},
 		},
 		{
 			name:      "two-site cordon m2: same-site spare m4 promotes, B never touched",
 			topo:      topo2,
 			preferred: siteA,
 			cordoned:  []bool{false, true, false, false, false, false, false, false, false, false, false, false},
-			prevKey:   []int{6, 7, 8, 12, 13, 14, 15, 16, 17, 18, 19, 20},
-			want:      []int{6, 10, 8, 7, 13, 14, 15, 16, 17, 18, 19, 20}, // m2 parks on home 10, m4 takes v2
+			prevKey:   []int{6, 7, 8, 15, 16, 17, 9, 10, 11, 21, 22, 23},
+			want:      []int{6, 13, 8, 7, 16, 17, 9, 10, 11, 21, 22, 23}, // m2 parks on home 13, m4 takes v2
+		},
+		{
+			name:      "two-site cordon b1: B's own spare b4 takes the orphaned B validator",
+			topo:      topo2,
+			preferred: siteB,
+			cordoned:  []bool{false, false, false, false, false, false, true, false, false, false, false, false},
+			prevKey:   []int{6, 7, 8, 15, 16, 17, 9, 10, 11, 21, 22, 23},
+			want:      []int{6, 7, 8, 15, 16, 17, 18, 10, 11, 9, 22, 23}, // b1 parks on home 18, b4 takes v4(9)
 		},
 		{
 			name:      "two-site: orphan with no same-site spare stays uncovered, never crosses to B",
 			topo:      topo2,
 			preferred: siteA,
 			cordoned:  []bool{false, true, true, false, false, false, false, false, false, false, false, false},
-			prevKey:   []int{6, 10, 8, 7, 13, 14, 15, 16, 17, 18, 19, 20},
-			want:      []int{6, 10, 11, 7, 13, 14, 15, 16, 17, 18, 19, 20}, // v3(8) uncovered; b-site stays sync
+			prevKey:   []int{6, 13, 8, 7, 16, 17, 9, 10, 11, 21, 22, 23},
+			want:      []int{6, 13, 14, 7, 16, 17, 9, 10, 11, 21, 22, 23}, // v3(8) uncovered; B untouched
 		},
 		{
-			name:      "site-failover to B: all of A cordoned, v1-v3 land on b1-b3",
-			topo:      topo2,
-			preferred: siteB,
-			cordoned:  []bool{true, true, true, true, true, true, false, false, false, false, false, false},
-			prevKey:   []int{6, 7, 8, 12, 13, 14, 15, 16, 17, 18, 19, 20},
-			want:      []int{9, 10, 11, 12, 13, 14, 6, 7, 8, 18, 19, 20}, // m1-m3 park on homes; b1-b3 take v1-v3
-		},
-		{
-			name:      "post-failover fault on b2: B spare b4 promotes",
-			topo:      topo2,
-			preferred: siteB,
-			cordoned:  []bool{true, true, true, true, true, true, false, true, false, false, false, false},
-			prevKey:   []int{9, 10, 11, 12, 13, 14, 6, 7, 8, 18, 19, 20},
-			want:      []int{9, 10, 11, 12, 13, 14, 6, 16, 8, 7, 19, 20}, // b2 parks on home 16, b4 takes v2
-		},
-		{
-			name:      "failback to A: B cordons to homes, m1-m3 retake v1-v3",
-			topo:      topo2,
+			name:      "2x2 steady state: 2 validators per DC, all sticky",
+			topo:      topo22,
 			preferred: siteA,
-			cordoned:  []bool{false, false, false, false, false, false, true, true, true, true, true, true},
-			prevKey:   []int{9, 10, 11, 12, 13, 14, 6, 7, 8, 18, 19, 20},
-			want:      []int{6, 7, 8, 12, 13, 14, 15, 16, 17, 18, 19, 20}, // exact seed restored
+			cordoned:  []bool{false, false, false, false, false, false, false, false},
+			prevKey:   []int{6, 7, 12, 13, 8, 9, 16, 17},
+			want:      []int{6, 7, 12, 13, 8, 9, 16, 17},
+		},
+		{
+			name:      "2x2 cordon b1: no spare, its validator key stays uncovered in its own DC",
+			topo:      topo22,
+			preferred: siteB,
+			cordoned:  []bool{false, false, false, false, true, false, false, false},
+			prevKey:   []int{6, 7, 12, 13, 8, 9, 16, 17},
+			want:      []int{6, 7, 12, 13, 14, 9, 16, 17}, // b1 parks on home 14; v3(8) uncovered
 		},
 	}
 

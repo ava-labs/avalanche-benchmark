@@ -60,13 +60,15 @@ if [ -z "$SSH_USER" ]; then
 fi
 
 # Topology config. PREFERRED: explicit per-role IP lists per data center —
-#   VALIDATOR_IPS / SPARE_IPS / RPC_IPS           (site A)
-#   BACKUP_VALIDATOR_IPS / BACKUP_SPARE_IPS / BACKUP_RPC_IPS  (site B, optional)
-# Each list's LENGTH sets that role's count; its VALUES set placement (repeat an IP
-# to co-locate another process on that box). We assemble the positional NODE_IPS /
-# BACKUP_SITE_NODE_IPS the rest of the tooling consumes (slot order: validators,
-# spares, rpcs) AND export the per-role vars so reconcile/create-l1 read the counts
-# directly. Validation (>=3 validators, >=2 rpc) lives in reconcile/loadPool.
+#   VALIDATOR_IPS / SPARE_IPS / RPC_IPS           (site A / DC A)
+#   BACKUP_VALIDATOR_IPS / BACKUP_SPARE_IPS / BACKUP_RPC_IPS  (site B / DC B, optional)
+# Both data centers run LIVE validators (active-active) — e.g. the 2x2 topology is
+# 2 validators + 2 RPC trackers in each DC. Each list's LENGTH sets that role's
+# count; its VALUES set placement (repeat an IP to co-locate another process on
+# that box). We assemble the positional NODE_IPS / BACKUP_SITE_NODE_IPS the rest
+# of the tooling consumes (slot order: validators, spares, rpcs) AND export the
+# per-role vars so reconcile/create-l1 read the counts directly. Validation
+# (>=3 validators TOTAL across sites, >=1 rpc per site) lives in reconcile/loadPool.
 #
 # LEGACY fallback: if VALIDATOR_IPS is unset, NODE_IPS / BACKUP_SITE_NODE_IPS are
 # used as-is (the fixed 3 validators + 1 spare + 2 RPCs layout).
@@ -117,8 +119,6 @@ PCHAIN_NODE_COUNT=5
 PCHAIN_HTTP_BASE_PORT=9650
 PCHAIN_STAKING_BASE_PORT=9651
 PCHAIN_PORT_STEP=10
-L1_VALIDATOR_START_INDEX=6
-L1_VALIDATOR_COUNT=3
 
 join_by_comma() {
     local IFS=,
@@ -193,12 +193,13 @@ _count() {
 }
 
 # ensure_staking_keys verifies every committed staking identity the configured
-# topology will reference (staking/l1/6 .. 6+NVal+Size-1) actually exists. Keys are
-# generated with `go run ./cmd/genstaking` LOCALLY and committed/shipped in the kit —
-# the control box has no Go toolchain — so this is a pre-flight check with a clear
+# topology will reference (staking/l1/6 .. 6+registered+Size-1, where registered
+# is NVal per site across every site) actually exists. Keys are generated with
+# `go run ./cmd/genstaking` LOCALLY and committed/shipped in the kit — the
+# control box has no Go toolchain — so this is a pre-flight check with a clear
 # remedy, not a generator. Mirrors reconcile's key scheme (plan.go).
 ensure_staking_keys() {
-    local nval nspare nrpc sp size maxkey k
+    local nval nspare nrpc sp size nreg maxkey k
     if [ -n "${PER_ROLE_TOPOLOGY:-}" ]; then
         nval=$(_count "$VALIDATOR_IPS"); nspare=$(_count "$SPARE_IPS"); nrpc=$(_count "$RPC_IPS")
     else
@@ -206,8 +207,9 @@ ensure_staking_keys() {
     fi
     sp=$((nval + nspare + nrpc))
     size=$sp
-    [ -n "$BACKUP_SITE_NODE_IPS" ] && size=$((2 * sp))
-    maxkey=$((6 + nval + size - 1))
+    nreg=$nval
+    [ -n "$BACKUP_SITE_NODE_IPS" ] && { size=$((2 * sp)); nreg=$((2 * nval)); }
+    maxkey=$((6 + nreg + size - 1))
 
     for k in $(seq 6 "$maxkey"); do
         if [ ! -d "$STAKING_DIR/l1/$k" ]; then

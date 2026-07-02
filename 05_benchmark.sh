@@ -30,22 +30,22 @@ if [ ! -x "$BOMBARD" ]; then
     exit 1
 fi
 
-# Bombard the PINNED dedicated archive RPC nodes (role=rpc: m5+m6 on site A, plus
-# b5+b6 in two-site mode — keys 10/19/18/20, zero-weight non-validators that track
-# the subnet and serve RPC). The failover engine never promotes them to validators,
-# so this clean ingress path survives failover events — unlike the hot spare m4
-# (key 9), which becomes a validator whenever one of m1-m3 goes down. Ingress on the
-# consensus-critical validators (m1-m3) wedges/throttles consensus; routing all load
-# through the dedicated non-validating RPC nodes keeps the validators healthy and
-# holds ~4000 TPS glass-smooth (2026-06-04 submission-target comparison). Listing all
-# four pinned RPCs lets bombard (failover-native: fans sends, watches each endpoint,
-# resubmits in-flight txs) ride through a full site failover. See wiki:
+# Bombard the PINNED dedicated RPC trackers in BOTH data centers (role=rpc —
+# zero-weight non-validators that track the subnet and serve RPC; reconcile
+# never promotes them to validators). Ingress on the consensus-critical
+# validators wedges/throttles consensus; routing all load through the dedicated
+# non-validating RPC nodes keeps the validators healthy and holds ~4000 TPS
+# glass-smooth (2026-06-04 submission-target comparison). See wiki:
 # why_bombard_the_non_validating_rpc_tracker_not_the_validator_and_it_must_be_sybil_on.
 #
 # Endpoints come from `reconcile endpoints` (the single source of truth for the
 # co-location-aware ports), so a co-located RPC slot is targeted on its ACTUAL port
 # rather than a hardcoded :9652 (which would hit a validator on a shared box).
 RECONCILE_BIN="$SCRIPT_DIR/bin/reconcile"
+# Both DCs are active, so ingress goes to ALL RPCs. Clear any stale active-site
+# routing file left by an earlier failover-era run — bombard would narrow its
+# ingress to one DC if the file exists.
+rm -f "${BOMBARD_ACTIVE_RPCS_FILE:-/tmp/bombard.active-rpcs}"
 export NODE_IPS BACKUP_SITE_NODE_IPS
 mapfile -t RPC_URLS < <("$RECONCILE_BIN" endpoints | awk -F'\t' -v c="$CHAIN_ID" \
     '$3=="rpc"{printf "http://%s:%s/ext/bc/%s/rpc\n", $4, $5, c}')

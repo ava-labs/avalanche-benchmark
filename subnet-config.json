@@ -3,7 +3,8 @@
         "k": 20,
         "alphaPreference": 11,
         "alphaConfidence": 13,
-        "beta": 25
+        "beta": 12,
+        "concurrentRepolls": 4
     },
     "proposerWindowMilliseconds": 100,
     "proposerMillisecondTimestamps": true

@@ -64,13 +64,17 @@ func run() error {
 		return fmt.Errorf("failed to load .env: %w", err)
 	}
 
-	// Validator set: prefer the per-role VALIDATOR_IPS (its length is the validator
-	// count), else fall back to the legacy positional NODE_IPS (first 3 = validators).
-	// The IPs are display-only — registration is by committed staking key (NodeID),
+	// Validator set: prefer the per-role VALIDATOR_IPS + BACKUP_VALIDATOR_IPS
+	// (both data centers' validators are registered — active-active), else fall
+	// back to the legacy positional NODE_IPS (first 3 = validators). The IPs are
+	// display-only — registration is by committed staking key (NodeID),
 	// IP-agnostic — so the count is what matters here.
 	var nodeIPs []string
 	if v := os.Getenv("VALIDATOR_IPS"); v != "" {
 		nodeIPs = splitTrim(v)
+		if b := os.Getenv("BACKUP_VALIDATOR_IPS"); b != "" {
+			nodeIPs = append(nodeIPs, splitTrim(b)...)
+		}
 	} else if raw := os.Getenv("NODE_IPS"); raw != "" {
 		nodeIPs = splitTrim(raw)
 		if len(nodeIPs) > minValidators {

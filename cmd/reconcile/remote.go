@@ -55,11 +55,11 @@ func splitIPs(csv string) []string {
 //	VALIDATOR_IPS / SPARE_IPS / RPC_IPS                 (site A)
 //	BACKUP_VALIDATOR_IPS / BACKUP_SPARE_IPS / BACKUP_RPC_IPS (site B, optional)
 //
-// Per site the pool is laid out [validators..., spares..., rpcs...]. Validators
-// must be >=3 (hard error) and RPCs >=1. (A single RPC is fine now that every role
-// state-syncs and restore seeds all roles from one pruned snapshot — no more
-// snapshot-the-redundant-RPC trick that needed a second ingress node.) The two sites
-// must share the same shape, since the registered validator set moves between them on failover.
+// Per site the pool is laid out [validators..., spares..., rpcs...]. BOTH sites
+// run live validators (active-active), so the validator minimum (>=3, hard
+// error) applies to the TOTAL across sites — e.g. the 2x2 topology is 2
+// validators per data center. RPCs must be >=1 per site. The two sites must
+// share the same shape.
 //
 // Back-compat: if VALIDATOR_IPS is unset, fall back to the legacy positional
 // NODE_IPS / BACKUP_SITE_NODE_IPS as the fixed 3 validators + 1 spare + 2 RPCs.
@@ -72,9 +72,6 @@ func loadPool() (Topology, []string, []instance) {
 	valA := splitIPs(mustEnv("VALIDATOR_IPS"))
 	spareA := splitIPs(os.Getenv("SPARE_IPS"))
 	rpcA := splitIPs(os.Getenv("RPC_IPS"))
-	if len(valA) < 3 {
-		fatalf("VALIDATOR_IPS has %d IP(s); a live L1 needs at least 3 validators", len(valA))
-	}
 	if len(rpcA) < 1 {
 		fatalf("RPC_IPS has %d IP(s); need at least 1 RPC node per site to serve ingress.", len(rpcA))
 	}
@@ -87,13 +84,16 @@ func loadPool() (Topology, []string, []instance) {
 		spareB := splitIPs(os.Getenv("BACKUP_SPARE_IPS"))
 		rpcB := splitIPs(os.Getenv("BACKUP_RPC_IPS"))
 		if len(valB) != topo.NVal || len(spareB) != topo.NSpare || len(rpcB) != topo.NRPC {
-			fatalf("backup site shape (%dv/%ds/%dr) must match primary (%dv/%ds/%dr) — the validator set moves between sites on failover",
+			fatalf("site B shape (%dv/%ds/%dr) must match site A (%dv/%ds/%dr) — both data centers run the same layout",
 				len(valB), len(spareB), len(rpcB), topo.NVal, topo.NSpare, topo.NRPC)
 		}
 		topo.TwoSite = true
 		pool = append(pool, valB...)
 		pool = append(pool, spareB...)
 		pool = append(pool, rpcB...)
+	}
+	if topo.totalValidators() < 3 {
+		fatalf("topology has %d validator(s) total; a live L1 needs at least 3", topo.totalValidators())
 	}
 	return topo, pool, buildInstances(pool)
 }
@@ -391,7 +391,6 @@ const gracefulStopPolls = 120 // * 500ms = 60s
 // — under load, after a reorg — can wedge on restart (observed: non-validators AND a
 // validator frozen post-failover/restore, recoverable only by a full `clean`). Graceful
 // shutdown also reaps the plugin child, avoiding the SIGKILL orphan/ETXTBSY problem.
-// site-failover keeps the hard killNode on purpose: it simulates a real outage.
 func (c *config) gracefulStop(i int) {
 	in := c.instances[i]
 	c.ssh(in.host, c.termCmd(in)) // SIGTERM — flush state + reap plugin
@@ -494,16 +493,16 @@ func (c *config) freshClean(i int) {
 
 // wipeL1Data stops the node and deletes its entire data/validator directory so it
 // rejoins with no local chain state and is forced to state-sync the L1 fresh onto
-// the live branch. Used by `restore` for the recovering site only.
+// the live branch. Used by `clean`.
 //
 // The whole dir is removed on purpose. There is no "L1-only" database to delete:
 // avalanchego keeps every chain (P-chain, C/X, and the L1 subnet) in one shared
 // --db-dir (data/validator/db, a single prefixdb with no per-chain subdir), and
 // subnet-evm keeps its EVM state under data/validator/chainData/<chainID>. Removing
-// only db/ is NOT enough — the EVM state resurrects the stale post-failover frontier
-// and the node then reports a height the live validators never had, so it never
-// converges (measured 2026-06-12; see docs/two-site-failover.md). Clearing all of
-// data/validator is the only reliable clean slate.
+// only db/ is NOT enough — the EVM state resurrects a stale frontier and the node
+// then reports a height the live validators never had, so it never converges
+// (measured 2026-06-12). Clearing all of data/validator is the only reliable
+// clean slate.
 //
 // This is safe: nothing unique lives in data/validator. The node identity
 // (staking/active) and committed key sets (staking/l1) are outside it and untouched,
@@ -551,27 +550,15 @@ func (c *config) isRPCNode(i int) bool {
 	return c.topo.isRPCSlot(i)
 }
 
-// backupSiteMinDelayMS is the block-production cadence the BACKUP site (B) runs at whenever it
-// holds the validator set — i.e. after a failover. min-delay-target only affects a node while it
-// is PRODUCING (proposing); a tracker applying another site's blocks ignores it. So site B still
-// tracks the primary at full 25ms cadence during normal operation, and only its OWN production
-// (post-failover) is slowed to ~10 blk/s — below the ~14 blk/s replay ceiling, so a recovering
-// primary's tip stays catchable WITHOUT any mid-restore rolling restart. The throttle is simply
-// baked into site B's config; the primary (A) keeps chain-config.json's 25ms.
-const backupSiteMinDelayMS = 100
-
 // deployChainConfig writes pool slot i's ROLE-appropriate chain-config to its instance config
 // file (which the start script copies into place): chain-config-rpc.json for the pinned RPC
 // nodes, chain-config.json for validators and the spare. The two files are kept SEPARATE so RPC
-// settings can be tuned independently, but they now carry the SAME sync rules (state-sync +
+// settings can be tuned independently, but they carry the SAME sync rules (state-sync +
 // pruning) — so every role shares one snapshot shape and self-heals via state-sync if it falls
-// more than state-sync-min-blocks behind. (Previously the RPC file was an archive profile with
-// pruning + state-sync disabled for full history; RPCs no longer serve arbitrary-height eth_
-// queries, but they now recover by a plain resync instead of an archive->archive clone.) For a
-// normal node the file is chain-config.json (startScript unchanged); a co-located instance gets
-// chain-config-N.json so housemates with different roles don't clobber each other. On the BACKUP
-// site it also lowers min-delay-target to backupSiteMinDelayMS so that site produces slowly when
-// it takes over. Re-applied on restore so a node's pruning/state-sync mode is reset to match its DB.
+// more than state-sync-min-blocks behind. For a normal node the file is chain-config.json
+// (startScript unchanged); a co-located instance gets chain-config-N.json so housemates with
+// different roles don't clobber each other. Both data centers produce at the same cadence —
+// there is no standby-site throttle in the active-active topology.
 func (c *config) deployChainConfig(i int) {
 	in := c.instances[i]
 	src := "chain-config.json"
@@ -579,16 +566,6 @@ func (c *config) deployChainConfig(i int) {
 		src = "chain-config-rpc.json"
 	}
 	c.scp(c.repoDir+"/"+src, in.host, c.remoteDir+"/"+in.chainCfg, false)
-	if c.topo.Site(i) == siteB {
-		c.setMinDelay(i, backupSiteMinDelayMS)
-	}
-}
-
-// setMinDelay rewrites min-delay-target (ms) in pool slot i's chain-config file. Takes effect on
-// the node's next (re)start — the VM reads min-delay-target once at init (subnet-evm vm.go).
-func (c *config) setMinDelay(i, ms int) {
-	in := c.instances[i]
-	c.ssh(in.host, fmt.Sprintf(`cd %s && sed -i 's/"min-delay-target": *[0-9]*/"min-delay-target": %d/' %s`, c.remoteDir, ms, in.chainCfg))
 }
 
 // upload pushes all artifacts a box needs. Pass 0 of reconcile. The binary, plugin,

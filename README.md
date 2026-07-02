@@ -1,36 +1,33 @@
-# Avalanche L1 Failover Benchmark
+# Avalanche L1 Two-Data-Center (2x2) Benchmark
 
-Tools to stand up an Avalanche L1 across **two data centers**, drive it with
-transaction load, and **simulate cross-region validator failover** — losing a
-whole site and recovering the validator set onto the backup — on a fixed pool of
-machines, without ever adding or removing machines from the fleet.
+Tools to stand up an Avalanche L1 across **two data centers, both active**, and
+drive it with transaction load — the 2x2 draft: 2 live validators in DC A and 2
+in DC B, on a fixed pool of machines. There is no failover machinery on this
+branch; both DCs validate at once and the goal is a cross-DC latency/throughput
+measurement.
 
-**Topology (configurable):** each site runs **N validators + S hot spares + R
-pinned archive RPC nodes**, plus a shared control host. The counts are set per
-site in `.env` via per-role IP lists — `VALIDATOR_IPS` (≥3), `SPARE_IPS` (≥0),
+**Topology (configurable):** each data center runs **N validators + S hot
+spares + R pinned RPC trackers**, plus a shared control host. The counts are set
+per site in `.env` via per-role IP lists — `VALIDATOR_IPS`, `SPARE_IPS` (≥0),
 `RPC_IPS` (≥1) — and the **length of each list is the count, the values are the
-placement**. An IP may repeat to **co-locate** multiple nodes on one machine
-(each on its own port + data dir), so node count is decoupled from machine count:
-the full topology can run on as few as one box, or one node per box. The default
-example is the validated shape — **3 validators + 1 spare + 2 RPC** per site (6
-machines), site B (backup) running the same shape as zero-weight syncing
-trackers. The validator identities (staking keys) are *conserved* — they move
-between machines, and across sites on a `site-failover`, but are never
-duplicated, so the chain stays a single branch. The pinned RPC nodes are never
-promoted to validators, so the load generator's ingress survives failover. The
-control host runs the 5 P-chain (primary network) validators the L1 bootstraps
-against, the load generator, and the monitoring stack — it holds no L1 node, so
-it keeps coordinating through a full-site outage. Single-site mode (no backup) is
-supported unchanged — just leave the `BACKUP_*` lists unset.
+placement**. Validators in BOTH lists (`VALIDATOR_IPS` and
+`BACKUP_VALIDATOR_IPS`) are registered, weighted L1 validators; the total across
+sites must be ≥3 (the 2x2 is 2+2). An IP may repeat to **co-locate** multiple
+nodes on one machine (each on its own port + data dir). DC A machines are named
+`m1..mN`, DC B machines `b1..bN` — every status/endpoints output shows which DC
+a node runs in. The pinned RPC trackers are never promoted to validators and are
+the load generator's ingress. The control host runs the 5 P-chain (primary
+network) validators the L1 bootstraps against, the load generator, and the
+monitoring stack — it holds no L1 node. Single-site mode is supported unchanged
+— just leave the `BACKUP_*` lists unset.
 
 > **Co-location is a TEST affordance**, not a production layout: stacking nodes
 > on one box removes fault isolation (one box loss takes them all), so a
 > representative DR test still wants each site's validators on separate machines,
 > ideally in two regions. The tooling warns when a box carries more than one node.
 
-> **Want the full end-to-end drill in one place?** See
-> **[docs/e2e-runbook.md](docs/e2e-runbook.md)** — install → configure → deploy →
-> benchmark → site failover → graceful failback, start to finish.
+> **The 2x2 draft design** — key layout, consensus parameters, and deploy
+> sequence — is in **[docs/two-site-2x2-draft.md](docs/two-site-2x2-draft.md)**.
 
 ## Ports
 
@@ -62,29 +59,23 @@ source instead (Linux, requires Go and git): `make`.
 ```bash
 cp .env.example .env
 # Edit .env — explicit per-role IP lists (length = count, values = placement;
-# repeat an IP to co-locate). VALIDATOR_IPS >= 3, RPC_IPS >= 2 (redundant RPC required).
+# repeat an IP to co-locate). The 2x2 shape:
 #   SSH_USER=ubuntu
 #   SSH_KEY_PATH=/path/to/your-fleet-key
-#   VALIDATOR_IPS=A1,A2,A3      # site A validators (>=3)
-#   SPARE_IPS=A4                # site A hot spares (any count, incl. 0)
-#   RPC_IPS=A5,A6              # site A pinned archive RPCs (>=2; may co-locate)
-#   BACKUP_VALIDATOR_IPS=B1,B2,B3   # site B — set these to enable two-site mode
-#   BACKUP_SPARE_IPS=B4
-#   BACKUP_RPC_IPS=B5,B6
+#   VALIDATOR_IPS=A1,A2             # DC A live validators
+#   SPARE_IPS=                      # no spares in the 2x2 draft
+#   RPC_IPS=A5,A6                   # DC A pinned RPC trackers
+#   BACKUP_VALIDATOR_IPS=B1,B2      # DC B live validators (active, not standby)
+#   BACKUP_SPARE_IPS=
+#   BACKUP_RPC_IPS=B5,B6            # DC B pinned RPC trackers
 ```
 
-`.env.example` documents every field and shows alternate shapes (e.g. the full
-topology co-located on 3 boxes, or everything on one). After editing, run
+`.env.example` documents every field. After editing, run
 `./bin/reconcile endpoints` to print the resulting per-node layout
-(name / site / role / host / port) before deploying. Setting the `BACKUP_*` lists
-enables **two-site mode**: a backup data center of zero-weight syncing trackers the
-validator set can be swapped onto when the whole primary site goes down
-(`./scripts/failover/site-failover.sh b`). To return once the primary is healthy,
-use the graceful `restore.sh a` — it rolls the set back one validator at a time
-with no chain downtime; `site-failover.sh a` is the hard-cutover failback for a
-true outage (see the rollback caveat in
-[docs/two-site-failover.md](docs/two-site-failover.md)). Single-site behavior is
-unchanged when the `BACKUP_*` lists are unset.
+(name / site / role / host / port) before deploying. Setting the `BACKUP_*`
+lists enables **two-data-center mode**: BOTH sites run live validators
+(active-active). Single-site behavior is unchanged when the `BACKUP_*` lists
+are unset.
 
 > **Validator count > 3** needs more committed staking identities than the 20
 > shipped in `staking/l1/`. `02_create_l1.sh` pre-flights this and prints the exact
@@ -101,17 +92,10 @@ full walkthrough — with what to expect at each step — is in
 ```bash
 ./01_bootstrap_primary_network.sh   # 5 local P-chain validators (leave running)
 ./02_create_l1.sh                   # one-time: register validators, write network.env
-./03_wipe_and_deploy_l1.sh          # deploy all 12 nodes, start chain from genesis (destructive)
+./03_wipe_and_deploy_l1.sh          # deploy every pool node, start chain from genesis (destructive)
 ./04_monitoring.sh                  # Prometheus + Grafana on the control host
-./scripts/failover/status.sh        # expect all nodes SERVING, "validators serving: N/N" (3/3 by default)
-./05_benchmark.sh                   # drive ~4000 tx/s at the pinned RPC nodes
-```
-
-Then run the failover drill (separate terminal, benchmark left running):
-
-```bash
-./scripts/failover/site-failover.sh b   # nuke site A, fail the validator set onto B
-./scripts/failover/restore.sh a         # graceful rolling failback to A (no chain downtime)
+./scripts/failover/status.sh        # expect all nodes SERVING, "validators serving: 4/4" for the 2x2
+./05_benchmark.sh                   # drive ~4000 tx/s at the pinned RPC trackers in both DCs
 ```
 
 `03_wipe_and_deploy_l1.sh` is **destructive** — it wipes node data and restarts
@@ -124,9 +108,7 @@ blocks on demand.
 ## Monitoring (Prometheus + Grafana)
 
 `04_monitoring.sh` runs Prometheus + Grafana **on the control host** — not on a
-pool node, since a pool node disappears during a site failover — and scrapes
-every node's `:9652/ext/metrics`, so the dashboards keep recording the survivors
-as a site drops out.
+pool node — and scrapes every node's `:9652/ext/metrics`.
 
 ```bash
 make monitoring-deps     # one-time (source builds only): fetch prometheus + grafana
@@ -135,16 +117,15 @@ make monitoring-deps     # one-time (source builds only): fetch prometheus + gra
 
 It discovers the fleet from `reconcile endpoints` (the single source of truth for
 the configured topology + co-location-aware ports) and labels each target by
-`site` (`a`/`b`), `machine` (`m1`…/`b1`…), and `role` (`validator`/`spare`/`rpc`/
-`tracker`) — so the dashboards track whatever counts you set. Two dashboards are
-provisioned:
+`site` (`a`/`b` — the node's data center), `machine` (`m1`…/`b1`…), and `role`
+(`validator`/`spare`/`rpc`) — so the dashboards track whatever counts you set
+and can be grouped/compared per DC. Two dashboards are provisioned:
 
 - **Avalanche Benchmark** (`/d/avalanche-benchmark`) — per-node TPS, consensus,
   and verification panels.
-- **Avalanche Failover** (`/d/avalanche-failover`) — built for this demo:
-  per-node last-accepted (finalized) height, the **A→B finalized gap**, node
-  up/down, and block-acceptance rate. Watch site A flatline and site B take over
-  live.
+- **Avalanche Failover** (`/d/avalanche-failover`) — per-node last-accepted
+  (finalized) height, the **A→B finalized gap** (in the 2x2 this reads as the
+  cross-DC finalization skew), node up/down, and block-acceptance rate.
 
 Grafana is on `:3000`, Prometheus on `:9090` (anonymous admin, no login). If
 those ports aren't open to you, tunnel over SSH:
@@ -155,34 +136,25 @@ ssh -i <key> -L3000:localhost:3000 -L9090:localhost:9090 <user>@<control-host>
 ```
 
 Re-runnable (kills + restarts cleanly). Works in single-site mode too — the A→B
-gap panel is just empty without a backup site.
+gap panel is just empty without a second data center.
 
-## Failover commands
+## Pool commands
 
-`scripts/failover/` moves validator identities across the fixed pool. Within a
-site the hot spare covers a downed validator; a `site-failover` moves the whole
-set across sites. See
-[docs/failover-recovery-simulation.md](docs/failover-recovery-simulation.md)
-(single-site) and [docs/two-site-failover.md](docs/two-site-failover.md)
-(two-site) for the design.
+`scripts/failover/` operates the fixed pool (the directory name is historical —
+there is no cross-site failover on this branch; validator identities stay in
+their own data center).
 
 ```bash
 ./scripts/failover/status.sh     # read-only: each node's ACTUAL state + honest validators-serving count
 ./scripts/failover/verify.sh     # read-only: prove the live network is ONE branch + quorum healthy
-./scripts/failover/down.sh <m>   # cordon machine m (take it "offline") — within-site failover
+./scripts/failover/down.sh <m>   # cordon machine m (take it "offline")
 ./scripts/failover/up.sh <m>     # uncordon machine m (return it to service)
 ./scripts/failover/clean.sh <m>  # wipe machine m's chain data and re-bootstrap it clean
-
-# Two-site mode (requires BACKUP_SITE_NODE_IPS):
-./scripts/failover/site-failover.sh <a|b>  # hard cutover: nuke the other site, swap the whole set here
-./scripts/failover/restore.sh <a|b>        # graceful rolling failback: one validator at a time, no downtime
+./scripts/failover/failover.sh   # pure re-apply of the current intentions (recover an interrupted run)
 ```
 
-`site-failover` models a real outage: it **hard-kills every node on the down site
-at once** (freezing its tip at the true data-loss boundary), then the surviving
-site forms consensus on the blocks it already holds — no state is pulled from the
-dead site. `status.sh` reports every node as `SERVING@block` / `BOOTSTRAPPING` /
-`DOWN` and an honest `validators serving: X/N`, so you see what is *actually*
+`status.sh` reports every node as `SERVING@block` / `BOOTSTRAPPING` / `DOWN`
+and an honest `validators serving: X/N`, so you see what is *actually*
 happening rather than what was *intended*.
 
 ## Recovering From a Stalled Chain
@@ -285,10 +257,9 @@ uses one fixed profile:
 - in-flight cap: **2000** (sized to the block cadence so the rps limiter binds,
   not the cap)
 - resubmit interval: **5s**
-- ingress: the **pinned archive RPC nodes** — `m5`/`m6` on site A, plus `b5`/`b6`
-  on site B in two-site mode. These are never promoted to validators, so ingress
-  survives a failover; bombard fans across all reachable RPCs and resubmits
-  in-flight txs, so it rides straight through a `site-failover`.
+- ingress: the **pinned RPC trackers in both data centers** (`role=rpc` in
+  `reconcile endpoints`). These are never promoted to validators; bombard fans
+  across all of them and resubmits in-flight txs.
 
 To change the profile, edit the constants at the top of `05_benchmark.sh`. See
 [docs/throughput-tuning-and-benchmarks.md](docs/throughput-tuning-and-benchmarks.md)
@@ -302,27 +273,20 @@ clear before starting a new benchmark (mempool expiration is 1 minute).
 
 Genesis is configured with ACP-226 excess-gas parameters for fast block
 production from the start, and the packaged AvalancheGo build pins a 1s
-proposer-window branch. The two sites run **different cadences**, applied at
-deploy time:
-
-- **Site A (primary): 25 ms** (`min-delay-target` in `chain-config.json`) — the
-  hot ~40 blk/s profile.
-- **Site B (backup): 100 ms** — ~10 blk/s, and only while it *produces* (i.e.
-  after a failover). `min-delay-target` governs a node only while it proposes, so
-  B tracks A's 25 ms blocks at full speed during normal operation; the slower
-  backup cadence is what lets a recovering site converge without a rolling
-  restart. See [docs/two-site-failover.md](docs/two-site-failover.md).
+proposer-window branch. Both data centers produce at the **same cadence** —
+`min-delay-target` in `chain-config.json` (there is no standby-site throttle in
+the active-active topology).
 
 To tune, edit `min-delay-target` in `chain-config.json` and re-run
 `./03_wipe_and_deploy_l1.sh` (which resets the chain to genesis).
 
 ## Further reading
 
-- [docs/e2e-runbook.md](docs/e2e-runbook.md) — the full end-to-end failover &
-  recovery drill.
-- [docs/two-site-failover.md](docs/two-site-failover.md) — two-site design,
-  identity map, and what is simulated vs. production.
-- [docs/failover-recovery-simulation.md](docs/failover-recovery-simulation.md) —
-  the single-site failover model and stalled-chain recovery theory.
+- [docs/two-site-2x2-draft.md](docs/two-site-2x2-draft.md) — this branch's 2x2
+  active-active design: key layout, consensus parameters, deploy sequence.
 - [docs/throughput-tuning-and-benchmarks.md](docs/throughput-tuning-and-benchmarks.md)
   — the 4000-rps profile and block-cadence tuning.
+- Historical (describe the failover machinery this branch removed):
+  [docs/e2e-runbook.md](docs/e2e-runbook.md),
+  [docs/two-site-failover.md](docs/two-site-failover.md),
+  [docs/failover-recovery-simulation.md](docs/failover-recovery-simulation.md).

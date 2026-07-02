@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+// syncToleranceBlocks: a node within this many blocks of the max tip counts as
+// caught up for the common-height branch comparison.
+const syncToleranceBlocks = 100
+
 // blockAt fetches the L1 block at the given tag ("finalized", "latest", or a hex
 // height like "0x1f4") from a node's RPC, returning (height, hash, ok).
 func (c *config) blockAt(i int, tag string) (uint64, string, bool) {
@@ -37,8 +41,8 @@ func (c *config) blockAt(i int, tag string) (uint64, string, bool) {
 	return h, out.Result.Hash, true
 }
 
-// verifyAgreement proves the post-failover / post-restore invariant: the live
-// network is on a SINGLE branch (no fork) and quorum is healthy. It reads each
+// verifyAgreement proves the live network is on a SINGLE branch (no fork) and
+// quorum is healthy. It reads each
 // uncordoned node's finalized tip, then compares the block HASH at a common
 // recent height across all of them — an identical hash on every responding node
 // is the proof of a single branch. Validators must all be SERVING. Read-only;
@@ -73,7 +77,7 @@ func verifyAgreement(cfg *config) bool {
 		}
 	}
 
-	want := topo.NVal
+	want := topo.totalValidators()
 	serving := 0
 	for _, n := range nodes {
 		if n.isVal && n.ok {

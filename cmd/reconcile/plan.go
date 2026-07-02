@@ -8,20 +8,20 @@ import (
 // Committed staking-key layout (staking/l1/<idx>). Indices 1..5 are the P-chain
 // primaries (not pool machines); the L1 pool keys begin at l1KeyBase:
 //
-//   - the first NVal keys (l1KeyBase .. l1KeyBase+NVal-1) are the REGISTERED
-//     validator set — the only staked identities. They are registered on the
-//     P-chain at create-l1, are permanent + IP-agnostic, and MOVE between sites
-//     on an explicit site-failover (a single-machine cordon never promotes a
-//     backup-site machine — consensus stays single-site by design);
+//   - the first totalValidators keys (l1KeyBase .. l1KeyBase+totalValidators-1)
+//     are the REGISTERED validator set — the only staked identities, registered
+//     on the P-chain at create-l1, permanent + IP-agnostic. In two-site mode
+//     BOTH data centers hold live validators: site A's validator slots host the
+//     first NVal keys, site B's the next NVal (active-active — there is no
+//     standby site and no cross-site failover on this branch);
 //   - after them, one unique non-validating "home" identity per pool slot
-//     (l1KeyBase+NVal + globalSlotIndex), so every live machine has a distinct
-//     NodeID even when it is not currently hosting a validator key. A spare or
+//     (homeBase + globalSlotIndex), so every live machine has a distinct
+//     NodeID even when it is not currently hosting a validator key. A
 //     pinned-RPC machine simply wears its home identity permanently.
 //
 // The counts (NVal validators, NSpare hot spares, NRPC pinned dedicated RPCs, per
-// site) come from the per-role IP env (see loadPool); the layout, key numbers,
-// roles and restore steps are all derived from them. A 2nd+ RPC is optional ingress
-// redundancy; one RPC per site is supported now that every role state-syncs.
+// site) come from the per-role IP env (see loadPool); the layout, key numbers and
+// roles are all derived from them.
 const l1KeyBase = 6
 
 const (
@@ -29,16 +29,28 @@ const (
 	siteB = 1
 )
 
-// Topology describes the machine pool: one site, or two (primary A + backup B).
-// Each site has the same fixed-by-config shape: NVal validators, NSpare hot
-// spares, NRPC pinned dedicated RPCs, laid out per site as
+// Topology describes the machine pool: one site, or two data centers (A + B),
+// both ACTIVE. Each site has the same fixed-by-config shape: NVal validators,
+// NSpare hot spares, NRPC pinned dedicated RPCs, laid out per site as
 // [v0..v(NVal-1), spare0..., rpc0...].
 type Topology struct {
 	TwoSite bool
-	NVal    int // validators per site (>=3)
+	NVal    int // live validators per site (total across sites >=3)
 	NSpare  int // hot spares per site (>=0)
 	NRPC    int // pinned dedicated RPCs per site (>=1)
 }
+
+// numSites is 2 in two-site mode, else 1.
+func (t Topology) numSites() int {
+	if t.TwoSite {
+		return 2
+	}
+	return 1
+}
+
+// totalValidators is the size of the REGISTERED validator set — NVal per site,
+// every site active.
+func (t Topology) totalValidators() int { return t.NVal * t.numSites() }
 
 // sitePool is the number of slots in one site.
 func (t Topology) sitePool() int { return t.NVal + t.NSpare + t.NRPC }
@@ -78,17 +90,18 @@ func (t Topology) MachineName(i int) string {
 }
 
 // homeBase is the first committed key index used for per-slot home identities
-// (right after the NVal registered validator keys).
-func (t Topology) homeBase() int { return l1KeyBase + t.NVal }
+// (right after the registered validator keys).
+func (t Topology) homeBase() int { return l1KeyBase + t.totalValidators() }
 
 // HomeKey is the unique non-validating identity machine i wears when cordoned,
 // free, or (for a spare/RPC) permanently. One per slot, so several live
 // non-validating trackers never share a NodeID.
 func (t Topology) HomeKey(i int) int { return t.homeBase() + i }
 
-// validatorKeys are the NVal registered validator identities (l1KeyBase..).
+// validatorKeys are the registered validator identities (l1KeyBase..), NVal per
+// site across every site.
 func (t Topology) validatorKeys() []int {
-	keys := make([]int, t.NVal)
+	keys := make([]int, t.totalValidators())
 	for i := range keys {
 		keys[i] = l1KeyBase + i
 	}
@@ -96,9 +109,9 @@ func (t Topology) validatorKeys() []int {
 }
 
 // AllKeys lists every committed key index a pool machine must be provisioned
-// with: the NVal validator keys plus one home identity per slot.
+// with: the registered validator keys plus one home identity per slot.
 func (t Topology) AllKeys() []int {
-	keys := make([]int, 0, t.NVal+t.Size())
+	keys := make([]int, 0, t.totalValidators()+t.Size())
 	for _, k := range t.validatorKeys() {
 		keys = append(keys, k)
 	}
@@ -108,22 +121,10 @@ func (t Topology) AllKeys() []int {
 	return keys
 }
 
-// SiteFromName parses an operator site argument ("a" or "b").
-func (t Topology) SiteFromName(s string) (int, bool) {
-	switch s {
-	case "a", "A":
-		return siteA, true
-	case "b", "B":
-		if !t.TwoSite {
-			return 0, false
-		}
-		return siteB, true
-	}
-	return 0, false
+// isValidatorKey reports whether k is one of the registered validator keys.
+func (t Topology) isValidatorKey(k int) bool {
+	return k >= l1KeyBase && k < l1KeyBase+t.totalValidators()
 }
-
-// isValidatorKey reports whether k is one of the NVal registered validator keys.
-func (t Topology) isValidatorKey(k int) bool { return k >= l1KeyBase && k < l1KeyBase+t.NVal }
 
 // isRPCKey reports whether committed key k is the home identity of a pinned-RPC
 // slot. An RPC machine is sticky on this key and is never a promotion target.
@@ -139,16 +140,16 @@ type MachineIntent struct {
 	Key      int  `json:"key"`
 }
 
-// seedIntents is the default mapping a fresh deploy resets to: site A's validator
-// slots host the NVal registered validator keys (l1KeyBase..); every other slot
-// (site A spares/RPCs, and all of site B in two-site mode) wears its own home
-// identity as an uncordoned non-validating tracker. All uncordoned.
+// seedIntents is the default mapping a fresh deploy resets to: EVERY site's
+// validator slots host registered validator keys (site A gets the first NVal,
+// site B the next NVal — active-active); every other slot (spares, RPCs) wears
+// its own home identity as an uncordoned non-validating tracker. All uncordoned.
 func seedIntents(topo Topology) []MachineIntent {
 	intents := make([]MachineIntent, topo.Size())
 	for i := range intents {
 		key := topo.HomeKey(i)
-		if topo.Site(i) == siteA && topo.isValidatorSlot(i) {
-			key = l1KeyBase + topo.slotInSite(i) // active validator key on the primary site
+		if topo.isValidatorSlot(i) {
+			key = l1KeyBase + topo.Site(i)*topo.NVal + topo.slotInSite(i)
 		}
 		intents[i] = MachineIntent{Cordoned: false, Key: key}
 	}
@@ -160,16 +161,16 @@ func seedIntents(topo Topology) []MachineIntent {
 // machine, it returns the new key per machine.
 //
 // Policy (move only what must move):
-//   - A pinned RPC machine (wears key 10 or 18) keeps it forever — never
-//     validates, never a promotion target. Checked first so the pin is sticky
-//     even across a cordon/uncordon of that machine.
+//   - A pinned RPC machine keeps its home identity forever — never validates,
+//     never a promotion target. Checked first so the pin is sticky even across
+//     a cordon/uncordon of that machine.
 //   - A cordoned machine gives up its key and wears its home identity.
 //   - An uncordoned machine holding a validator key keeps it (sticky).
 //   - A validator key left uncovered (because its holder was cordoned, or it was
 //     uncovered already) is "orphaned" and reassigned to a free uncordoned
 //     machine — but ONLY within preferredSite, lowest machine number first.
-//     Orphans never cross sites implicitly; only an explicit site-failover
-//     (which cordons one whole site and prefers the other) moves the set.
+//     Orphans never cross data centers: each site's validators stay in their
+//     own site.
 //   - With no free machine in preferredSite, the orphaned key stays uncovered
 //     (quorum may drop).
 func ComputeMapping(topo Topology, cordoned []bool, prevKey []int, preferredSite int) []int {

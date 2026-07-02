@@ -1,10 +1,9 @@
-// Command reconcile converges a fixed pool of machines — 5 in single-site mode
-// (3 validators + 1 hot spare + 1 pinned dedicated-RPC node), or 5+5 in
-// two-site mode (a backup data center of zero-weight syncing trackers + its own
-// pinned RPC) — to the desired failover state recorded in the intentions JSON.
-// It is the single engine behind 03 (fresh deploy), and the up/down/failover
-// wrappers — see docs/failover-recovery-simulation.md and
-// docs/two-site-failover.md.
+// Command reconcile converges a fixed pool of machines to the desired state
+// recorded in the intentions JSON. The pool is one site, or two data centers
+// that BOTH run live validators (active-active — e.g. the 2x2 topology: 2
+// validators + pinned RPC trackers per DC). It is the single engine behind 03
+// (fresh deploy) and the up/down/failover.sh wrappers — see
+// docs/two-site-2x2-draft.md.
 //
 // The decision logic is a pure function (plan.go); this file does the SSH/scp
 // I/O. Run it via the bash wrappers, which supply config through the environment.
@@ -27,13 +26,6 @@ func usage() {
   down <m>           cordon machine m, recompute mapping, reconcile
   up <m>             uncordon machine m, recompute mapping, reconcile
   clean <m>          wipe machine m's chain data (keep credentials), then reconcile it back up
-  site-failover <a|b>  fail the validator set over to the given site (hard cutover, two-site mode)
-  restore <a|b>        graceful rolling migration of the validator set to a site — one
-                       validator at a time, chain stays >=2/3 throughout, no fork (two-site
-                       mode); seeds targets from a live DB snapshot by default
-                       (RESTORE_MODE=state-sync forces from-scratch; RESTORE_SKIP_SEED=1
-                       skips the snapshot+wipe to resume an already-synced target).
-                       Typically used to restore the original site after a site-failover
   apply              pure reconcile against the existing intentions (no intent change)
   status             read-only health report (actual node state, no changes)
   verify             read-only proof the live network is ONE branch (no fork) + quorum healthy
@@ -90,18 +82,6 @@ func main() {
 		return
 	}
 
-	if os.Args[1] == "restore" {
-		if len(os.Args) < 3 {
-			usage()
-		}
-		target, ok := topo.SiteFromName(os.Args[2])
-		if !ok {
-			fatalf("site must be 'a' or 'b' (two-site mode requires BACKUP_SITE_NODE_IPS), got %q", os.Args[2])
-		}
-		rollingRestore(cfg, target)
-		return
-	}
-
 	fresh := false
 	var intents []MachineIntent
 
@@ -112,11 +92,7 @@ func main() {
 		if err := saveIntents(cfg.stateFile, intents); err != nil {
 			fatalf("%v", err)
 		}
-		if topo.TwoSite {
-			fmt.Println("== reconcile fresh: reseeded intentions to {m1:6, m2:7, m3:8, m4:9(spare), m5:10(rpc), m6:19(rpc), b1-b3:14-16(sync), b4:17(spare), b5:18(rpc), b6:20(rpc)} ==")
-		} else {
-			fmt.Println("== reconcile fresh: reseeded intentions to {m1:6, m2:7, m3:8, m4:9(spare), m5:10(rpc), m6:19(rpc)} ==")
-		}
+		fmt.Println("== reconcile fresh: reseeded intentions to the default mapping ==")
 
 	case "down", "up":
 		m := parseMachine(os.Args, topo)
@@ -132,40 +108,6 @@ func main() {
 			fatalf("%v", err)
 		}
 		fmt.Printf("== reconcile %s %d (%s) ==\n", os.Args[1], m, topo.MachineName(m-1))
-
-	case "site-failover":
-		if len(os.Args) < 3 {
-			usage()
-		}
-		target, ok := topo.SiteFromName(os.Args[2])
-		if !ok {
-			fatalf("site must be 'a' or 'b' (two-site mode requires BACKUP_SITE_NODE_IPS), got %q", os.Args[2])
-		}
-		prev, err := loadIntents(cfg.stateFile, topo)
-		if err != nil {
-			fatalf("%v", err)
-		}
-		intents, err = retargetSite(prev, topo, target)
-		if err != nil {
-			fatalf("%v", err)
-		}
-		if err := saveIntents(cfg.stateFile, intents); err != nil {
-			fatalf("%v", err)
-		}
-		fmt.Printf("== reconcile site-failover %s ==\n", os.Args[2])
-		// Model a real disaster: NUKE the down site first — hard-kill every node on it
-		// at once — so its tip is frozen at the instant of failure before anything else
-		// happens. The surviving site is a live tracker; it now reconciles ITSELF on
-		// whatever blocks it already holds (no data is ever pulled from the dead site),
-		// which both fixes the true RPO boundary and lets waitForSiteSettled converge on a
-		// static tip instead of chasing the old site's still-advancing one.
-		downSite := otherSite(target)
-		fmt.Printf("== site-failover: nuking site %s (parallel SIGKILL — simulated outage) ==\n", siteName(downSite))
-		cfg.nukeSite(downSite)
-		// Make the surviving site internally consistent (promote validators already at the
-		// tip as-is; resync any laggard from the site's OWN archive RPC) so a quorum forms
-		// without the inconsistent-height deadlock. No-op when the site is a synced hot standby.
-		cfg.reconcileBackupHeights(intents, target)
 
 	case "apply":
 		var err error
@@ -219,7 +161,7 @@ func printIntents(topo Topology, intents []MachineIntent) {
 }
 
 // reconcile converges reality to intents in three passes: ensure-provisioned,
-// stop-swap, start. See docs/failover-recovery-simulation.md.
+// stop-swap, start.
 func reconcile(cfg *config, intents []MachineIntent, fresh bool) {
 	topo := cfg.topo
 	hosts := cfg.nodeIPs
@@ -289,10 +231,6 @@ func reconcile(cfg *config, intents []MachineIntent, fresh bool) {
 			cfg.start(a.Machine - 1)
 		}
 	}
-
-	// Publish the active site's RPCs so bombard routes ingress to the data center
-	// that now holds the validators (and switches as failover/restore moves them).
-	cfg.writeActiveRPCs(intents)
 
 	// No blocking health wait — watch live state with status.sh in another window.
 	fmt.Println("\nApplied. Watch live node state in another window with:")

@@ -7,9 +7,7 @@ import (
 )
 
 // loadIntents reads the intentions JSON. If the file is absent it returns the
-// default seed (first-ever run behaves like a fresh deploy of the mapping). A
-// single-site file (one site's worth of machines) read in two-site mode is migrated
-// by appending the site-B seed (backup site joins as zero-weight trackers, A untouched).
+// default seed (first-ever run behaves like a fresh deploy of the mapping).
 func loadIntents(path string, topo Topology) ([]MachineIntent, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
@@ -21,9 +19,6 @@ func loadIntents(path string, topo Topology) ([]MachineIntent, error) {
 	var intents []MachineIntent
 	if err := json.Unmarshal(data, &intents); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-	if topo.TwoSite && len(intents) == topo.sitePool() {
-		intents = append(intents, seedIntents(topo)[topo.sitePool():]...)
 	}
 	if len(intents) != topo.Size() {
 		return nil, fmt.Errorf("%s has %d machines, expected %d", path, len(intents), topo.Size())
@@ -56,21 +51,6 @@ func retarget(prev []MachineIntent, m int, cordon bool, topo Topology) ([]Machin
 	cordoned[m-1] = cordon
 
 	return mergeIntents(cordoned, ComputeMapping(topo, cordoned, prevKey, topo.Site(m-1))), nil
-}
-
-// retargetSite fails the whole deployment over to the target site: every
-// machine in the other site is cordoned, every machine in the target site is
-// uncordoned, and the orphaned validator keys land on the target site's free
-// machines. This is the only path that moves validator identities across sites.
-func retargetSite(prev []MachineIntent, topo Topology, target int) ([]MachineIntent, error) {
-	if !topo.TwoSite {
-		return nil, fmt.Errorf("site failover requires BACKUP_SITE_NODE_IPS to be configured")
-	}
-	cordoned, prevKey := splitIntents(prev)
-	for i := range cordoned {
-		cordoned[i] = topo.Site(i) != target
-	}
-	return mergeIntents(cordoned, ComputeMapping(topo, cordoned, prevKey, target)), nil
 }
 
 func splitIntents(intents []MachineIntent) (cordoned []bool, keys []int) {

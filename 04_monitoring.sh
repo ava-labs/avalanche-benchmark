@@ -5,12 +5,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_common.sh"
 
 # Prometheus + Grafana, run LOCALLY on this control host — NOT on a benchmark
-# node. Failover monitoring has to outlive any single site: node 1 (m1) is a
-# validator that goes DOWN during a site-A failover, so hosting the monitor
-# there would blind you exactly when the failover happens. The control host is
-# the one machine that stays up across both site outages and already reaches
-# every node's :9652 (bombard does). It scrapes all 12 nodes' /ext/metrics and
-# keeps recording the survivors as a site drops out.
+# node. The control host reaches every node's :9652 (bombard does) and stays up
+# if a data center has trouble. It scrapes every pool node's /ext/metrics.
 #
 #   bin/prometheus            fetched by `make monitoring-deps` (linux-amd64)
 #   bin/grafana-dist/         extracted here from bin/grafana.tar.gz
@@ -52,10 +48,9 @@ echo "  OK."
 
 # ------------------------------------------------------------------------------
 # [2/5] Generate prometheus.yml — scrape every node in both sites. Each target
-# gets a friendly `instance` (so dashboards read "validator-1", "rpc-1" instead
-# of an IP:port), plus site / machine / role labels for grouping. Names are the
-# HOME role: after a failover a "backup-N" node is the one now validating — which
-# is exactly the story the dashboards show.
+# gets a friendly `instance` (so dashboards read "m1", "b1" instead of an
+# IP:port), plus site / machine / role labels for grouping — the site label is
+# the node's data center (a|b).
 # ------------------------------------------------------------------------------
 echo "[2/5] Generating prometheus.yml..."
 mkdir -p "$MON_DIR"
@@ -87,14 +82,11 @@ export NODE_IPS BACKUP_SITE_NODE_IPS
     echo "    static_configs:"
     while IFS=$'\t' read -r name site role host port; do
         [ -n "$host" ] || continue
-        # Map the slot role to the dashboard's role vocabulary. Site-A validator
-        # slots are live validators; the SAME slots on the backup site are
-        # zero-weight syncing trackers in steady state.
+        # Map the slot role to the dashboard's role vocabulary. Validator
+        # slots in BOTH data centers are live validators (active-active).
         drole="$role"
         case "$role" in
-        v*) [ "$site" = a ] && drole=validator || drole=tracker ;;
-        spare) [ "$site" = a ] && drole=spare || drole=tracker ;;
-        rpc) drole=rpc ;;
+        v*) drole=validator ;;
         esac
         emit_target "$host" "$port" "$site" "$name" "$name" "$drole"
     done < <("$SCRIPT_DIR/bin/reconcile" endpoints)
@@ -180,5 +172,5 @@ echo "  Failover board:  http://$PUBLIC_IP:$GRAFANA_PORT/d/avalanche-failover?re
 echo "  Consensus board: http://$PUBLIC_IP:$GRAFANA_PORT/d/avalanche-consensus?refresh=5s&from=now-15m&to=now"
 echo "  Benchmark board: http://$PUBLIC_IP:$GRAFANA_PORT/d/avalanche-benchmark?refresh=5s"
 echo ""
-echo "Scraping $TARGET_COUNT node(s) at /ext/metrics on their per-slot ports (site a = m1-m6, site b = b1-b6)."
+echo "Scraping $TARGET_COUNT node(s) at /ext/metrics on their per-slot ports (DC A = m1..mN, DC B = b1..bN)."
 echo "Stop with:  kill \$(cat $DATA_DIR/prometheus.pid $DATA_DIR/grafana.pid)"

@@ -226,7 +226,7 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 		}
 	}
 
-	nVal := cfg.topo.NVal
+	nVal := cfg.topo.totalValidators()
 	fmt.Printf("validators serving: %d/%d (intended up: %d/%d)\n",
 		servingValidators, nVal, intendedValidators, nVal)
 
@@ -245,8 +245,8 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 
 // roleLabel renders the operator-facing role for a committed key: a live validator
 // identity ("v1"..), or a non-validating home identity classified by the slot it
-// belongs to — pinned RPC, hot spare, a site-B syncing tracker, or a displaced
-// site-A validator-slot parked on its home identity.
+// belongs to — pinned RPC, hot spare, or a cordoned validator slot parked on its
+// home identity.
 func (t Topology) roleLabel(key int) string {
 	if t.isValidatorKey(key) {
 		return fmt.Sprintf("v%d", key-l1KeyBase+1)
@@ -259,9 +259,7 @@ func (t Topology) roleLabel(key int) string {
 		return "rpc(nv)"
 	case t.isSpareSlot(slot):
 		return "spare(nv)"
-	case t.Site(slot) == siteB:
-		return "sync(nv)" // site-B zero-weight syncing tracker
 	default:
-		return "idle(nv)" // displaced site-A validator-slot on its home identity
+		return "idle(nv)" // validator slot parked on its home identity
 	}
 }
