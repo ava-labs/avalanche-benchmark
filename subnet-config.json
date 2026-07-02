@@ -1,8 +1,8 @@
 {
     "snowParameters": {
-        "k": 20,
-        "alphaPreference": 11,
-        "alphaConfidence": 13,
+        "k": 4,
+        "alphaPreference": 3,
+        "alphaConfidence": 4,
         "beta": 25
     },
     "proposerWindowMilliseconds": 100,
