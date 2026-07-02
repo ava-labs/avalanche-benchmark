@@ -184,23 +184,32 @@ func (c *config) checkHealth(intents []MachineIntent) []healthResult {
 func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) {
 	servingValidators, intendedValidators := 0, 0
 	bootstrappingValidator, downUncordoned := false, false
+	nodeFieldWidth := 0
+
+	for i := range intents {
+		field := fmt.Sprintf("%s (%s)", cfg.topo.MachineName(i), cfg.nodeIPs[i])
+		if len(field) > nodeFieldWidth {
+			nodeFieldWidth = len(field)
+		}
+	}
 
 	for i, in := range intents {
 		ip := cfg.nodeIPs[i]
 		name := cfg.topo.MachineName(i)
 		label := cfg.topo.roleLabel(in.Key)
+		nodeField := fmt.Sprintf("%s (%s)", name, ip)
 		if in.Cordoned {
-			fmt.Printf("  %s (%s): cordoned       %-9s (down by intent)\n", name, ip, label)
+			fmt.Printf("  %-*s: %-13s %-9s (down by intent)\n", nodeFieldWidth, nodeField, "cordoned", label)
 			continue
 		}
 		r := results[i]
 		switch r.state {
 		case healthServing:
-			fmt.Printf("  %s (%s): SERVING        %-9s block=%d\n", name, ip, label, r.block)
+			fmt.Printf("  %-*s: %-13s %-9s block=%d\n", nodeFieldWidth, nodeField, "SERVING", label, r.block)
 		case healthBootstrapping:
-			fmt.Printf("  %s (%s): BOOTSTRAPPING  %-9s (catching up, not yet serving)\n", name, ip, label)
+			fmt.Printf("  %-*s: %-13s %-9s (catching up, not yet serving)\n", nodeFieldWidth, nodeField, "BOOTSTRAPPING", label)
 		default:
-			fmt.Printf("  %s (%s): DOWN           %-9s (uncordoned but not responding!)\n", name, ip, label)
+			fmt.Printf("  %-*s: %-13s %-9s (uncordoned but not responding!)\n", nodeFieldWidth, nodeField, "DOWN", label)
 		}
 		if cfg.topo.isValidatorKey(in.Key) {
 			intendedValidators++
