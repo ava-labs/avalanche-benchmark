@@ -8,7 +8,7 @@ the ceiling. All numbers from benchmarks on 2026-06-03.
 > **Update (2026-06-29): the proposer window is no longer fixed at 1s.** The
 > throughput numbers below stand, but the "never go below 1s" guidance was an
 > artifact of the old fork's whole-second timestamp grid, not a fundamental
-> limit. The fleet now runs `containerman17/benchmark` (@ `4265498f03`), which
+> limit. The fleet now runs `containerman17/fde` (@ `0844018`), which
 > makes the window a per-subnet config knob (`proposerWindowMilliseconds`) and
 > adds millisecond-granular proposerVM timestamps (`proposerMillisecondTimestamps`).
 > Ms-timestamps remove the 1-second slot boundary that used to unlock a competing
@@ -22,7 +22,7 @@ the ceiling. All numbers from benchmarks on 2026-06-03.
 
 | Parameter | File | Value | Why |
 |---|---|---|---|
-| `proposerWindowMilliseconds` | `subnet-config.json` | **100** (failover) / 1000 (max throughput) | Per-subnet knob on the `containerman17/benchmark` fork. With `proposerMillisecondTimestamps: true`, sub-1s is safe (no competing proposer) and cuts the per-slot failover stall ~10×. Set `1000` only if you need the last few % of steady-state ceiling. Requires ms-timestamps — never set sub-1s without it. |
+| `proposerWindowMilliseconds` | `subnet-config.json` | **100** (failover) / 1000 (max throughput) | Per-subnet knob on the `containerman17/fde` fork. With `proposerMillisecondTimestamps: true`, sub-1s is safe (no competing proposer) and cuts the per-slot failover stall ~10×. Set `1000` only if you need the last few % of steady-state ceiling. Requires ms-timestamps — never set sub-1s without it. |
 | `proposerMillisecondTimestamps` | `subnet-config.json` | **true** | Ms-granular proposerVM timestamps. The enabler for any sub-1s window — without it the slot clock floors to whole seconds and a short window unlocks a second proposer. |
 | `beta` | `subnet-config.json` | **20 (default)** | Full finality safety. Do NOT lower for 4000 — unnecessary and the only real fork risk. |
 | `alpha` | `subnet-config.json` | **11** | Lowest per-poll latency (must be > k/2=10). |
@@ -80,7 +80,7 @@ whole-second grid, or stacking it with low beta. The safe config does none of it
   competing builds / dropped "wrong-proposer" blocks → throughput throttle. A
   window `≥ 1s` kept the slot at 0 across the whole second → one proposer per
   height → no contention. This is why the 2026-06-03 numbers said "never < 1s".
-- **What changed (`containerman17/benchmark` @ `4265498f03`):**
+- **What changed (`containerman17/fde` @ `0844018`, first shipped as `containerman17/benchmark`):**
   `proposerMillisecondTimestamps: true` makes the slot clock millisecond-granular,
   so the slot only advances when a *full window* of real time elapses — not at an
   arbitrary 1-second tick. A sub-second window now keeps **one proposer per
