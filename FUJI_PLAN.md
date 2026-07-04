@@ -129,9 +129,15 @@ bootstrap list (`remote.go:465-466`, fed from `PCHAIN_BOOTSTRAP_IPS/IDS` env,
     SOLE P-chain beacons.
 - Per-role bootstrap lists (breaks the "identity-agnostic identical start script"
   assumption, hence the L):
-  - RPC role: `--bootstrap-ips=<fuji-node-ip>:9651 --bootstrap-ids=<fuji-NodeID>`
-    (the ONE allowed outgoing TCP; the peer's NodeID must be known and pinned;
-    follow-only re-syncs from exactly these peers, `config/flags.go:274`).
+  - RPC role: `--bootstrap-ips=18.192.93.241:9651
+    --bootstrap-ids=NodeID-2m38qc95mhHXtrhjyGbe7r2NhniqHHJRB` (the ONE allowed
+    outgoing TCP; follow-only re-syncs from exactly these peers,
+    `config/flags.go:274`). UPSTREAM CHOICE (user decision): no extra machine; the
+    upstream is one of the Fuji bootstrap peers hardcoded in avalanchego's
+    `genesis/bootstrappers.json` (Ava Labs-operated, implicitly trusted by every
+    stock build). Chosen entry: the first Fuji bootstrapper in the pinned commit,
+    `genesis/bootstrappers.json:100-103`. The NodeID is pinned by the TLS
+    handshake, so a hijacked IP cannot impersonate the peer.
   - Validator/spare role: `--bootstrap-ips/-ids` = our RPC machines (DC-internal IPs,
     port 9651).
 - **Sibling peering** (new, from the proven recipe): isolated validators must reach each
@@ -246,10 +252,26 @@ to `0.0.0.0/0` on the control box (`main.tf:100-106`) and blanket egress
   Mind the two indirect external dependencies that break under total isolation:
   public-ip discovery via curl (item 1) and time sync (proposerVM windows care about
   clock skew; point chrony at the RPC boxes or the DC NTP).
-- RPC SG: egress rule allowing exactly ONE destination, `<fuji-node-ip>:9651/tcp`
+- RPC SG: egress rule allowing exactly ONE destination, `18.192.93.241:9651/tcp`
   (avalanche p2p is TLS over TCP on the staking port, satisfying "p2p, not HTTP").
-  Ingress: 9651 from validator SG, 9652 (HTTP RPC) from control box / bombard host,
-  metrics from the monitoring host.
+  Annotate the rule with the expected peer identity so the pairing is auditable:
+  `NodeID-2m38qc95mhHXtrhjyGbe7r2NhniqHHJRB` (first Fuji entry in the pinned
+  commit's `genesis/bootstrappers.json:100-103`; identity enforced by the TLS
+  handshake, the SG rule only constrains the destination). Ingress: 9651 from
+  validator SG, 9652 (HTTP RPC) from control box / bombard host, metrics from the
+  monitoring host.
+- Runbook caveat (a), trust: follow-only takes the upstream's frontier at face value
+  (the beacon frontier IS what gets fetched and executed,
+  `bootstrapper.go:407-418`), so choosing the upstream IS the trust decision. An
+  Ava Labs bootstrap peer is the same party every stock avalanchego build already
+  trusts to join the network; anything less trusted as upstream would let it feed
+  our whole fleet a wrong P-chain view.
+- Runbook caveat (b), rotation: the hardcoded bootstrapper IPs can rotate between
+  avalanchego releases. On EVERY avalanchego upgrade (any `AVALANCHEGO_COMMIT` bump
+  in the Makefile), re-check `genesis/bootstrappers.json` in the new commit and
+  update the SG egress rule + the RPC tier's `--bootstrap-ips/-ids` together; a
+  stale IP fails closed (RPC tier stops tracking, validators freeze on the last
+  P height, the L1 keeps mining per the relay-outage e2e).
 - Note the wiki gotcha `docker_embedded_dns_resolver_bypasses_egress_iptables_firewall`
   if the fleet ever moves to containers (it bit the e2e); on plain EC2 SGs with no
   default route it does not apply.
@@ -316,7 +338,8 @@ to `0.0.0.0/0` on the control box (`main.tf:100-106`) and blanket egress
 3. **infra**: terraform apply of the Fuji-shaped SGs + fleet (item 5). Authorized only
    after user review of this plan.
 4. **RPC follow-only sync**: deploy + start the RPC tier (item 1 flags) against the
-   pinned public Fuji peer; gate on `/ext/health/readiness` and P height ~= Fuji tip.
+   chosen Fuji bootstrap peer (`NodeID-2m38qc...` @ `18.192.93.241:9651`); gate on
+   `/ext/health/readiness` and P height ~= Fuji tip.
 5. **validators**: start validator/spare tier (follow-only, beacons = RPC tier,
    sibling seeding via state-sync-ids); serial hop, budget ~10 min; gate on readiness.
    First boot runs without `--track-subnets` (the subnet does not exist yet); this
