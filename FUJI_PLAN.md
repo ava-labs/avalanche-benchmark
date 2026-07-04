@@ -256,7 +256,7 @@ stays byte-identical.
 
 ### 5. (M) Firewall / security groups
 
-Current terraform (`terraform-aws-untested/main.tf`) is devnet-shaped: avax ports open
+Current terraform (`terraform-aws/main.tf`) is devnet-shaped: avax ports open
 to `0.0.0.0/0` on the control box (`main.tf:100-106`) and blanket egress
 (`main.tf:110-116`). Target:
 
@@ -351,7 +351,7 @@ to `0.0.0.0/0` on the control box (`main.tf:100-106`) and blanket egress
    balances (per-run deposit, ~5-6 days; top up with
    IncreaseL1ValidatorBalanceTx for longer runs). Re-runnable.
 3. **infra**: terraform apply of the Fuji-shaped SGs + fleet (item 5). The SG
-   lockdown is still a TODO in `terraform-aws-untested/main.tf` (e2e-pending; the
+   lockdown is still a TODO in `terraform-aws/main.tf` (e2e-pending; the
    module needs per-role SGs it cannot express blind, see the TODO block there).
 4. **create-l1 on Fuji**: `./02_create_chain.sh` from the control box against
    `api.avax-test.network` (generated wallet; pre-flights keys AND P-chain
@@ -393,5 +393,5 @@ follow-only P-chain, the bs_accepted bootstrap counter is the feed signal).
 e2e-pending (needs Fuji funds and/or machines, blocked on the authorized e2e):
 the C->P move and create-l1 spend path with a funded wallet; the full fleet
 deploy (two-hop sync, latch behavior, failover drills on Fuji); the terraform
-per-role SG lockdown (TODO block in terraform-aws-untested/main.tf); Grafana
+per-role SG lockdown (TODO block in terraform-aws/main.tf); Grafana
 panel sanity against a live fleet.

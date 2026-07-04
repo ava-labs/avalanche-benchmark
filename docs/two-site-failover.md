@@ -290,7 +290,7 @@ deterministic-EVM-sync protocol ask (request #8) closes.
 - **Honest health for idle chains:** `status.sh` reports SERVING from
   `eth_blockNumber` even when no blocks are being produced; add a
   height-advancing check so a post-failback stall is visible.
-- **Terraform:** `terraform-aws-untested/` provisions one site; parameterize a
+- **Terraform:** `terraform-aws/` provisions one site; parameterize a
   second region for site B.
 - **Configurable site sizes:** both sites are pinned at 6 machines; production
   asks may want asymmetric sites (e.g. 4 backup trackers, no backup spare).
