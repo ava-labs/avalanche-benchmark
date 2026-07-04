@@ -22,7 +22,7 @@ all: deps build
 	@echo "All ready."
 
 # Build Go tools
-build: bin/create-l1 bin/bombard bin/reconcile
+build: bin/create-l1 bin/bombard bin/reconcile bin/genstaking bin/fuji-wallet
 
 bin/create-l1:
 	@mkdir -p bin
@@ -35,6 +35,14 @@ bin/bombard:
 bin/reconcile:
 	@mkdir -p bin
 	go build -o bin/reconcile ./cmd/reconcile
+
+bin/genstaking:
+	@mkdir -p bin
+	go build -o bin/genstaking ./cmd/genstaking
+
+bin/fuji-wallet:
+	@mkdir -p bin
+	go build -o bin/fuji-wallet ./cmd/fuji-wallet
 
 # Download/build dependencies
 deps: bin/avalanchego
@@ -82,7 +90,7 @@ pack: deps build monitoring-deps
 	tar --exclude=scripts/failover/intentions.json --exclude=bin/grafana-dist -czvf remote-benchmark.tar.gz \
 		bin/ \
 		_common.sh \
-		0[1-6]_*.sh \
+		0[0-6]_*.sh \
 		scripts/failover/ \
 		monitoring/grafana-datasources.yml \
 		monitoring/dashboards/ \
@@ -91,7 +99,6 @@ pack: deps build monitoring-deps
 		chain-config-rpc.json \
 		subnet-config.json \
 		genesis.json \
-		staking/ \
 		.env.example \
 		README.md \
 		docs/

@@ -1,10 +1,11 @@
-// Command genstaking generates committed benchmark staking identities
+// Command genstaking generates per-deploy staking identities
 // (staker.crt / staker.key / signer.key) under staking/l1/<index>/ for the
-// given key indices and prints the matching node-ids.env lines. These are
-// throwaway test identities for the failover benchmark — committing them is
-// intentional (see staking/node-ids.env).
+// given key indices and prints the matching node-ids.env manifest lines.
+// The identities are GITIGNORED and never committed: their NodeIDs get bound
+// as validationIDs on Fuji's public P-chain, so a leaked staking key equals
+// validator impersonation. Invoked by ./00_gen_secrets.sh (as bin/genstaking).
 //
-// Usage: go run ./cmd/genstaking <firstIndex> <lastIndex>
+// Usage: genstaking <firstIndex> <lastIndex>
 package main
 
 import (
@@ -37,7 +38,7 @@ func main() {
 	for idx := lo; idx <= hi; idx++ {
 		dir := filepath.Join("staking", "l1", strconv.Itoa(idx))
 		if _, err := os.Stat(dir); err == nil {
-			fatalf("%s already exists — refusing to overwrite a committed identity", dir)
+			fatalf("%s already exists: refusing to overwrite an identity that may be registered on Fuji", dir)
 		}
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			fatalf("mkdir %s: %v", dir, err)

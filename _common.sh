@@ -23,7 +23,7 @@ fi
 source "$ENV_FILE"
 
 # Export REMOTE_DIR so the reconcile child inherits the SAME deploy dir the shell
-# scripts use. Lets .env point the deploy at a dir OTHER than the repo — required
+# scripts use. Lets .env point the deploy at a dir OTHER than the repo: required
 # for a localhost run (REMOTE_DIR=repo would scp binaries onto themselves).
 export REMOTE_DIR
 
@@ -59,7 +59,7 @@ if [ -z "$SSH_USER" ]; then
     exit 1
 fi
 
-# Topology config. PREFERRED: explicit per-role IP lists per data center —
+# Topology config. PREFERRED: explicit per-role IP lists per data center:
 #   VALIDATOR_IPS / SPARE_IPS / RPC_IPS           (site A)
 #   BACKUP_VALIDATOR_IPS / BACKUP_SPARE_IPS / BACKUP_RPC_IPS  (site B, optional)
 # Each list's LENGTH sets that role's count; its VALUES set placement (repeat an IP
@@ -113,68 +113,19 @@ BOOTSTRAP_IP="${NODE_IPS_ARRAY[0]}"
 SUBNET_EVM_ID="srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy"
 STAKING_DIR="$SCRIPT_DIR/staking"
 NODE_IDS_FILE="$STAKING_DIR/node-ids.env"
-PCHAIN_NODE_COUNT=5
-PCHAIN_HTTP_BASE_PORT=9650
-PCHAIN_STAKING_BASE_PORT=9651
-PCHAIN_PORT_STEP=10
+FUJI_WALLET_KEY="$STAKING_DIR/fuji-wallet.key"
 L1_VALIDATOR_START_INDEX=6
-L1_VALIDATOR_COUNT=3
 
-join_by_comma() {
-    local IFS=,
-    echo "$*"
-}
-
-node_id_for_l1_index() {
-    local idx=$1
-    if [ ! -f "$NODE_IDS_FILE" ]; then
-        echo "ERROR: missing $NODE_IDS_FILE" >&2
-        exit 1
-    fi
-    local value
-    value=$(grep -E "^L1_${idx}_NODE_ID=" "$NODE_IDS_FILE" | tail -n 1 | cut -d= -f2- || true)
-    if [ -z "$value" ]; then
-        echo "ERROR: missing L1_${idx}_NODE_ID in $NODE_IDS_FILE" >&2
-        exit 1
-    fi
-    echo "$value"
-}
-
-pchain_http_port() {
-    local idx=$1
-    echo $((PCHAIN_HTTP_BASE_PORT + (idx - 1) * PCHAIN_PORT_STEP))
-}
-
-pchain_staking_port() {
-    local idx=$1
-    echo $((PCHAIN_STAKING_BASE_PORT + (idx - 1) * PCHAIN_PORT_STEP))
-}
-
-pchain_node_ids_csv() {
-    local ids=()
-    local i
-    for i in $(seq 1 "$PCHAIN_NODE_COUNT"); do
-        ids+=("$(node_id_for_l1_index "$i")")
-    done
-    join_by_comma "${ids[@]}"
-}
-
-pchain_public_ip() {
-    # .env may pin this (e.g. 127.0.0.1 for an all-loopback single-box run, where
-    # every node advertises loopback and the curl'd NAT IP would be unreachable).
-    [ -n "${PCHAIN_PUBLIC_IP:-}" ] && { echo "$PCHAIN_PUBLIC_IP"; return; }
-    curl -fsS https://checkip.amazonaws.com | tr -d '[:space:]'
-}
-
-pchain_public_staking_ips_csv() {
-    local public_ip=$1
-    local ips=()
-    local i
-    for i in $(seq 1 "$PCHAIN_NODE_COUNT"); do
-        ips+=("$public_ip:$(pchain_staking_port "$i")")
-    done
-    join_by_comma "${ips[@]}"
-}
+# Public Fuji peer the RPC tier's P-chain follows: the fleet's ONE allowed
+# outgoing TCP. Default: the first Fuji entry in the pinned avalanchego commit's
+# genesis/bootstrappers.json (Ava Labs-operated; the NodeID is enforced by the
+# TLS handshake, so a hijacked IP cannot impersonate it). RUNBOOK: these
+# hardcoded IPs rotate between releases: on every AVALANCHEGO_COMMIT bump,
+# re-check bootstrappers.json and update this default, the SG egress rule, and
+# any .env override TOGETHER. A stale IP fails closed (P-chain feed freezes;
+# the L1 keeps mining).
+FUJI_UPSTREAM_IPS="${FUJI_UPSTREAM_IPS:-18.192.93.241:9651}"
+FUJI_UPSTREAM_IDS="${FUJI_UPSTREAM_IDS:-NodeID-2m38qc95mhHXtrhjyGbe7r2NhniqHHJRB}"
 
 print_nodes() {
     for i in "${!NODE_IPS_ARRAY[@]}"; do
@@ -192,13 +143,12 @@ _count() {
     echo "${#arr[@]}"
 }
 
-# ensure_staking_keys verifies every committed staking identity the configured
-# topology will reference (staking/l1/6 .. 6+NVal+Size-1) actually exists. Keys are
-# generated with `go run ./cmd/genstaking` LOCALLY and committed/shipped in the kit —
-# the control box has no Go toolchain — so this is a pre-flight check with a clear
-# remedy, not a generator. Mirrors reconcile's key scheme (plan.go).
-ensure_staking_keys() {
-    local nval nspare nrpc sp size maxkey k
+# staking_max_key computes the highest committed key index the configured
+# topology references (keys 6 .. 6+NVal+Size-1). Mirrors reconcile's key scheme
+# (plan.go). Used by 00_gen_secrets.sh (generator) and ensure_staking_keys
+# (pre-flight).
+staking_max_key() {
+    local nval nspare nrpc sp size
     if [ -n "${PER_ROLE_TOPOLOGY:-}" ]; then
         nval=$(_count "$VALIDATOR_IPS"); nspare=$(_count "$SPARE_IPS"); nrpc=$(_count "$RPC_IPS")
     else
@@ -207,13 +157,22 @@ ensure_staking_keys() {
     sp=$((nval + nspare + nrpc))
     size=$sp
     [ -n "$BACKUP_SITE_NODE_IPS" ] && size=$((2 * sp))
-    maxkey=$((6 + nval + size - 1))
+    echo $((L1_VALIDATOR_START_INDEX + nval + size - 1))
+}
 
-    for k in $(seq 6 "$maxkey"); do
+# ensure_staking_keys verifies every GENERATED staking identity the configured
+# topology will reference (staking/l1/6 .. staking_max_key) actually exists.
+# Keys are generated per deploy by ./00_gen_secrets.sh and are NEVER committed
+# (their NodeIDs get bound as validationIDs on Fuji's public P-chain; a leaked
+# staking key = validator impersonation). Pre-flight check, not a generator.
+ensure_staking_keys() {
+    local maxkey k
+    maxkey=$(staking_max_key)
+    for k in $(seq "$L1_VALIDATOR_START_INDEX" "$maxkey"); do
         if [ ! -d "$STAKING_DIR/l1/$k" ]; then
-            echo "ERROR: topology (${nval}v/${nspare}s/${nrpc}r per site) needs committed staking key $k," >&2
-            echo "       but $STAKING_DIR/l1/$k is missing. Generate locally and rebuild the kit:" >&2
-            echo "         go run ./cmd/genstaking $k $maxkey >> staking/node-ids.env" >&2
+            echo "ERROR: the configured topology needs staking key $k, but" >&2
+            echo "       $STAKING_DIR/l1/$k is missing. Generate the deploy secrets first:" >&2
+            echo "         ./00_gen_secrets.sh" >&2
             exit 1
         fi
     done
