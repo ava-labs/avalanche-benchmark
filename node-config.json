@@ -2,5 +2,9 @@
     "index-enabled": false,
     "throttler-inbound-node-max-processing-msgs": 8192,
     "throttler-inbound-bandwidth-refill-rate": 8388608,
-    "throttler-inbound-bandwidth-max-burst-size": 16777216
+    "throttler-inbound-bandwidth-max-burst-size": 16777216,
+    "throttler-inbound-at-large-alloc-size": 33554432,
+    "throttler-inbound-node-max-at-large-bytes": 16777216,
+    "throttler-outbound-at-large-alloc-size": 33554432,
+    "throttler-outbound-node-max-at-large-bytes": 16777216
 }

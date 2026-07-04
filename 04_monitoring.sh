@@ -171,7 +171,8 @@ for _ in $(seq 1 30); do
     sleep 1
 done
 
-PUBLIC_IP="$(pchain_public_ip 2>/dev/null || echo localhost)"
+PUBLIC_IP="$(curl -fsS https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]' || true)"
+PUBLIC_IP="${PUBLIC_IP:-localhost}"
 echo ""
 echo "=== Monitoring ready ==="
 echo "Prometheus: http://$PUBLIC_IP:$PROM_PORT"

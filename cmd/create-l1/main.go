@@ -11,25 +11,35 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ava-labs/avalanchego/genesis"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/staking"
 	"github.com/ava-labs/avalanchego/utils/constants"
 	"github.com/ava-labs/avalanchego/utils/crypto/bls/signer/localsigner"
 	"github.com/ava-labs/avalanchego/utils/units"
+	"github.com/ava-labs/avalanchego/vms/platformvm"
 	"github.com/ava-labs/avalanchego/vms/platformvm/signer"
 	"github.com/ava-labs/avalanchego/vms/platformvm/txs"
 	"github.com/ava-labs/avalanchego/vms/secp256k1fx"
 	"github.com/ava-labs/avalanchego/wallet/subnet/primary"
 	"github.com/joho/godotenv"
+
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/fujikey"
 )
 
 var outputFile string
 
 const (
-	pchainURI             = "http://127.0.0.1:9650"
+	// defaultPChainAPI is the public Fuji API. Our own RPC tier is follow-only,
+	// so its platform.* API is gated forever: P-chain txs MUST go against a
+	// public node (FUJI_PLAN.md gotchas). Override with PCHAIN_API in .env.
+	defaultPChainAPI      = "https://api.avax-test.network"
 	l1ValidatorStartIndex = 6
 	minValidators         = 3
+	// validatorBalance is the per-validator continuous-fee deposit paid by the
+	// conversion tx. 1 AVAX lasts ~50-60 days on Fuji (0.1 drains in ~5-6 days);
+	// balance 0 makes the validator INACTIVE and takes the whole L1 down. Top up
+	// with IncreaseL1ValidatorBalanceTx (anyone can fund, no owner auth).
+	validatorBalance = units.Avax
 )
 
 // splitTrim parses a comma-separated list, trimming blanks and dropping empties.
@@ -66,8 +76,8 @@ func run() error {
 
 	// Validator set: prefer the per-role VALIDATOR_IPS (its length is the validator
 	// count), else fall back to the legacy positional NODE_IPS (first 3 = validators).
-	// The IPs are display-only — registration is by committed staking key (NodeID),
-	// IP-agnostic — so the count is what matters here.
+	// The IPs are display-only: registration is by generated staking key
+	// (NodeID) and IP-agnostic, so the count is what matters here.
 	var nodeIPs []string
 	if v := os.Getenv("VALIDATOR_IPS"); v != "" {
 		nodeIPs = splitTrim(v)
@@ -84,7 +94,12 @@ func run() error {
 	}
 	l1ValidatorCount := len(nodeIPs)
 
-	fmt.Println("=== Create L1 ===")
+	pchainURI := defaultPChainAPI
+	if v := os.Getenv("PCHAIN_API"); v != "" {
+		pchainURI = v
+	}
+
+	fmt.Println("=== Create L1 (on Fuji: this SPENDS AVAX, run once per chain) ===")
 	fmt.Printf("  P-chain API: %s\n", pchainURI)
 	for i, ip := range nodeIPs {
 		fmt.Printf("  L1 validator %d: %s staking/l1/%d\n", i+1, ip, l1ValidatorStartIndex+i)
@@ -92,6 +107,30 @@ func run() error {
 	fmt.Println()
 
 	ctx := context.Background()
+
+	// The generated (gitignored) Fuji wallet pays fees + validator balances and
+	// becomes the subnet owner. genesis.EWOQKey stays only for OUR L1's EVM
+	// side (genesis.json alloc, bombard): never for Fuji's public P-chain.
+	stakingDirForKey := findStakingDir()
+	if stakingDirForKey == "" {
+		return fmt.Errorf("staking directory not found")
+	}
+	walletKey, err := fujikey.Load(filepath.Join(stakingDirForKey, "fuji-wallet.key"))
+	if err != nil {
+		return fmt.Errorf("load Fuji wallet key (run ./00_gen_secrets.sh and ./01_fund_wallet.sh first): %w", err)
+	}
+
+	// Pre-flight the balance so a short wallet fails BEFORE any tx is issued:
+	// a half-created chain (subnet without conversion) wastes the fees paid.
+	needed := uint64(l1ValidatorCount)*validatorBalance + 100*units.MilliAvax
+	balResp, err := platformvm.NewClient(pchainURI).GetBalance(ctx, []ids.ShortID{walletKey.Address()})
+	if err != nil {
+		return fmt.Errorf("platform.getBalance: %w", err)
+	}
+	if uint64(balResp.Balance) < needed {
+		return fmt.Errorf("P-chain balance %d nAVAX < %d nAVAX needed (%d validators x 1 AVAX + fees); run ./01_fund_wallet.sh",
+			balResp.Balance, needed, l1ValidatorCount)
+	}
 
 	// Load genesis
 	genesisPath := findGenesisFile()
@@ -104,9 +143,9 @@ func run() error {
 	}
 	fmt.Printf("Using genesis: %s\n", genesisPath)
 
-	// Create wallet using node1
+	// Create wallet against the public Fuji API
 	fmt.Println("[1/4] Creating wallet...")
-	kc := secp256k1fx.NewKeychain(genesis.EWOQKey)
+	kc := secp256k1fx.NewKeychain(walletKey)
 	wallet, err := primary.MakePWallet(ctx, pchainURI, kc, primary.WalletConfig{})
 	if err != nil {
 		return fmt.Errorf("failed to create wallet: %w", err)
@@ -116,7 +155,7 @@ func run() error {
 	fmt.Println("[2/4] Creating subnet...")
 	owner := &secp256k1fx.OutputOwners{
 		Threshold: 1,
-		Addrs:     []ids.ShortID{genesis.EWOQKey.Address()},
+		Addrs:     []ids.ShortID{walletKey.Address()},
 	}
 	subnetTx, err := wallet.IssueCreateSubnetTx(owner)
 	if err != nil {
@@ -165,9 +204,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to convert subnet to L1: %w", err)
 	}
-
-	// Wait for chain
-	fmt.Println("  Waiting for chain to be ready...")
+	// The wallet waits for acceptance on each Issue* call, but the public API is
+	// load-balanced: give the fleet a beat before anything queries the new chain.
+	fmt.Println("  Conversion accepted; settling...")
 	time.Sleep(5 * time.Second)
 
 	// Write output file if requested
@@ -186,8 +225,8 @@ func run() error {
 	fmt.Printf("Chain ID:  %s\n", chainID)
 	fmt.Printf("Validators: staking/l1/%d..%d (%d total)\n", l1ValidatorStartIndex, l1ValidatorStartIndex+l1ValidatorCount-1, l1ValidatorCount)
 	fmt.Println()
-	fmt.Println("RPC endpoints (NOT live yet — these start serving only after")
-	fmt.Println("./03_wipe_and_deploy_l1.sh deploys and boots the validators):")
+	fmt.Println("RPC endpoints (NOT live yet: these start serving only after")
+	fmt.Println("./03_deploy_chain.sh deploys and boots the validators):")
 	for i, ip := range nodeIPs {
 		fmt.Printf("  Node %d: http://%s:9652/ext/bc/%s/rpc\n", i+1, ip, chainID)
 	}
@@ -250,7 +289,7 @@ func buildValidatorsFromCommittedKeys(startIndex, count int) ([]*txs.ConvertSubn
 		validators = append(validators, &txs.ConvertSubnetToL1Validator{
 			NodeID:  nodeID.Bytes(),
 			Weight:  units.Schmeckle,
-			Balance: units.Avax,
+			Balance: validatorBalance,
 			Signer:  *pop,
 		})
 		fmt.Printf("    staking/l1/%d: %s\n", i, nodeID)

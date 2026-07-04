@@ -112,11 +112,9 @@ func main() {
 		if err := saveIntents(cfg.stateFile, intents); err != nil {
 			fatalf("%v", err)
 		}
-		if topo.TwoSite {
-			fmt.Println("== reconcile fresh: reseeded intentions to {m1:6, m2:7, m3:8, m4:9(spare), m5:10(rpc), m6:19(rpc), b1-b3:14-16(sync), b4:17(spare), b5:18(rpc), b6:20(rpc)} ==")
-		} else {
-			fmt.Println("== reconcile fresh: reseeded intentions to {m1:6, m2:7, m3:8, m4:9(spare), m5:10(rpc), m6:19(rpc)} ==")
-		}
+		// The actual mapping (validator keys on site A's validator slots, pinned
+		// home identities everywhere else) is printed by printIntents below.
+		fmt.Println("== reconcile fresh: reseeded intentions to the default mapping ==")
 
 	case "down", "up":
 		m := parseMachine(os.Args, topo)

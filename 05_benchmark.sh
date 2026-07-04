@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_common.sh"
 
 if [ ! -f "$NETWORK_ENV" ]; then
-    echo "ERROR: network.env not found. Run 02_create_l1.sh first."
+    echo "ERROR: network.env not found. Run 02_create_chain.sh first."
     exit 1
 fi
 

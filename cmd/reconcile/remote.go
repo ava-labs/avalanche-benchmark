@@ -7,25 +7,28 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/joho/godotenv"
 )
 
 // config is the runtime environment, supplied by the bash wrapper (which sources
-// _common.sh + network.env and computes the P-chain bootstrap set). The pure
+// _common.sh + network.env and exports the Fuji upstream peer). The pure
 // planner needs none of this; only the I/O orchestration does.
 type config struct {
-	topo         Topology
-	nodeIPs      []string   // pool machines: site A (NODE_IPS), then site B (BACKUP_SITE_NODE_IPS) if configured
-	instances    []instance // one per pool slot, parallel to nodeIPs; carries ports + dirs (co-location aware)
-	sshUser      string
-	sshKey       string
-	remoteDir    string // e.g. ~/avalanche-benchmark (tilde expanded remotely)
-	repoDir      string // local repo root, source of upload artifacts
-	chainID      string
-	subnetID     string
-	subnetEVMID  string
-	bootstrapIPs string // static P-chain staking ips csv
-	bootstrapIDs string // static P-chain node ids csv
-	stateFile    string
+	topo        Topology
+	nodeIPs     []string   // pool machines: site A (NODE_IPS), then site B (BACKUP_SITE_NODE_IPS) if configured
+	instances   []instance // one per pool slot, parallel to nodeIPs; carries ports + dirs (co-location aware)
+	sshUser     string
+	sshKey      string
+	remoteDir   string // e.g. ~/avalanche-benchmark (tilde expanded remotely)
+	repoDir     string // local repo root, source of upload artifacts
+	chainID     string
+	subnetID    string
+	subnetEVMID string
+	upstreamIPs string         // public Fuji peer(s) the RPC tier's P-chain follows (ip:port csv)
+	upstreamIDs string         // their NodeIDs (TLS-pinned; a hijacked IP cannot impersonate)
+	nodeIDByKey map[int]string // committed key index -> NodeID, from staking/node-ids.env
+	stateFile   string
 }
 
 func mustEnv(key string) string {
@@ -57,7 +60,7 @@ func splitIPs(csv string) []string {
 //
 // Per site the pool is laid out [validators..., spares..., rpcs...]. Validators
 // must be >=3 (hard error) and RPCs >=1. (A single RPC is fine now that every role
-// state-syncs and restore seeds all roles from one pruned snapshot — no more
+// state-syncs and restore seeds all roles from one pruned snapshot: no more
 // snapshot-the-redundant-RPC trick that needed a second ingress node.) The two sites
 // must share the same shape, since the registered validator set moves between them on failover.
 //
@@ -87,7 +90,7 @@ func loadPool() (Topology, []string, []instance) {
 		spareB := splitIPs(os.Getenv("BACKUP_SPARE_IPS"))
 		rpcB := splitIPs(os.Getenv("BACKUP_RPC_IPS"))
 		if len(valB) != topo.NVal || len(spareB) != topo.NSpare || len(rpcB) != topo.NRPC {
-			fatalf("backup site shape (%dv/%ds/%dr) must match primary (%dv/%ds/%dr) — the validator set moves between sites on failover",
+			fatalf("backup site shape (%dv/%ds/%dr) must match primary (%dv/%ds/%dr): the validator set moves between sites on failover",
 				len(valB), len(spareB), len(rpcB), topo.NVal, topo.NSpare, topo.NRPC)
 		}
 		topo.TwoSite = true
@@ -121,21 +124,41 @@ func loadPoolPositional() (Topology, []string, []instance) {
 
 func loadConfig() *config {
 	topo, pool, insts := loadPool()
-	return &config{
-		topo:         topo,
-		nodeIPs:      pool,
-		instances:    insts,
-		sshUser:      mustEnv("SSH_USER"),
-		sshKey:       mustEnv("SSH_KEY_PATH"),
-		remoteDir:    envOr("REMOTE_DIR", "~/avalanche-benchmark"),
-		repoDir:      mustEnv("REPO_DIR"),
-		chainID:      mustEnv("CHAIN_ID"),
-		subnetID:     mustEnv("SUBNET_ID"),
-		subnetEVMID:  mustEnv("SUBNET_EVM_ID"),
-		bootstrapIPs: mustEnv("PCHAIN_BOOTSTRAP_IPS"),
-		bootstrapIDs: mustEnv("PCHAIN_BOOTSTRAP_IDS"),
-		stateFile:    mustEnv("FAILOVER_STATE_FILE"),
+	c := &config{
+		topo:        topo,
+		nodeIPs:     pool,
+		instances:   insts,
+		sshUser:     mustEnv("SSH_USER"),
+		sshKey:      mustEnv("SSH_KEY_PATH"),
+		remoteDir:   envOr("REMOTE_DIR", "~/avalanche-benchmark"),
+		repoDir:     mustEnv("REPO_DIR"),
+		chainID:     mustEnv("CHAIN_ID"),
+		subnetID:    mustEnv("SUBNET_ID"),
+		subnetEVMID: mustEnv("SUBNET_EVM_ID"),
+		upstreamIPs: mustEnv("FUJI_UPSTREAM_IPS"),
+		upstreamIDs: mustEnv("FUJI_UPSTREAM_IDS"),
+		stateFile:   mustEnv("FAILOVER_STATE_FILE"),
 	}
+	c.nodeIDByKey = loadNodeIDs(c.repoDir + "/staking/node-ids.env")
+	return c
+}
+
+// loadNodeIDs parses the generated manifest (staking/node-ids.env, written by
+// 00_gen_secrets.sh) into committed-key-index -> NodeID. The NodeIDs feed the
+// per-role --bootstrap-ids / --state-sync-ids lists in startScript.
+func loadNodeIDs(path string) map[int]string {
+	vars, err := godotenv.Read(path)
+	if err != nil {
+		fatalf("read %s (run ./00_gen_secrets.sh first): %v", path, err)
+	}
+	out := make(map[int]string, len(vars))
+	for k, v := range vars {
+		var idx int
+		if _, err := fmt.Sscanf(k, "L1_%d_NODE_ID", &idx); err == nil && v != "" {
+			out[idx] = v
+		}
+	}
+	return out
 }
 
 func envOr(key, def string) string {
@@ -145,12 +168,12 @@ func envOr(key, def string) string {
 	return def
 }
 
-// sshOpts mirror _common.sh exactly — these avoid the YubiKey-agent hang on the
+// sshOpts mirror _common.sh exactly: these avoid the YubiKey-agent hang on the
 // ephemeral bench hosts. Keep them byte-identical with _common.sh.
 //
 // ConnectTimeout + ServerAlive* are load-bearing: without them a single wedged
 // host (sshd up at TCP but starved so it never completes the banner, or a box
-// that thrashes mid-command) hangs ssh — and thus the whole reconcile/restore —
+// that thrashes mid-command) hangs ssh (and thus the whole reconcile/restore)
 // FOREVER with no error. ConnectTimeout bounds the connect/banner phase;
 // ServerAliveInterval*CountMax (~60s) bails if an established connection goes
 // dead mid-command. A failed ssh is fatal (see ssh()), so the operator gets a
@@ -193,7 +216,7 @@ func (c *config) scpArgs(extra ...string) []string {
 }
 
 // ssh runs a remote command and returns trimmed stdout. SSH failures are fatal:
-// "the simulated up/down went wrong" — no best-effort skipping.
+// "the simulated up/down went wrong": no best-effort skipping.
 func (c *config) ssh(host, remoteCmd string) string {
 	cmd := exec.Command("ssh", c.sshArgs(host, remoteCmd)...)
 	cmd.Stderr = os.Stderr
@@ -250,9 +273,9 @@ func (c *config) rsyncUpload(localPath, host, remotePath string) {
 // snapshotPull streams a (lightly-compressed) tar of the already-stopped source's
 // chain data dir into a local file on the control box. The source MUST be stopped
 // first (killNode) so the on-disk pebble/EVM state is a consistent point-in-time
-// image — copying a live DB yields a torn, unopenable snapshot. The output is
+// image: copying a live DB yields a torn, unopenable snapshot. The output is
 // streamed to a file, never buffered in memory (the DB is many GB). zstd -T0 uses
-// all cores on the (idle, stopped) source — much faster than single-threaded gzip
+// all cores on the (idle, stopped) source: much faster than single-threaded gzip
 // and a better ratio, so fewer bytes cross the slow cross-region link. (If a node
 // lacks zstd the pull fails cleanly and restore falls back to state-sync.)
 func (c *config) snapshotPull(srcIdx int, localTar string) bool {
@@ -290,7 +313,7 @@ func (c *config) snapshotPush(dstIdx int, localTar string) {
 	}
 	defer f.Close()
 	// Extract the relative-path image (see snapshotPull) INTO this instance's own data
-	// dir, whatever it is named — decoupling source and destination dir names.
+	// dir, whatever it is named: decoupling source and destination dir names.
 	cmd := exec.Command("ssh", c.sshArgs(in.host, fmt.Sprintf("mkdir -p %s/%s && cd %s/%s && zstd -dc | tar -xf -", c.remoteDir, in.dataDir, c.remoteDir, in.dataDir))...)
 	cmd.Stdin = f
 	cmd.Stderr = os.Stderr
@@ -332,7 +355,7 @@ const pluginPat = "avalanche-benchmark/[p]lugins/"
 // killNode kills the avalanchego for pool slot i AND its orphaned subnet-evm plugin
 // child, then waits for it to disappear. avalanchego runs the VM as a go-plugin child
 // process; SIGKILLing the parent orphans the child, which keeps the plugin binary open
-// (ETXTBSY) and blocks re-upload — and these orphans accumulate across failover cycles.
+// (ETXTBSY) and blocks re-upload, and these orphans accumulate across failover cycles.
 // So every stop must reap the plugin too.
 //
 // On a normal (one-process) box this is the exact-name reap it always was: kill every
@@ -388,13 +411,13 @@ const gracefulStopPolls = 120 // * 500ms = 60s
 // the hard SIGKILL reap (killNode) only if it doesn't exit within the grace window.
 // Used for every PLANNED stop (key swaps via stop(), snapshot sources, `down`). A
 // SIGKILL there leaves a "missing or corrupted snapshot" that the node regenerates and
-// — under load, after a reorg — can wedge on restart (observed: non-validators AND a
+// (under load, after a reorg) can wedge on restart (observed: non-validators AND a
 // validator frozen post-failover/restore, recoverable only by a full `clean`). Graceful
 // shutdown also reaps the plugin child, avoiding the SIGKILL orphan/ETXTBSY problem.
 // site-failover keeps the hard killNode on purpose: it simulates a real outage.
 func (c *config) gracefulStop(i int) {
 	in := c.instances[i]
-	c.ssh(in.host, c.termCmd(in)) // SIGTERM — flush state + reap plugin
+	c.ssh(in.host, c.termCmd(in)) // SIGTERM: flush state + reap plugin
 	_, alive := c.killCmds(in)
 	for k := 0; k < gracefulStopPolls; k++ {
 		if c.ssh(in.host, alive) == "D" {
@@ -402,7 +425,7 @@ func (c *config) gracefulStop(i int) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	fmt.Printf("  %s: graceful stop didn't exit in %ds — SIGKILL fallback\n", c.topo.MachineName(i), gracefulStopPolls/2)
+	fmt.Printf("  %s: graceful stop didn't exit in %ds: SIGKILL fallback\n", c.topo.MachineName(i), gracefulStopPolls/2)
 	c.killNode(i)
 }
 
@@ -429,14 +452,84 @@ func (c *config) swap(i, keyIdx int) {
 		c.remoteDir, in.activeDir, in.activeDir, keyIdx, keyIdx, keyIdx, in.activeDir, keyIdx, in.activeDir))
 }
 
-// startScript renders the identity-agnostic launch script for pool slot i. Identity
-// lives in the files under the instance's staking/active dir (swapped in pass 1), so
-// this command is the same regardless of which validator the machine hosts. The data
-// dir is preserved (never wiped here) so a hot spare rejoins in seconds. All ports and
-// paths come from the instance, so a co-located 2nd process lands on its own ports and
-// dirs; for a normal node these are the original 9652/9653 + data/validator values.
+// nodeIDForKey returns committed key k's NodeID from the generated manifest.
+func (c *config) nodeIDForKey(k int) string {
+	id := c.nodeIDByKey[k]
+	if id == "" {
+		fatalf("missing L1_%d_NODE_ID in %s/staking/node-ids.env (run ./00_gen_secrets.sh)", k, c.repoDir)
+	}
+	return id
+}
+
+// pchainBeacons returns the --bootstrap-ips/--bootstrap-ids for pool slot i.
+// The whole fleet runs --p-chain-follow-only, re-syncing the P-chain forever
+// from exactly these peers (two-hop chaining, see FUJI_PLAN.md):
+//   - RPC slots follow the pinned public Fuji peer: the fleet's ONE allowed
+//     external TCP (FUJI_UPSTREAM_IPS/IDS; re-check genesis/bootstrappers.json
+//     on every avalanchego bump, the hardcoded IPs rotate between releases);
+//   - every other slot follows its OWN SITE's RPC slots (validators only ever
+//     reach RPC machines in the same DC). RPC identities are pinned home keys
+//     that never swap, so this list is static per deploy. NOTE the >=75%
+//     beacon-weight startup latch: with 2 RPCs per site a validator needs BOTH
+//     connected at (re)start.
+func (c *config) pchainBeacons(i int) (ips, nodeIDs string) {
+	if c.topo.isRPCSlot(i) {
+		return c.upstreamIPs, c.upstreamIDs
+	}
+	var ipL, idL []string
+	for j, in := range c.instances {
+		if c.topo.isRPCSlot(j) && c.topo.Site(j) == c.topo.Site(i) {
+			ipL = append(ipL, fmt.Sprintf("%s:%d", in.host, in.stakingPort))
+			idL = append(idL, c.nodeIDForKey(c.topo.HomeKey(j)))
+		}
+	}
+	return strings.Join(ipL, ","), strings.Join(idL, ",")
+}
+
+// siblingSeeds returns --state-sync-ips/--state-sync-ids for pool slot i: every
+// OTHER pool instance under its CURRENTLY intended identity. Signed-IP gossip
+// never relays the fleet's private IPs, so the L1 consensus mesh must be seeded
+// explicitly: via state-sync-ids, NOT bootstrap-ids, so fresh siblings never
+// become P-chain frontier beacons (the frontier-cap gotcha; proven recipe in
+// the 2026-07-03 e2e). Identities move on failover, so the seeds are read from
+// the intentions file at render time: every (re)started node dials a fresh,
+// correct list, and a stale entry on a not-restarted sibling is just a failed
+// dial until the swapped node dials in itself.
+func (c *config) siblingSeeds(i int) (ips, nodeIDs string) {
+	intents, err := loadIntents(c.stateFile, c.topo)
+	if err != nil {
+		fatalf("render start script: %v", err)
+	}
+	var ipL, idL []string
+	for j, in := range c.instances {
+		if j == i {
+			continue
+		}
+		ipL = append(ipL, fmt.Sprintf("%s:%d", in.host, in.stakingPort))
+		idL = append(idL, c.nodeIDForKey(intents[j].Key))
+	}
+	return strings.Join(ipL, ","), strings.Join(idL, ",")
+}
+
+// startScript renders the launch script for pool slot i. Identity lives in the
+// files under the instance's staking/active dir (swapped in pass 1); the only
+// role-dependent parts are the P-chain beacon and sibling-seed lists above. The
+// data dir is preserved (never wiped here) so a hot spare rejoins in seconds. All
+// ports and paths come from the instance, so a co-located 2nd process lands on its
+// own ports and dirs; for a normal node these are the original 9652/9653 +
+// data/validator values.
+//
+// Fuji flags (see FUJI_PLAN.md): the primary network is Fuji itself
+// (--network-id=fuji, built-in genesis); --partial-sync-primary-network syncs
+// ONLY the P-chain (skips Fuji X/C); --p-chain-follow-only keeps the P-chain
+// permanently bootstrapping off the beacons: REQUIRED on the inside tiers (a
+// stock partial-sync node behind non-validator peers freezes after the
+// bootstrap-to-consensus handoff) and what the RPC tier was e2e-proven with;
+// --network-allow-private-ips lets the fleet dial its DC-internal addresses.
 func (c *config) startScript(i int) string {
 	in := c.instances[i]
+	beaconIPs, beaconIDs := c.pchainBeacons(i)
+	seedIPs, seedIDs := c.siblingSeeds(i)
 	return fmt.Sprintf(`#!/bin/bash
 set -e
 cd %[1]s
@@ -453,7 +546,10 @@ setsid ./bin/avalanchego \
     --db-dir=%[7]s/db \
     --log-dir=%[7]s/logs \
     --data-dir=%[7]s \
-    --network-id=local \
+    --network-id=fuji \
+    --partial-sync-primary-network=true \
+    --p-chain-follow-only=true \
+    --network-allow-private-ips=true \
     --staking-tls-cert-file=%[11]s/staker.crt \
     --staking-tls-key-file=%[11]s/staker.key \
     --staking-signer-key-file=%[11]s/signer.key \
@@ -464,9 +560,12 @@ setsid ./bin/avalanchego \
     --track-subnets="%[3]s" \
     --bootstrap-ips=%[5]s \
     --bootstrap-ids=%[6]s \
+    --state-sync-ips=%[12]s \
+    --state-sync-ids=%[13]s \
     >%[7]s/logs/avalanchego.out 2>&1 < /dev/null &
-`, c.remoteDir, c.chainID, c.subnetID, in.host, c.bootstrapIPs, c.bootstrapIDs,
-		in.dataDir, in.chainCfg, in.httpPort, in.stakingPort, in.activeDir)
+`, c.remoteDir, c.chainID, c.subnetID, in.host, beaconIPs, beaconIDs,
+		in.dataDir, in.chainCfg, in.httpPort, in.stakingPort, in.activeDir,
+		seedIPs, seedIDs)
 }
 
 func (c *config) start(i int) {
@@ -500,17 +599,17 @@ func (c *config) freshClean(i int) {
 // avalanchego keeps every chain (P-chain, C/X, and the L1 subnet) in one shared
 // --db-dir (data/validator/db, a single prefixdb with no per-chain subdir), and
 // subnet-evm keeps its EVM state under data/validator/chainData/<chainID>. Removing
-// only db/ is NOT enough — the EVM state resurrects the stale post-failover frontier
+// only db/ is NOT enough: the EVM state resurrects the stale post-failover frontier
 // and the node then reports a height the live validators never had, so it never
 // converges (measured 2026-06-12; see docs/two-site-failover.md). Clearing all of
 // data/validator is the only reliable clean slate.
 //
 // This is safe: nothing unique lives in data/validator. The node identity
-// (staking/active) and committed key sets (staking/l1) are outside it and untouched,
-// so the P-chain validator registration (authoritative on the dev-machine P-chain) is
-// unaffected. On restart the node re-bootstraps the primary network from the dev
-// machine and state-syncs the L1 to tip (state-sync-enabled in chain-config.json);
-// startScript re-creates the dirs and re-copies configs.
+// (staking/active) and generated key sets (staking/l1) are outside it and untouched,
+// so the P-chain validator registration (authoritative on Fuji's public P-chain) is
+// unaffected. On restart the node re-syncs the Fuji P-chain through its beacons
+// (RPC tier, follow-only) and state-syncs the L1 to tip (state-sync-enabled in
+// chain-config.json); startScript re-creates the dirs and re-copies configs.
 func (c *config) wipeL1Data(i int) {
 	in := c.instances[i]
 	c.killNode(i)
@@ -537,12 +636,12 @@ func (c *config) provisioned(host string) bool {
 	return out == "OK"
 }
 
-// isRPCNode reports whether machine i is a pinned dedicated-RPC node — the RPC slots of each
+// isRPCNode reports whether machine i is a pinned dedicated-RPC node: the RPC slots of each
 // site (m5/m6, and b5/b6 in two-site mode). RPC nodes run chain-config-rpc.json, kept SEPARATE
 // from the validator/spare chain-config.json so RPC-only settings can be tuned independently.
 // Both files now carry the SAME sync rules (state-sync + pruning), so an RPC self-heals via
 // state-sync and seeds from the same pruned snapshot as every other role. (Previously the RPC
-// config was an archive profile — pruning + state-sync disabled — which held full history but
+// config was an archive profile: pruning + state-sync disabled: which held full history but
 // had no self-heal path.) Index-based, holds in single- and two-site mode. Safe for i<0.
 func (c *config) isRPCNode(i int) bool {
 	if i < 0 {
@@ -552,10 +651,10 @@ func (c *config) isRPCNode(i int) bool {
 }
 
 // backupSiteMinDelayMS is the block-production cadence the BACKUP site (B) runs at whenever it
-// holds the validator set — i.e. after a failover. min-delay-target only affects a node while it
+// holds the validator set: i.e. after a failover. min-delay-target only affects a node while it
 // is PRODUCING (proposing); a tracker applying another site's blocks ignores it. So site B still
 // tracks the primary at full 25ms cadence during normal operation, and only its OWN production
-// (post-failover) is slowed to ~10 blk/s — below the ~14 blk/s replay ceiling, so a recovering
+// (post-failover) is slowed to ~10 blk/s: below the ~14 blk/s replay ceiling, so a recovering
 // primary's tip stays catchable WITHOUT any mid-restore rolling restart. The throttle is simply
 // baked into site B's config; the primary (A) keeps chain-config.json's 25ms.
 const backupSiteMinDelayMS = 100
@@ -564,7 +663,7 @@ const backupSiteMinDelayMS = 100
 // file (which the start script copies into place): chain-config-rpc.json for the pinned RPC
 // nodes, chain-config.json for validators and the spare. The two files are kept SEPARATE so RPC
 // settings can be tuned independently, but they now carry the SAME sync rules (state-sync +
-// pruning) — so every role shares one snapshot shape and self-heals via state-sync if it falls
+// pruning): so every role shares one snapshot shape and self-heals via state-sync if it falls
 // more than state-sync-min-blocks behind. (Previously the RPC file was an archive profile with
 // pruning + state-sync disabled for full history; RPCs no longer serve arbitrary-height eth_
 // queries, but they now recover by a plain resync instead of an archive->archive clone.) For a
@@ -585,7 +684,7 @@ func (c *config) deployChainConfig(i int) {
 }
 
 // setMinDelay rewrites min-delay-target (ms) in pool slot i's chain-config file. Takes effect on
-// the node's next (re)start — the VM reads min-delay-target once at init (subnet-evm vm.go).
+// the node's next (re)start: the VM reads min-delay-target once at init (subnet-evm vm.go).
 func (c *config) setMinDelay(i, ms int) {
 	in := c.instances[i]
 	c.ssh(in.host, fmt.Sprintf(`cd %s && sed -i 's/"min-delay-target": *[0-9]*/"min-delay-target": %d/' %s`, c.remoteDir, ms, in.chainCfg))
