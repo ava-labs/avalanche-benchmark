@@ -95,9 +95,10 @@ placing a key.
 - **`scripts/failover/up.sh <m>`** — uncordon machine, then reconcile.
 - **`scripts/failover/failover.sh`** — pure reconcile, no intent change.
 
-What stays separate is **`01` (local P-chain)** and **`02` (`create-l1`)** — those
-make the chain *exist* and reconcile cannot reissue them. Reconcile owns all five
-pool machines forever after, first deploy and every failover.
+What stays separate is **`00`/`01` (secrets + Fuji wallet funding)** and **`02`
+(`create-l1` on Fuji)** — those make the chain *exist* and reconcile cannot
+reissue them. Reconcile owns all five pool machines forever after, first deploy
+and every failover.
 
 No lockfile: the client is trusted to drive from a single terminal session,
 serially.
@@ -168,12 +169,12 @@ preserved** (never wiped) so a hot spare rejoins in seconds; only `--fresh` wipe
 
 Idempotent: a second run stop-swaps nothing and starts nothing.
 
-**Bootstrap peers:** every launch passes the same static `--bootstrap-ips/-ids` —
-the **5 local P-chain nodes** (control machine's public IP on ports 9651/9661/…,
-NodeIDs `L1_1..5`). The node gossips into the network through them and discovers
-the L1 peers itself; no need to list pool peers, and nothing to recompute as
-identities move between machines. (The control machine hosting a reachable
-P-chain is an assumed given, same as `03` today.)
+**Bootstrap peers:** reconcile derives each slot's `--bootstrap-ips/-ids` by
+role — RPC slots follow the pinned public Fuji peer (`FUJI_UPSTREAM_IPS/IDS`);
+every other slot follows its own site's RPC slots (pinned home identities, so
+the list is static per deploy). Because private IPs are never gossiped, the L1
+mesh is seeded explicitly via `--state-sync-ips/-ids`, regenerated from the
+current intentions on every start so the seeds track identity moves.
 
 **Startup flags are stored nowhere** — reconcile regenerates the launch invocation
 every time, and crucially it is **identity-agnostic**: `--staking-tls-cert/key/
@@ -288,5 +289,5 @@ binary.
 - `cmd/reconcile/remote.go` — SSH/scp I/O, observe, stop, swap, start, provision.
 - `cmd/reconcile/main.go` — CLI (`fresh`/`down <m>`/`up <m>`/`apply`) + the 3-pass loop.
 - `scripts/failover/{_failover_common,up,down,failover}.sh` — wrappers.
-- `03_wipe_and_deploy_l1.sh` — `reconcile fresh`. `05_benchmark.sh` — bombards the pinned RPC node `m5` only.
+- `03_deploy_chain.sh` — `reconcile fresh`. `05_benchmark.sh` — bombards the pinned RPC node `m5` only.
 - `bin/reconcile` — `make build` target.

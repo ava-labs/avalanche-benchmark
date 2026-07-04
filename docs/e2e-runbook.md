@@ -96,36 +96,46 @@ Run everything from the kit root on the control host. Steps 1–4 stand the
 network up; steps 5–8 are the drill itself. Use **two terminals** for the drill:
 one for the benchmark (left running), one for the failover commands.
 
-### Step 1 — bootstrap the primary network (P-chain)
+### Step 1 — generate secrets and fund the Fuji wallet (one time)
 
 ```bash
-./01_bootstrap_primary_network.sh
+./00_gen_secrets.sh
+./01_fund_wallet.sh
 ```
 
-Starts 5 local P-chain validators on the control host. The L1 validators
-bootstrap through these, so leave them running for the whole session.
+`00` generates the per-deploy staking identities + the Fuji fund/fee wallet into
+gitignored paths (`staking/`) and writes the NodeID manifest. `01` prints the
+wallet's C-chain address: fund it manually at the Fuji faucet
+(https://core.app/tools/testnet-faucet/, the faucet is C-chain only), and the
+script then moves everything C -> P automatically. Budget: ~0.1 AVAX fees +
+1 AVAX per validator.
 
-### Step 2 — create the L1 (one time)
+### Step 2 — create the L1 on Fuji (one time, SPENDS AVAX)
 
 ```bash
-./02_create_l1.sh
+./02_create_chain.sh
 ```
 
 Registers the validator identities (the count from `VALIDATOR_IPS`; 3 by default)
-on the P-chain and writes `network.env` (the new `SUBNET_ID` / `CHAIN_ID`). It
-also pre-flights that enough committed staking keys exist for the configured
-topology, printing the exact `genstaking` command if more are needed.
+on Fuji's public P-chain via `api.avax-test.network` and writes `network.env`
+(the new `SUBNET_ID` / `CHAIN_ID`). It pre-flights the staking keys and the
+wallet balance before issuing anything. Run once per chain; re-deploys never
+repeat this step.
 
 ### Step 3 — deploy the L1 across both sites
 
 ```bash
-./03_wipe_and_deploy_l1.sh
+./03_deploy_chain.sh
 ```
 
 Uploads the binaries, plugin, and keys to all 12 nodes and starts the chain from
-genesis (block 0): **site A validating, site B tracking**. **Destructive** — it
-wipes node data and restarts the chain. Re-run any time to reset to a clean
-chain; the P-chain registration is preserved, so you do **not** re-run steps 1–2.
+genesis (block 0): **site A validating, site B tracking**. **Destructive by
+design** — it wipes node data and restarts the chain; losing the L1 state is the
+point. Re-run any time to reset to a clean chain; the registration on Fuji is
+preserved, so you do **not** re-run steps 1–2 (and spend nothing). First boot of
+a fresh fleet full-replays Fuji's P-chain: the RPC tier syncs first (~minutes),
+then the validators sync through it (serial per hop) — nodes sit in
+BOOTSTRAPPING until then, which is normal.
 
 ### Step 4 — start monitoring
 
@@ -232,8 +242,9 @@ one validator key at a time with a health gate between each. The hot profile
 ./06_cleanup.sh
 ```
 
-Stops every node and the local P-chain, removes the remote deployment
-directories, and deletes the local `network.env`.
+Stops every node, removes the remote deployment directories, and deletes the
+local `network.env`. It does not touch `staking/` (the generated secrets) or
+anything on Fuji; the chain remains registered there.
 
 ---
 

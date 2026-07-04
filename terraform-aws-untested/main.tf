@@ -9,6 +9,24 @@ terraform {
 #   site A (primary) + control  -> us-west-1
 #   site B (backup)             -> us-west-2
 # Every resource is tagged Project=avalanche-benchmark (teardown/safety filters key on it).
+#
+# TODO (e2e-pending, FUJI_PLAN.md item 5): these SGs are still devnet-shaped
+# (avax ports open to 0.0.0.0/0, blanket egress) and this module does not know
+# which box is a validator vs an RPC (roles are assigned later in the .env
+# layer), so the Fuji lockdown could not be implemented blind here. Target
+# shape, to be applied during the authorized Fuji e2e:
+#   - split per-role SGs (requires validator/rpc counts as terraform config);
+#   - validator SG: ingress 9651 from RPC + validator SGs only; egress ONLY to
+#     RPC machines (9651), sibling validators (9651), intra-DC NTP/DNS. Mind the
+#     two indirect external deps: public-ip discovery via curl (use the
+#     DC-internal IP in .env instead) and time sync (point chrony at the RPC
+#     boxes or DC NTP);
+#   - RPC SG: egress exactly ONE destination, the pinned public Fuji peer
+#     18.192.93.241:9651/tcp (expected NodeID-2m38qc95mhHXtrhjyGbe7r2NhniqHHJRB,
+#     enforced by the TLS handshake; keep in lockstep with FUJI_UPSTREAM_IPS and
+#     re-check genesis/bootstrappers.json on every avalanchego bump). Ingress:
+#     9651 from validator SG, 9652 from control box, metrics from monitoring;
+#   - control SG: drop the 9650-9700 world-open rule (no local primaries anymore).
 
 provider "aws" {
   region = "us-west-1" # site A + control

@@ -18,10 +18,14 @@ trackers. The validator identities (staking keys) are *conserved* — they move
 between machines, and across sites on a `site-failover`, but are never
 duplicated, so the chain stays a single branch. The pinned RPC nodes are never
 promoted to validators, so the load generator's ingress survives failover. The
-control host runs the 5 P-chain (primary network) validators the L1 bootstraps
-against, the load generator, and the monitoring stack — it holds no L1 node, so
-it keeps coordinating through a full-site outage. Single-site mode (no backup) is
-supported unchanged — just leave the `BACKUP_*` lists unset.
+L1 anchors on **Fuji's public P-chain** (see [FUJI_PLAN.md](FUJI_PLAN.md)):
+every node runs `--network-id=fuji --partial-sync-primary-network
+--p-chain-follow-only`; the RPC tier follows one pinned public Fuji peer (the
+fleet's only external TCP) and serves the P-chain onward to the validators
+(two-hop). The control host runs the orchestration, the load generator, and the
+monitoring stack; it holds no L1 node, so it keeps coordinating through a
+full-site outage. Single-site mode (no backup) is supported unchanged: just
+leave the `BACKUP_*` lists unset.
 
 > **Co-location is a TEST affordance**, not a production layout: stacking nodes
 > on one box removes fault isolation (one box loss takes them all), so a
@@ -41,8 +45,9 @@ Open the following ports on your remote nodes:
 | 22 | SSH | Yes | Remote access |
 | 9652-9653 | AvalancheGo | Yes | L1 HTTP (RPC) / staking ports |
 
-The five local P-chain validators run on the control host on ports `9650/9651`,
-`9660/9661`, `9670/9671`, `9680/9681`, and `9690/9691`.
+The RPC machines additionally need ONE outbound TCP to the pinned public Fuji
+peer (default `18.192.93.241:9651`, see `.env.example`); validators need no
+external connectivity at all.
 
 ## Install
 
@@ -86,9 +91,10 @@ true outage (see the rollback caveat in
 [docs/two-site-failover.md](docs/two-site-failover.md)). Single-site behavior is
 unchanged when the `BACKUP_*` lists are unset.
 
-> **Validator count > 3** needs more committed staking identities than the 20
-> shipped in `staking/l1/`. `02_create_l1.sh` pre-flights this and prints the exact
-> `go run ./cmd/genstaking <lo> <hi>` to run (locally, then rebuild the kit).
+> **Staking identities are generated per deploy** by `./00_gen_secrets.sh`
+> (gitignored, never committed: on Fuji a leaked staking key means validator
+> impersonation). It sizes the key set to the configured topology automatically;
+> `02_create_chain.sh` pre-flights that every needed key exists.
 > The legacy positional `NODE_IPS` / `BACKUP_SITE_NODE_IPS` (exactly 6 each, fixed
 > 3/1/2) still works if `VALIDATOR_IPS` is unset.
 
@@ -99,9 +105,10 @@ full walkthrough — with what to expect at each step — is in
 [docs/e2e-runbook.md](docs/e2e-runbook.md).
 
 ```bash
-./01_bootstrap_primary_network.sh   # 5 local P-chain validators (leave running)
-./02_create_l1.sh                   # one-time: register validators, write network.env
-./03_wipe_and_deploy_l1.sh          # deploy all 12 nodes, start chain from genesis (destructive)
+./00_gen_secrets.sh                 # per-deploy staking keys + Fuji wallet (gitignored)
+./01_fund_wallet.sh                 # manual Fuji faucet (C-chain), auto C->P move
+./02_create_chain.sh                # ONCE per chain: create the L1 on Fuji (SPENDS AVAX)
+./03_deploy_chain.sh                # deploy all 12 nodes, start chain from genesis (destructive, repeatable)
 ./04_monitoring.sh                  # Prometheus + Grafana on the control host
 ./scripts/failover/status.sh        # expect all nodes SERVING, "validators serving: N/N" (3/3 by default)
 ./05_benchmark.sh                   # drive ~4000 tx/s at the pinned RPC nodes
@@ -114,12 +121,14 @@ Then run the failover drill (separate terminal, benchmark left running):
 ./scripts/failover/restore.sh a         # graceful rolling failback to A (no chain downtime)
 ```
 
-`03_wipe_and_deploy_l1.sh` is **destructive** — it wipes node data and restarts
-the chain from genesis (block 0). Re-run any time to reset to a clean chain; the
-P-chain registration is preserved, so you don't re-run `01`/`02`. Editing
-`chain-config.json` and re-running `03` is how you apply a new chain config. A
-fresh chain sits at block 0 until the benchmark drives load — Avalanche produces
-blocks on demand.
+`03_deploy_chain.sh` is **destructive by design**: it wipes node data and
+restarts the chain from genesis (block 0). Re-run any time to reset to a clean
+chain; the registration on Fuji's P-chain is preserved, so you never re-run
+`00`-`02` (and never re-spend AVAX) for a re-deploy. Editing `chain-config.json`
+and re-running `03` is how you apply a new chain config. A fresh chain sits at
+block 0 until the benchmark drives load (Avalanche produces blocks on demand).
+First boot of a fresh fleet full-replays Fuji's P-chain: RPC tier first
+(~minutes), then the validators sync through them.
 
 ## Monitoring (Prometheus + Grafana)
 
@@ -314,7 +323,7 @@ deploy time:
   restart. See [docs/two-site-failover.md](docs/two-site-failover.md).
 
 To tune, edit `min-delay-target` in `chain-config.json` and re-run
-`./03_wipe_and_deploy_l1.sh` (which resets the chain to genesis).
+`./03_deploy_chain.sh` (which resets the chain to genesis).
 
 ## Further reading
 

@@ -217,7 +217,7 @@ window end-to-end.
 A full demo cycle:
 
 ```bash
-./03_wipe_and_deploy_l1.sh              # deploys all 12 machines
+./03_deploy_chain.sh              # deploys all 12 machines
 ./05_benchmark.sh                       # in one window
 ./scripts/failover/site-failover.sh b   # in another: kill site A mid-load
 watch -n 2 ./scripts/failover/status.sh # watch B bootstrap + serve

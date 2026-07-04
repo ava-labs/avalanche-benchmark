@@ -1,10 +1,25 @@
 # Fuji migration plan: anchor the benchmark L1's P-chain on Fuji testnet
 
-Status: PLAN ONLY. No infra changes. Written 2026-07-04 against this repo tip and
-avalanchego `containerman17/fde` @ `084401863ba97267ea95ac25c4f285f183b0045c`
-(master + the 6 open PRs incl. #5613 p-chain-follow-only), which the Makefile now pins.
-After user review, a full Terraform e2e on Fuji is authorized as the next step; the
-execution order at the bottom is written to be runnable as-is.
+Status: IMPLEMENTED 2026-07-04 (code + scripts, locally verified; see
+"Implementation status" at the bottom for what remains e2e-pending). Written
+against this repo tip and avalanchego `containerman17/fde` @
+`084401863ba97267ea95ac25c4f285f183b0045c` (master + the 6 open PRs incl. #5613
+p-chain-follow-only), which the Makefile pins.
+
+User corrections applied during implementation:
+- Secrets generation is a NUMBERED SCRIPT (`./00_gen_secrets.sh`), not a make
+  target: the Makefile is not shipped in the release tarball.
+- Faucet funding is MANUAL and C-CHAIN ONLY (no P-chain faucet exists);
+  `./01_fund_wallet.sh` prints the C-chain address, polls until the balance
+  arrives, then automatically moves everything C -> P.
+- create-chain and deploy-chain are SEPARATE scripts: `./02_create_chain.sh`
+  spends AVAX and runs ONCE; `./03_deploy_chain.sh` is the repeatable
+  from-scratch raise that intentionally wipes the L1 data and never re-spends.
+
+Script sequence: 00_gen_secrets, 01_fund_wallet, 02_create_chain (once),
+03_deploy_chain (repeatable), 04_monitoring, 05_benchmark, 06_cleanup. The old
+01_bootstrap_primary_network.sh (5 local devnet primaries) is deleted: Fuji IS
+the primary network.
 
 ## Target topology
 
@@ -190,34 +205,32 @@ wallet and the subnet owner (`main.go:109`, `main.go:117-120`). Needed:
 - The 5s "wait for chain" sleep (`main.go:171`) becomes a real poll: Fuji P-chain
   acceptance is not instant-local.
 
-### 3. (M) NEW: `cmd/gen-secrets` (`make secrets`) + remove committed keys from git
+### 3. (M) NEW: `./00_gen_secrets.sh` (numbered script, ships in the kit) + remove committed keys from git
 
-A tiny Go binary that generates ALL generate-class secrets into gitignored paths, and a
-non-secret manifest that scripts read instead of hardcoded values. Everything else in
-the flow stays byte-identical.
+Implemented as a numbered script (user correction: the Makefile is not shipped
+in the release tarball), backed by two prebuilt binaries that DO ship in the kit
+(`bin/genstaking`, reused as-is, and the new `bin/fuji-wallet`). The script
+generates ALL generate-class secrets into gitignored paths plus the non-secret
+manifest scripts read instead of hardcoded values. Everything else in the flow
+stays byte-identical.
 
-- Generates, per deploy:
+- Generates, per deploy (sized to the topology in `.env`, refusing to overwrite
+  anything that may already be registered/funded):
   - `staking/l1/<idx>/{staker.crt,staker.key,signer.key}` for every identity the
-    configured topology needs (reuse the existing generator: `cmd/genstaking` already
-    exists and is what produced the current keys, see `_common.sh:195-220`).
-  - The Fuji P-chain fund/fee wallet + L1 owner key (one secp256k1 key is enough for
-    both roles for the benchmark) into e.g. `staking/fuji-wallet.key` (gitignored).
-    If we go the platform-cli route, gen-secrets can instead emit/import the key into
-    the platform-cli keystore (`platform-cli keys import`, key-name `default`).
-- Emits the manifest (non-secret): keep the EXISTING `staking/node-ids.env` path and
-  format (L1_<idx>_NODE_ID=...), extended with BLS pubkey/PoP per identity (needed for
-  a platform-cli manual convert) and the wallet's P-chain address. This is the whole
-  "scripts read the manifest" design: every consumer already reads that file rather
-  than hardcoding NodeIDs (`_common.sh:128-141` `node_id_for_l1_index`,
-  `cmd/create-l1/main.go:210-214`), so pointing gen-secrets at the same path means
-  ZERO script changes. Repo-wide grep confirms no NodeID literals outside
-  `staking/node-ids.env`.
-- Git surgery: `git rm -r staking/l1 staking/node-ids.env`, add both to `.gitignore`,
-  update `ensure_staking_keys`'s remedy text (`_common.sh:214-217`) to say
-  `make secrets`. The `pack`/`rpm` targets already ship `staking/` from the working
-  tree (`Makefile:94`), so generated keys flow into the kit unchanged.
-- Note: the CURRENT committed keys 6-20 must be treated as burned for Fuji purposes
-  (they are public in git history); devnet reuse until the switch is fine.
+    configured topology needs (via the existing `cmd/genstaking`).
+  - The Fuji P-chain fund/fee wallet + L1 owner key (one secp256k1 key covers
+    both roles) into `staking/fuji-wallet.key` (`fuji-wallet gen`).
+- Emits the manifest (non-secret): the EXISTING `staking/node-ids.env` path and
+  format (L1_<idx>_NODE_ID=...). Every consumer already reads that file rather
+  than hardcoding NodeIDs (including reconcile, which now derives all beacon and
+  sibling-seed NodeID lists from it), so no other flow changed. BLS pubkey/PoP
+  stayed out of the manifest: create-l1 computes PoPs from the key files
+  directly and the platform-cli path was not taken.
+- Git surgery: DONE, `staking/` is deleted from git and gitignored wholesale;
+  `ensure_staking_keys`'s remedy text says `./00_gen_secrets.sh`. `pack` no
+  longer ships `staking/` (secrets are generated ON the control box by 00).
+- Note: the previously committed keys 6-20 are burned for Fuji purposes (public
+  in git history); they were deleted with the switch.
 
 ### 4. (M) Retire the local devnet P-chain and its assumptions in scripts
 
@@ -328,26 +341,56 @@ to `0.0.0.0/0` on the control box (`main.tf:100-106`) and blanket egress
 - Endpoint selection also unchanged: bombard targets the RPC role via
   `reconcile endpoints` (`05_benchmark.sh:48-56`).
 
-## Execution order (runnable as-is once items above land)
+## Execution order (as implemented)
 
-1. **secrets**: `make secrets` (item 3) generates staking identities + Fuji wallet,
-   writes the manifest (`staking/node-ids.env` + wallet address). No network access.
-2. **fund**: faucet-fund the wallet's P-chain address (item 2 budget: fees + N x 1 AVAX
-   validator balances; ~5 AVAX covers a 3-validator run for weeks). Verify with
-   `platform-cli wallet balance` or `platform.getBalance` against the public API.
-3. **infra**: terraform apply of the Fuji-shaped SGs + fleet (item 5). Authorized only
-   after user review of this plan.
-4. **RPC follow-only sync**: deploy + start the RPC tier (item 1 flags) against the
-   chosen Fuji bootstrap peer (`NodeID-2m38qc...` @ `18.192.93.241:9651`); gate on
-   `/ext/health/readiness` and P height ~= Fuji tip.
-5. **validators**: start validator/spare tier (follow-only, beacons = RPC tier,
-   sibling seeding via state-sync-ids); serial hop, budget ~10 min; gate on readiness.
-   First boot runs without `--track-subnets` (the subnet does not exist yet); this
-   pre-syncs the P-chain so step 7's restart is fast.
-6. **create-l1 on Fuji**: from the control box against `api.avax-test.network`
-   (create-l1 with the generated wallet, or platform-cli manual convert). Writes
-   `network.env` (SUBNET_ID/CHAIN_ID) exactly as today.
-7. **deploy L1**: `./03_wipe_and_deploy_l1.sh` (reconcile fresh) restarts the pool
-   with `--track-subnets=<subnetID>` as the flow already does; validators' pre-synced
-   P-chain db carries over, only the L1 state-syncs/bootstraps.
-8. **bombard**: `./05_benchmark.sh` unchanged (item 9).
+1. **secrets**: `./00_gen_secrets.sh` generates staking identities + Fuji wallet,
+   writes the manifest (`staking/node-ids.env`). No network access, no spend.
+2. **fund**: `./01_fund_wallet.sh` prints the wallet's C-chain address (the Fuji
+   faucet is C-chain only), polls until the manual faucet transfer arrives, then
+   automatically moves everything C -> P. Budget: fees + N x 1 AVAX validator
+   balances; ~5 AVAX covers a 3-validator run for weeks. Re-runnable.
+3. **infra**: terraform apply of the Fuji-shaped SGs + fleet (item 5). The SG
+   lockdown is still a TODO in `terraform-aws-untested/main.tf` (e2e-pending; the
+   module needs per-role SGs it cannot express blind, see the TODO block there).
+4. **create-l1 on Fuji**: `./02_create_chain.sh` from the control box against
+   `api.avax-test.network` (generated wallet; pre-flights keys AND P-chain
+   balance before issuing anything). Writes `network.env` (SUBNET_ID/CHAIN_ID)
+   exactly as before. ONCE per chain; this is the only step that spends.
+   Note the chain now exists BEFORE the fleet first boots, so every node starts
+   with `--track-subnets` from day one (the old "pre-sync then restart" step
+   disappeared with the create/deploy split).
+5. **deploy**: `./03_deploy_chain.sh` (reconcile fresh) starts everything. The
+   RPC tier full-replays Fuji P off the pinned peer (`NodeID-2m38qc...` @
+   `18.192.93.241:9651`, ~minutes); validators clear the 75% beacon latch once
+   their site's RPCs are up and then sync through them (serial per hop).
+   Repeatable at will: wipes the L1 (by design), never touches Fuji.
+6. **bombard**: `./05_benchmark.sh` unchanged (item 9).
+
+## Deferred
+
+- **Failover via the Fuji P-chain (validator-set changes on-chain)**: the
+  intended future is to move validators by issuing P-chain validator changes
+  instead of swapping staking keys, so a failover needs no node restart and no
+  consensus-preference reset (in theory: no fork window at all). Deferred
+  because it requires C-chain contract deploys (validator manager) plus
+  aggregated signature collection. Until then the existing key-swapping
+  failover mechanism stays EXACTLY as is (kept untouched by this migration).
+
+## Implementation status (2026-07-04)
+
+Done and locally verified: Makefile pin + new binaries (genstaking, fuji-wallet);
+per-role launch flags in reconcile (network-id=fuji, partial-sync, follow-only,
+allow-private-ips, per-role bootstrap beacons, intent-tracking sibling seeds via
+state-sync-ids; unit-tested in cmd/reconcile/remote_test.go); create-l1 against
+the public Fuji API with generated wallet + balance pre-flight; scripts 00-06
+renumbered/rewritten (00 run end-to-end locally, 01 poll + create-l1 spend gate
+verified read-only against real Fuji); committed keys removed from git and
+staking/ gitignored; node-config.json outbound throttles; docs + dashboards
+(P-chain follow-only panels; snowman last_accepted_height does NOT advance for a
+follow-only P-chain, the bs_accepted bootstrap counter is the feed signal).
+
+e2e-pending (needs Fuji funds and/or machines, blocked on the authorized e2e):
+the C->P move and create-l1 spend path with a funded wallet; the full fleet
+deploy (two-hop sync, latch behavior, failover drills on Fuji); the terraform
+per-role SG lockdown (TODO block in terraform-aws-untested/main.tf); Grafana
+panel sanity against a live fleet.
