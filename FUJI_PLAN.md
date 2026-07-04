@@ -347,8 +347,9 @@ to `0.0.0.0/0` on the control box (`main.tf:100-106`) and blanket egress
    writes the manifest (`staking/node-ids.env`). No network access, no spend.
 2. **fund**: `./01_fund_wallet.sh` prints the wallet's C-chain address (the Fuji
    faucet is C-chain only), polls until the manual faucet transfer arrives, then
-   automatically moves everything C -> P. Budget: fees + N x 1 AVAX validator
-   balances; ~5 AVAX covers a 3-validator run for weeks. Re-runnable.
+   automatically moves everything C -> P. Budget: fees + N x 0.1 AVAX validator
+   balances (per-run deposit, ~5-6 days; top up with
+   IncreaseL1ValidatorBalanceTx for longer runs). Re-runnable.
 3. **infra**: terraform apply of the Fuji-shaped SGs + fleet (item 5). The SG
    lockdown is still a TODO in `terraform-aws-untested/main.tf` (e2e-pending; the
    module needs per-role SGs it cannot express blind, see the TODO block there).

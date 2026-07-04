@@ -36,10 +36,10 @@ const (
 	l1ValidatorStartIndex = 6
 	minValidators         = 3
 	// validatorBalance is the per-validator continuous-fee deposit paid by the
-	// conversion tx. 1 AVAX lasts ~50-60 days on Fuji (0.1 drains in ~5-6 days);
-	// balance 0 makes the validator INACTIVE and takes the whole L1 down. Top up
-	// with IncreaseL1ValidatorBalanceTx (anyone can fund, no owner auth).
-	validatorBalance = units.Avax
+	// conversion tx. 0.1 AVAX lasts ~5-6 days on Fuji, plenty per run; balance 0
+	// makes the validator INACTIVE and takes the whole L1 down. Top up any time
+	// with IncreaseL1ValidatorBalanceTx (anyone can fund, no owner auth needed).
+	validatorBalance = 100 * units.MilliAvax
 )
 
 // splitTrim parses a comma-separated list, trimming blanks and dropping empties.

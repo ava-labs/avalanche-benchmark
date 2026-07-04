@@ -108,7 +108,7 @@ gitignored paths (`staking/`) and writes the NodeID manifest. `01` prints the
 wallet's C-chain address: fund it manually at the Fuji faucet
 (https://core.app/tools/testnet-faucet/, the faucet is C-chain only), and the
 script then moves everything C -> P automatically. Budget: ~0.1 AVAX fees +
-1 AVAX per validator.
+0.1 AVAX per validator (a ~5-6 day deposit; top up for longer runs).
 
 ### Step 2 — create the L1 on Fuji (one time, SPENDS AVAX)
 
