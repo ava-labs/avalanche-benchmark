@@ -39,3 +39,7 @@ export CHAIN_ID SUBNET_ID SUBNET_EVM_ID
 export FUJI_UPSTREAM_IPS FUJI_UPSTREAM_IDS
 export REPO_DIR
 export FAILOVER_STATE_FILE="$REPO_DIR/scripts/failover/intentions.json"
+# MANAGER_ADDRESS (from network.env) enables the on-chain weight reconciliation;
+# PCHAIN_API (optional .env override) is where reconcile reaches Fuji's public
+# P-chain + C-chain APIs.
+export MANAGER_ADDRESS PCHAIN_API

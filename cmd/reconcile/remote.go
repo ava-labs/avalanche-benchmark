@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/topo"
 )
 
 // config is the runtime environment, supplied by the bash wrapper (which sources
@@ -51,81 +53,22 @@ func splitIPs(csv string) []string {
 }
 
 // loadPool derives the topology, ordered pool, and per-slot instances from the
-// per-role IP env. Each site is defined by three lists whose LENGTHS set the
-// counts and whose VALUES set placement (a repeated IP co-locates another process
-// on that box):
-//
-//	VALIDATOR_IPS / SPARE_IPS / RPC_IPS                 (site A)
-//	BACKUP_VALIDATOR_IPS / BACKUP_SPARE_IPS / BACKUP_RPC_IPS (site B, optional)
-//
-// Per site the pool is laid out [validators..., spares..., rpcs...]. Validators
-// must be >=3 (hard error) and RPCs >=1. (A single RPC is fine now that every role
-// state-syncs and restore seeds all roles from one pruned snapshot: no more
-// snapshot-the-redundant-RPC trick that needed a second ingress node.) The two sites
-// must share the same shape, since the registered validator set moves between them on failover.
-//
-// Back-compat: if VALIDATOR_IPS is unset, fall back to the legacy positional
-// NODE_IPS / BACKUP_SITE_NODE_IPS as the fixed 3 validators + 1 spare + 2 RPCs.
-// Split out from loadConfig so `endpoints` can run with just the IP env.
+// per-role IP env (see internal/topo.FromEnv: VALIDATOR_IPS / SPARE_IPS /
+// RPC_IPS for site A, BACKUP_* for the optional site B; lengths set the
+// counts, repeated IPs co-locate). Split out from loadConfig so `endpoints`
+// can run with just the IP env.
 func loadPool() (Topology, []string, []instance) {
-	if os.Getenv("VALIDATOR_IPS") == "" {
-		return loadPoolPositional()
+	t, pool, err := topo.FromEnv(os.Getenv)
+	if err != nil {
+		fatalf("%v (set the per-role IP lists in .env)", err)
 	}
-
-	valA := splitIPs(mustEnv("VALIDATOR_IPS"))
-	spareA := splitIPs(os.Getenv("SPARE_IPS"))
-	rpcA := splitIPs(os.Getenv("RPC_IPS"))
-	if len(valA) < 3 {
-		fatalf("VALIDATOR_IPS has %d IP(s); a live L1 needs at least 3 validators", len(valA))
-	}
-	if len(rpcA) < 1 {
-		fatalf("RPC_IPS has %d IP(s); need at least 1 RPC node per site to serve ingress.", len(rpcA))
-	}
-
-	topo := Topology{NVal: len(valA), NSpare: len(spareA), NRPC: len(rpcA)}
-	pool := append(append(append([]string{}, valA...), spareA...), rpcA...)
-
-	if os.Getenv("BACKUP_VALIDATOR_IPS") != "" {
-		valB := splitIPs(mustEnv("BACKUP_VALIDATOR_IPS"))
-		spareB := splitIPs(os.Getenv("BACKUP_SPARE_IPS"))
-		rpcB := splitIPs(os.Getenv("BACKUP_RPC_IPS"))
-		if len(valB) != topo.NVal || len(spareB) != topo.NSpare || len(rpcB) != topo.NRPC {
-			fatalf("backup site shape (%dv/%ds/%dr) must match primary (%dv/%ds/%dr): the validator set moves between sites on failover",
-				len(valB), len(spareB), len(rpcB), topo.NVal, topo.NSpare, topo.NRPC)
-		}
-		topo.TwoSite = true
-		pool = append(pool, valB...)
-		pool = append(pool, spareB...)
-		pool = append(pool, rpcB...)
-	}
-	return topo, pool, buildInstances(pool)
-}
-
-// loadPoolPositional is the legacy fixed 3/1/2 layout from NODE_IPS /
-// BACKUP_SITE_NODE_IPS, preserved so existing deploys behave identically.
-func loadPoolPositional() (Topology, []string, []instance) {
-	const legacyPool = 6 // 3 validators + 1 spare + 2 RPCs
-	topo := Topology{NVal: 3, NSpare: 1, NRPC: 2}
-	ips := strings.Split(mustEnv("NODE_IPS"), ",")
-	if len(ips) < legacyPool {
-		fatalf("NODE_IPS has %d entries, need at least %d pool machines", len(ips), legacyPool)
-	}
-	pool := ips[:legacyPool]
-	if backup := os.Getenv("BACKUP_SITE_NODE_IPS"); backup != "" {
-		bips := strings.Split(backup, ",")
-		if len(bips) != legacyPool {
-			fatalf("BACKUP_SITE_NODE_IPS has %d entries, need exactly %d backup-site machines", len(bips), legacyPool)
-		}
-		topo.TwoSite = true
-		pool = append(pool, bips...)
-	}
-	return topo, pool, buildInstances(pool)
+	return t, pool, buildInstances(pool)
 }
 
 func loadConfig() *config {
-	topo, pool, insts := loadPool()
+	t, pool, insts := loadPool()
 	c := &config{
-		topo:        topo,
+		topo:        t,
 		nodeIPs:     pool,
 		instances:   insts,
 		sshUser:     mustEnv("SSH_USER"),
@@ -267,58 +210,6 @@ func (c *config) rsyncUpload(localPath, host, remotePath string) {
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		fatalf("rsync %s -> %s:%s failed: %v", localPath, host, remotePath, err)
-	}
-}
-
-// snapshotPull streams a (lightly-compressed) tar of the already-stopped source's
-// chain data dir into a local file on the control box. The source MUST be stopped
-// first (killNode) so the on-disk pebble/EVM state is a consistent point-in-time
-// image: copying a live DB yields a torn, unopenable snapshot. The output is
-// streamed to a file, never buffered in memory (the DB is many GB). zstd -T0 uses
-// all cores on the (idle, stopped) source: much faster than single-threaded gzip
-// and a better ratio, so fewer bytes cross the slow cross-region link. (If a node
-// lacks zstd the pull fails cleanly and restore falls back to state-sync.)
-func (c *config) snapshotPull(srcIdx int, localTar string) bool {
-	in := c.instances[srcIdx]
-	f, err := os.Create(localTar)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "snapshot: create %s: %v\n", localTar, err)
-		return false
-	}
-	defer f.Close()
-	// Tar the CONTENTS of the data dir (relative "./db", "./logs", …) rather than the
-	// dir itself, so a snapshot from one instance can be extracted into a target whose
-	// data dir has a different name (e.g. data/validator -> data/validator-1 when the
-	// recovering node is co-located). For a normal (non-co-located) restore this is the
-	// same bytes as before, just relative paths.
-	cmd := exec.Command("ssh", c.sshArgs(in.host, fmt.Sprintf("cd %s/%s && tar -cf - . | zstd -3 -T0", c.remoteDir, in.dataDir))...)
-	cmd.Stdout = f
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "snapshot pull from %s failed: %v\n", in.host, err)
-		return false
-	}
-	return true
-}
-
-// snapshotPush streams a local snapshot tar to a target and extracts it, recreating
-// data/validator from the source's committed state. The target MUST be stopped and
-// its data/validator removed first (loadSnapshot does this) so nothing stale merges
-// with the extracted image.
-func (c *config) snapshotPush(dstIdx int, localTar string) {
-	in := c.instances[dstIdx]
-	f, err := os.Open(localTar)
-	if err != nil {
-		fatalf("snapshot: open %s: %v", localTar, err)
-	}
-	defer f.Close()
-	// Extract the relative-path image (see snapshotPull) INTO this instance's own data
-	// dir, whatever it is named: decoupling source and destination dir names.
-	cmd := exec.Command("ssh", c.sshArgs(in.host, fmt.Sprintf("mkdir -p %s/%s && cd %s/%s && zstd -dc | tar -xf -", c.remoteDir, in.dataDir, c.remoteDir, in.dataDir))...)
-	cmd.Stdin = f
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fatalf("snapshot push to %s failed: %v", in.host, err)
 	}
 }
 
@@ -468,45 +359,37 @@ func (c *config) nodeIDForKey(k int) string {
 //     external TCP (FUJI_UPSTREAM_IPS/IDS; re-check genesis/bootstrappers.json
 //     on every avalanchego bump, the hardcoded IPs rotate between releases);
 //   - every other slot follows its OWN SITE's RPC slots (validators only ever
-//     reach RPC machines in the same DC). RPC identities are pinned home keys
-//     that never swap, so this list is static per deploy. NOTE the >=75%
-//     beacon-weight startup latch: with 2 RPCs per site a validator needs BOTH
-//     connected at (re)start.
+//     reach RPC machines in the same DC). Identities are permanent, so this
+//     list is static per deploy. NOTE the >=75% beacon-weight startup latch:
+//     with 2 RPCs per site a validator needs BOTH connected at (re)start.
 func (c *config) pchainBeacons(i int) (ips, nodeIDs string) {
-	if c.topo.isRPCSlot(i) {
+	if c.topo.IsRPCSlot(i) {
 		return c.upstreamIPs, c.upstreamIDs
 	}
 	var ipL, idL []string
 	for j, in := range c.instances {
-		if c.topo.isRPCSlot(j) && c.topo.Site(j) == c.topo.Site(i) {
+		if c.topo.IsRPCSlot(j) && c.topo.Site(j) == c.topo.Site(i) {
 			ipL = append(ipL, fmt.Sprintf("%s:%d", in.host, in.stakingPort))
-			idL = append(idL, c.nodeIDForKey(c.topo.HomeKey(j)))
+			idL = append(idL, c.nodeIDForKey(c.topo.KeyOf(j)))
 		}
 	}
 	return strings.Join(ipL, ","), strings.Join(idL, ",")
 }
 
 // siblingSeeds returns --state-sync-ips/--state-sync-ids for pool slot i: every
-// OTHER pool instance under its CURRENTLY intended identity. Signed-IP gossip
-// never relays the fleet's private IPs, so the L1 consensus mesh must be seeded
+// OTHER pool instance under its permanent identity. Signed-IP gossip never
+// relays the fleet's private IPs, so the L1 consensus mesh must be seeded
 // explicitly: via state-sync-ids, NOT bootstrap-ids, so fresh siblings never
 // become P-chain frontier beacons (the frontier-cap gotcha; proven recipe in
-// the 2026-07-03 e2e). Identities move on failover, so the seeds are read from
-// the intentions file at render time: every (re)started node dials a fresh,
-// correct list, and a stale entry on a not-restarted sibling is just a failed
-// dial until the swapped node dials in itself.
+// the 2026-07-03 e2e). Identities never move, so the list is static per deploy.
 func (c *config) siblingSeeds(i int) (ips, nodeIDs string) {
-	intents, err := loadIntents(c.stateFile, c.topo)
-	if err != nil {
-		fatalf("render start script: %v", err)
-	}
 	var ipL, idL []string
 	for j, in := range c.instances {
 		if j == i {
 			continue
 		}
 		ipL = append(ipL, fmt.Sprintf("%s:%d", in.host, in.stakingPort))
-		idL = append(idL, c.nodeIDForKey(intents[j].Key))
+		idL = append(idL, c.nodeIDForKey(c.topo.KeyOf(j)))
 	}
 	return strings.Join(ipL, ","), strings.Join(idL, ",")
 }
@@ -647,7 +530,7 @@ func (c *config) isRPCNode(i int) bool {
 	if i < 0 {
 		return false
 	}
-	return c.topo.isRPCSlot(i)
+	return c.topo.IsRPCSlot(i)
 }
 
 // backupSiteMinDelayMS is the block-production cadence the BACKUP site (B) runs at whenever it

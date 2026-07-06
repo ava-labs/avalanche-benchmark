@@ -2,19 +2,54 @@ package main
 
 import (
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 )
 
+const (
+	// syncToleranceBlocks: a node is "synced enough" to carry active weight
+	// when its serving height is within this many blocks of the fleet tip
+	// (avalanchego self-heals a small gap once it participates).
+	syncToleranceBlocks = 100
+	// sitePollInterval paces the readiness polls during a graceful restore.
+	sitePollInterval = 3 * time.Second
+	// siteReadyTimeout bounds how long restore waits for the returning site to
+	// catch up (state-sync from scratch can take a while on Fuji).
+	siteReadyTimeout = 30 * time.Minute
+)
+
+func siteName(site int) string {
+	if site == siteB {
+		return "b"
+	}
+	return "a"
+}
+
+func otherSite(site int) int {
+	if site == siteA {
+		return siteB
+	}
+	return siteA
+}
+
+// rpcMachineIdxs lists the pool indexes of a site's pinned RPC slots.
+func rpcMachineIdxs(t Topology, site int) []int {
+	var idxs []int
+	for i := 0; i < t.Size(); i++ {
+		if t.Site(i) == site && t.IsRPCSlot(i) {
+			idxs = append(idxs, i)
+		}
+	}
+	return idxs
+}
+
 // nukeSite models a real site loss — a region outage / power cut, not a graceful drain.
 // Every avalanchego on the given site is hard-killed (SIGKILL) CONCURRENTLY, so the whole
-// site dies at once instead of being staggered by the sequential stop-swap loop. It runs
-// BEFORE reconcileBackupHeights so the surviving site's retained tip is frozen at the true
-// RPO boundary: the survivor then forms consensus on whatever blocks it already holds,
-// pulling zero state from the dead site. (We kill the process, not the box, so the boxes
-// stay SSH-reachable for the test harness — the chain-level effect, loss of the dead site's
-// validators and a frozen tip, is identical to a real outage.)
+// site dies at once instead of being staggered by a sequential stop loop. The surviving
+// site's standby validators are full consensus participants (weight 1), so they hold the
+// accepted tip already; recovery is purely the weight seesaw on the C-chain/P-chain, no
+// process restarts and no state surgery. (We kill the process, not the box, so the boxes
+// stay SSH-reachable for the test harness.)
 func (c *config) nukeSite(site int) {
 	var wg sync.WaitGroup
 	for i := 0; i < c.topo.Size(); i++ {
@@ -31,128 +66,42 @@ func (c *config) nukeSite(site int) {
 	wg.Wait()
 }
 
-// failoverSettleTimeout bounds how long a failover waits for the surviving site to settle
-// before it reads the live tip (see waitForSiteSettled). Short, because the common case is a
-// node restart that serves within seconds; the bound keeps a genuinely long bootstrap from
-// stalling the cutover.
-const failoverSettleTimeout = 90 * time.Second
-
-// Hard-site-failover recovery.
-//
-// A hard `site-failover` assumes the old site is GONE and cuts the validator set over to the
-// surviving site. The surviving site's would-be validators are trackers that may sit behind
-// the tip (cross-region lag) or at inconsistent heights. Promote them as-is at WILDLY
-// different heights and consensus can't form a quorum on any tip — the chain DEADLOCKS even
-// though every node reports SERVING (measured 2026-06-22: 659k/426k/412k produced zero blocks).
-//
-// reconcileBackupHeights recovers EVERY role — validators, spare, AND the pinned RPCs — by
-// STATE-SYNC: any node behind the live tip by more than syncToleranceBlocks (or down) is wiped
-// and reset to its light role-default config, so reconcile's start resyncs it to the tip.
-// State-sync lands every wiped node at a common recent pivot, so the promoted set agrees on a
-// tip (no inconsistent-height deadlock) and stays PRUNED — no DB clone, no archive-config flip,
-// no pruning-mode mismatch (the failure modes the clone approach kept hitting). The surviving
-// site's RPCs (which retain the tip) serve the state-sync; the chain state is small and, because
-// the old site is gone, the tip is static, so the sync converges quickly. A node already within
-// tolerance of the tip is left as-is (a promoted validator, or a serving RPC — fast path; at a
-// healthy cadence the standby keeps up, so this is the common case).
-//
-// The RPCs now run the same light (state-sync + pruning) profile as the validators, so a
-// far-behind RPC self-heals by the same wipe + state-sync — no archive->archive clone. It no
-// longer retains full history, but recovery is a plain resync. Runs BEFORE reconcile starts.
-func (c *config) reconcileBackupHeights(intents []MachineIntent, targetSite int) {
-	topo := c.topo
-
-	// Let the surviving site settle (RPCs serving, heights stable) so the tip read below is the
-	// true retained tip, not a momentarily-recovering node's partial height.
-	res := c.waitForSiteSettled(intents, targetSite, failoverSettleTimeout)
-
-	// Live tip = highest block any SERVING node on the site holds (the RPCs hold it).
-	var tip uint64
-	for i := 0; i < topo.Size(); i++ {
-		if topo.Site(i) == targetSite && i < len(res) && res[i].state == healthServing && res[i].block > tip {
-			tip = res[i].block
-		}
-	}
-
-	// Every role — validators, spares, AND pinned RPCs: state-sync any that are behind the tip
-	// (or down); leave the rest. The RPCs run the same light profile now, so they resync too.
-	targets := append([]int{}, validatorDestIdx(topo, targetSite)...)
-	targets = append(targets, spareDestIdxs(topo, targetSite)...)
-	targets = append(targets, rpcMachineIdxs(topo, targetSite)...)
-	var promote, resync []string
-	for _, i := range targets {
-		if i >= len(intents) || intents[i].Cordoned {
-			continue
-		}
-		serving := i < len(res) && res[i].state == healthServing
-		gap := "DOWN"
-		if serving && res[i].block <= tip {
-			gap = fmt.Sprintf("%d blocks behind tip", tip-res[i].block)
-		}
-		if serving && tip > 0 && tip-res[i].block <= uint64(syncToleranceBlocks) {
-			fmt.Printf("  %s: %s — within %d-block tolerance, PROMOTE AS-IS (avalanchego self-heals the gap)\n",
-				topo.MachineName(i), gap, syncToleranceBlocks)
-			promote = append(promote, topo.MachineName(i)) // current enough — promote as-is
-			continue
-		}
-		fmt.Printf("  !! %s: %s — beyond %d-block tolerance: WIPE + STATE-SYNC to the site's live tip (deadlock guard)\n",
-			topo.MachineName(i), gap, syncToleranceBlocks)
-		c.deployChainConfig(i) // pruned + state-sync-enabled, matches the wiped DB
-		c.wipeL1Data(i)        // clear data dir -> forces state-sync on start
-		resync = append(resync, topo.MachineName(i))
-	}
-	if len(resync) == 0 {
-		fmt.Printf("== failover: site %s recovery (tip %d) — all validators within tolerance, clean hot-standby promote, NO resync ==\n",
-			siteName(targetSite), tip)
-	} else {
-		fmt.Printf("== failover: site %s recovery (tip %d) — promote-as-is: [%s]  WIPED+state-sync: [%s] ==\n",
-			siteName(targetSite), tip, strings.Join(promote, " "), strings.Join(resync, " "))
-	}
-}
-
-// waitForSiteSettled gives the surviving site a bounded window to finish recovering before a
-// failover reads the live tip, then returns the settled health snapshot. A failover fired
-// right after a restore can catch the site's RPCs still bootstrapping: not yet SERVING,
-// or SERVING but still climbing to their retained tip. If the tip were read in that instant the
-// at-tip RPC would be missed and behind-but-close validators would be promoted at a stale tip.
-//
-// In a hard failover the old site is gone, so no new blocks are minted and the surviving nodes'
-// heights converge to the highest retained tip. We poll until that max height holds steady
-// across two consecutive reads (every node done climbing) with at least two nodes serving, then
-// return — or return the latest snapshot once the timeout elapses. Best-effort: a node that
-// never serves simply isn't counted; the wait only gives a quickly-restarting node the chance
-// to reappear.
-func (c *config) waitForSiteSettled(intents []MachineIntent, targetSite int, timeout time.Duration) []healthResult {
-	deadline := time.Now().Add(timeout)
-	haveMax := false
-	var prevMax uint64
-	var res []healthResult
+// waitForSiteReady blocks a graceful restore until every staking slot of the
+// target site is SERVING within syncToleranceBlocks of the fleet tip: only
+// then may the weight seesaw hand it the consensus (handing active weight to
+// a still-bootstrapping site would stall the chain until it caught up).
+func (c *config) waitForSiteReady(intents []MachineIntent, targetSite int) {
+	fmt.Printf("waiting for site %s staking nodes to serve within %d blocks of tip...\n",
+		siteName(targetSite), syncToleranceBlocks)
+	deadline := time.Now().Add(siteReadyTimeout)
 	for {
-		res = c.checkHealth(intents)
-		var maxH uint64
-		serving := 0
-		for i := 0; i < c.topo.Size(); i++ {
-			if c.topo.Site(i) != targetSite || i >= len(intents) || intents[i].Cordoned {
-				continue
-			}
-			if i >= len(res) || res[i].state != healthServing {
-				continue
-			}
-			serving++
-			if res[i].block > maxH {
-				maxH = res[i].block
+		res := c.checkHealth(intents)
+		var tip uint64
+		for i := range res {
+			if res[i].state == healthServing && res[i].block > tip {
+				tip = res[i].block
 			}
 		}
-		// Settled: enough of the site is serving and the highest retained tip stopped moving.
-		if serving >= 2 && maxH > 0 && haveMax && maxH == prevMax {
-			fmt.Printf("failover: surviving site settled — %d node(s) serving, tip %d.\n", serving, maxH)
-			return res
+		ready, lagging := true, ""
+		for i := 0; i < c.topo.Size(); i++ {
+			if c.topo.Site(i) != targetSite || !c.topo.IsStakingSlot(i) || intents[i].Cordoned {
+				continue
+			}
+			if res[i].state != healthServing || tip-res[i].block > syncToleranceBlocks {
+				ready = false
+				lagging = c.topo.MachineName(i)
+				break
+			}
+		}
+		if ready {
+			fmt.Printf("  site %s ready (tip %d).\n", siteName(targetSite), tip)
+			return
 		}
 		if time.Now().After(deadline) {
-			fmt.Printf("failover: settle window (%s) elapsed — proceeding with %d serving node(s), tip %d.\n", timeout, serving, maxH)
-			return res
+			fatalf("site %s did not become ready within %s (%s lagging) — investigate, then re-run restore",
+				siteName(targetSite), siteReadyTimeout, lagging)
 		}
-		prevMax, haveMax = maxH, true
-		time.Sleep(restorePollInterval)
+		fmt.Printf("  waiting: %s not ready (tip %d)\n", lagging, tip)
+		time.Sleep(sitePollInterval)
 	}
 }

@@ -1,7 +1,7 @@
 #!/bin/bash
 # CREATE the chain on Fuji: subnet + chain + ConvertSubnetToL1Tx, issued against
 # the PUBLIC Fuji API (our own RPC tier is follow-only, so its platform.* API is
-# gated forever). This SPENDS AVAX (fees + 1 AVAX continuous-fee balance per
+# gated forever). This SPENDS AVAX (fees + 0.1 AVAX continuous-fee balance per
 # validator) and registers the generated NodeIDs on a public chain, so run it
 # ONCE per chain. Re-deploys of the fleet go through ./03_deploy_chain.sh, which
 # never re-creates (and never re-spends).
@@ -14,22 +14,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_common.sh"
 
 # ------------------------------------------------------------------------------
-# Check if L1 already exists
+# Resume semantics: create-l1 persists every step's result to network.env as it
+# completes and SKIPS anything already present, so re-running here never creates
+# a second chain or double-spends — it resumes/verifies the recorded one
+# (including finishing a failed initializeValidatorSet). To force a genuinely
+# NEW L1, delete network.env first (the old chain becomes unreachable).
 # ------------------------------------------------------------------------------
 if [ -f "$NETWORK_ENV" ]; then
     source "$NETWORK_ENV"
-    echo "WARNING: network.env already exists"
-    echo "  Subnet ID: $SUBNET_ID"
-    echo "  Chain ID:  $CHAIN_ID"
+    echo "network.env exists — resuming/verifying the recorded L1 (no new creation):"
+    echo "  Subnet ID: ${SUBNET_ID:-<pending>}"
+    echo "  Chain ID:  ${CHAIN_ID:-<pending>}"
+    echo "  Manager:   ${MANAGER_ADDRESS:-<pending>}"
     echo ""
-    echo "Creating a NEW chain costs AVAX and abandons the one above (the fleet"
-    echo "can keep using it via ./03_deploy_chain.sh, no new creation needed)."
-    read -p "Create a NEW L1 anyway? This will overwrite network.env. [y/N] " -n 1 -r
-    echo ""
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "Aborted. To (re)deploy the fleet against the existing L1, run: ./03_deploy_chain.sh"
-        exit 0
-    fi
 fi
 
 # Pre-flight: every generated staking identity the configured topology references
@@ -52,6 +49,7 @@ echo "=== L1 Created ==="
 echo ""
 echo "Subnet ID: $SUBNET_ID"
 echo "Chain ID:  $CHAIN_ID"
+echo "Manager:   $MANAGER_ADDRESS (ValidatorManager on the Fuji C-chain)"
 echo ""
 echo "Saved to: $NETWORK_ENV"
 echo ""

@@ -9,9 +9,10 @@ p-chain-follow-only), which the Makefile pins.
 User corrections applied during implementation:
 - Secrets generation is a NUMBERED SCRIPT (`./00_gen_secrets.sh`), not a make
   target: the Makefile is not shipped in the release tarball.
-- Faucet funding is MANUAL and C-CHAIN ONLY (no P-chain faucet exists);
-  `./01_fund_wallet.sh` prints the C-chain address, polls until the balance
-  arrives, then automatically moves everything C -> P.
+- Faucet funding is MANUAL; `./01_fund_wallet.sh` prints BOTH addresses
+  (P-chain: validator balances + fees; C-chain: ValidatorManager gas) and polls
+  until each chain holds its budget. No cross-chain moves: fund each chain
+  directly at the faucet.
 - create-chain and deploy-chain are SEPARATE scripts: `./02_create_chain.sh`
   spends AVAX and runs ONCE; `./03_deploy_chain.sh` is the repeatable
   from-scratch raise that intentionally wipes the L1 data and never re-spends.
@@ -345,18 +346,27 @@ to `0.0.0.0/0` on the control box (`main.tf:100-106`) and blanket egress
 
 1. **secrets**: `./00_gen_secrets.sh` generates staking identities + Fuji wallet,
    writes the manifest (`staking/node-ids.env`). No network access, no spend.
-2. **fund**: `./01_fund_wallet.sh` prints the wallet's C-chain address (the Fuji
-   faucet is C-chain only), polls until the manual faucet transfer arrives, then
-   automatically moves everything C -> P. Budget: fees + N x 0.1 AVAX validator
-   balances (per-run deposit, ~5-6 days; top up with
-   IncreaseL1ValidatorBalanceTx for longer runs). Re-runnable.
+2. **fund**: `./01_fund_wallet.sh` prints the wallet's P-chain AND C-chain
+   addresses with the required budgets and polls until both are funded at the
+   faucet (P: fees + one 0.1 AVAX continuous-fee deposit per REGISTERED
+   validator, i.e. every validator+spare slot of both sites, ~5-6 days; top up
+   with IncreaseL1ValidatorBalanceTx for longer runs. C: ValidatorManager
+   deploy + weight-op gas). Re-runnable.
 3. **infra**: terraform apply of the Fuji-shaped SGs + fleet (item 5). The SG
    lockdown is still a TODO in `terraform-aws/main.tf` (e2e-pending; the
    module needs per-role SGs it cannot express blind, see the TODO block there).
 4. **create-l1 on Fuji**: `./02_create_chain.sh` from the control box against
-   `api.avax-test.network` (generated wallet; pre-flights keys AND P-chain
-   balance before issuing anything). Writes `network.env` (SUBNET_ID/CHAIN_ID)
-   exactly as before. ONCE per chain; this is the only step that spends.
+   `api.avax-test.network` (generated wallet; pre-flights keys AND both
+   balances before issuing anything). Creates subnet + chain, deploys and
+   initializes the ValidatorManager on the Fuji C-chain (churnPeriodSeconds=0,
+   maxChurn=20%), converts with the (C-chain blockchainID, contract address)
+   manager pair and ALL staking slots registered (site-A validators at weight
+   1e9, everything else at 1, owners set to the wallet), then replays the
+   conversion into the contract (initializeValidatorSet via the public Glacier
+   signature aggregator). Writes `network.env`
+   (SUBNET_ID/CHAIN_ID/MANAGER_ADDRESS) incrementally and RESUMES from it, so
+   a failed run is finished by re-running. ONCE per chain; the only step that
+   spends.
    Note the chain now exists BEFORE the fleet first boots, so every node starts
    with `--track-subnets` from day one (the old "pre-sync then restart" step
    disappeared with the create/deploy split).
@@ -367,15 +377,21 @@ to `0.0.0.0/0` on the control box (`main.tf:100-106`) and blanket egress
    Repeatable at will: wipes the L1 (by design), never touches Fuji.
 6. **bombard**: `./05_benchmark.sh` unchanged (item 9).
 
-## Deferred
+## Failover via the ValidatorManager (implemented 2026-07-06)
 
-- **Failover via the Fuji P-chain (validator-set changes on-chain)**: the
-  intended future is to move validators by issuing P-chain validator changes
-  instead of swapping staking keys, so a failover needs no node restart and no
-  consensus-preference reset (in theory: no fork window at all). Deferred
-  because it requires C-chain contract deploys (validator manager) plus
-  aggregated signature collection. Until then the existing key-swapping
-  failover mechanism stays EXACTLY as is (kept untouched by this migration).
+Key-swap failover is GONE (it produced forks: the same registered identity
+moved between boxes). Every pool slot wears one permanent staking identity
+(key = 6 + slot, internal/topo); all validator+spare slots of both sites are
+registered as L1 validators at conversion and never re-registered. Failover is
+a weight seesaw through the stock icm-contracts v2 ValidatorManager on the
+Fuji C-chain (churnPeriodSeconds=0 turns the churn limit into a per-op 20%
+size cap; raises land before lowers so liveness holds mid-seesaw). Signatures
+come from the public Glacier aggregator (no self-hosted infra); the final
+weight per validator costs ONE SetL1ValidatorWeightTx (P-chain nonce skipping
+collapses ratchet intermediates). reconcile runs the weight convergence loop
+after its process passes: desired state in intentions.json, current state read
+fresh from contract + P-chain each step, so every action is idempotent and a
+crashed run resumes by re-running.
 
 ## Implementation status (2026-07-04)
 

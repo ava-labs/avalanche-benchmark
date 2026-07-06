@@ -101,19 +101,6 @@ func (c *config) instancesOnHost(host string) []int {
 	return idx
 }
 
-// slotRoleName labels a pool slot by its role within its site
-// ([v1..vN, spare..., rpc...]). Human-facing only — endpoints + co-location warnings.
-func (t Topology) slotRoleName(i int) string {
-	switch s := t.slotInSite(i); {
-	case s < t.NVal:
-		return "v" + strconv.Itoa(s+1)
-	case s < t.NVal+t.NSpare:
-		return "spare"
-	default:
-		return "rpc"
-	}
-}
-
 // warnColocation prints a CONCISE heads-up (to stderr) when the topology trades away
 // fault isolation: co-located nodes or validators sharing a box. Kept to a couple of
 // lines and stderr-only so it never buries command output; callers skip it entirely
@@ -129,7 +116,7 @@ func (c *config) warnColocation() {
 		hosts++
 		vals := 0
 		for _, i := range c.instancesOnHost(in.host) {
-			if c.topo.isValidatorSlot(i) {
+			if c.topo.IsValidatorSlot(i) {
 				vals++
 			}
 		}

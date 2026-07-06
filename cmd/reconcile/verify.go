@@ -60,20 +60,23 @@ func verifyAgreement(cfg *config) bool {
 		ok    bool
 		isVal bool
 	}
+	total := totalWeight(intents)
 	var nodes []ninfo
 	var maxTip uint64
+	want := 0
 	for i, in := range intents {
+		if isActiveWeight(in.Weight, total) {
+			want++
+		}
 		if in.Cordoned {
 			continue
 		}
 		h, _, ok := cfg.blockAt(i, "finalized")
-		nodes = append(nodes, ninfo{topo.MachineName(i), i, h, ok, topo.isValidatorKey(in.Key)})
+		nodes = append(nodes, ninfo{topo.MachineName(i), i, h, ok, isActiveWeight(in.Weight, total)})
 		if ok && h > maxTip {
 			maxTip = h
 		}
 	}
-
-	want := topo.NVal
 	serving := 0
 	for _, n := range nodes {
 		if n.isVal && n.ok {

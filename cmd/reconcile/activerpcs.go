@@ -24,20 +24,19 @@ func activeRPCsFilePath() string {
 	return "/tmp/bombard.active-rpcs"
 }
 
-// activeSite returns the site that currently holds the validator MAJORITY — the one
-// bombard should target. During a graceful restore the majority flips after the 2nd
-// validator lands, so ingress follows the migration. Defaults to siteA when neither
-// holds a majority (e.g. a stalled chain), so the published set is never empty.
+// activeSite returns the site that holds the majority of the desired
+// consensus weight (uncordoned slots) — the one bombard should target.
+// Defaults to siteA on a tie, so the published set is never empty.
 func activeSite(intents []MachineIntent, topo Topology) int {
-	var a, b int
+	var a, b uint64
 	for i, in := range intents {
-		if in.Cordoned || !topo.isValidatorKey(in.Key) {
+		if in.Cordoned {
 			continue
 		}
 		if topo.Site(i) == siteB {
-			b++
+			b += in.Weight
 		} else {
-			a++
+			a += in.Weight
 		}
 	}
 	if b > a {

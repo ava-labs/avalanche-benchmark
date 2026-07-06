@@ -181,8 +181,12 @@ func (c *config) checkHealth(intents []MachineIntent) []healthResult {
 // reportHealth prints the actual per-node health and an honest summary, with
 // hints for the two non-obvious failure modes (lost quorum, and the 75% rejoin
 // latch that keeps a single brought-up validator from recovering a stalled chain).
+// "Validator" here means a slot whose DESIRED weight is active (>=1% of total);
+// standbys are registered on-chain too, but at weight 1 they are consensus-
+// irrelevant and reported as non-validators.
 func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) {
-	servingValidators, intendedValidators := 0, 0
+	total := totalWeight(intents)
+	servingValidators, intendedValidators, activeSlots := 0, 0, 0
 	bootstrappingValidator, downUncordoned := false, false
 	nodeFieldWidth := 0
 
@@ -196,7 +200,11 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 	for i, in := range intents {
 		ip := cfg.nodeIPs[i]
 		name := cfg.topo.MachineName(i)
-		label := cfg.topo.roleLabel(in.Key)
+		label := roleLabel(cfg.topo, i, in, total)
+		active := isActiveWeight(in.Weight, total)
+		if active {
+			activeSlots++
+		}
 		nodeField := fmt.Sprintf("%s (%s)", name, ip)
 		if in.Cordoned {
 			fmt.Printf("  %-*s: %-13s %-9s (down by intent)\n", nodeFieldWidth, nodeField, "cordoned", label)
@@ -211,7 +219,7 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 		default:
 			fmt.Printf("  %-*s: %-13s %-9s (uncordoned but not responding!)\n", nodeFieldWidth, nodeField, "DOWN", label)
 		}
-		if cfg.topo.isValidatorKey(in.Key) {
+		if active {
 			intendedValidators++
 			switch r.state {
 			case healthServing:
@@ -226,16 +234,15 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 		}
 	}
 
-	nVal := cfg.topo.NVal
 	fmt.Printf("validators serving: %d/%d (intended up: %d/%d)\n",
-		servingValidators, nVal, intendedValidators, nVal)
+		servingValidators, activeSlots, intendedValidators, activeSlots)
 
-	if servingValidators < quorumNeeded(nVal) {
-		fmt.Printf("WARNING: fewer than %d validators serving — chain lacks quorum and is HALTED until restored.\n", quorumNeeded(nVal))
+	if servingValidators < quorumNeeded(activeSlots) {
+		fmt.Printf("WARNING: fewer than %d validators serving — chain lacks quorum and is HALTED until restored.\n", quorumNeeded(activeSlots))
 	}
-	if bootstrappingValidator && intendedValidators < neededOnlineToRejoin(nVal) {
+	if bootstrappingValidator && intendedValidators < neededOnlineToRejoin(activeSlots) {
 		fmt.Printf("HINT: a rejoining validator needs >=%d of %d validators connected to clear the bootstrap\n",
-			neededOnlineToRejoin(nVal), nVal)
+			neededOnlineToRejoin(activeSlots), activeSlots)
 		fmt.Println("      startup latch. Bring up the remaining validator machine(s) so they recover together.")
 	}
 	if downUncordoned {
@@ -243,25 +250,16 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 	}
 }
 
-// roleLabel renders the operator-facing role for a committed key: a live validator
-// identity ("v1"..), or a non-validating home identity classified by the slot it
-// belongs to — pinned RPC, hot spare, a site-B syncing tracker, or a displaced
-// site-A validator-slot parked on its home identity.
-func (t Topology) roleLabel(key int) string {
-	if t.isValidatorKey(key) {
-		return fmt.Sprintf("v%d", key-l1KeyBase+1)
-	}
-	slot := key - t.homeBase()
+// roleLabel renders the operator-facing role of a slot under the current
+// intents: an acting validator ("val", desired weight >=1% of total), a warm
+// registered standby ("standby", weight 1), or an unregistered pinned RPC.
+func roleLabel(t Topology, i int, in MachineIntent, total uint64) string {
 	switch {
-	case slot < 0 || slot >= t.Size():
-		return "nv"
-	case t.isRPCSlot(slot):
+	case !t.IsStakingSlot(i):
 		return "rpc(nv)"
-	case t.isSpareSlot(slot):
-		return "spare(nv)"
-	case t.Site(slot) == siteB:
-		return "sync(nv)" // site-B zero-weight syncing tracker
+	case isActiveWeight(in.Weight, total):
+		return "val"
 	default:
-		return "idle(nv)" // displaced site-A validator-slot on its home identity
+		return "standby"
 	}
 }

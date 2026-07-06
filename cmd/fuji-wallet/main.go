@@ -1,13 +1,13 @@
-// Command fuji-wallet manages the per-deploy Fuji fund/fee wallet (the key that
-// pays for subnet/chain creation and validator continuous fees on Fuji's public
-// P-chain). The key is GENERATED per deploy and gitignored: never committed
+// Command fuji-wallet manages the per-deploy Fuji fund/fee wallet (the key
+// that pays for subnet/chain creation and validator continuous fees on Fuji's
+// public P-chain, and for the ValidatorManager contract gas on the Fuji
+// C-chain). The key is GENERATED per deploy and gitignored: never committed
 // (see FUJI_PLAN.md "KEY POLICY").
 //
 //	fuji-wallet gen  -key staking/fuji-wallet.key   generate the key, print addresses
-//	fuji-wallet fund -key staking/fuji-wallet.key   faucet flow: print the C-chain
-//	    address, poll until the (manual, C-chain-only) faucet transfer arrives,
-//	    then automatically move everything C -> P (export + import), so the
-//	    P-chain wallet ends up funded with zero extra user steps.
+//	fuji-wallet fund -key staking/fuji-wallet.key   print the P- and C-chain
+//	    addresses with the required amounts and poll until BOTH are funded at
+//	    the faucet. No cross-chain moves: fund each chain directly.
 package main
 
 import (
@@ -27,22 +27,23 @@ import (
 	"github.com/ava-labs/avalanchego/utils/constants"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/fujikey"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/topo"
 	"github.com/ava-labs/avalanchego/utils/crypto/secp256k1"
 	"github.com/ava-labs/avalanchego/utils/formatting/address"
 	"github.com/ava-labs/avalanchego/utils/units"
 	"github.com/ava-labs/avalanchego/vms/platformvm"
-	"github.com/ava-labs/avalanchego/vms/secp256k1fx"
-	"github.com/ava-labs/avalanchego/wallet/subnet/primary"
 )
 
 const (
 	defaultAPI = "https://api.avax-test.network"
-	// exportFeeMargin is left on the C-chain to cover the atomic export fee
-	// (dynamic base fee; observed well under 0.005 AVAX).
-	exportFeeMargin = uint64(10 * units.MilliAvax) // nAVAX
-	// minFundNavax is the smallest C-chain balance worth moving; below it the
-	// poll keeps waiting (a faucet drip is 2 AVAX, so this only filters dust).
-	minFundNavax = uint64(100 * units.MilliAvax)
+	// Keep in sync with cmd/create-l1/main.go. This is the continuous-fee
+	// balance per registered validator paid by ConvertSubnetToL1Tx.
+	validatorBalance = uint64(100 * units.MilliAvax)
+	feeBudget        = uint64(100 * units.MilliAvax)
+	// requiredCNavax covers the ValidatorManager deploy + initialize +
+	// initializeValidatorSet + a generous margin for later weight-seesaw ops.
+	// Keep in sync with create-l1's cChainGasBudgetAvax.
+	requiredCNavax = uint64(150 * units.MilliAvax)
 )
 
 func fatalf(format string, args ...any) {
@@ -93,98 +94,67 @@ func gen(keyPath string) {
 }
 
 func printAddresses(key *secp256k1.PrivateKey) {
+	fmt.Printf("  P-chain address: %s\n", pAddress(key))
+	fmt.Printf("  C-chain address: %s\n", key.EthAddress().Hex())
+}
+
+func pAddress(key *secp256k1.PrivateKey) string {
 	pAddr, err := address.Format("P", constants.FujiHRP, key.Address().Bytes())
 	if err != nil {
 		fatalf("format P-chain address: %v", err)
 	}
-	fmt.Printf("  P-chain address: %s\n", pAddr)
-	fmt.Printf("  C-chain address: %s\n", key.EthAddress().Hex())
+	return pAddr
 }
 
+// fund prints both funding targets and polls until each chain holds its
+// budget. Idempotent: already-satisfied chains are skipped, so re-runs (and
+// topping up just one side) behave sensibly.
 func fund(keyPath, api string) {
 	key, err := fujikey.Load(keyPath)
 	if err != nil {
 		fatalf("load wallet key (run ./00_gen_secrets.sh first): %v", err)
 	}
 	ctx := context.Background()
-	cAddr := key.EthAddress().Hex()
 
-	// Report current P-chain balance so re-runs / already-funded wallets are obvious.
+	requiredP := requiredPBalance()
 	pBal := pBalance(ctx, api, key.Address())
-	fmt.Printf("Current P-chain balance: %s AVAX\n\n", avaxString(pBal))
+	cBal := weiToNavax(cBalanceWei(api, key.EthAddress().Hex()))
+	fmt.Printf("Current balances: P %s AVAX (need %s), C %s AVAX (need %s)\n\n",
+		avaxString(pBal), avaxString(requiredP), avaxString(cBal), avaxString(requiredCNavax))
+	if pBal >= requiredP && cBal >= requiredCNavax {
+		fmt.Println("Both chains already funded. Nothing to do.")
+		printAddresses(key)
+		return
+	}
 
 	fmt.Println("================================================================")
-	fmt.Println("  FUND THIS ADDRESS AT THE FUJI FAUCET (C-chain: there is no")
-	fmt.Println("  P-chain faucet; this tool moves the funds C -> P for you):")
+	fmt.Println("  FUND AT THE FUJI FAUCET (https://core.app/tools/testnet-faucet/,")
+	fmt.Println("  2 AVAX/request — pick the chain per request, no cross-chain moves):")
 	fmt.Println()
-	fmt.Printf("      %s\n", cAddr)
-	fmt.Println()
-	fmt.Println("  Faucet: https://core.app/tools/testnet-faucet/  (2 AVAX/request)")
-	fmt.Println("  Budget: ~0.1 AVAX fees + 0.1 AVAX per validator (continuous")
-	fmt.Println("          fee, ~5-6 days/run). If the P-chain balance above already")
-	fmt.Println("          covers that, Ctrl-C now: nothing more to do.")
+	if pBal < requiredP {
+		fmt.Printf("    P-Chain  %s\n", pAddress(key))
+		fmt.Printf("             need %s AVAX (0.1 per registered validator + fees)\n", avaxString(requiredP))
+	}
+	if cBal < requiredCNavax {
+		fmt.Printf("    C-Chain  %s\n", key.EthAddress().Hex())
+		fmt.Printf("             need %s AVAX (ValidatorManager deploy + weight ops gas)\n", avaxString(requiredCNavax))
+	}
 	fmt.Println("================================================================")
 	fmt.Println()
 
-	fmt.Println("Polling C-chain balance (every 5s)...")
-	var cBalNavax uint64
+	fmt.Println("Polling balances (every 5s)...")
 	for {
-		wei := cBalanceWei(api, cAddr)
-		cBalNavax = weiToNavax(wei)
-		if cBalNavax >= minFundNavax {
+		pBal = pBalance(ctx, api, key.Address())
+		cBal = weiToNavax(cBalanceWei(api, key.EthAddress().Hex()))
+		if pBal >= requiredP && cBal >= requiredCNavax {
 			break
 		}
-		fmt.Printf("  %s  C balance: %s AVAX: waiting for faucet\n", time.Now().Format("15:04:05"), avaxString(cBalNavax))
+		fmt.Printf("  %s  P: %s/%s  C: %s/%s\n", time.Now().Format("15:04:05"),
+			avaxString(pBal), avaxString(requiredP), avaxString(cBal), avaxString(requiredCNavax))
 		time.Sleep(5 * time.Second)
 	}
-	fmt.Printf("  C balance arrived: %s AVAX\n\n", avaxString(cBalNavax))
 
-	exportAmt := cBalNavax - exportFeeMargin
-	fmt.Printf("Moving %s AVAX C -> P (leaving %s AVAX for the export fee)...\n",
-		avaxString(exportAmt), avaxString(exportFeeMargin))
-
-	// The wallet snapshots UTXO/account state at creation, so build it only now,
-	// after the faucet funds are on-chain.
-	kc := secp256k1fx.NewKeychain(key)
-	wallet, err := primary.MakeWallet(ctx, api, kc, kc, primary.WalletConfig{})
-	if err != nil {
-		fatalf("create wallet: %v", err)
-	}
-	owner := secp256k1fx.OutputOwners{
-		Threshold: 1,
-		Addrs:     []ids.ShortID{key.Address()},
-	}
-
-	fmt.Println("[1/2] C-chain ExportTx -> P...")
-	exportTx, err := wallet.C().IssueExportTx(constants.PlatformChainID, []*secp256k1fx.TransferOutput{{
-		Amt:          exportAmt,
-		OutputOwners: owner,
-	}})
-	if err != nil {
-		fatalf("export C->P: %v", err)
-	}
-	fmt.Printf("  accepted: %s\n", exportTx.ID())
-
-	fmt.Println("[2/2] P-chain ImportTx...")
-	cChainID := wallet.C().Builder().Context().BlockchainID
-	// The exported atomic UTXO can take a moment to appear on the API node's
-	// shared memory; retry briefly instead of failing the whole run.
-	var importErr error
-	for attempt := 1; attempt <= 5; attempt++ {
-		var tx interface{ ID() ids.ID }
-		tx, importErr = wallet.P().IssueImportTx(cChainID, &owner)
-		if importErr == nil {
-			fmt.Printf("  accepted: %s\n", tx.ID())
-			break
-		}
-		fmt.Printf("  attempt %d/5 failed (%v), retrying in 5s...\n", attempt, importErr)
-		time.Sleep(5 * time.Second)
-	}
-	if importErr != nil {
-		fatalf("import to P: %v", importErr)
-	}
-
-	fmt.Printf("\nDone. P-chain balance: %s AVAX\n", avaxString(pBalance(ctx, api, key.Address())))
+	fmt.Printf("\nDone. P: %s AVAX, C: %s AVAX\n", avaxString(pBal), avaxString(cBal))
 	printAddresses(key)
 }
 
@@ -194,6 +164,17 @@ func pBalance(ctx context.Context, api string, addr ids.ShortID) uint64 {
 		fatalf("platform.getBalance against %s: %v", api, err)
 	}
 	return uint64(resp.Balance)
+}
+
+// requiredPBalance budgets a continuous-fee deposit for EVERY registered
+// validator: all staking slots of both sites (the conversion registers them
+// all; failover only moves weight).
+func requiredPBalance() uint64 {
+	t, _, err := topo.FromEnv(os.Getenv)
+	if err != nil {
+		fatalf("topology from env (source .env via the scripts): %v", err)
+	}
+	return uint64(len(t.StakingSlots()))*validatorBalance + feeBudget
 }
 
 // cBalanceWei fetches the EVM account balance with a raw eth_getBalance call

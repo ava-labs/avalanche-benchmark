@@ -9,8 +9,8 @@ import (
 )
 
 // fujiTestConfig builds a two-site 3v/1s/2r config with a seeded intentions
-// file, mirroring the recommended topology (homes m1..m6=9..14, b1..b6=15..20;
-// pinned RPC homes 13,14 site A and 19,20 site B).
+// file. Permanent key scheme: KeyOf(i) = 6+i, so m1..m6 wear 6..11 (RPCs
+// 10,11) and b1..b6 wear 12..17 (RPCs 16,17).
 func fujiTestConfig(t *testing.T) *config {
 	t.Helper()
 	topo := Topology{TwoSite: true, NVal: 3, NSpare: 1, NRPC: 2}
@@ -42,11 +42,11 @@ func fujiTestConfig(t *testing.T) *config {
 
 func TestLoadNodeIDs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "node-ids.env")
-	if err := os.WriteFile(path, []byte("L1_6_NODE_ID=NodeID-abc\nL1_20_NODE_ID=NodeID-xyz\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("L1_6_NODE_ID=NodeID-abc\nL1_17_NODE_ID=NodeID-xyz\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	got := loadNodeIDs(path)
-	if got[6] != "NodeID-abc" || got[20] != "NodeID-xyz" || len(got) != 2 {
+	if got[6] != "NodeID-abc" || got[17] != "NodeID-xyz" || len(got) != 2 {
 		t.Errorf("loadNodeIDs = %v", got)
 	}
 }
@@ -62,22 +62,22 @@ func TestPchainBeacons(t *testing.T) {
 		}
 	}
 
-	// A site-A validator follows site A's RPC slots ONLY (their pinned home keys
-	// 13,14), never the public peer, never site B's RPCs.
+	// A site-A validator follows site A's RPC slots ONLY (their permanent keys
+	// 10,11), never the public peer, never site B's RPCs.
 	ips, ids := c.pchainBeacons(0)
 	if ips != "10.0.0.5:9653,10.0.0.6:9653" {
 		t.Errorf("validator beacon ips = %q", ips)
 	}
-	if ids != c.nodeIDByKey[13]+","+c.nodeIDByKey[14] {
+	if ids != c.nodeIDByKey[10]+","+c.nodeIDByKey[11] {
 		t.Errorf("validator beacon ids = %q", ids)
 	}
 
-	// A site-B tracker follows site B's RPC slots (home keys 19,20).
+	// A site-B node follows site B's RPC slots (permanent keys 16,17).
 	ips, ids = c.pchainBeacons(6)
 	if ips != "10.1.0.5:9653,10.1.0.6:9653" {
 		t.Errorf("site-B beacon ips = %q", ips)
 	}
-	if ids != c.nodeIDByKey[19]+","+c.nodeIDByKey[20] {
+	if ids != c.nodeIDByKey[16]+","+c.nodeIDByKey[17] {
 		t.Errorf("site-B beacon ids = %q", ids)
 	}
 }
@@ -85,8 +85,7 @@ func TestPchainBeacons(t *testing.T) {
 func TestSiblingSeeds(t *testing.T) {
 	c := fujiTestConfig(t)
 
-	// m1 (validator, key 6) seeds every OTHER slot under its intended identity:
-	// m2/m3 wear validator keys 7,8; every other slot wears its home key.
+	// m1 (key 6) seeds every OTHER slot under its permanent identity.
 	ips, ids := c.siblingSeeds(0)
 	ipList := strings.Split(ips, ",")
 	idList := strings.Split(ids, ",")
@@ -94,11 +93,11 @@ func TestSiblingSeeds(t *testing.T) {
 		t.Fatalf("want 11 sibling seeds, got %d/%d", len(ipList), len(idList))
 	}
 	if ipList[0] != "10.0.0.2:9653" || idList[0] != c.nodeIDByKey[7] {
-		t.Errorf("first seed = %s/%s, want m2 with validator key 7", ipList[0], idList[0])
+		t.Errorf("first seed = %s/%s, want m2 with key 7", ipList[0], idList[0])
 	}
-	// Spare m4 wears home key 12 in the seeded mapping.
-	if idList[2] != c.nodeIDByKey[12] {
-		t.Errorf("m4 seed id = %s, want home key 12's NodeID", idList[2])
+	// Spare m4 wears its permanent key 9.
+	if idList[2] != c.nodeIDByKey[9] {
+		t.Errorf("m4 seed id = %s, want key 9's NodeID", idList[2])
 	}
 	for _, id := range idList {
 		if id == c.nodeIDByKey[6] {

@@ -1,9 +1,9 @@
 #!/bin/bash
-# Graceful rolling restore (two-site mode): migrate the validator set onto the
-# given site one validator at a time, keeping the chain at >=2/3 throughout — no
-# chain downtime, no fork. Brings the target site up as trackers, waits for it to
-# sync to the live tip, then rolls each validator key over with a health gate
-# between steps. Typical use: restore the original site after ./site-failover.sh.
+# Graceful restore (two-site mode): move the active consensus weight onto the
+# given site via the ValidatorManager weight seesaw. No key swaps, no chain
+# downtime, no fork. Brings both sites up, waits until the target site serves
+# at tip, then raises its validators' weights before lowering the other side's.
+# Typical use: restore the original site after ./site-failover.sh.
 # Usage: ./restore.sh <a|b>
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
