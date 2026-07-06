@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"regexp"
 	"strings"
 	"time"
 
@@ -33,8 +34,19 @@ import (
 //go:embed ValidatorManager.abi.json
 var abiJSON string
 
+// binHex is the UNLINKED ValidatorManager deploy bytecode: it contains a
+// solc library placeholder (__$...$__) for the ValidatorMessages library,
+// which must be deployed first and its address substituted in (exactly what
+// the generated abigen Deploy does).
+//
 //go:embed ValidatorManager.bin.hex
 var binHex string
+
+//go:embed ValidatorMessages.bin.hex
+var libBinHex string
+
+// libPlaceholder matches solc library placeholders in unlinked bytecode.
+var libPlaceholder = regexp.MustCompile(`__\$[0-9a-f]+\$__`)
 
 const (
 	// ActiveWeight/StandbyWeight are the two consensus weights a registered
@@ -108,13 +120,25 @@ func (c *Client) Balance(ctx context.Context) (*big.Int, error) {
 	return c.eth.BalanceAt(ctx, c.sender, nil)
 }
 
-// Deploy deploys the ValidatorManager implementation directly (no proxy;
+// Deploy deploys the ValidatorMessages library, links its address into the
+// ValidatorManager bytecode, and deploys the manager directly (no proxy;
 // constructor arg 0 = ICMInitializable.Allowed so initialize is callable on
-// the implementation itself). Returns the contract address.
+// the implementation itself). Returns the manager address.
 func (c *Client) Deploy(ctx context.Context) (common.Address, error) {
-	bytecode, err := hex.DecodeString(strings.TrimPrefix(strings.TrimSpace(binHex), "0x"))
+	libBytecode, err := hex.DecodeString(strings.TrimPrefix(strings.TrimSpace(libBinHex), "0x"))
 	if err != nil {
-		return common.Address{}, fmt.Errorf("decode embedded bytecode: %w", err)
+		return common.Address{}, fmt.Errorf("decode embedded library bytecode: %w", err)
+	}
+	libReceipt, err := c.transact(ctx, nil, libBytecode, nil, 0)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("deploy ValidatorMessages library: %w", err)
+	}
+
+	linked := libPlaceholder.ReplaceAllString(strings.TrimSpace(binHex),
+		strings.ToLower(libReceipt.ContractAddress.Hex()[2:]))
+	bytecode, err := hex.DecodeString(strings.TrimPrefix(linked, "0x"))
+	if err != nil {
+		return common.Address{}, fmt.Errorf("decode linked bytecode: %w", err)
 	}
 	ctorArgs, err := c.abi.Pack("", uint8(0)) // ICMInitializable.Allowed
 	if err != nil {
