@@ -580,7 +580,6 @@ func issuer(ctx context.Context, sendCh chan<- uint64, baseRPS, overshoot float6
 	}
 }
 
-
 // monitorNonce rescues bombard from a frontier regression. A hard failover (or any
 // reorg) can leave the chain's accepted nonce BELOW our lowest in-flight nonce: the
 // chain then expects a nonce we already "mined" on the old frontier and will never
@@ -719,6 +718,11 @@ func benignSendErr(err error) bool {
 		strings.Contains(s, "nonce too low")
 }
 
+// p50WindowSeconds is how many one-second ticks of landing latencies the
+// reported percentiles cover. A 5s rolling window smooths the per-tick jitter
+// while still tracking failover/latency shifts within a few seconds.
+const p50WindowSeconds = 5
+
 func reportLoop(ctx context.Context, tps, cap int, useTUI bool) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -731,6 +735,7 @@ func reportLoop(ctx context.Context, tps, cap int, useTUI bool) {
 
 	prevMined := track.mined.Load()
 	prevAt := time.Now()
+	var latWindow [][]time.Duration // last N ticks of landing latencies
 	for {
 		select {
 		case <-ctx.Done():
@@ -739,9 +744,18 @@ func reportLoop(ctx context.Context, tps, cap int, useTUI bool) {
 		}
 
 		track.mu.Lock()
-		lats := track.latSince
+		tickLats := track.latSince
 		track.latSince = nil
 		track.mu.Unlock()
+
+		latWindow = append(latWindow, tickLats)
+		if len(latWindow) > p50WindowSeconds {
+			latWindow = latWindow[len(latWindow)-p50WindowSeconds:]
+		}
+		var lats []time.Duration
+		for _, s := range latWindow {
+			lats = append(lats, s...)
+		}
 
 		mined := track.mined.Load()
 		now := time.Now()

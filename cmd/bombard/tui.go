@@ -101,7 +101,7 @@ func (ui *terminalStatsUI) render(s statsSnapshot) {
 	topH := chartArea / 2
 	botH := chartArea - topH
 	tpsChart := renderLineChart(ui.history, chartWidth, topH, "mined transactions per second")
-	p50Chart := renderLineChart(ui.p50History, chartWidth, botH, "p50 mine latency (ms)")
+	p50Chart := renderLineChart(ui.p50History, chartWidth, botH, "5s p50 mine latency (ms)")
 
 	elapsed := s.at.Sub(ui.startedAt).Round(time.Second)
 	if elapsed < 0 {
@@ -125,10 +125,10 @@ func (ui *terminalStatsUI) render(s statsSnapshot) {
 	fmt.Fprintf(&b, "issued=%d  mined=%d  inflight=%d/%d  resubmits=%d  minedTps=%.0f/%d\n",
 		s.issued, s.mined, s.inflight, s.cap, s.resubmits, s.minedTPS, s.targetRPS)
 	if s.latencySamples > 0 {
-		fmt.Fprintf(&b, "p50=%s  p95=%s  samples=%d",
+		fmt.Fprintf(&b, "5s p50=%s  5s p95=%s  samples=%d",
 			formatLatency(s.p50), formatLatency(s.p95), s.latencySamples)
 	} else {
-		b.WriteString("p50=-  p95=-  samples=0")
+		b.WriteString("5s p50=-  5s p95=-  samples=0")
 	}
 
 	rendered := trimToHeight(b.String(), height)
@@ -142,7 +142,7 @@ func printStats(s statsSnapshot) {
 	}
 
 	if s.latencySamples > 0 {
-		fmt.Printf("STATS issued=%d mined=%d inflight=%d/%d resubmits=%d minedTps=%.0f/%d%s | total p50=%v p95=%v p99=%v\n",
+		fmt.Printf("STATS issued=%d mined=%d inflight=%d/%d resubmits=%d minedTps=%.0f/%d%s | 5s p50=%v p95=%v p99=%v\n",
 			s.issued, s.mined, s.inflight, s.cap, s.resubmits, s.minedTPS, s.targetRPS, behind,
 			s.p50.Round(time.Millisecond), s.p95.Round(time.Millisecond), s.p99.Round(time.Millisecond))
 		return
