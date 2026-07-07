@@ -7,14 +7,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ava-labs/avalanchego/api/info"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/utils/constants"
+	"github.com/ava-labs/avalanchego/utils/crypto/keychain"
 	"github.com/ava-labs/avalanchego/utils/rpc"
 	"github.com/ava-labs/avalanchego/vms/platformvm"
+	"github.com/ava-labs/avalanchego/vms/platformvm/txs"
 	"github.com/ava-labs/avalanchego/vms/secp256k1fx"
+	pchain "github.com/ava-labs/avalanchego/wallet/chain/p"
+	pbuilder "github.com/ava-labs/avalanchego/wallet/chain/p/builder"
+	psigner "github.com/ava-labs/avalanchego/wallet/chain/p/signer"
 	pwallet "github.com/ava-labs/avalanchego/wallet/chain/p/wallet"
 	"github.com/ava-labs/avalanchego/wallet/subnet/primary"
+	walletcommon "github.com/ava-labs/avalanchego/wallet/subnet/primary/common"
 	ethcommon "github.com/ava-labs/libevm/common"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/fujikey"
@@ -82,40 +87,43 @@ type stakingTarget struct {
 }
 
 type weightEngine struct {
-	cfg       *config
-	subnetID  ids.ID
-	cChainID  ids.ID
-	cli       *valmgr.Client
-	pClient   *platformvm.Client
-	pchainURI string
-	kc        *secp256k1fx.Keychain
-	wallet    pwallet.Wallet // built lazily; only P-chain deliveries need it
-	targets   []stakingTarget
+	cfg      *config
+	subnetID ids.ID
+	cChainID ids.ID
+	cli      *valmgr.Client
+	pClient  *platformvm.Client
+	kc       *secp256k1fx.Keychain
+	wallet   pwallet.Wallet // built lazily; only P-chain deliveries need it
+	targets  []stakingTarget
 }
 
-// pchainURI returns the public Fuji API base (PCHAIN_API override) used for
-// WALLET tx issuance and info.* only: MakePWallet needs /ext/info, which the
-// per-chain publicnode hosts below do not serve. The fleet's own RPC tier is
-// follow-only and can never serve platform.*.
-func pchainURI() string {
-	return envOr("PCHAIN_API", "https://api.avax-test.network")
-}
+// The whole seesaw runs off publicnode's per-chain Fuji RPC, never touching the
+// aggressively rate-limited api.avax-test.network (the fleet's egress IP is
+// throttled there and 429s on the first hit). Both hosts are overridable.
 
-// The read/contract traffic (every eth_call, initiate/complete tx, and
-// platform.getL1Validator poll — the bulk of our calls) goes to publicnode's
-// per-chain hosts instead, so api.avax-test.network only sees the handful of
-// wallet issuances and stops 429ing us mid-seesaw.
+// cchainRPCURL is where every ValidatorManager eth_call and initiate/complete
+// tx goes.
 func cchainRPCURL() string {
 	return envOr("CCHAIN_RPC", "https://avalanche-fuji-c-chain-rpc.publicnode.com")
 }
 
-// pchainReadClient returns the platformvm client for reads. publicnode serves
-// the P-chain API at /ext/bc/P but NOT at /ext/P (the only path
-// platformvm.NewClient can build), so construct the client on the exact URL.
+// pchainReadClient returns the platformvm client used for reads AND wallet tx
+// issuance. publicnode serves the P-chain API at /ext/bc/P but NOT at /ext/P
+// (the only path platformvm.NewClient builds), so construct it on the exact URL.
 func pchainReadClient() *platformvm.Client {
 	url := envOr("PCHAIN_RPC", "https://avalanche-fuji-p-chain-rpc.publicnode.com/ext/bc/P")
 	return &platformvm.Client{Requester: rpc.NewEndpointRequester(url)}
 }
+
+// fujiCChainIDStr is the Fuji C-chain blockchain ID: the ValidatorManager's
+// chain and the warp source chain. A fixed network constant, hardcoded so we
+// never call info.getBlockchainID (publicnode does not serve /ext/info, and the
+// official API rate-limits it).
+const fujiCChainIDStr = "yH8D7ThNJkxmtkuv2jgBa4P1Rn3Qpr4pPr7QYNfcdoS6k6HWp"
+
+// gasPriceMultiplier mirrors wallet/chain/p.gasPriceMultiplier (headroom for
+// issuing several txs in a row).
+const gasPriceMultiplier = 2
 
 // newWeightEngine wires the C-chain client, P-chain client and the
 // slot -> validationID mapping. Returns nil (with a notice) when the deploy
@@ -133,24 +141,22 @@ func newWeightEngine(ctx context.Context, cfg *config, intents []MachineIntent) 
 	if err != nil {
 		return nil, fmt.Errorf("load fuji wallet key: %w", err)
 	}
-	uri := pchainURI()
 	cli, err := valmgr.Dial(ctx, cchainRPCURL(), key, ethcommon.HexToAddress(managerHex))
 	if err != nil {
 		return nil, err
 	}
-	cChainID, err := info.NewClient(uri).GetBlockchainID(ctx, "C")
+	cChainID, err := ids.FromString(fujiCChainIDStr)
 	if err != nil {
-		return nil, fmt.Errorf("info.getBlockchainID(C): %w", err)
+		return nil, err
 	}
 
 	e := &weightEngine{
-		cfg:       cfg,
-		subnetID:  subnetID,
-		cChainID:  cChainID,
-		cli:       cli,
-		pClient:   pchainReadClient(),
-		pchainURI: uri,
-		kc:        secp256k1fx.NewKeychain(key),
+		cfg:      cfg,
+		subnetID: subnetID,
+		cChainID: cChainID,
+		cli:      cli,
+		pClient:  pchainReadClient(),
+		kc:       secp256k1fx.NewKeychain(key),
 	}
 	e.targets, err = stakingTargets(cfg, subnetID, intents)
 	return e, err
@@ -401,12 +407,58 @@ func (e *weightEngine) pWallet(ctx context.Context) (pwallet.Wallet, error) {
 	if e.wallet != nil {
 		return e.wallet, nil
 	}
-	w, err := primary.MakePWallet(ctx, e.pchainURI, e.kc, primary.WalletConfig{})
+	w, err := makePWalletNoInfo(ctx, e.pClient, e.kc)
 	if err != nil {
 		return nil, fmt.Errorf("make P-chain wallet: %w", err)
 	}
 	e.wallet = w
 	return w, nil
+}
+
+// makePWalletNoInfo builds a P-chain wallet WITHOUT any /ext/info call. Stock
+// primary.MakePWallet fetches the network ID from info, which publicnode's
+// per-chain P RPC does not serve; every other input (AVAX asset, fee
+// config/state, UTXOs, tx issuance) is a P-chain API call publicnode does
+// serve, and the network ID is the Fuji constant. This is a faithful copy of
+// MakePWallet's body with the info dependency swapped for constants.FujiID.
+func makePWalletNoInfo(ctx context.Context, pClient *platformvm.Client, kc keychain.Keychain) (pwallet.Wallet, error) {
+	addrs := kc.Addresses()
+
+	avaxAssetID, err := pClient.GetStakingAssetID(ctx, constants.PrimaryNetworkID)
+	if err != nil {
+		return nil, fmt.Errorf("get AVAX asset id: %w", err)
+	}
+	feeConfig, err := pClient.GetFeeConfig(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get fee config: %w", err)
+	}
+	_, gasPrice, _, err := pClient.GetFeeState(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get fee state: %w", err)
+	}
+	pctx := &pbuilder.Context{
+		NetworkID:         constants.FujiID,
+		AVAXAssetID:       avaxAssetID,
+		ComplexityWeights: feeConfig.Weights,
+		GasPrice:          gasPriceMultiplier * gasPrice,
+	}
+
+	utxos := walletcommon.NewUTXOs()
+	if err := primary.AddAllUTXOs(ctx, utxos, pClient, txs.Codec,
+		constants.PlatformChainID, constants.PlatformChainID, addrs.List()); err != nil {
+		return nil, fmt.Errorf("fetch P-chain UTXOs: %w", err)
+	}
+	owners, err := platformvm.GetOwners(pClient, ctx, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("get owners: %w", err)
+	}
+
+	pBackend := pwallet.NewBackend(walletcommon.NewChainUTXOs(constants.PlatformChainID, utxos), owners)
+	return pwallet.New(
+		pchain.NewClient(pClient, pBackend),
+		pbuilder.New(addrs, pctx, pBackend),
+		psigner.New(kc, pBackend),
+	), nil
 }
 
 // weightsReport prints the desired vs on-chain (P-chain) weight per staking
