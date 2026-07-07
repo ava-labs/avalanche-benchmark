@@ -40,9 +40,10 @@ type statsSnapshot struct {
 }
 
 type terminalStatsUI struct {
-	out       io.Writer
-	startedAt time.Time
-	history   []float64
+	out        io.Writer
+	startedAt  time.Time
+	history    []float64 // mined TPS per tick
+	p50History []float64 // p50 mine latency (ms) per tick
 }
 
 func stdoutIsTerminal() bool {
@@ -58,9 +59,10 @@ func restoreTerminal() {
 func newTerminalStatsUI(out io.Writer) *terminalStatsUI {
 	fmt.Fprint(out, ansiHideCursor)
 	return &terminalStatsUI{
-		out:       out,
-		startedAt: time.Now(),
-		history:   make([]float64, 0, tuiHistorySeconds),
+		out:        out,
+		startedAt:  time.Now(),
+		history:    make([]float64, 0, tuiHistorySeconds),
+		p50History: make([]float64, 0, tuiHistorySeconds),
 	}
 }
 
@@ -74,16 +76,32 @@ func (ui *terminalStatsUI) render(s statsSnapshot) {
 		ui.history = ui.history[len(ui.history)-tuiHistorySeconds:]
 	}
 
-	width, height := terminalSize()
-	chartHeight := height - 9
-	if chartHeight < 4 {
-		chartHeight = 4
+	// p50 in ms; carry forward the last value on ticks with no landings so the
+	// latency line holds steady instead of dropping to a misleading 0.
+	p50ms := float64(s.p50) / float64(time.Millisecond)
+	if s.latencySamples == 0 && len(ui.p50History) > 0 {
+		p50ms = ui.p50History[len(ui.p50History)-1]
 	}
+	ui.p50History = append(ui.p50History, p50ms)
+	if len(ui.p50History) > tuiHistorySeconds {
+		ui.p50History = ui.p50History[len(ui.p50History)-tuiHistorySeconds:]
+	}
+
+	width, height := terminalSize()
 	chartWidth := width
 	if chartWidth < 2 {
 		chartWidth = 2
 	}
-	chart := renderTPSChart(ui.history, chartWidth, chartHeight)
+	// Two charts share the vertical space; ~12 lines reserved for header,
+	// both captions, spacing, and the two stats lines.
+	chartArea := height - 12
+	if chartArea < 8 {
+		chartArea = 8
+	}
+	topH := chartArea / 2
+	botH := chartArea - topH
+	tpsChart := renderLineChart(ui.history, chartWidth, topH, "mined transactions per second")
+	p50Chart := renderLineChart(ui.p50History, chartWidth, botH, "p50 mine latency (ms)")
 
 	elapsed := s.at.Sub(ui.startedAt).Round(time.Second)
 	if elapsed < 0 {
@@ -98,7 +116,10 @@ func (ui *terminalStatsUI) render(s statsSnapshot) {
 	var b strings.Builder
 	b.WriteString(ansiClearScreen)
 	fmt.Fprintf(&b, "Bombard  target=%d rps  elapsed=%s  %s\n\n", s.targetRPS, elapsed, status)
-	b.WriteString(chart)
+	b.WriteString(tpsChart)
+	b.WriteByte('\n')
+	b.WriteByte('\n')
+	b.WriteString(p50Chart)
 	b.WriteByte('\n')
 	b.WriteByte('\n')
 	fmt.Fprintf(&b, "issued=%d  mined=%d  inflight=%d/%d  resubmits=%d  minedTps=%.0f/%d\n",
@@ -153,14 +174,14 @@ func minInt(a, b int) int {
 	return b
 }
 
-func renderTPSChart(history []float64, width, height int) string {
+func renderLineChart(history []float64, width, height int, caption string) string {
 	maxPoints := width
 	for points := maxPoints; points >= 2; points-- {
 		chart := asciigraph.Plot(
 			zeroPaddedLatestSeries(history, points),
 			asciigraph.Height(height),
 			asciigraph.LowerBound(0),
-			asciigraph.Caption("mined transactions per second"),
+			asciigraph.Caption(caption),
 			asciigraph.Precision(0),
 		)
 		if maxLineWidth(chart) <= width {
@@ -168,7 +189,7 @@ func renderTPSChart(history []float64, width, height int) string {
 		}
 	}
 
-	return rightAlignLines("not enough room for TPS chart", width)
+	return rightAlignLines("not enough room for chart", width)
 }
 
 func zeroPaddedLatestSeries(history []float64, points int) []float64 {
