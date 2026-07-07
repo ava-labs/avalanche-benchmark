@@ -42,6 +42,16 @@ import (
 
 const weightRounds = 100 // initiate-step bound; a full DC seesaw needs ~10
 
+const (
+	// weightConverge* pace the outer retry of the whole converge sequence. The
+	// binding constraint is Fuji primary-network signature coverage climbing
+	// past the 67% quorum as a fresh C-chain warp message propagates (minutes),
+	// so retry for ~20 min before deferring to a manual `reconcile apply`.
+	weightConvergeAttempts = 20
+	weightRetryBackoff     = 60 * time.Second
+	weightConvergeTimeout  = 40 * time.Minute
+)
+
 // nextWeight returns the furthest weight toward desired reachable in ONE
 // initiateValidatorWeightUpdate, given the churn cap: with period 0 each op
 // may move at most 20% of the tracker total (equality passes: the contract
@@ -160,7 +170,7 @@ func reconcileWeights(cfg *config, intents []MachineIntent) {
 		fmt.Println("[3/3] weights: SKIPPED — MANAGER_ADDRESS not set (pre-manager deploy; on-chain weights are immutable)")
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), weightConvergeTimeout)
 	defer cancel()
 
 	e, err := newWeightEngine(ctx, cfg, intents)
@@ -170,12 +180,25 @@ func reconcileWeights(cfg *config, intents []MachineIntent) {
 	fmt.Printf("[3/3] weights: reconciling via ValidatorManager %s (subnet %s)\n", e.cli.Manager.Hex(), e.subnetID)
 
 	// The whole sequence is retried: each pass re-observes everything, so a
-	// transient failure (aggregator, RPC) just repeats the remaining work.
+	// transient failure just repeats the remaining work. The dominant transient
+	// is Fuji signature coverage: a SetL1ValidatorWeightTx carries a warp
+	// message signed by the Fuji PRIMARY NETWORK, and Fuji validators only sign
+	// a C-chain-originated message once they have synced the C-chain block that
+	// emitted the initiate. Right after an initiate, coverage sits below the 67%
+	// quorum (measured ~52% on 2026-07-07) and climbs over MINUTES as the block
+	// propagates. So we retry patiently with a long backoff, not seconds — the
+	// chain stays healthy on the current weights throughout (delivery only moves
+	// weight once it lands). Re-run `reconcile apply` to resume past the timeout.
 	var lastErr error
-	for attempt := 1; attempt <= 3; attempt++ {
+	for attempt := 1; attempt <= weightConvergeAttempts; attempt++ {
 		if attempt > 1 {
-			fmt.Printf("  weights: retrying (%v)\n", lastErr)
-			time.Sleep(5 * time.Second)
+			fmt.Printf("  weights: attempt %d/%d in %s (last: %v)\n",
+				attempt, weightConvergeAttempts, weightRetryBackoff, lastErr)
+			select {
+			case <-ctx.Done():
+				fatalf("weights: %v (re-run `reconcile apply` to resume; every step is idempotent)", ctx.Err())
+			case <-time.After(weightRetryBackoff):
+			}
 		}
 		if lastErr = e.converge(ctx); lastErr == nil {
 			fmt.Println("  weights: converged (contract == P-chain == desired)")
