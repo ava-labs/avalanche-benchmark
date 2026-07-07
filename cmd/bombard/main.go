@@ -173,73 +173,6 @@ func (t *tracker) dueForResubmit(interval time.Duration, now time.Time) []*types
 
 var track = newTracker()
 
-// defaultActiveRPCsFile lists the RPC URLs of the data center that currently holds
-// the validator set. reconcile rewrites it on every failover/restore; watchActiveRPCs
-// restricts ingress to those endpoints so bombard drives ONE site at a time and
-// follows the failover. Shared with cmd/reconcile (activeRPCsFilePath /
-// BOMBARD_ACTIVE_RPCS_FILE). Absent/empty file = send to all endpoints.
-const defaultActiveRPCsFile = "/tmp/bombard.active-rpcs"
-
-func activeRPCsFilePath() string {
-	if p := os.Getenv("BOMBARD_ACTIVE_RPCS_FILE"); p != "" {
-		return p
-	}
-	return defaultActiveRPCsFile
-}
-
-// watchActiveRPCs polls the active-rpcs file and marks each endpoint active only if
-// it appears there, so ingress goes solely to the live validator site and re-points
-// when reconcile moves it. Fail-open: an absent/empty file — or one that matches no
-// endpoint (format drift) — leaves all endpoints active, so a bad file never starves
-// ingress. Polled (not inotify) to survive the file being rewritten across a run.
-func watchActiveRPCs(ctx context.Context, b *broadcaster, path string) {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	last := "\x00" // sentinel so the first read always logs
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-		content := ""
-		if data, err := os.ReadFile(path); err == nil {
-			content = strings.TrimSpace(string(data))
-		}
-		if content == last {
-			continue
-		}
-		last = content
-		want := map[string]bool{}
-		for _, u := range strings.Fields(content) {
-			want[u] = true
-		}
-		matched := 0
-		for _, n := range b.nodes {
-			if want[n.url] {
-				matched++
-			}
-		}
-		failOpen := len(want) > 0 && matched == 0
-		var on []string
-		for _, n := range b.nodes {
-			active := len(want) == 0 || failOpen || want[n.url]
-			n.active.Store(active)
-			if active {
-				on = append(on, n.url)
-			}
-		}
-		switch {
-		case len(want) == 0:
-			fmt.Fprintf(os.Stderr, "\ningress: active-site routing cleared — sending to all %d endpoint(s)\n", len(b.nodes))
-		case failOpen:
-			fmt.Fprintf(os.Stderr, "\ningress: WARN active-rpcs file matched no endpoint — sending to all (fail-open)\n")
-		default:
-			fmt.Fprintf(os.Stderr, "\ningress: active site — routing to %s\n", strings.Join(on, ", "))
-		}
-	}
-}
-
 // resyncPending/resyncTarget let monitorNonce ask the issuer to jump to a live
 // frontier nonce after a failover/reorg strands our in-flight nonces above the
 // chain. The monitor sets the target, then the flag; the issuer consumes both.
@@ -500,7 +433,6 @@ func main() {
 		}()
 	}
 
-	go watchActiveRPCs(ctx, bc, activeRPCsFilePath())
 	go monitorNonce(ctx, bc, address)
 	go issuer(ctx, sendCh, float64(*rps), *overshootFlag, uint64(cap), startNonce)
 

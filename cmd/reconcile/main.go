@@ -120,7 +120,6 @@ func main() {
 			printIntents(topo, intents)
 			reconcileWeights(cfg, intents)
 		}
-		cfg.writeActiveRPCs(intents)
 
 	case "weight":
 		cfg.warnColocation()
@@ -136,8 +135,6 @@ func main() {
 		mustSaveIntents(cfg, intents)
 		printIntents(topo, intents)
 		reconcileWeights(cfg, intents)
-		// Re-point bombard AFTER weights moved: ingress follows consensus.
-		cfg.writeActiveRPCs(intents)
 
 	case "fresh":
 		cfg.warnColocation()
@@ -151,7 +148,6 @@ func main() {
 		}
 		reconcile(cfg, intents, all, true)
 		reconcileWeights(cfg, intents)
-		cfg.writeActiveRPCs(intents)
 
 	default:
 		usage()

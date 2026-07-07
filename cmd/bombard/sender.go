@@ -64,7 +64,6 @@ type nodeSender struct {
 	queue   chan *types.Transaction
 	healthy atomic.Bool // in send rotation while within ingressDropBehind of tip
 	atTip   atomic.Bool // within ingressAtTipWithin of tip — safe to issue nonces to
-	active  atomic.Bool // routed ingress only while on the active (validator) site
 }
 
 // newBroadcaster dials every rpcURL (lazily, over HTTP — a down node is included
@@ -103,8 +102,7 @@ func newBroadcaster(ctx context.Context, rpcURLs []string, sendTimeout time.Dura
 			queue:  make(chan *types.Transaction, sendQueueLen),
 		}
 		ns.healthy.Store(true)
-		ns.atTip.Store(true)  // assume at-tip until monitorIngress measures otherwise
-		ns.active.Store(true) // all endpoints active until an active-rpcs file narrows it
+		ns.atTip.Store(true) // assume at-tip until monitorIngress measures otherwise
 		b.nodes = append(b.nodes, ns)
 		for i := 0; i < sendConcPerNode; i++ {
 			go ns.run(ctx, sendTimeout)
@@ -138,21 +136,15 @@ func (b *broadcaster) broadcast(signed *types.Transaction) {
 	// Pick the send pool in priority order. Sequential-nonce issuance must land on an
 	// endpoint AT THE TIP: a tx whose nonce is above a behind endpoint's accepted
 	// frontier is an unfillable gap that pins throughput at 0 (see ingressAtTipWithin).
-	//   1. active + at-tip — steady state, and the end state of a completed migration.
-	//   2. any at-tip      — covers the restore window: the active set has flipped to the
-	//                        recovering site whose RPCs aren't caught up yet, so keep
-	//                        issuing to the at-tip site we are restoring FROM.
-	//   3. any healthy     — nothing is fully at tip but something is in rotation; a brief
+	//   1. any at-tip      — steady state: every caught-up endpoint, both sites.
+	//   2. any healthy     — nothing is fully at tip but something is in rotation; a brief
 	//                        small-gap hop beats a stall.
-	//   4. everything      — nothing looks caught up at all; spray all so ingress never
+	//   3. everything      — nothing looks caught up at all; spray all so ingress never
 	//                        hard-stops, and the resubmit loop retries as nodes recover.
-	activeAtTip, anyAtTip, anyHealthy := false, false, false
+	anyAtTip, anyHealthy := false, false
 	for _, n := range b.nodes {
 		if n.atTip.Load() {
 			anyAtTip = true
-			if n.active.Load() {
-				activeAtTip = true
-			}
 		}
 		if n.healthy.Load() {
 			anyHealthy = true
@@ -160,8 +152,6 @@ func (b *broadcaster) broadcast(signed *types.Transaction) {
 	}
 	eligible := func(n *nodeSender) bool {
 		switch {
-		case activeAtTip:
-			return n.active.Load() && n.atTip.Load()
 		case anyAtTip:
 			return n.atTip.Load()
 		case anyHealthy:
