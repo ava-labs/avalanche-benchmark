@@ -184,12 +184,56 @@ func renderLineChart(history []float64, width, height int, caption string) strin
 			asciigraph.Caption(caption),
 			asciigraph.Precision(0),
 		)
+		chart = moveAxisLabelsRight(chart)
 		if maxLineWidth(chart) <= width {
 			return rightAlignLines(chart, width)
 		}
 	}
 
 	return rightAlignLines("not enough room for chart", width)
+}
+
+// moveAxisLabelsRight flips asciigraph's Y-axis gutter to the right. asciigraph
+// prints each plot row as "<right-justified label><axis rune><plot>" with the
+// axis rune (┤, or ┼ at the origin) at a single fixed column and nowhere else.
+// This rewrites those rows to "<plot><axis rune><label>" so the numbers read
+// down the right edge. Rows without an axis rune (caption, X-axis) pass through.
+func moveAxisLabelsRight(chart string) string {
+	lines := strings.Split(chart, "\n")
+	type row struct {
+		i, axis int
+		runes   []rune
+	}
+	// asciigraph right-trims each row, so plot rows have unequal lengths. Pad
+	// every plot to the widest before appending the gutter, else the axis
+	// column and labels come out ragged.
+	var rows []row
+	maxPlot := 0
+	for i, line := range lines {
+		runes := []rune(line)
+		axis := -1
+		for j, r := range runes {
+			if r == '┤' || r == '┼' {
+				axis = j
+				break
+			}
+		}
+		if axis < 0 {
+			continue
+		}
+		rows = append(rows, row{i, axis, runes})
+		if n := len(runes) - axis - 1; n > maxPlot {
+			maxPlot = n
+		}
+	}
+	for _, rw := range rows {
+		plot := string(rw.runes[rw.axis+1:])
+		if pad := maxPlot - (len(rw.runes) - rw.axis - 1); pad > 0 {
+			plot += strings.Repeat(" ", pad)
+		}
+		lines[rw.i] = plot + string(rw.runes[rw.axis]) + string(rw.runes[:rw.axis])
+	}
+	return strings.Join(lines, "\n")
 }
 
 func zeroPaddedLatestSeries(history []float64, points int) []float64 {
