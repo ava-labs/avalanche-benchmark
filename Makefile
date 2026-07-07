@@ -1,4 +1,8 @@
-.PHONY: all clean deps build pack monitoring-deps rpm
+.PHONY: all clean clean-tools deps build pack monitoring-deps rpm
+# The Go tool binaries are phony too: their file rules have no source
+# prerequisites, so without this a stale bin/ silently ships into `pack`
+# (bit us 2026-07-06). go's build cache keeps the rebuild near-instant.
+.PHONY: bin/create-l1 bin/bombard bin/reconcile bin/genstaking bin/fuji-wallet
 
 .DEFAULT_GOAL := all
 
@@ -51,6 +55,12 @@ deps: bin/avalanchego
 clean:
 	rm -rf bin/
 
+# Remove only the Go tool binaries (keeps the expensive avalanchego/plugin and
+# monitoring downloads). pack runs this first so a pack can never ship a stale
+# tool even if the .PHONY list above drifts.
+clean-tools:
+	rm -f bin/create-l1 bin/bombard bin/reconcile bin/genstaking bin/fuji-wallet
+
 # Build avalanchego + subnet-evm from the published pinned ref (run on Linux)
 bin/avalanchego bin/$(SUBNET_EVM_ID):
 	@mkdir -p bin
@@ -85,7 +95,7 @@ bin/grafana.tar.gz:
 	curl -L -o bin/grafana.tar.gz "$$URL"
 
 # Create offline package for deployment to the control machine
-pack: deps build monitoring-deps
+pack: clean-tools deps build monitoring-deps
 	rm -f remote-benchmark.tar.gz
 	tar --exclude=scripts/failover/intentions.json --exclude=bin/grafana-dist -czvf remote-benchmark.tar.gz \
 		bin/ \
