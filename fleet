@@ -2,9 +2,9 @@
 # Single entry point for the two-datacenter benchmark fleet. Every operator verb
 # lives in the benchmark-fleet binary:
 #
-#   ./fleet up   <m...>                    rebuild + start machines (from genesis)
-#   ./fleet down <m...>                    simulate hardware failure (hard kill)
-#   ./fleet mark <validator|spare|dead> <m...>   move on-chain consensus weight
+#   ./fleet up   <m...>                    rebuild + start machines, stake back at spare
+#   ./fleet down <m...>                    simulate hardware failure (hard kill), stake to dead
+#   ./fleet weight <validator|spare|dead> <m...>   move on-chain consensus weight
 #   ./fleet status [--watch]               per-DC stake tier + reachability
 #
 # This wrapper only cd's to the repo root so the binary finds .env + network.env

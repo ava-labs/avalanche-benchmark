@@ -2,21 +2,20 @@
 //
 // Every machine wears ONE permanent staking identity (internal/topo); the
 // validator+spare slots of both sites are all registered as L1 validators at
-// conversion and NEVER re-registered. Operating the fleet is therefore two
-// independent axes, each its own verb:
+// conversion and NEVER re-registered. Two verbs operate the fleet:
 //
-//	hardware   — up/down: kill or (re)start avalanchego on a box. `down` hard-
-//	             kills (simulated failure, data left on disk); `up` rebuilds the
-//	             box from genesis (wipes L1 chainData, keeps the Fuji P-chain).
-//	             Neither touches on-chain weight.
-//	stake      — mark <validator|spare|dead>: move a registered identity's
-//	             consensus weight between the three tiers through the
-//	             ValidatorManager contract on Fuji's C-chain (weights.go). This
-//	             is the seesaw; it never starts or stops a process.
-//
-// The two axes are deliberately orthogonal: a box can be down but still
-// mark=validator (its stuck stake blocks quorum until you mark it dead), or up
-// but mark=spare. `status` shows both columns per datacenter.
+//	up/down:   the box lifecycle, stake follows. `down` hard-kills avalanchego
+//	           (simulated failure, data left on disk) and drops the identity's
+//	           on-chain weight to dead; `up` rebuilds the box from genesis
+//	           (wipes L1 chainData, keeps the Fuji P-chain), starts it, and
+//	           brings its weight back at spare. Promotion to full validator
+//	           stays an explicit `weight validator`.
+//	weight:    <validator|spare|dead> moves a registered identity's consensus
+//	           weight between the three tiers through the ValidatorManager
+//	           contract on Fuji's C-chain (weights.go). This is the seesaw; it
+//	           never starts or stops a process, so it can also express the odd
+//	           states (a down box still holding validator weight to stall the
+//	           chain on purpose). `status` shows both columns per datacenter.
 //
 // The binary self-loads .env + network.env from the repo root, so it is the
 // whole interface: run it directly (or via ./fleet). No wrapper scripts.
@@ -38,11 +37,12 @@ func fatalf(format string, args ...any) {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: benchmark-fleet <command>
-  up   <m...>                 (re)build the given machines from genesis and start them
+  up   <m...>                 (re)build the given machines from genesis, start them,
+                              and bring their stake back at spare weight
                               (wipes L1 chain data, keeps the Fuji P-chain)
   down <m...>                 simulate hardware failure: hard-kill the given machines
-                              (data left on disk; no weight change)
-  mark <validator|spare|dead> <m...>
+                              (data left on disk) and drop their stake to dead weight
+  weight <validator|spare|dead> <m...>
                               set the given machines' on-chain consensus weight tier
                               (validator=1000000, spare=1000, dead=1) and converge it
   status [--watch]            read-only report: per-datacenter stake tier + reachability
@@ -80,17 +80,30 @@ func main() {
 		ms := parseMachines(os.Args[2:], topo)
 		intents := mustLoadIntents(cfg)
 		down := cmd == "down"
+		tier := valmgr.SpareWeight
+		if down {
+			tier = valmgr.DeadWeight
+		}
+		staked := false
 		for _, m := range ms {
 			next, err := setCordon(intents, m, down)
 			if err != nil {
 				fatalf("%v", err)
+			}
+			// Stake follows the box: down -> dead, up -> spare (promote back to
+			// validator explicitly). RPC slots carry no weight.
+			if topo.IsStakingSlot(m - 1) {
+				if next, err = setWeight(next, m, tier, topo); err != nil {
+					fatalf("%v", err)
+				}
+				staked = true
 			}
 			intents = next
 		}
 		mustSaveIntents(cfg, intents)
 		if down {
 			// Simulated hardware failure: hard SIGKILL, no wipe — the box "dies"
-			// with its data intact. Weight is untouched (mark dead to pull stake).
+			// with its data intact.
 			for _, m := range ms {
 				fmt.Printf("== down %s (%s): SIGKILL (simulated failure) ==\n", topo.MachineName(m-1), cfg.nodeIPs[m-1])
 				cfg.killNode(m - 1)
@@ -103,10 +116,15 @@ func main() {
 			}
 			reconcile(cfg, intents, fresh, false)
 		}
+		if staked {
+			printIntents(topo, intents)
+			reconcileWeights(cfg, intents)
+		}
+		cfg.writeActiveRPCs(intents)
 
-	case "mark":
+	case "weight":
 		cfg.warnColocation()
-		w, ms := parseMark(os.Args[2:], topo)
+		w, ms := parseWeight(os.Args[2:], topo)
 		intents := mustLoadIntents(cfg)
 		for _, m := range ms {
 			next, err := setWeight(intents, m, w, topo)
@@ -187,11 +205,11 @@ func parseMachines(args []string, topo Topology) []int {
 	return out
 }
 
-// parseMark parses `<role> <m...>`: the first arg is the weight tier, the rest
-// are machine numbers. Returns the mapped weight and the machines.
-func parseMark(args []string, topo Topology) (uint64, []int) {
+// parseWeight parses `<tier> <m...>`: the first arg is the weight tier, the
+// rest are machine numbers. Returns the mapped weight and the machines.
+func parseWeight(args []string, topo Topology) (uint64, []int) {
 	if len(args) < 2 {
-		fatalf("usage: mark <validator|spare|dead> <m...>")
+		fatalf("usage: weight <validator|spare|dead> <m...>")
 	}
 	var w uint64
 	switch args[0] {
@@ -202,7 +220,7 @@ func parseMark(args []string, topo Topology) (uint64, []int) {
 	case "dead":
 		w = valmgr.DeadWeight
 	default:
-		fatalf("role must be validator|spare|dead, got %q", args[0])
+		fatalf("tier must be validator|spare|dead, got %q", args[0])
 	}
 	return w, parseMachines(args[1:], topo)
 }

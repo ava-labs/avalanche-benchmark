@@ -70,9 +70,9 @@ func saveIntents(path string, intents []MachineIntent) error {
 }
 
 // setCordon returns a copy of prev with machine m's (1-based) cordon flag set.
-// Cordon is the pure hardware-reachability axis: it changes NO weights. Weight
-// is a separate, deliberate axis (reconcile `mark`); a box going up or down
-// never moves stake on its own.
+// It changes no weights itself; the up/down commands pair it with setWeight
+// (down -> dead, up -> spare) so stake follows the box, and the `weight`
+// command moves stake without touching cordon.
 func setCordon(prev []MachineIntent, m int, cordon bool) ([]MachineIntent, error) {
 	if m < 1 || m > len(prev) {
 		return nil, fmt.Errorf("machine %d out of range 1..%d", m, len(prev))
@@ -84,14 +84,14 @@ func setCordon(prev []MachineIntent, m int, cordon bool) ([]MachineIntent, error
 
 // setWeight returns a copy of prev with machine m's (1-based) desired weight
 // set to w. Only staking slots (registered validators) carry a weight; setting
-// one on an RPC slot is rejected. Weight is the pure stake-intent axis (mark),
-// independent of whether the box is up or down.
+// one on an RPC slot is rejected. Weight is pure stake intent, independent of
+// whether the box is up or down.
 func setWeight(prev []MachineIntent, m int, w uint64, t Topology) ([]MachineIntent, error) {
 	if m < 1 || m > len(prev) {
 		return nil, fmt.Errorf("machine %d out of range 1..%d", m, len(prev))
 	}
 	if !t.IsStakingSlot(m - 1) {
-		return nil, fmt.Errorf("%s is an RPC slot (not a registered validator); it has no weight to mark", t.MachineName(m-1))
+		return nil, fmt.Errorf("%s is an RPC slot (not a registered validator); it has no weight to set", t.MachineName(m-1))
 	}
 	next := append([]MachineIntent{}, prev...)
 	next[m-1].Weight = w

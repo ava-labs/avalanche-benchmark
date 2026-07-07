@@ -40,7 +40,7 @@ func TestSetCordon(t *testing.T) {
 	}
 }
 
-// TestSetWeight: mark is the pure stake axis — it sets the weight tier and
+// TestSetWeight: setWeight is pure stake intent — it sets the weight tier and
 // leaves cordon (and the input slice) untouched.
 func TestSetWeight(t *testing.T) {
 	topo := stdTopo()

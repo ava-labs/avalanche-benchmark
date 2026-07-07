@@ -502,7 +502,7 @@ func weightsReport(cfg *config, intents []MachineIntent) {
 		fmt.Println("weights: converged (P-chain == desired)")
 		return
 	}
-	fmt.Println("weights: PENDING — re-run the ./fleet mark that set this tier (Fuji signature coverage may still be catching up)")
+	fmt.Println("weights: PENDING — re-run the ./fleet weight that set this tier (Fuji signature coverage may still be catching up)")
 	for _, l := range lines {
 		fmt.Println(l)
 	}

@@ -84,9 +84,10 @@ topology co-located on 3 boxes, or everything on one). After editing, run
 (name / site / role / host / port) before deploying. Setting the `BACKUP_*` lists
 enables **two-site mode**: a second data center of spare-weight validators the
 consensus can be moved onto when the primary site goes down. A failover is a
-weight move on the ValidatorManager contract — `./fleet mark validator <site-B
-machines>` to hand them the consensus, `./fleet mark dead <site-A machines>` to
-pull the dead site's stake out of quorum. Single-site behavior is unchanged when
+weight move on the ValidatorManager contract: `./fleet weight validator <site-B
+machines>` to hand them the consensus, then `./fleet down <site-A machines>` to
+kill the boxes and pull their stake out of quorum. Single-site behavior is
+unchanged when
 the `BACKUP_*` lists are unset.
 
 > **Staking identities are generated per deploy** by `./00_gen_secrets.sh`
@@ -115,12 +116,12 @@ full walkthrough — with what to expect at each step — is in
 Then run the failover drill (separate terminal, benchmark left running):
 
 ```bash
-./fleet down 1 2 3                        # simulate a site-A outage: hard-kill its validators
-./fleet mark validator 7 8 9              # move the consensus onto site B's validators
-./fleet mark dead 1 2 3                   # pull the dead site's stake out of quorum
+./fleet weight validator 7 8 9            # move the consensus onto site B's validators FIRST
+./fleet down 1 2 3                        # site-A outage: hard-kill + drop its stake to dead
 # ...later, to fail back once site A is healthy:
-./fleet up 1 2 3                          # rebuild site A from genesis
-./fleet mark validator 1 2 3             # hand the consensus back; mark spare 7 8 9
+./fleet up 1 2 3                          # rebuild site A from genesis; it comes back as spare
+./fleet weight validator 1 2 3            # hand the consensus back
+./fleet weight spare 7 8 9                # drop site B to standby
 ```
 
 `03_deploy_chain.sh` is **destructive by design**: it wipes node data and
@@ -171,31 +172,29 @@ gap panel is just empty without a backup site.
 ## Failover commands
 
 The whole fleet is driven by the `./fleet` binary. Every registered identity is
-permanent (registered once at conversion, never moved); operating the fleet is
-two independent axes:
+permanent (registered once at conversion, never moved); two verbs operate it:
 
-- **hardware** — `up` / `down` start or hard-kill avalanchego on a box. `down`
-  simulates a failure (SIGKILL, data left on disk); `up` rebuilds the box from
-  genesis (wipes L1 chain data, keeps the Fuji P-chain). Neither touches weight.
-- **stake** — `mark <validator|spare|dead>` moves an identity's on-chain
-  consensus weight between three tiers (validator=1000000, spare=1000, dead=1)
-  through the ValidatorManager contract. This is the seesaw; it never starts or
-  stops a process.
-
-The two are deliberately orthogonal: a box can be down but still `validator`
-(its stuck stake blocks quorum until you `mark dead` it), or up but `spare`.
+- **`up` / `down`**: the box lifecycle, stake follows. `down` simulates a
+  failure (SIGKILL, data left on disk) and drops the identity's on-chain weight
+  to `dead`; `up` rebuilds the box from genesis (wipes L1 chain data, keeps the
+  Fuji P-chain), starts it, and brings its weight back at `spare`.
+- **`weight <validator|spare|dead>`**: moves an identity's on-chain consensus
+  weight between three tiers (validator=1000000, spare=1000, dead=1) through
+  the ValidatorManager contract. This is the seesaw; it never starts or stops a
+  process, so it also expresses the odd states (a down box still holding
+  `validator` weight to stall the chain on purpose).
 
 ```bash
 ./fleet status [--watch]                # read-only: per-DC stake tier + reachability
-./fleet down 1 2                        # simulate hardware failure on machines 1,2
-./fleet up 1 2                          # rebuild machines 1,2 from genesis and start them
-./fleet mark validator 7 8 9           # give machines 7,8,9 full consensus weight
-./fleet mark spare 1 2 3               # drop machines 1,2,3 to standby weight
-./fleet mark dead 1 2 3                # pull machines 1,2,3's stake out of quorum
+./fleet down 1 2                        # simulate hardware failure on machines 1,2 (stake -> dead)
+./fleet up 1 2                          # rebuild machines 1,2, start them (stake -> spare)
+./fleet weight validator 7 8 9          # give machines 7,8,9 full consensus weight
+./fleet weight spare 1 2 3              # drop machines 1,2,3 to standby weight
+./fleet weight dead 1 2 3               # pull machines 1,2,3's stake out of quorum
 ```
 
-A full site failover is just those primitives composed: raise the incoming site
-to `validator` **before** dropping the outgoing site, or you stall the chain
+A full site failover is just those primitives composed: `weight validator` the
+incoming site **before** `down`ing the outgoing site, or you stall the chain
 (post-Durango there is no anyone-can-propose fallback). See
 [docs/two-site-failover.md](docs/two-site-failover.md) for the worked drill.
 
@@ -216,9 +215,9 @@ bug — it comes from how AvalancheGo bootstraps a (re)starting validator.
 
 ### Taking validators down is safe (the chain keeps going)
 
-- **Take 1 of 3 down, hot spare present:** `mark validator` the spare and
-  `mark dead` the downed box → back to 3 active validators → **full speed**.
-  (Identities never move: this is a weight seesaw, not a key swap.)
+- **Take 1 of 3 down, hot spare present:** `down` already pulled the dead box's
+  stake; `weight validator` the spare → back to 3 active validators →
+  **full speed**. (Identities never move: this is a weight seesaw, not a key swap.)
 - **Take 1 of 3 down, no spare left:** the chain runs on **2 of 3**. Quorum is a
   simple majority (>50%), so it **keeps producing blocks — just slower**: the
   missing validator is the scheduled proposer for ~1/3 of slots, and each of those
