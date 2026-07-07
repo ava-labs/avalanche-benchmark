@@ -178,59 +178,74 @@ func (c *config) checkHealth(intents []MachineIntent) []healthResult {
 	return results
 }
 
-// reportHealth prints the actual per-node health and an honest summary, with
-// hints for the two non-obvious failure modes (lost quorum, and the 75% rejoin
-// latch that keeps a single brought-up validator from recovering a stalled chain).
-// "Validator" here means a slot whose DESIRED weight is active (>=1% of total);
-// standbys are registered on-chain too, but at weight 1 they are consensus-
-// irrelevant and reported as non-validators.
+// reportHealth prints each node grouped by datacenter with two columns — its
+// desired STAKE tier (validator/spare/dead/rpc) and its physical REACHABILITY
+// (SERVING/BOOTSTRAPPING/DOWN, or off when intentionally down) — then an honest
+// summary and hints for the two non-obvious failure modes (lost quorum, and the
+// 75% rejoin latch that keeps a single brought-up validator from recovering a
+// stalled chain). "Validator" in the summary means a slot whose DESIRED weight
+// is the validator tier (>=1% of total); spares are registered too but are
+// consensus-irrelevant.
 func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) {
+	t := cfg.topo
 	total := totalWeight(intents)
-	servingValidators, intendedValidators, activeSlots := 0, 0, 0
-	bootstrappingValidator, downUncordoned := false, false
-	nodeFieldWidth := 0
 
+	nameW := len("node")
 	for i := range intents {
-		field := fmt.Sprintf("%s (%s)", cfg.topo.MachineName(i), cfg.nodeIPs[i])
-		if len(field) > nodeFieldWidth {
-			nodeFieldWidth = len(field)
+		if f := fmt.Sprintf("%s (%s)", t.MachineName(i), cfg.nodeIPs[i]); len(f) > nameW {
+			nameW = len(f)
 		}
 	}
 
-	for i, in := range intents {
-		ip := cfg.nodeIPs[i]
-		name := cfg.topo.MachineName(i)
-		label := roleLabel(cfg.topo, i, in, total)
-		active := isActiveWeight(in.Weight, total)
-		if active {
-			activeSlots++
-		}
-		nodeField := fmt.Sprintf("%s (%s)", name, ip)
-		if in.Cordoned {
-			fmt.Printf("  %-*s: %-13s %-9s (down by intent)\n", nodeFieldWidth, nodeField, "cordoned", label)
-			continue
-		}
-		r := results[i]
-		switch r.state {
-		case healthServing:
-			fmt.Printf("  %-*s: %-13s %-9s block=%d\n", nodeFieldWidth, nodeField, "SERVING", label, r.block)
-		case healthBootstrapping:
-			fmt.Printf("  %-*s: %-13s %-9s (catching up, not yet serving)\n", nodeFieldWidth, nodeField, "BOOTSTRAPPING", label)
-		default:
-			fmt.Printf("  %-*s: %-13s %-9s (uncordoned but not responding!)\n", nodeFieldWidth, nodeField, "DOWN", label)
-		}
-		if active {
-			intendedValidators++
-			switch r.state {
-			case healthServing:
-				servingValidators++
-			case healthBootstrapping:
-				bootstrappingValidator = true
+	sites := []int{siteA}
+	if t.TwoSite {
+		sites = append(sites, siteB)
+	}
+
+	servingValidators, intendedValidators, activeSlots := 0, 0, 0
+	bootstrappingValidator, downUncordoned := false, false
+
+	for _, site := range sites {
+		fmt.Printf("DC %s\n", strings.ToUpper(siteName(site)))
+		fmt.Printf("  %-*s  %-9s  %s\n", nameW, "node", "stake", "reachable")
+		for i, in := range intents {
+			if t.Site(i) != site {
+				continue
+			}
+			field := fmt.Sprintf("%s (%s)", t.MachineName(i), cfg.nodeIPs[i])
+			active := isActiveWeight(in.Weight, total)
+			if active {
+				activeSlots++
+			}
+			var reach string
+			switch {
+			case in.Cordoned:
+				reach = "off (down by intent)"
+			case results[i].state == healthServing:
+				reach = fmt.Sprintf("SERVING block=%d", results[i].block)
+			case results[i].state == healthBootstrapping:
+				reach = "BOOTSTRAPPING (catching up)"
 			default:
+				reach = "DOWN (not responding!)"
+			}
+			fmt.Printf("  %-*s  %-9s  %s\n", nameW, field, weightRole(in.Weight), reach)
+
+			if in.Cordoned {
+				continue
+			}
+			if active {
+				intendedValidators++
+				switch results[i].state {
+				case healthServing:
+					servingValidators++
+				case healthBootstrapping:
+					bootstrappingValidator = true
+				default:
+					downUncordoned = true
+				}
+			} else if results[i].state == healthDown {
 				downUncordoned = true
 			}
-		} else if r.state == healthDown {
-			downUncordoned = true
 		}
 	}
 
@@ -246,20 +261,6 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 		fmt.Println("      startup latch. Bring up the remaining validator machine(s) so they recover together.")
 	}
 	if downUncordoned {
-		fmt.Println("NOTE: an uncordoned node is not responding — re-run failover.sh, or check its logs.")
-	}
-}
-
-// roleLabel renders the operator-facing role of a slot under the current
-// intents: an acting validator ("val", desired weight >=1% of total), a warm
-// registered standby ("standby", weight 1), or an unregistered pinned RPC.
-func roleLabel(t Topology, i int, in MachineIntent, total uint64) string {
-	switch {
-	case !t.IsStakingSlot(i):
-		return "rpc(nv)"
-	case isActiveWeight(in.Weight, total):
-		return "val"
-	default:
-		return "standby"
+		fmt.Println("NOTE: an uncordoned node is not responding — check its logs, or `up` it to rebuild.")
 	}
 }

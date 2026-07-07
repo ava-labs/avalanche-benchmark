@@ -97,7 +97,7 @@ export NODE_IPS BACKUP_SITE_NODE_IPS
         rpc) drole=rpc ;;
         esac
         emit_target "$host" "$port" "$site" "$name" "$name" "$drole"
-    done < <("$SCRIPT_DIR/bin/reconcile" endpoints)
+    done < <("$SCRIPT_DIR/bin/benchmark-fleet" endpoints)
 } > "$PROM_YML"
 
 TARGET_COUNT=$(grep -c "      - targets:" "$PROM_YML")

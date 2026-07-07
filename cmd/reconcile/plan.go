@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/topo"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/valmgr"
 )
@@ -29,7 +31,7 @@ type MachineIntent struct {
 
 // seedIntents is the state a fresh deploy resets to, matching the conversion
 // weights create-l1 registered: site A's validator slots carry the consensus
-// at ActiveWeight; every other staking slot idles at StandbyWeight; RPC slots
+// at ValidatorWeight; every other staking slot idles at SpareWeight; RPC slots
 // are unregistered. All uncordoned.
 func seedIntents(t Topology) []MachineIntent {
 	intents := make([]MachineIntent, t.Size())
@@ -44,17 +46,34 @@ func seedWeight(t Topology, i int) uint64 {
 	case !t.IsStakingSlot(i):
 		return 0
 	case t.Site(i) == siteA && t.IsValidatorSlot(i):
-		return valmgr.ActiveWeight
+		return valmgr.ValidatorWeight
 	default:
-		return valmgr.StandbyWeight
+		return valmgr.SpareWeight
 	}
 }
 
-// activeWeightThreshold reports whether a desired weight makes the slot an
-// acting validator: at least 1% of the fleet's total desired weight. Below
-// that a node is consensus-irrelevant (a warm standby).
+// isActiveWeight reports whether a desired weight makes the slot an acting
+// validator: at least 1% of the fleet's total desired weight. The validator
+// tier (100x a spare) clears it; spare and dead tiers do not.
 func isActiveWeight(w, total uint64) bool {
 	return total > 0 && w*100 >= total
+}
+
+// weightRole names the tier a desired weight sits in, for status display.
+// Unregistered RPC slots carry weight 0; a mid-ratchet on-chain value shows raw.
+func weightRole(w uint64) string {
+	switch w {
+	case 0:
+		return "rpc"
+	case valmgr.ValidatorWeight:
+		return "validator"
+	case valmgr.SpareWeight:
+		return "spare"
+	case valmgr.DeadWeight:
+		return "dead"
+	default:
+		return fmt.Sprintf("w=%d", w)
+	}
 }
 
 func totalWeight(intents []MachineIntent) uint64 {
@@ -105,17 +124,4 @@ func Plan(t Topology, intents []MachineIntent, obs []Observed) []Action {
 		acts[i] = Action{Machine: i + 1, Stop: stop, SwapKey: swap, Start: start}
 	}
 	return acts
-}
-
-// LiveValidators counts the uncordoned slots holding an active (>=1% of
-// total) desired weight: the "N/NVal" the operator cares about.
-func LiveValidators(t Topology, intents []MachineIntent) int {
-	total := totalWeight(intents)
-	n := 0
-	for _, in := range intents {
-		if !in.Cordoned && isActiveWeight(in.Weight, total) {
-			n++
-		}
-	}
-	return n
 }

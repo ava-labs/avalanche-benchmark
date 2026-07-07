@@ -11,121 +11,88 @@ import (
 func stdTopo() Topology    { return Topology{NVal: 3, NSpare: 1, NRPC: 2} }
 func stdTwoSite() Topology { return Topology{TwoSite: true, NVal: 3, NSpare: 1, NRPC: 2} }
 
-// TestRetargetPromotesSpare: cordoning an active validator hands its weight to
-// the same-site spare; uncordoning brings it back as a standby (sticky).
-func TestRetargetPromotesSpare(t *testing.T) {
+// TestSetCordon: cordon is the pure hardware axis — it flips the flag and
+// leaves weight (and the input slice) untouched.
+func TestSetCordon(t *testing.T) {
 	topo := stdTopo()
 	intents := seedIntents(topo)
 
-	next, err := retarget(intents, 1, true, topo) // down m1
+	next, err := setCordon(intents, 1, true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !next[0].Cordoned || next[0].Weight != valmgr.StandbyWeight {
-		t.Errorf("m1 after down = %+v, want cordoned standby", next[0])
+	if !next[0].Cordoned {
+		t.Error("m1 should be cordoned")
 	}
-	if next[3].Weight != valmgr.ActiveWeight {
-		t.Errorf("spare m4 weight = %d, want promoted to %d", next[3].Weight, valmgr.ActiveWeight)
+	if next[0].Weight != intents[0].Weight {
+		t.Errorf("cordon changed weight: %d -> %d", intents[0].Weight, next[0].Weight)
 	}
-	if got := LiveValidators(topo, next); got != 3 {
-		t.Errorf("LiveValidators after down = %d, want 3 (spare covered)", got)
+	if intents[0].Cordoned {
+		t.Error("setCordon mutated its input")
 	}
 
-	back, err := retarget(next, 1, false, topo) // up m1
+	back, err := setCordon(next, 1, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if back[0].Cordoned || back[0].Weight != valmgr.StandbyWeight {
-		t.Errorf("m1 after up = %+v, want uncordoned standby (sticky promotion)", back[0])
-	}
-	if back[3].Weight != valmgr.ActiveWeight {
-		t.Errorf("spare m4 must keep the promoted weight, got %d", back[3].Weight)
+	if back[0].Cordoned {
+		t.Error("m1 should be uncordoned")
 	}
 }
 
-// TestRetargetNoFreeStandby: with the spare already promoted and another
-// validator cordoned, the weight drops to standby (quorum degrades, no crash).
-func TestRetargetNoFreeStandby(t *testing.T) {
+// TestSetWeight: mark is the pure stake axis — it sets the weight tier and
+// leaves cordon (and the input slice) untouched.
+func TestSetWeight(t *testing.T) {
 	topo := stdTopo()
 	intents := seedIntents(topo)
-	next, _ := retarget(intents, 1, true, topo) // spare promoted
-	next, _ = retarget(next, 2, true, topo)     // no free standby left in site A
-	if next[1].Weight != valmgr.StandbyWeight || !next[1].Cordoned {
-		t.Errorf("m2 = %+v, want cordoned standby", next[1])
-	}
-	if got := LiveValidators(topo, next); got != 2 {
-		t.Errorf("LiveValidators = %d, want 2 (degraded)", got)
-	}
-}
 
-// TestRetargetNeverCrossesSites: a site-A fault never promotes a site-B slot.
-func TestRetargetNeverCrossesSites(t *testing.T) {
-	topo := stdTwoSite()
-	intents := seedIntents(topo)
-	next, _ := retarget(intents, 1, true, topo)
-	next, _ = retarget(next, 2, true, topo)
-	for i := topo.SitePool(); i < topo.Size(); i++ {
-		if next[i].Weight != seedWeight(topo, i) {
-			t.Errorf("site-B slot %d weight changed to %d on a site-A fault", i, next[i].Weight)
-		}
-	}
-}
-
-func TestSiteFailoverWeights(t *testing.T) {
-	topo := stdTwoSite()
-	intents := seedIntents(topo)
-	next, err := retargetSite(intents, topo, siteB)
+	next, err := setWeight(intents, 4, valmgr.ValidatorWeight, topo) // promote spare m4
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, in := range next {
-		wantCordon := topo.Site(i) == siteA
-		if in.Cordoned != wantCordon {
-			t.Errorf("slot %d cordoned = %v, want %v", i, in.Cordoned, wantCordon)
-		}
-		want := uint64(valmgr.StandbyWeight)
-		switch {
-		case !topo.IsStakingSlot(i):
-			want = 0
-		case topo.Site(i) == siteB && topo.IsValidatorSlot(i):
-			want = valmgr.ActiveWeight
-		}
-		if in.Weight != want {
-			t.Errorf("slot %d weight = %d, want %d", i, in.Weight, want)
-		}
+	if next[3].Weight != valmgr.ValidatorWeight {
+		t.Errorf("m4 weight = %d, want %d", next[3].Weight, valmgr.ValidatorWeight)
 	}
-}
+	if next[3].Cordoned != intents[3].Cordoned {
+		t.Error("setWeight changed cordon")
+	}
+	if intents[3].Weight == valmgr.ValidatorWeight {
+		t.Error("setWeight mutated its input")
+	}
 
-func TestRestoreKeepsBothSitesUp(t *testing.T) {
-	topo := stdTwoSite()
-	intents, err := retargetSite(seedIntents(topo), topo, siteB)
+	// dead tier pulls stake without touching the process
+	dead, err := setWeight(next, 4, valmgr.DeadWeight, topo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	next, err := retargetRestore(intents, topo, siteA)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i, in := range next {
-		if in.Cordoned {
-			t.Errorf("slot %d cordoned after restore, want everything up", i)
-		}
-		if topo.Site(i) == siteA && topo.IsValidatorSlot(i) && in.Weight != valmgr.ActiveWeight {
-			t.Errorf("site-A validator %d weight = %d, want active", i, in.Weight)
-		}
-		if topo.Site(i) == siteB && in.Weight > valmgr.StandbyWeight {
-			t.Errorf("site-B slot %d weight = %d, want standby", i, in.Weight)
-		}
+	if dead[3].Weight != valmgr.DeadWeight {
+		t.Errorf("m4 weight = %d, want dead %d", dead[3].Weight, valmgr.DeadWeight)
 	}
 }
 
-func TestSiteFailoverRequiresTwoSite(t *testing.T) {
+func TestSetWeightRejectsRPCSlot(t *testing.T) {
 	topo := stdTopo()
-	if _, err := retargetSite(seedIntents(topo), topo, siteB); err == nil {
-		t.Error("retargetSite must fail in single-site mode")
+	intents := seedIntents(topo)
+	rpc := -1
+	for i := 0; i < topo.Size(); i++ {
+		if topo.IsRPCSlot(i) {
+			rpc = i
+			break
+		}
 	}
-	if _, err := retargetRestore(seedIntents(topo), topo, siteB); err == nil {
-		t.Error("retargetRestore must fail in single-site mode")
+	if _, err := setWeight(intents, rpc+1, valmgr.SpareWeight, topo); err == nil {
+		t.Error("setWeight on an RPC slot must fail (unregistered)")
+	}
+}
+
+func TestSetOutOfRange(t *testing.T) {
+	topo := stdTopo()
+	intents := seedIntents(topo)
+	if _, err := setCordon(intents, 0, true); err == nil {
+		t.Error("machine 0 must be rejected")
+	}
+	if _, err := setWeight(intents, topo.Size()+1, valmgr.DeadWeight, topo); err == nil {
+		t.Error("out-of-range machine must be rejected")
 	}
 }
 
@@ -143,7 +110,9 @@ func TestLoadIntentsMissingReturnsSeed(t *testing.T) {
 func TestLoadIntentsRoundTrip(t *testing.T) {
 	topo := stdTwoSite()
 	path := filepath.Join(t.TempDir(), "intents.json")
-	want, _ := retargetSite(seedIntents(topo), topo, siteB)
+	want := seedIntents(topo)
+	want, _ = setCordon(want, 1, true)
+	want, _ = setWeight(want, 4, valmgr.DeadWeight, topo)
 	if err := saveIntents(path, want); err != nil {
 		t.Fatal(err)
 	}

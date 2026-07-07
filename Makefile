@@ -2,7 +2,7 @@
 # The Go tool binaries are phony too: their file rules have no source
 # prerequisites, so without this a stale bin/ silently ships into `pack`
 # (bit us 2026-07-06). go's build cache keeps the rebuild near-instant.
-.PHONY: bin/create-l1 bin/bombard bin/reconcile bin/genstaking bin/fuji-wallet
+.PHONY: bin/create-l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet
 
 .DEFAULT_GOAL := all
 
@@ -26,7 +26,7 @@ all: deps build
 	@echo "All ready."
 
 # Build Go tools
-build: bin/create-l1 bin/bombard bin/reconcile bin/genstaking bin/fuji-wallet
+build: bin/create-l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet
 
 bin/create-l1:
 	@mkdir -p bin
@@ -36,9 +36,9 @@ bin/bombard:
 	@mkdir -p bin
 	go build -o bin/bombard ./cmd/bombard
 
-bin/reconcile:
+bin/benchmark-fleet:
 	@mkdir -p bin
-	go build -o bin/reconcile ./cmd/reconcile
+	go build -o bin/benchmark-fleet ./cmd/reconcile
 
 bin/genstaking:
 	@mkdir -p bin
@@ -59,7 +59,7 @@ clean:
 # monitoring downloads). pack runs this first so a pack can never ship a stale
 # tool even if the .PHONY list above drifts.
 clean-tools:
-	rm -f bin/create-l1 bin/bombard bin/reconcile bin/genstaking bin/fuji-wallet
+	rm -f bin/create-l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet
 
 # Build avalanchego + subnet-evm from the published pinned ref (run on Linux)
 bin/avalanchego bin/$(SUBNET_EVM_ID):
@@ -97,11 +97,11 @@ bin/grafana.tar.gz:
 # Create offline package for deployment to the control machine
 pack: clean-tools deps build monitoring-deps
 	rm -f remote-benchmark.tar.gz
-	tar --exclude=scripts/failover/intentions.json --exclude=bin/grafana-dist -czvf remote-benchmark.tar.gz \
+	tar --exclude=bin/grafana-dist -czvf remote-benchmark.tar.gz \
 		bin/ \
 		_common.sh \
+		fleet \
 		0[0-6]_*.sh \
-		scripts/failover/ \
 		monitoring/grafana-datasources.yml \
 		monitoring/dashboards/ \
 		node-config.json \

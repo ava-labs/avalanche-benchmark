@@ -45,12 +45,12 @@ fi
 # Endpoints come from `reconcile endpoints` (the single source of truth for the
 # co-location-aware ports), so a co-located RPC slot is targeted on its ACTUAL port
 # rather than a hardcoded :9652 (which would hit a validator on a shared box).
-RECONCILE_BIN="$SCRIPT_DIR/bin/reconcile"
+RECONCILE_BIN="$SCRIPT_DIR/bin/benchmark-fleet"
 export NODE_IPS BACKUP_SITE_NODE_IPS
 mapfile -t RPC_URLS < <("$RECONCILE_BIN" endpoints | awk -F'\t' -v c="$CHAIN_ID" \
     '$3=="rpc"{printf "http://%s:%s/ext/bc/%s/rpc\n", $4, $5, c}')
 if [ "${#RPC_URLS[@]}" -eq 0 ]; then
-    echo "ERROR: 'reconcile endpoints' returned no RPC nodes — check NODE_IPS/bin/reconcile." >&2
+    echo "ERROR: 'reconcile endpoints' returned no RPC nodes — check NODE_IPS/bin/benchmark-fleet." >&2
     exit 1
 fi
 RPC_LIST="$(IFS=,; echo "${RPC_URLS[*]}")"

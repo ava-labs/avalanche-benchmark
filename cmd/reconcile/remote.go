@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -36,9 +37,45 @@ type config struct {
 func mustEnv(key string) string {
 	v := os.Getenv(key)
 	if v == "" {
-		fatalf("missing required env %s (run via scripts/failover wrappers, not directly)", key)
+		fatalf("missing required env %s (set it in .env / network.env)", key)
 	}
 	return v
+}
+
+// loadEnvFiles makes the binary self-contained: it sources .env + network.env
+// from the repo root (REPO_DIR, defaulting to the working dir) and fills the
+// same defaults the old _common.sh shell loader supplied, so `benchmark-fleet`
+// runs directly with no wrapper. Values already in the real environment win
+// (godotenv never overrides), so an ad-hoc `FOO=bar benchmark-fleet ...` still
+// overrides a file. The per-role IP lists, SSH_USER, and the chain IDs have no
+// defaults — they must come from the files (topo.FromEnv / mustEnv report a
+// clear error if absent).
+func loadEnvFiles() {
+	repo := os.Getenv("REPO_DIR")
+	if repo == "" {
+		if wd, err := os.Getwd(); err == nil {
+			repo = wd
+		}
+		os.Setenv("REPO_DIR", repo)
+	}
+	// Loaded separately so a missing network.env (pre-02) still lets .env load.
+	_ = godotenv.Load(filepath.Join(repo, ".env"))
+	_ = godotenv.Load(filepath.Join(repo, "network.env"))
+
+	setDefault("REMOTE_DIR", "~/avalanche-benchmark")
+	setDefault("SSH_KEY_PATH", "/home/ubuntu/.ssh/ilya-solohin-failover-bench-2026-05-04")
+	setDefault("SUBNET_EVM_ID", "srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy")
+	// Public Fuji peer the RPC tier follows (kept in sync with _common.sh; rotates
+	// on an AVALANCHEGO_COMMIT bump — see bootstrappers.json).
+	setDefault("FUJI_UPSTREAM_IPS", "18.192.93.241:9651")
+	setDefault("FUJI_UPSTREAM_IDS", "NodeID-2m38qc95mhHXtrhjyGbe7r2NhniqHHJRB")
+	setDefault("FAILOVER_STATE_FILE", filepath.Join(repo, "fleet-state.json"))
+}
+
+func setDefault(key, val string) {
+	if os.Getenv(key) == "" {
+		os.Setenv(key, val)
+	}
 }
 
 // splitIPs parses a comma-separated IP list, trimming blanks and dropping empties.

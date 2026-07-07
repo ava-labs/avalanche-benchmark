@@ -80,16 +80,14 @@ cp .env.example .env
 
 `.env.example` documents every field and shows alternate shapes (e.g. the full
 topology co-located on 3 boxes, or everything on one). After editing, run
-`./bin/reconcile endpoints` to print the resulting per-node layout
+`./fleet endpoints` to print the resulting per-node layout
 (name / site / role / host / port) before deploying. Setting the `BACKUP_*` lists
-enables **two-site mode**: a backup data center of zero-weight syncing trackers the
-validator set can be swapped onto when the whole primary site goes down
-(`./scripts/failover/site-failover.sh b`). To return once the primary is healthy,
-use the graceful `restore.sh a` — it rolls the set back one validator at a time
-with no chain downtime; `site-failover.sh a` is the hard-cutover failback for a
-true outage (see the rollback caveat in
-[docs/two-site-failover.md](docs/two-site-failover.md)). Single-site behavior is
-unchanged when the `BACKUP_*` lists are unset.
+enables **two-site mode**: a second data center of spare-weight validators the
+consensus can be moved onto when the primary site goes down. A failover is a
+weight move on the ValidatorManager contract — `./fleet mark validator <site-B
+machines>` to hand them the consensus, `./fleet mark dead <site-A machines>` to
+pull the dead site's stake out of quorum. Single-site behavior is unchanged when
+the `BACKUP_*` lists are unset.
 
 > **Staking identities are generated per deploy** by `./00_gen_secrets.sh`
 > (gitignored, never committed: on Fuji a leaked staking key means validator
@@ -110,15 +108,19 @@ full walkthrough — with what to expect at each step — is in
 ./02_create_chain.sh                # ONCE per chain: create the L1 on Fuji (SPENDS AVAX)
 ./03_deploy_chain.sh                # deploy all 12 nodes, start chain from genesis (destructive, repeatable)
 ./04_monitoring.sh                  # Prometheus + Grafana on the control host
-./scripts/failover/status.sh        # expect all nodes SERVING, "validators serving: N/N" (3/3 by default)
+./fleet status                      # expect all nodes SERVING, "validators serving: N/N" (3/3 by default)
 ./05_benchmark.sh                   # drive ~4000 tx/s at the pinned RPC nodes
 ```
 
 Then run the failover drill (separate terminal, benchmark left running):
 
 ```bash
-./scripts/failover/site-failover.sh b   # nuke site A, fail the validator set onto B
-./scripts/failover/restore.sh a         # graceful rolling failback to A (no chain downtime)
+./fleet down 1 2 3                        # simulate a site-A outage: hard-kill its validators
+./fleet mark validator 7 8 9              # move the consensus onto site B's validators
+./fleet mark dead 1 2 3                   # pull the dead site's stake out of quorum
+# ...later, to fail back once site A is healthy:
+./fleet up 1 2 3                          # rebuild site A from genesis
+./fleet mark validator 1 2 3             # hand the consensus back; mark spare 7 8 9
 ```
 
 `03_deploy_chain.sh` is **destructive by design**: it wipes node data and
@@ -142,7 +144,7 @@ make monitoring-deps     # one-time (source builds only): fetch prometheus + gra
 ./04_monitoring.sh       # generate scrape config, start both, print URLs
 ```
 
-It discovers the fleet from `reconcile endpoints` (the single source of truth for
+It discovers the fleet from `fleet endpoints` (the single source of truth for
 the configured topology + co-location-aware ports) and labels each target by
 `site` (`a`/`b`), `machine` (`m1`…/`b1`…), and `role` (`validator`/`spare`/`rpc`/
 `tracker`) — so the dashboards track whatever counts you set. Two dashboards are
@@ -168,31 +170,38 @@ gap panel is just empty without a backup site.
 
 ## Failover commands
 
-`scripts/failover/` moves validator identities across the fixed pool. Within a
-site the hot spare covers a downed validator; a `site-failover` moves the whole
-set across sites. See
-[docs/failover-recovery-simulation.md](docs/failover-recovery-simulation.md)
-(single-site) and [docs/two-site-failover.md](docs/two-site-failover.md)
-(two-site) for the design.
+The whole fleet is driven by the `./fleet` binary. Every registered identity is
+permanent (registered once at conversion, never moved); operating the fleet is
+two independent axes:
+
+- **hardware** — `up` / `down` start or hard-kill avalanchego on a box. `down`
+  simulates a failure (SIGKILL, data left on disk); `up` rebuilds the box from
+  genesis (wipes L1 chain data, keeps the Fuji P-chain). Neither touches weight.
+- **stake** — `mark <validator|spare|dead>` moves an identity's on-chain
+  consensus weight between three tiers (validator=10000, spare=100, dead=1)
+  through the ValidatorManager contract. This is the seesaw; it never starts or
+  stops a process.
+
+The two are deliberately orthogonal: a box can be down but still `validator`
+(its stuck stake blocks quorum until you `mark dead` it), or up but `spare`.
 
 ```bash
-./scripts/failover/status.sh     # read-only: each node's ACTUAL state + honest validators-serving count
-./scripts/failover/verify.sh     # read-only: prove the live network is ONE branch + quorum healthy
-./scripts/failover/down.sh <m>   # cordon machine m (take it "offline") — within-site failover
-./scripts/failover/up.sh <m>     # uncordon machine m (return it to service)
-./scripts/failover/clean.sh <m>  # wipe machine m's chain data and re-bootstrap it clean
-
-# Two-site mode (requires BACKUP_SITE_NODE_IPS):
-./scripts/failover/site-failover.sh <a|b>  # hard cutover: nuke the other site, swap the whole set here
-./scripts/failover/restore.sh <a|b>        # graceful rolling failback: one validator at a time, no downtime
+./fleet status [--watch]                # read-only: per-DC stake tier + reachability
+./fleet down 1 2                        # simulate hardware failure on machines 1,2
+./fleet up 1 2                          # rebuild machines 1,2 from genesis and start them
+./fleet mark validator 7 8 9           # give machines 7,8,9 full consensus weight
+./fleet mark spare 1 2 3               # drop machines 1,2,3 to standby weight
+./fleet mark dead 1 2 3                # pull machines 1,2,3's stake out of quorum
 ```
 
-`site-failover` models a real outage: it **hard-kills every node on the down site
-at once** (freezing its tip at the true data-loss boundary), then the surviving
-site forms consensus on the blocks it already holds — no state is pulled from the
-dead site. `status.sh` reports every node as `SERVING@block` / `BOOTSTRAPPING` /
-`DOWN` and an honest `validators serving: X/N`, so you see what is *actually*
-happening rather than what was *intended*.
+A full site failover is just those primitives composed: raise the incoming site
+to `validator` **before** dropping the outgoing site, or you stall the chain
+(post-Durango there is no anyone-can-propose fallback). See
+[docs/two-site-failover.md](docs/two-site-failover.md) for the worked drill.
+
+`status` reports every node as `SERVING@block` / `BOOTSTRAPPING` / `DOWN` (or
+`off` when intentionally down) alongside its stake tier, per datacenter, so you
+see what is *actually* happening rather than what was *intended*.
 
 ## Recovering From a Stalled Chain
 
@@ -207,8 +216,9 @@ bug — it comes from how AvalancheGo bootstraps a (re)starting validator.
 
 ### Taking validators down is safe (the chain keeps going)
 
-- **Take 1 of 3 down, hot spare present:** the spare immediately assumes the
-  downed validator's identity → back to 3 active validators → **full speed**.
+- **Take 1 of 3 down, hot spare present:** `mark validator` the spare and
+  `mark dead` the downed box → back to 3 active validators → **full speed**.
+  (Identities never move: this is a weight seesaw, not a key swap.)
 - **Take 1 of 3 down, no spare left:** the chain runs on **2 of 3**. Quorum is a
   simple majority (>50%), so it **keeps producing blocks — just slower**: the
   missing validator is the scheduled proposer for ~1/3 of slots, and each of those

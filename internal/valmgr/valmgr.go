@@ -49,15 +49,25 @@ var libBinHex string
 var libPlaceholder = regexp.MustCompile(`__\$[0-9a-f]+\$__`)
 
 const (
-	// ActiveWeight/StandbyWeight are the two consensus weights a registered
-	// validator ever holds. Active=100, standby=1 gives the active DC ~98-99%
-	// of total weight, so a standby-DC node wins a proposer slot only ~1% of the
-	// time (one cross-DC block hop, absorbed by poll early-termination), while
-	// standbys stay live consensus participants that are consensus-irrelevant.
-	// The 20% churn-cap ratchet still has room (steps of ~60 on a ~305 total),
-	// and every uint64 product in the pipeline is nowhere near overflow.
-	ActiveWeight  uint64 = 100
-	StandbyWeight uint64 = 1
+	// The three weight tiers a registered validator ever holds. The operator
+	// marks a slot into one of them (reconcile `mark validator|spare|dead`);
+	// the seesaw ratchets the on-chain weight there.
+	//
+	//   ValidatorWeight — acting consensus member of the active DC.
+	//   SpareWeight     — alive but idle: the standby DC and hot spares. At 1%
+	//                     of an active peer it still wins ~1% of proposer slots,
+	//                     so it is a live participant that can take over the set
+	//                     WITHOUT the post-Durango proposer deadlock a weight-1
+	//                     standby would hit (it holds real slot probability).
+	//   DeadWeight      — stake pulled out of quorum: mark a failed box here so
+	//                     its unreachable weight stops blocking finalization.
+	//
+	// Ratios are 100:1 between adjacent tiers. Totals stay ~tens of thousands,
+	// far below any uint64 product bound in the pipeline, and the 20% churn-cap
+	// ratchet has ample room. Production swaps these for 1 / 1000 / 1000000.
+	ValidatorWeight uint64 = 10000
+	SpareWeight     uint64 = 100
+	DeadWeight      uint64 = 1
 
 	// Churn settings baked at initialize (write-once). Period 0 turns the rate
 	// limit into a per-op size cap of maximumChurnPercentage of the running

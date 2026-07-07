@@ -397,12 +397,13 @@ func run() error {
 }
 
 // slotWeight is the conversion-time weight policy: the primary site's
-// validator slots carry the consensus, everything else idles at 1.
+// validator slots carry the consensus at ValidatorWeight, everything else
+// (the standby site and hot spares) registers at SpareWeight.
 func slotWeight(t topo.Topology, slot int) uint64 {
 	if t.Site(slot) == topo.SiteA && t.IsValidatorSlot(slot) {
-		return valmgr.ActiveWeight
+		return valmgr.ValidatorWeight
 	}
-	return valmgr.StandbyWeight
+	return valmgr.SpareWeight
 }
 
 // isConverted probes the first conversion validationID: present means the

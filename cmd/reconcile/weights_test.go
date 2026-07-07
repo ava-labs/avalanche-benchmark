@@ -7,7 +7,7 @@ import (
 )
 
 func TestNextWeight(t *testing.T) {
-	const A = valmgr.ActiveWeight
+	const A = valmgr.ValidatorWeight
 	tests := []struct {
 		name                    string
 		current, desired, total uint64
@@ -33,7 +33,7 @@ func TestNextWeight(t *testing.T) {
 // full DC failover and asserts the ratchet terminates quickly with every step
 // within the per-op cap.
 func TestSeesawConverges(t *testing.T) {
-	const A = valmgr.ActiveWeight
+	const A = valmgr.ValidatorWeight
 	// Post-conversion two-site fleet: site A active, site B + spares standby.
 	weights := []uint64{A, A, A, 1, 1, 1, 1, 1}
 	desired := []uint64{1, 1, 1, 1, A, A, A, 1}

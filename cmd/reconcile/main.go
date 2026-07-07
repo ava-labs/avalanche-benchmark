@@ -1,48 +1,55 @@
-// Command reconcile converges a fixed pool of machines — per site 3+
-// validators, hot spares and pinned dedicated-RPC nodes, optionally doubled
-// across two sites — to the desired state recorded in the intentions JSON.
+// Command benchmark-fleet drives the two-datacenter Avalanche benchmark L1.
 //
 // Every machine wears ONE permanent staking identity (internal/topo); the
 // validator+spare slots of both sites are all registered as L1 validators at
-// conversion. Reconciliation therefore has two halves:
+// conversion and NEVER re-registered. Operating the fleet is therefore two
+// independent axes, each its own verb:
 //
-//	processes — stop/start avalanchego per cordon intent (SSH, this package);
-//	weights   — converge each registered identity's consensus weight to the
-//	            intent through the ValidatorManager contract on the Fuji
-//	            C-chain (weights.go). Failover IS a weight change; keys never
-//	            move between machines (key swaps produced forks).
+//	hardware   — up/down: kill or (re)start avalanchego on a box. `down` hard-
+//	             kills (simulated failure, data left on disk); `up` rebuilds the
+//	             box from genesis (wipes L1 chainData, keeps the Fuji P-chain).
+//	             Neither touches on-chain weight.
+//	stake      — mark <validator|spare|dead>: move a registered identity's
+//	             consensus weight between the three tiers through the
+//	             ValidatorManager contract on Fuji's C-chain (weights.go). This
+//	             is the seesaw; it never starts or stops a process.
 //
-// The decision logic is pure (plan.go); remote.go does the SSH/scp I/O. Run
-// via the bash wrappers, which supply config through the environment.
+// The two axes are deliberately orthogonal: a box can be down but still
+// mark=validator (its stuck stake blocks quorum until you mark it dead), or up
+// but mark=spare. `status` shows both columns per datacenter.
+//
+// The binary self-loads .env + network.env from the repo root, so it is the
+// whole interface: run it directly (or via ./fleet). No wrapper scripts.
 package main
 
 import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
+
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/valmgr"
 )
 
 func fatalf(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, "reconcile: "+format+"\n", args...)
+	fmt.Fprintf(os.Stderr, "benchmark-fleet: "+format+"\n", args...)
 	os.Exit(1)
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `usage: reconcile <command>
-  fresh              clear cordons, wipe data, reseed intents (site A active), force re-upload,
-                     start all, converge weights
-  down <m>           cordon machine m; if it held active weight, promote a same-site standby
-  up <m>             uncordon machine m (rejoins as a standby; weights are sticky)
-  clean <m>          wipe machine m's chain data (keep credentials), then reconcile it back up
-  site-failover <a|b>  hard DC failover: nuke the other site, seesaw all active weight to the
-                       given site via the ValidatorManager (two-site mode)
-  restore <a|b>        graceful weight migration to a site: bring both sites up, wait until the
-                       target site serves at tip, then seesaw the weights (two-site mode)
-  apply              pure reconcile against the existing intentions (processes + weights)
-  status             read-only health report (node state + on-chain weights, no changes)
-  verify             read-only proof the live network is ONE branch (no fork) + quorum healthy
-  endpoints          print per-slot "name<TAB>site<TAB>role<TAB>host<TAB>httpPort" (co-location-aware;
-                     used by 04_monitoring.sh / 05_benchmark.sh to target the right ports)`)
+	fmt.Fprintln(os.Stderr, `usage: benchmark-fleet <command>
+  up   <m...>                 (re)build the given machines from genesis and start them
+                              (wipes L1 chain data, keeps the Fuji P-chain)
+  down <m...>                 simulate hardware failure: hard-kill the given machines
+                              (data left on disk; no weight change)
+  mark <validator|spare|dead> <m...>
+                              set the given machines' on-chain consensus weight tier
+                              (validator=10000, spare=100, dead=1) and converge it
+  status [--watch]            read-only report: per-datacenter stake tier + reachability
+  fresh                       WIPE + redeploy the whole fleet from genesis, reseed intents
+                              (site A active), force re-upload binaries, converge weights
+  endpoints                   print per-slot "name<TAB>site<TAB>role<TAB>host<TAB>httpPort"
+                              (used by 04_monitoring.sh / 05_benchmark.sh)`)
 	os.Exit(2)
 }
 
@@ -50,10 +57,12 @@ func main() {
 	if len(os.Args) < 2 {
 		usage()
 	}
+	loadEnvFiles()
+	cmd := os.Args[1]
 
-	// `endpoints` is a pure read of the IP env (no SSH/chain config needed), so it
-	// runs before the full loadConfig — 04/05 call it with only the IP env exported.
-	if os.Args[1] == "endpoints" {
+	// `endpoints` is a pure read of the IP env (no SSH/chain config), so it runs
+	// before the full loadConfig — 04/05 call it with only the IP env available.
+	if cmd == "endpoints" {
 		topo, _, insts := loadPool()
 		printEndpoints(topo, insts)
 		return
@@ -61,149 +70,141 @@ func main() {
 
 	cfg := loadConfig()
 	topo := cfg.topo
-	// Operator topology warnings only on state-CHANGING commands — never on the
-	// read-only status/verify, which are often run under `watch` where the notes
-	// would bury the node list.
-	switch os.Args[1] {
-	case "status", "verify":
-	default:
+
+	switch cmd {
+	case "status":
+		status(cfg, hasFlag(os.Args[2:], "--watch"))
+
+	case "up", "down":
 		cfg.warnColocation()
-	}
-
-	if os.Args[1] == "status" {
-		status(cfg)
-		return
-	}
-
-	if os.Args[1] == "verify" {
-		if !verifyAgreement(cfg) {
-			os.Exit(1)
+		ms := parseMachines(os.Args[2:], topo)
+		intents := mustLoadIntents(cfg)
+		down := cmd == "down"
+		for _, m := range ms {
+			next, err := setCordon(intents, m, down)
+			if err != nil {
+				fatalf("%v", err)
+			}
+			intents = next
 		}
-		return
-	}
-
-	if os.Args[1] == "clean" {
-		m := parseMachine(os.Args, topo)
-		fmt.Printf("== reconcile clean %d (%s): wipe chain data, keep credentials ==\n", m, topo.MachineName(m-1))
-		cfg.wipeL1Data(m - 1) // stop + wipe ONLY this instance's data dir (co-location safe)
-		intents, err := loadIntents(cfg.stateFile, topo)
-		if err != nil {
-			fatalf("%v", err)
+		mustSaveIntents(cfg, intents)
+		if down {
+			// Simulated hardware failure: hard SIGKILL, no wipe — the box "dies"
+			// with its data intact. Weight is untouched (mark dead to pull stake).
+			for _, m := range ms {
+				fmt.Printf("== down %s (%s): SIGKILL (simulated failure) ==\n", topo.MachineName(m-1), cfg.nodeIPs[m-1])
+				cfg.killNode(m - 1)
+			}
+		} else {
+			// Recovery: rebuild each target from genesis, then start.
+			fresh := map[int]bool{}
+			for _, m := range ms {
+				fresh[m-1] = true
+			}
+			reconcile(cfg, intents, fresh, false)
 		}
-		reconcile(cfg, intents, false) // bring it back up clean against current intent
-		return
-	}
 
-	fresh := false
-	waitSite := -1 // when >=0, wait for this site to serve at tip before the weight seesaw
-	var intents []MachineIntent
+	case "mark":
+		cfg.warnColocation()
+		w, ms := parseMark(os.Args[2:], topo)
+		intents := mustLoadIntents(cfg)
+		for _, m := range ms {
+			next, err := setWeight(intents, m, w, topo)
+			if err != nil {
+				fatalf("%v", err)
+			}
+			intents = next
+		}
+		mustSaveIntents(cfg, intents)
+		printIntents(topo, intents)
+		reconcileWeights(cfg, intents)
+		// Re-point bombard AFTER weights moved: ingress follows consensus.
+		cfg.writeActiveRPCs(intents)
 
-	switch os.Args[1] {
 	case "fresh":
-		fresh = true
-		intents = seedIntents(topo)
-		if err := saveIntents(cfg.stateFile, intents); err != nil {
-			fatalf("%v", err)
+		cfg.warnColocation()
+		intents := seedIntents(topo)
+		mustSaveIntents(cfg, intents)
+		fmt.Println("== benchmark-fleet fresh: reseeded intents (site A active) ==")
+		printIntents(topo, intents)
+		all := map[int]bool{}
+		for i := range intents {
+			all[i] = true
 		}
-		fmt.Println("== reconcile fresh: reseeded intentions (site A active) ==")
-
-	case "down", "up":
-		m := parseMachine(os.Args, topo)
-		prev, err := loadIntents(cfg.stateFile, topo)
-		if err != nil {
-			fatalf("%v", err)
-		}
-		intents, err = retarget(prev, m, os.Args[1] == "down", topo)
-		if err != nil {
-			fatalf("%v", err)
-		}
-		if err := saveIntents(cfg.stateFile, intents); err != nil {
-			fatalf("%v", err)
-		}
-		fmt.Printf("== reconcile %s %d (%s) ==\n", os.Args[1], m, topo.MachineName(m-1))
-
-	case "site-failover":
-		if len(os.Args) < 3 {
-			usage()
-		}
-		target, ok := topo.SiteFromName(os.Args[2])
-		if !ok {
-			fatalf("site must be 'a' or 'b' (two-site mode requires the BACKUP_* IP lists), got %q", os.Args[2])
-		}
-		prev, err := loadIntents(cfg.stateFile, topo)
-		if err != nil {
-			fatalf("%v", err)
-		}
-		intents, err = retargetSite(prev, topo, target)
-		if err != nil {
-			fatalf("%v", err)
-		}
-		if err := saveIntents(cfg.stateFile, intents); err != nil {
-			fatalf("%v", err)
-		}
-		fmt.Printf("== reconcile site-failover %s ==\n", os.Args[2])
-		// Model a real disaster: NUKE the down site — hard-kill every node on it at
-		// once — so its tip is frozen at the instant of failure. The surviving site's
-		// standby validators are live consensus participants at the same tip, so no
-		// state surgery is needed: the weight seesaw below IS the recovery.
-		downSite := otherSite(target)
-		fmt.Printf("== site-failover: nuking site %s (parallel SIGKILL — simulated outage) ==\n", siteName(downSite))
-		cfg.nukeSite(downSite)
-
-	case "restore":
-		if len(os.Args) < 3 {
-			usage()
-		}
-		target, ok := topo.SiteFromName(os.Args[2])
-		if !ok {
-			fatalf("site must be 'a' or 'b' (two-site mode requires the BACKUP_* IP lists), got %q", os.Args[2])
-		}
-		prev, err := loadIntents(cfg.stateFile, topo)
-		if err != nil {
-			fatalf("%v", err)
-		}
-		intents, err = retargetRestore(prev, topo, target)
-		if err != nil {
-			fatalf("%v", err)
-		}
-		if err := saveIntents(cfg.stateFile, intents); err != nil {
-			fatalf("%v", err)
-		}
-		waitSite = target
-		fmt.Printf("== reconcile restore %s (graceful weight migration) ==\n", os.Args[2])
-
-	case "apply":
-		var err error
-		intents, err = loadIntents(cfg.stateFile, topo)
-		if err != nil {
-			fatalf("%v", err)
-		}
-		fmt.Println("== reconcile apply ==")
+		reconcile(cfg, intents, all, true)
+		reconcileWeights(cfg, intents)
+		cfg.writeActiveRPCs(intents)
 
 	default:
 		usage()
 	}
-
-	printIntents(topo, intents)
-	reconcile(cfg, intents, fresh)
-	if waitSite >= 0 {
-		cfg.waitForSiteReady(intents, waitSite)
-	}
-	reconcileWeights(cfg, intents)
-	// Re-point bombard AFTER the weights actually moved: ingress must follow
-	// the consensus, not the intent.
-	cfg.writeActiveRPCs(intents)
 }
 
-func parseMachine(args []string, topo Topology) int {
-	if len(args) < 3 {
-		usage()
+func mustLoadIntents(cfg *config) []MachineIntent {
+	intents, err := loadIntents(cfg.stateFile, cfg.topo)
+	if err != nil {
+		fatalf("%v", err)
 	}
-	m, err := strconv.Atoi(args[2])
-	if err != nil || m < 1 || m > topo.Size() {
-		fatalf("machine must be 1..%d, got %q", topo.Size(), args[2])
+	return intents
+}
+
+func mustSaveIntents(cfg *config, intents []MachineIntent) {
+	if err := saveIntents(cfg.stateFile, intents); err != nil {
+		fatalf("%v", err)
 	}
-	return m
+}
+
+func hasFlag(args []string, flag string) bool {
+	for _, a := range args {
+		if a == flag {
+			return true
+		}
+	}
+	return false
+}
+
+// parseMachines parses one or more 1-based machine numbers (deduped, order
+// preserved). Flags are skipped; each number must be in range 1..Size.
+func parseMachines(args []string, topo Topology) []int {
+	var out []int
+	seen := map[int]bool{}
+	for _, a := range args {
+		if len(a) > 0 && a[0] == '-' {
+			continue // skip flags
+		}
+		m, err := strconv.Atoi(a)
+		if err != nil || m < 1 || m > topo.Size() {
+			fatalf("machine must be 1..%d, got %q", topo.Size(), a)
+		}
+		if !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	if len(out) == 0 {
+		fatalf("need at least one machine number (1..%d)", topo.Size())
+	}
+	return out
+}
+
+// parseMark parses `<role> <m...>`: the first arg is the weight tier, the rest
+// are machine numbers. Returns the mapped weight and the machines.
+func parseMark(args []string, topo Topology) (uint64, []int) {
+	if len(args) < 2 {
+		fatalf("usage: mark <validator|spare|dead> <m...>")
+	}
+	var w uint64
+	switch args[0] {
+	case "validator":
+		w = valmgr.ValidatorWeight
+	case "spare":
+		w = valmgr.SpareWeight
+	case "dead":
+		w = valmgr.DeadWeight
+	default:
+		fatalf("role must be validator|spare|dead, got %q", args[0])
+	}
+	return w, parseMachines(args[1:], topo)
 }
 
 // printEndpoints writes one tab-separated line per pool slot —
@@ -221,32 +222,34 @@ func printEndpoints(topo Topology, insts []instance) {
 }
 
 func printIntents(topo Topology, intents []MachineIntent) {
-	total := totalWeight(intents)
 	for i, in := range intents {
 		state := "up"
 		if in.Cordoned {
-			state = "cordoned"
+			state = "down"
 		}
-		fmt.Printf("  %s: key=%d weight=%-10d %-9s %s\n",
-			topo.MachineName(i), topo.KeyOf(i), in.Weight, roleLabel(topo, i, in, total), state)
+		fmt.Printf("  %s: weight=%-6d %-9s %s\n",
+			topo.MachineName(i), in.Weight, weightRole(in.Weight), state)
 	}
 }
 
-// reconcile converges process reality to intents in three passes: ensure-
-// provisioned, stop-swap, start. The weight half runs after (reconcileWeights).
-func reconcile(cfg *config, intents []MachineIntent, fresh bool) {
+// reconcile converges process reality to intents. freshSet names instances to
+// rebuild from genesis first (kill + wipe L1 chainData, keep the P-chain).
+// forceUpload re-ships binaries to every box regardless of what's already there
+// (whole-fleet fresh); otherwise a box is uploaded only if it is missing
+// artifacts. Passes: ensure-provisioned, stop-swap, start.
+func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forceUpload bool) {
 	topo := cfg.topo
 	hosts := cfg.nodeIPs
 
-	// Pass 0 — ensure provisioned. Work per PHYSICAL box, not per logical slot: the
-	// binary/plugin/keys are pushed once per box even when it hosts several co-located
-	// instances. In fresh mode every instance is killed+wiped BEFORE any upload, so a
-	// re-upload never hits ETXTBSY against a still-running co-located plugin.
 	fmt.Println("[0/3] ensure provisioned...")
-	if fresh {
+	if forceUpload {
+		// Whole-fleet fresh: kill+wipe every target BEFORE any upload, so a
+		// re-upload never hits ETXTBSY against a still-running co-located plugin.
 		for i := range hosts {
-			fmt.Printf("  %s (%s): fresh clean\n", topo.MachineName(i), hosts[i])
-			cfg.freshClean(i)
+			if freshSet[i] {
+				fmt.Printf("  %s (%s): fresh clean\n", topo.MachineName(i), hosts[i])
+				cfg.freshClean(i)
+			}
 		}
 		uploaded := map[string]bool{}
 		for i, host := range hosts {
@@ -260,7 +263,7 @@ func reconcile(cfg *config, intents []MachineIntent, fresh bool) {
 	} else {
 		checked := map[string]bool{}
 		for i, host := range hosts {
-			if checked[host] {
+			if intents[i].Cordoned || checked[host] {
 				continue
 			}
 			checked[host] = true
@@ -269,6 +272,12 @@ func reconcile(cfg *config, intents []MachineIntent, fresh bool) {
 				cfg.upload(host)
 			} else {
 				fmt.Printf("  %s (%s): provisioned\n", topo.MachineName(i), host)
+			}
+		}
+		for i := range hosts {
+			if freshSet[i] {
+				fmt.Printf("  %s (%s): rebuild from genesis\n", topo.MachineName(i), hosts[i])
+				cfg.freshClean(i)
 			}
 		}
 	}
@@ -305,21 +314,25 @@ func reconcile(cfg *config, intents []MachineIntent, fresh bool) {
 		}
 	}
 
-	fmt.Println("\nProcesses reconciled. Watch live node state in another window with:")
-	fmt.Println("  watch -n 2 ./scripts/failover/status.sh")
+	fmt.Println("\nProcesses reconciled. Watch live node state with:  ./fleet status --watch")
 }
 
-// status runs ONLY the read-only health snapshot against the current intentions —
-// no provisioning, no stop/start, no weight changes. Lets a client see real state.
-func status(cfg *config) {
-	intents, err := loadIntents(cfg.stateFile, cfg.topo)
-	if err != nil {
-		fatalf("%v", err)
+// status runs ONLY the read-only report against the current intents — no
+// provisioning, stop/start, or weight changes. With watch it repeats until
+// interrupted.
+func status(cfg *config, watch bool) {
+	for {
+		if watch {
+			fmt.Print("\033[H\033[2J") // clear screen
+		}
+		intents := mustLoadIntents(cfg)
+		fmt.Println("== benchmark-fleet status ==")
+		results := cfg.checkHealth(intents)
+		reportHealth(cfg, intents, results)
+		weightsReport(cfg, intents)
+		if !watch {
+			return
+		}
+		time.Sleep(2 * time.Second)
 	}
-	fmt.Println("== reconcile status ==")
-	printIntents(cfg.topo, intents)
-	fmt.Println("health (read-only snapshot)...")
-	results := cfg.checkHealth(intents)
-	reportHealth(cfg, intents, results)
-	weightsReport(cfg, intents)
 }

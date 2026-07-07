@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/valmgr"
 )
 
 // loadIntents reads the intentions JSON. If the file is absent it returns the
@@ -71,96 +69,31 @@ func saveIntents(path string, intents []MachineIntent) error {
 	return nil
 }
 
-// retarget toggles machine m's cordon flag (1-based) and applies the weight
-// policy for a single-machine fault, never crossing sites:
-//   - cordoning a slot that holds active weight hands that weight to an
-//     uncordoned standby staking slot in the SAME site (spares first, then
-//     any), and parks the cordoned slot at StandbyWeight. With no free slot
-//     the weight simply drops to standby (quorum may degrade; reported).
-//   - uncordoning brings the machine back as a standby: weight placement is
-//     sticky, so the earlier promotion is not flapped back automatically
-//     (use restore/site-failover for deliberate weight moves).
-func retarget(prev []MachineIntent, m int, cordon bool, t Topology) ([]MachineIntent, error) {
+// setCordon returns a copy of prev with machine m's (1-based) cordon flag set.
+// Cordon is the pure hardware-reachability axis: it changes NO weights. Weight
+// is a separate, deliberate axis (reconcile `mark`); a box going up or down
+// never moves stake on its own.
+func setCordon(prev []MachineIntent, m int, cordon bool) ([]MachineIntent, error) {
 	if m < 1 || m > len(prev) {
 		return nil, fmt.Errorf("machine %d out of range 1..%d", m, len(prev))
 	}
 	next := append([]MachineIntent{}, prev...)
-	i := m - 1
-	next[i].Cordoned = cordon
-
-	total := totalWeight(prev)
-	if cordon && t.IsStakingSlot(i) && isActiveWeight(next[i].Weight, total) {
-		if j := promotionTarget(next, t, t.Site(i)); j >= 0 {
-			next[j].Weight = next[i].Weight
-			fmt.Printf("  weight: %s -> %s (same-site standby promoted)\n", t.MachineName(i), t.MachineName(j))
-		} else {
-			fmt.Printf("  weight: no free standby in site %s — %s's weight drops to standby (quorum may degrade)\n",
-				siteName(t.Site(i)), t.MachineName(i))
-		}
-		next[i].Weight = valmgr.StandbyWeight
-	}
+	next[m-1].Cordoned = cordon
 	return next, nil
 }
 
-// promotionTarget picks the same-site uncordoned staking slot to hand active
-// weight to: spare slots first, then any standby, lowest slot number first.
-func promotionTarget(intents []MachineIntent, t Topology, site int) int {
-	total := totalWeight(intents)
-	pick := -1
-	for i, in := range intents {
-		if in.Cordoned || t.Site(i) != site || !t.IsStakingSlot(i) || isActiveWeight(in.Weight, total) {
-			continue
-		}
-		if t.IsSpareSlot(i) {
-			return i
-		}
-		if pick < 0 {
-			pick = i
-		}
+// setWeight returns a copy of prev with machine m's (1-based) desired weight
+// set to w. Only staking slots (registered validators) carry a weight; setting
+// one on an RPC slot is rejected. Weight is the pure stake-intent axis (mark),
+// independent of whether the box is up or down.
+func setWeight(prev []MachineIntent, m int, w uint64, t Topology) ([]MachineIntent, error) {
+	if m < 1 || m > len(prev) {
+		return nil, fmt.Errorf("machine %d out of range 1..%d", m, len(prev))
 	}
-	return pick
-}
-
-// retargetSite is the hard DC failover: the target site's validator slots get
-// ActiveWeight, its spares StandbyWeight, and the whole other site is
-// cordoned (presumed dead) at StandbyWeight. The weight seesaw itself is
-// executed later by the weight reconciler (raises before lowers).
-func retargetSite(prev []MachineIntent, t Topology, target int) ([]MachineIntent, error) {
-	if !t.TwoSite {
-		return nil, fmt.Errorf("site failover requires the BACKUP_* site to be configured")
+	if !t.IsStakingSlot(m - 1) {
+		return nil, fmt.Errorf("%s is an RPC slot (not a registered validator); it has no weight to mark", t.MachineName(m-1))
 	}
-	next := make([]MachineIntent, len(prev))
-	for i := range prev {
-		next[i] = MachineIntent{
-			Cordoned: t.Site(i) != target,
-			Weight:   siteWeights(t, i, target),
-		}
-	}
+	next := append([]MachineIntent{}, prev...)
+	next[m-1].Weight = w
 	return next, nil
-}
-
-// retargetRestore is the graceful return: BOTH sites stay up (the returning
-// site rejoins as standby trackers first; the caller waits for it to be
-// consensus-ready before the weight seesaw shifts the set).
-func retargetRestore(prev []MachineIntent, t Topology, target int) ([]MachineIntent, error) {
-	if !t.TwoSite {
-		return nil, fmt.Errorf("restore requires the BACKUP_* site to be configured")
-	}
-	next := make([]MachineIntent, len(prev))
-	for i := range prev {
-		next[i] = MachineIntent{Cordoned: false, Weight: siteWeights(t, i, target)}
-	}
-	return next, nil
-}
-
-// siteWeights is the steady-state weight layout with the given site active.
-func siteWeights(t Topology, i, activeSite int) uint64 {
-	switch {
-	case !t.IsStakingSlot(i):
-		return 0
-	case t.Site(i) == activeSite && t.IsValidatorSlot(i):
-		return valmgr.ActiveWeight
-	default:
-		return valmgr.StandbyWeight
-	}
 }

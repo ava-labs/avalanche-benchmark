@@ -9,29 +9,33 @@
 # reseeds the intentions to the default mapping (validator keys 6..5+NVal on
 # site A's validator slots, pinned home identities everywhere else), and starts
 # all nodes (validators + hot spare + pinned dedicated-RPC trackers). After
-# this, use scripts/failover/{up,down,failover}.sh.
+# this, drive the fleet with ./fleet {up,down,mark,status}.
 #
 # First boot on a fresh fleet: the RPC tier full-replays Fuji's P-chain
 # (~minutes) and the validators idle until their RPC beacons finish, then sync
-# through them (serial per hop). Watch scripts/failover/status.sh, don't panic.
+# through them (serial per hop). Watch ./fleet status --watch, don't panic.
 #
-# For an in-place failover (no wipe) use scripts/failover/. A brand-new chain
+# For an in-place failover (no wipe) use ./fleet. A brand-new chain
 # means re-running 02 first (costs AVAX; usually you don't want that).
 set -e
 trap 'echo "ERROR: 03 failed at line $LINENO. Command: $BASH_COMMAND"' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$SCRIPT_DIR"
-source "$SCRIPT_DIR/scripts/failover/_failover_common.sh"
+source "$SCRIPT_DIR/_common.sh"
+if [ ! -f "$SCRIPT_DIR/network.env" ]; then
+    echo "ERROR: network.env not found. Run ./02_create_chain.sh first." >&2
+    exit 1
+fi
+source "$SCRIPT_DIR/network.env"
 
-echo "=== Wipe and deploy (reconcile --fresh) ==="
+echo "=== Wipe and deploy (benchmark-fleet fresh) ==="
 echo "Subnet ID: $SUBNET_ID"
 echo "Chain ID:  $CHAIN_ID"
 echo "This WIPES all L1 chain data on the pool and restarts the L1 from genesis."
 echo "It does NOT re-create the chain on Fuji (no AVAX is spent)."
 echo ""
 
-"$RECONCILE_BIN" fresh
+"$SCRIPT_DIR/fleet" fresh
 
 echo ""
 IFS=',' read -ra _ips <<< "$NODE_IPS"

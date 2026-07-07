@@ -1,0 +1,17 @@
+#!/bin/bash
+# Single entry point for the two-datacenter benchmark fleet. Every operator verb
+# lives in the benchmark-fleet binary:
+#
+#   ./fleet up   <m...>                    rebuild + start machines (from genesis)
+#   ./fleet down <m...>                    simulate hardware failure (hard kill)
+#   ./fleet mark <validator|spare|dead> <m...>   move on-chain consensus weight
+#   ./fleet status [--watch]               per-DC stake tier + reachability
+#
+# This wrapper only cd's to the repo root so the binary finds .env + network.env
+# (which it loads itself). No other shell: the binary is the whole interface.
+cd "$(dirname "$(readlink -f "$0")")" || exit 1
+if [ ! -x bin/benchmark-fleet ]; then
+    echo "bin/benchmark-fleet not found — run 'make build' first." >&2
+    exit 1
+fi
+exec ./bin/benchmark-fleet "$@"
