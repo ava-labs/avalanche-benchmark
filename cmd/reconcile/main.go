@@ -2,20 +2,22 @@
 //
 // Every machine wears ONE permanent staking identity (internal/topo); the
 // validator+spare slots of both sites are all registered as L1 validators at
-// conversion and NEVER re-registered. Two verbs operate the fleet:
+// conversion and NEVER re-registered. Two independent axes operate the fleet:
 //
-//	up/down:   the box lifecycle, stake follows. `down` hard-kills avalanchego
-//	           (simulated failure, data left on disk) and drops the identity's
-//	           on-chain weight to dead; `up` rebuilds the box from genesis
-//	           (wipes L1 chainData, keeps the Fuji P-chain), starts it, and
-//	           brings its weight back at spare. Promotion to full validator
-//	           stays an explicit `weight validator`.
-//	weight:    <validator|spare|dead> moves a registered identity's consensus
-//	           weight between the three tiers through the ValidatorManager
-//	           contract on Fuji's C-chain (weights.go). This is the seesaw; it
-//	           never starts or stops a process, so it can also express the odd
-//	           states (a down box still holding validator weight to stall the
-//	           chain on purpose). `status` shows both columns per datacenter.
+//	up/down:   kill or (re)start avalanchego on a box. `down` hard-kills
+//	           (simulated failure, data left on disk); `up` rebuilds the box
+//	           from genesis (wipes L1 chainData, keeps the Fuji P-chain).
+//	           Neither touches on-chain weight: killing or reviving a box must
+//	           never depend on Fuji quorum.
+//	weight:    <tier> <m...> [<tier> <m...>]... moves registered identities'
+//	           consensus weight between the three tiers through the
+//	           ValidatorManager contract on Fuji's C-chain (weights.go). One
+//	           invocation is ONE seesaw with raises ordered before lowers, so
+//	           `weight validator 7 8 9 dead 1 2 3` is a whole site failover:
+//	           no low-weight window, and each lower fits a single churn step
+//	           because the raises landed first. Splitting it into two runs
+//	           costs a geometric ratchet against a shrinking total. It never
+//	           starts or stops a process. `status` shows both axes per DC.
 //
 // The binary self-loads .env + network.env from the repo root, so it is the
 // whole interface: run it directly (or via ./fleet). No wrapper scripts.
@@ -37,14 +39,14 @@ func fatalf(format string, args ...any) {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: benchmark-fleet <command>
-  up   <m...>                 (re)build the given machines from genesis, start them,
-                              and bring their stake back at spare weight
-                              (wipes L1 chain data, keeps the Fuji P-chain)
+  up   <m...>                 (re)build the given machines from genesis and start them
+                              (wipes L1 chain data, keeps the Fuji P-chain; weight untouched)
   down <m...>                 simulate hardware failure: hard-kill the given machines
-                              (data left on disk) and drop their stake to dead weight
-  weight <validator|spare|dead> <m...>
-                              set the given machines' on-chain consensus weight tier
-                              (validator=1000000, spare=1000, dead=1) and converge it
+                              (data left on disk; weight untouched)
+  weight <tier> <m...> [<tier> <m...>]...
+                              tier = validator|spare|dead (1000000|1000|1): set on-chain
+                              consensus weight tiers and converge them as ONE seesaw
+                              (raises before lowers), e.g.: weight validator 7 8 9 dead 1 2 3
   status [--watch]            read-only report: per-datacenter stake tier + reachability
   fresh                       WIPE + redeploy the whole fleet from genesis, reseed intents
                               (site A active), force re-upload binaries, converge weights
@@ -80,30 +82,18 @@ func main() {
 		ms := parseMachines(os.Args[2:], topo)
 		intents := mustLoadIntents(cfg)
 		down := cmd == "down"
-		tier := valmgr.SpareWeight
-		if down {
-			tier = valmgr.DeadWeight
-		}
-		staked := false
 		for _, m := range ms {
 			next, err := setCordon(intents, m, down)
 			if err != nil {
 				fatalf("%v", err)
-			}
-			// Stake follows the box: down -> dead, up -> spare (promote back to
-			// validator explicitly). RPC slots carry no weight.
-			if topo.IsStakingSlot(m - 1) {
-				if next, err = setWeight(next, m, tier, topo); err != nil {
-					fatalf("%v", err)
-				}
-				staked = true
 			}
 			intents = next
 		}
 		mustSaveIntents(cfg, intents)
 		if down {
 			// Simulated hardware failure: hard SIGKILL, no wipe — the box "dies"
-			// with its data intact.
+			// with its data intact. Weight is untouched (killing must never
+			// depend on Fuji quorum); flip stake with `weight`.
 			for _, m := range ms {
 				fmt.Printf("== down %s (%s): SIGKILL (simulated failure) ==\n", topo.MachineName(m-1), cfg.nodeIPs[m-1])
 				cfg.killNode(m - 1)
@@ -116,16 +106,12 @@ func main() {
 			}
 			reconcile(cfg, intents, fresh, false)
 		}
-		if staked {
-			printIntents(topo, intents)
-			reconcileWeights(cfg, intents)
-		}
 
 	case "weight":
 		cfg.warnColocation()
-		w, ms := parseWeight(os.Args[2:], topo)
+		assign := parseWeightArgs(os.Args[2:], topo)
 		intents := mustLoadIntents(cfg)
-		for _, m := range ms {
+		for m, w := range assign {
 			next, err := setWeight(intents, m, w, topo)
 			if err != nil {
 				fatalf("%v", err)
@@ -201,24 +187,41 @@ func parseMachines(args []string, topo Topology) []int {
 	return out
 }
 
-// parseWeight parses `<tier> <m...>`: the first arg is the weight tier, the
-// rest are machine numbers. Returns the mapped weight and the machines.
-func parseWeight(args []string, topo Topology) (uint64, []int) {
-	if len(args) < 2 {
-		fatalf("usage: weight <validator|spare|dead> <m...>")
+// parseWeightArgs parses `<tier> <m...> [<tier> <m...>]...` into a
+// machine -> weight assignment, so ONE invocation (and thus one converge, with
+// raises ordered before lowers) can express a whole seesaw:
+// `weight validator 7 8 9 dead 1 2 3`.
+func parseWeightArgs(args []string, topo Topology) map[int]uint64 {
+	tiers := map[string]uint64{
+		"validator": valmgr.ValidatorWeight,
+		"spare":     valmgr.SpareWeight,
+		"dead":      valmgr.DeadWeight,
 	}
+	assign := map[int]uint64{}
 	var w uint64
-	switch args[0] {
-	case "validator":
-		w = valmgr.ValidatorWeight
-	case "spare":
-		w = valmgr.SpareWeight
-	case "dead":
-		w = valmgr.DeadWeight
-	default:
-		fatalf("tier must be validator|spare|dead, got %q", args[0])
+	haveTier := false
+	for _, a := range args {
+		if tw, ok := tiers[a]; ok {
+			w = tw
+			haveTier = true
+			continue
+		}
+		m, err := strconv.Atoi(a)
+		if err != nil || m < 1 || m > topo.Size() {
+			fatalf("expected a tier (validator|spare|dead) or a machine 1..%d, got %q", topo.Size(), a)
+		}
+		if !haveTier {
+			fatalf("machine %d before any tier; usage: weight <tier> <m...> [<tier> <m...>]...", m)
+		}
+		if _, dup := assign[m]; dup {
+			fatalf("machine %d listed twice", m)
+		}
+		assign[m] = w
 	}
-	return w, parseMachines(args[1:], topo)
+	if len(assign) == 0 {
+		fatalf("usage: weight <validator|spare|dead> <m...> [<tier> <m...>]...")
+	}
+	return assign
 }
 
 // printEndpoints writes one tab-separated line per pool slot —

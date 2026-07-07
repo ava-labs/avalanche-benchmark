@@ -50,8 +50,8 @@ var libPlaceholder = regexp.MustCompile(`__\$[0-9a-f]+\$__`)
 
 const (
 	// The three weight tiers a registered validator ever holds. The operator
-	// sets a slot to one of them (`fleet weight validator|spare|dead`, or
-	// implicitly via up/down); the seesaw ratchets the on-chain weight there.
+	// sets a slot to one of them (`fleet weight validator|spare|dead`); the
+	// seesaw ratchets the on-chain weight there.
 	//
 	//   ValidatorWeight — acting consensus member of the active DC.
 	//   SpareWeight     — alive but idle: the standby DC. At 0.1% of an active

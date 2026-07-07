@@ -70,9 +70,9 @@ func saveIntents(path string, intents []MachineIntent) error {
 }
 
 // setCordon returns a copy of prev with machine m's (1-based) cordon flag set.
-// It changes no weights itself; the up/down commands pair it with setWeight
-// (down -> dead, up -> spare) so stake follows the box, and the `weight`
-// command moves stake without touching cordon.
+// Cordon is the pure hardware-reachability axis: it changes NO weights. Weight
+// is a separate, deliberate axis (`fleet weight`); a box going up or down
+// never moves stake on its own.
 func setCordon(prev []MachineIntent, m int, cordon bool) ([]MachineIntent, error) {
 	if m < 1 || m > len(prev) {
 		return nil, fmt.Errorf("machine %d out of range 1..%d", m, len(prev))
