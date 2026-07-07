@@ -54,19 +54,22 @@ const (
 	// the seesaw ratchets the on-chain weight there.
 	//
 	//   ValidatorWeight — acting consensus member of the active DC.
-	//   SpareWeight     — alive but idle: the standby DC and hot spares. At 1%
-	//                     of an active peer it still wins ~1% of proposer slots,
-	//                     so it is a live participant that can take over the set
-	//                     WITHOUT the post-Durango proposer deadlock a weight-1
-	//                     standby would hit (it holds real slot probability).
+	//   SpareWeight     — alive but idle: the standby DC. At 0.1% of an active
+	//                     peer it still holds real (nonzero) proposer-slot
+	//                     probability, so it is a live consensus participant the
+	//                     set can be moved onto WITHOUT the post-Durango proposer
+	//                     deadlock a weight-1 standby would hit.
 	//   DeadWeight      — stake pulled out of quorum: mark a failed box here so
 	//                     its unreachable weight stops blocking finalization.
 	//
-	// Ratios are 100:1 between adjacent tiers. Totals stay ~tens of thousands,
-	// far below any uint64 product bound in the pipeline, and the 20% churn-cap
-	// ratchet has ample room. Production swaps these for 1 / 1000 / 1000000.
-	ValidatorWeight uint64 = 10000
-	SpareWeight     uint64 = 100
+	// Ratios are 1000:1 between adjacent tiers. A healthy DC of 4 validators
+	// carries 4,000,000; the standby DC's spares add ~4,000, so the active DC
+	// holds ~99.9% of the weight and finalizes every block on its own votes
+	// (nothing waits on the other DC). Totals stay in the low millions, far
+	// below any uint64 product bound in the pipeline, and the 20% churn-cap
+	// ratchet has ample room.
+	ValidatorWeight uint64 = 1_000_000
+	SpareWeight     uint64 = 1_000
 	DeadWeight      uint64 = 1
 
 	// Churn settings baked at initialize (write-once). Period 0 turns the rate

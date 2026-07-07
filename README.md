@@ -178,7 +178,7 @@ two independent axes:
   simulates a failure (SIGKILL, data left on disk); `up` rebuilds the box from
   genesis (wipes L1 chain data, keeps the Fuji P-chain). Neither touches weight.
 - **stake** — `mark <validator|spare|dead>` moves an identity's on-chain
-  consensus weight between three tiers (validator=10000, spare=100, dead=1)
+  consensus weight between three tiers (validator=1000000, spare=1000, dead=1)
   through the ValidatorManager contract. This is the seesaw; it never starts or
   stops a process.
 

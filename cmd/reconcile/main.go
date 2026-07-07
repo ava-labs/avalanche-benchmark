@@ -44,7 +44,7 @@ func usage() {
                               (data left on disk; no weight change)
   mark <validator|spare|dead> <m...>
                               set the given machines' on-chain consensus weight tier
-                              (validator=10000, spare=100, dead=1) and converge it
+                              (validator=1000000, spare=1000, dead=1) and converge it
   status [--watch]            read-only report: per-datacenter stake tier + reachability
   fresh                       WIPE + redeploy the whole fleet from genesis, reseed intents
                               (site A active), force re-upload binaries, converge weights

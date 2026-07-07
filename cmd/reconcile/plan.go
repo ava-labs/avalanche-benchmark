@@ -54,7 +54,7 @@ func seedWeight(t Topology, i int) uint64 {
 
 // isActiveWeight reports whether a desired weight makes the slot an acting
 // validator: at least 1% of the fleet's total desired weight. The validator
-// tier (100x a spare) clears it; spare and dead tiers do not.
+// tier (1000x a spare) clears it; spare and dead tiers do not.
 func isActiveWeight(w, total uint64) bool {
 	return total > 0 && w*100 >= total
 }
