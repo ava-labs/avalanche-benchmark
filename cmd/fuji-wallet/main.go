@@ -119,8 +119,8 @@ func fund(keyPath, api string) {
 	requiredP := requiredPBalance()
 	pBal := pBalance(ctx, api, key.Address())
 	cBal := weiToNavax(cBalanceWei(api, key.EthAddress().Hex()))
-	fmt.Printf("Current balances: P %s AVAX (need %s), C %s AVAX (need %s)\n\n",
-		avaxString(pBal), avaxString(requiredP), avaxString(cBal), avaxString(requiredCNavax))
+	fmt.Printf("Current balances:  %s   %s\n\n",
+		chainStatus("P", pBal, requiredP), chainStatus("C", cBal, requiredCNavax))
 	if pBal >= requiredP && cBal >= requiredCNavax {
 		fmt.Println("Both chains already funded. Nothing to do.")
 		printAddresses(key)
@@ -131,14 +131,8 @@ func fund(keyPath, api string) {
 	fmt.Println("  FUND AT THE FUJI FAUCET (https://core.app/tools/testnet-faucet/,")
 	fmt.Println("  2 AVAX/request — pick the chain per request, no cross-chain moves):")
 	fmt.Println()
-	if pBal < requiredP {
-		fmt.Printf("    P-Chain  %s\n", pAddress(key))
-		fmt.Printf("             need %s AVAX (0.1 per registered validator + fees)\n", avaxString(requiredP))
-	}
-	if cBal < requiredCNavax {
-		fmt.Printf("    C-Chain  %s\n", key.EthAddress().Hex())
-		fmt.Printf("             need %s AVAX (ValidatorManager deploy + weight ops gas)\n", avaxString(requiredCNavax))
-	}
+	printFaucetTarget("P-Chain", pAddress(key), pBal, requiredP, "0.1 per registered validator + fees")
+	printFaucetTarget("C-Chain", key.EthAddress().Hex(), cBal, requiredCNavax, "ValidatorManager deploy + weight ops gas")
 	fmt.Println("================================================================")
 	fmt.Println()
 
@@ -149,8 +143,8 @@ func fund(keyPath, api string) {
 		if pBal >= requiredP && cBal >= requiredCNavax {
 			break
 		}
-		fmt.Printf("  %s  P: %s/%s  C: %s/%s\n", time.Now().Format("15:04:05"),
-			avaxString(pBal), avaxString(requiredP), avaxString(cBal), avaxString(requiredCNavax))
+		fmt.Printf("  %s  %s   %s\n", time.Now().Format("15:04:05"),
+			chainStatus("P", pBal, requiredP), chainStatus("C", cBal, requiredCNavax))
 		time.Sleep(5 * time.Second)
 	}
 
@@ -222,4 +216,25 @@ func weiToNavax(wei *big.Int) uint64 {
 
 func avaxString(navax uint64) string {
 	return fmt.Sprintf("%d.%09d", navax/units.Avax, navax%units.Avax)
+}
+
+// chainStatus renders one chain's funded state: ✅ once it meets the need,
+// ⏳ while it is short.
+func chainStatus(label string, bal, need uint64) string {
+	mark := "⏳"
+	if bal >= need {
+		mark = "✅"
+	}
+	return fmt.Sprintf("%s %s %s/%s AVAX", mark, label, avaxString(bal), avaxString(need))
+}
+
+// printFaucetTarget always shows a chain's address (so both are copyable); it
+// only asks for a faucet drop on the chain that is still short.
+func printFaucetTarget(label, addr string, bal, need uint64, note string) {
+	if bal >= need {
+		fmt.Printf("    ✅ %-8s %s  (funded)\n", label, addr)
+		return
+	}
+	fmt.Printf("    ⏳ %-8s %s\n", label, addr)
+	fmt.Printf("                 need %s AVAX (%s)\n", avaxString(need), note)
 }

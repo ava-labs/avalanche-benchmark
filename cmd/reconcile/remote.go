@@ -460,16 +460,25 @@ func (c *config) start(i int) {
 		script)
 }
 
-// freshClean kills the process for pool slot i and wipes ITS data + staking/active
-// dirs so the next observe reads dead + key 0. Used only by `reconcile fresh`. Only
-// this instance's dirs are removed (not the whole data/ tree), so co-located
-// housemates on the same box are left intact; the shared base dirs are ensured to
-// exist for the subsequent upload.
+// freshClean kills the process for pool slot i and resets it to a from-genesis
+// L1 while PRESERVING the already-synced Fuji P-chain. Used only by `reconcile
+// fresh`. It wipes ONLY the L1 EVM state (data/validator/chainData) and
+// staking/active (so the next observe reads dead + key 0), NOT the whole data
+// dir: keeping data/validator/db keeps the P-chain, so a fresh raise no longer
+// re-replays Fuji (minutes, bursty) before the fleet can serve.
+//
+// On restart the dedup-fixed proposervm (containerman17/fde >= 4274f639) sees
+// its outer blocks are all above the now-empty inner frontier, rolls the L1
+// back to genesis, and state-syncs to tip. This REQUIRES that fixed binary: on
+// the pre-fix binary a chainData-only wipe bricks chain creation ("inner block
+// unavailable for deduplicated block"). C-chain is unaffected — its coreth ethdb
+// lives inside db/ and its chainData dir is empty, so this never resets it.
+// Only this instance's dirs are removed, so co-located housemates are intact.
 func (c *config) freshClean(i int) {
 	in := c.instances[i]
 	c.killNode(i)
 	c.ssh(in.host, fmt.Sprintf(
-		"cd %s 2>/dev/null && rm -rf %s %s || true; "+
+		"cd %s 2>/dev/null && rm -rf %s/chainData %s || true; "+
 			"mkdir -p %s/bin %s/plugins %s/staking/l1",
 		c.remoteDir, in.dataDir, in.activeDir, c.remoteDir, c.remoteDir, c.remoteDir))
 }

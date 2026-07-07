@@ -50,12 +50,13 @@ var libPlaceholder = regexp.MustCompile(`__\$[0-9a-f]+\$__`)
 
 const (
 	// ActiveWeight/StandbyWeight are the two consensus weights a registered
-	// validator ever holds. 1e9 keeps every uint64 product in the pipeline
-	// (P-chain weight sums, warp quorum totalWeight*quorumNum, the contract's
-	// weight*100 churn math, avalanchego's 3*W+3 startup latch) ten orders of
-	// magnitude below overflow while leaving fine granularity for the 20%
-	// churn-cap ratchet steps.
-	ActiveWeight  uint64 = 1_000_000_000
+	// validator ever holds. Active=100, standby=1 gives the active DC ~98-99%
+	// of total weight, so a standby-DC node wins a proposer slot only ~1% of the
+	// time (one cross-DC block hop, absorbed by poll early-termination), while
+	// standbys stay live consensus participants that are consensus-irrelevant.
+	// The 20% churn-cap ratchet still has room (steps of ~60 on a ~305 total),
+	// and every uint64 product in the pipeline is nowhere near overflow.
+	ActiveWeight  uint64 = 100
 	StandbyWeight uint64 = 1
 
 	// Churn settings baked at initialize (write-once). Period 0 turns the rate
