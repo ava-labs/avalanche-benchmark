@@ -34,7 +34,11 @@ import (
 //
 //	contract.weight != desired  -> initiateValidatorWeightUpdate (ratcheted in
 //	                               steps of <=20% of the live total: the churn
-//	                               cap with churnPeriodSeconds=0)
+//	                               cap with churnPeriodSeconds=0). The churn
+//	                               math is deterministic, so the WHOLE ratchet
+//	                               is simulated locally and fired as one burst
+//	                               of consecutive-nonce txs landing in one or
+//	                               two blocks, not one receipt wait per step.
 //	pchain.weight != contract   -> aggregate the FINAL (highest-nonce) warp
 //	                               message, deliver one SetL1ValidatorWeightTx
 //	                               (P-chain nonce skipping collapses the
@@ -44,12 +48,9 @@ import (
 //	                               equal to P-chain state for observation)
 //
 // Raises are ordered before lowers in every phase, so the fleet never passes
-// through a low-total-weight window: liveness is preserved mid-seesaw. A raise
-// is additionally delivered to the P-chain EAGERLY, as soon as its own contract
-// ratchet finishes, so consensus gains the new site's weight per validator
-// instead of after the whole seesaw.
+// through a low-total-weight window: liveness is preserved mid-seesaw.
 
-const weightRounds = 100 // initiate-step bound; a full DC seesaw needs ~10
+const weightRounds = 100 // bound on simulated steps per plan and burst rounds; a full DC seesaw needs ~10 steps in 1 round
 
 const (
 	// weightConverge* pace the outer retry of the whole converge sequence. The
@@ -249,58 +250,80 @@ func (e *weightEngine) converge(ctx context.Context) error {
 	return e.verifyConverged(ctx)
 }
 
-// convergeContract ratchets every validator's CONTRACT weight to desired,
-// raises first, each step capped by the live churn budget.
+// convergeContract ratchets every validator's CONTRACT weight to desired.
+// Each round observes once, simulates the full seesaw locally (planSeesaw)
+// and fires every initiate in one burst; a clean batch converges in a single
+// round and the next round verifies it observed nothing left to do. A step
+// that reverts (state drift, budget mispredict) just costs its gas: the next
+// round re-observes and plans a corrective batch.
 func (e *weightEngine) convergeContract(ctx context.Context) error {
 	for round := 0; round < weightRounds; round++ {
 		total, err := e.cli.L1TotalWeight(ctx)
 		if err != nil {
 			return fmt.Errorf("l1TotalWeight: %w", err)
 		}
-		type step struct {
-			t       stakingTarget
-			current uint64
-		}
-		var raise, lower *step
+		current := make(map[ids.ID]uint64, len(e.targets))
+		names := make(map[ids.ID]string, len(e.targets))
 		for _, t := range e.targets {
 			v, err := e.cli.GetValidator(ctx, t.validationID)
 			if err != nil {
 				return fmt.Errorf("getValidator(%s): %w", e.slotName(t), err)
 			}
-			switch {
-			case v.Weight < t.desired && raise == nil:
-				raise = &step{t, v.Weight}
-			case v.Weight > t.desired && lower == nil:
-				lower = &step{t, v.Weight}
-			}
+			current[t.validationID] = v.Weight
+			names[t.validationID] = e.slotName(t)
 		}
-		next := raise
-		if next == nil {
-			next = lower
-		}
-		if next == nil {
+		steps := planSeesaw(e.targets, current, total)
+		if len(steps) == 0 {
 			return nil // contract fully converged
 		}
-		to := nextWeight(next.current, next.t.desired, total)
-		fmt.Printf("  weights: %s initiate %d -> %d (target %d, churn budget %d)\n",
-			e.slotName(next.t), next.current, to, next.t.desired, total/5)
-		if err := e.cli.InitiateWeightUpdate(ctx, next.t.validationID, to); err != nil {
-			return fmt.Errorf("initiate %s -> %d: %w", e.slotName(next.t), to, err)
+		fmt.Printf("  weights: firing %d initiates in one burst:\n", len(steps))
+		for _, s := range steps {
+			fmt.Printf("    %s -> %d\n", names[s.ValidationID], s.Weight)
 		}
-		// Eager delivery: the moment a RAISE reaches its target on the contract,
-		// push it to the P-chain so consensus gains the weight without waiting
-		// for the other validators' ratchets. Best-effort — right after the
-		// initiate, Fuji signature coverage may still be under quorum; the
-		// deliverToPChain phase is the retried catch-up. Lowers are never
-		// delivered eagerly: a lower landing on the P-chain before a
-		// still-undelivered raise would open a low-total-weight window.
-		if next == raise && to == next.t.desired {
-			if err := e.deliverValidator(ctx, next.t); err != nil {
-				fmt.Printf("  weights: %s eager delivery deferred (%v)\n", e.slotName(next.t), err)
-			}
+		if err := e.cli.InitiateWeightUpdates(ctx, steps); err != nil {
+			return err
 		}
 	}
-	return fmt.Errorf("contract weights did not converge within %d steps", weightRounds)
+	return fmt.Errorf("contract weights did not converge within %d rounds", weightRounds)
+}
+
+// planSeesaw simulates the contract's churn tracker (period 0: every op
+// re-seeds the 20% budget from the running total) and returns the exact
+// initiate sequence that converges current -> desired: first unfinished raise,
+// else first unfinished lower, each step capped by nextWeight. Deterministic,
+// so the burst it plans is what the contract will accept.
+func planSeesaw(targets []stakingTarget, observed map[ids.ID]uint64, total uint64) []valmgr.WeightStep {
+	current := make(map[ids.ID]uint64, len(observed))
+	for id, w := range observed {
+		current[id] = w
+	}
+	var steps []valmgr.WeightStep
+	for len(steps) < weightRounds {
+		var pick *stakingTarget
+		for i := range targets {
+			if current[targets[i].validationID] < targets[i].desired {
+				pick = &targets[i]
+				break
+			}
+		}
+		if pick == nil {
+			for i := range targets {
+				if current[targets[i].validationID] > targets[i].desired {
+					pick = &targets[i]
+					break
+				}
+			}
+		}
+		if pick == nil {
+			return steps
+		}
+		cur := current[pick.validationID]
+		to := nextWeight(cur, pick.desired, total)
+		steps = append(steps, valmgr.WeightStep{ValidationID: pick.validationID, Weight: to})
+		total = total - cur + to
+		current[pick.validationID] = to
+	}
+	return steps
 }
 
 // deliverValidator issues one SetL1ValidatorWeightTx for t if its P-chain
@@ -338,8 +361,7 @@ func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) er
 }
 
 // deliverToPChain delivers every validator whose P-chain weight differs from
-// the contract's. Raises land before lowers. This is the authoritative
-// catch-up behind the eager per-validator deliveries in convergeContract.
+// the contract's. Raises land before lowers.
 func (e *weightEngine) deliverToPChain(ctx context.Context) error {
 	var raises, lowers []stakingTarget
 	for _, t := range e.targets {

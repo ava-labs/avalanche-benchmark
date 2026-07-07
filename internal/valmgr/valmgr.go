@@ -243,16 +243,47 @@ func (c *Client) InitializeValidatorSet(
 	return err
 }
 
-// InitiateWeightUpdate starts a weight change on the contract; the emitted
-// warp message is reconstructed deterministically later (WeightMessage), so
-// nothing is scraped from the receipt.
-func (c *Client) InitiateWeightUpdate(ctx context.Context, validationID ids.ID, weight uint64) error {
-	data, err := c.abi.Pack("initiateValidatorWeightUpdate", [32]byte(validationID), weight)
-	if err != nil {
-		return fmt.Errorf("pack initiateValidatorWeightUpdate: %w", err)
+// WeightStep is one pre-computed initiateValidatorWeightUpdate call.
+type WeightStep struct {
+	ValidationID ids.ID
+	Weight       uint64
+}
+
+// InitiateWeightUpdates fires every step in one burst with consecutive nonces,
+// no receipt wait in between, so the whole ratchet lands in one or two blocks
+// instead of one block per step. Same-sender txs execute in nonce order, and
+// the churn tracker (period 0) re-seeds per call even within a block, so the
+// on-chain result matches the caller's local simulation. Receipts are checked
+// after everything is sent; the emitted warp messages are reconstructed
+// deterministically later (WeightMessage), nothing is scraped from receipts.
+func (c *Client) InitiateWeightUpdates(ctx context.Context, steps []WeightStep) error {
+	if len(steps) == 0 {
+		return nil
 	}
-	_, err = c.transact(ctx, &c.Manager, data, nil, 0)
-	return err
+	nonce, err := c.eth.PendingNonceAt(ctx, c.sender)
+	if err != nil {
+		return fmt.Errorf("nonce: %w", err)
+	}
+	hashes := make([]common.Hash, len(steps))
+	for i, s := range steps {
+		data, err := c.abi.Pack("initiateValidatorWeightUpdate", [32]byte(s.ValidationID), s.Weight)
+		if err != nil {
+			return fmt.Errorf("pack initiateValidatorWeightUpdate: %w", err)
+		}
+		// Fixed gas: estimating step i>0 against the pre-batch state would
+		// falsely revert on the churn check. Unused gas is refunded.
+		h, err := c.sendTx(ctx, nonce+uint64(i), warpTxGas, &c.Manager, data, nil)
+		if err != nil {
+			return fmt.Errorf("send initiate %d/%d: %w", i+1, len(steps), err)
+		}
+		hashes[i] = h
+	}
+	for i, h := range hashes {
+		if _, err := c.waitMined(ctx, h); err != nil {
+			return fmt.Errorf("initiate %d/%d: %w", i+1, len(steps), err)
+		}
+	}
+	return nil
 }
 
 // CompleteWeightUpdate delivers the P-chain-signed weight ack (predicate at
@@ -354,15 +385,6 @@ func (c *Client) transact(
 	if err != nil {
 		return nil, fmt.Errorf("nonce: %w", err)
 	}
-	tip, err := c.eth.SuggestGasTipCap(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("tip cap: %w", err)
-	}
-	head, err := c.eth.HeaderByNumber(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("head: %w", err)
-	}
-	feeCap := new(big.Int).Add(tip, new(big.Int).Mul(head.BaseFee, big.NewInt(2)))
 	if gas == 0 {
 		msg := callMsg(common.Address{}, data)
 		msg.To = to
@@ -373,6 +395,31 @@ func (c *Client) transact(
 		}
 		gas += gas / 2 // headroom; unused gas is refunded
 	}
+	h, err := c.sendTx(ctx, nonce, gas, to, data, accessList)
+	if err != nil {
+		return nil, err
+	}
+	return c.waitMined(ctx, h)
+}
+
+// sendTx signs and broadcasts one DynamicFeeTx at an explicit nonce without
+// waiting for it to mine.
+func (c *Client) sendTx(
+	ctx context.Context,
+	nonce, gas uint64,
+	to *common.Address,
+	data []byte,
+	accessList types.AccessList,
+) (common.Hash, error) {
+	tip, err := c.eth.SuggestGasTipCap(ctx)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("tip cap: %w", err)
+	}
+	head, err := c.eth.HeaderByNumber(ctx, nil)
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("head: %w", err)
+	}
+	feeCap := new(big.Int).Add(tip, new(big.Int).Mul(head.BaseFee, big.NewInt(2)))
 	tx := types.NewTx(&types.DynamicFeeTx{
 		ChainID:    c.chainID,
 		Nonce:      nonce,
@@ -386,12 +433,12 @@ func (c *Client) transact(
 	})
 	signed, err := types.SignTx(tx, types.LatestSignerForChainID(c.chainID), c.key)
 	if err != nil {
-		return nil, fmt.Errorf("sign: %w", err)
+		return common.Hash{}, fmt.Errorf("sign: %w", err)
 	}
 	if err := c.eth.SendTransaction(ctx, signed); err != nil {
-		return nil, fmt.Errorf("send: %w", err)
+		return common.Hash{}, fmt.Errorf("send: %w", err)
 	}
-	return c.waitMined(ctx, signed.Hash())
+	return signed.Hash(), nil
 }
 
 func (c *Client) waitMined(ctx context.Context, h common.Hash) (*types.Receipt, error) {
