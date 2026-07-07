@@ -43,7 +43,7 @@ type terminalStatsUI struct {
 	out        io.Writer
 	startedAt  time.Time
 	history    []float64 // mined TPS per tick
-	p50History []float64 // p50 mine latency (ms) per tick
+	p50History []float64 // p50 e2e latency (ms) per tick
 }
 
 func stdoutIsTerminal() bool {
@@ -101,7 +101,7 @@ func (ui *terminalStatsUI) render(s statsSnapshot) {
 	topH := chartArea / 2
 	botH := chartArea - topH
 	tpsChart := renderLineChart(ui.history, chartWidth, topH, "mined transactions per second")
-	p50Chart := renderLineChart(ui.p50History, chartWidth, botH, "5s p50 mine latency (ms)")
+	p50Chart := renderLineChart(ui.p50History, chartWidth, botH, "5s p50 e2e latency (ms)")
 
 	elapsed := s.at.Sub(ui.startedAt).Round(time.Second)
 	if elapsed < 0 {
