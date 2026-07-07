@@ -44,7 +44,10 @@ import (
 //	                               equal to P-chain state for observation)
 //
 // Raises are ordered before lowers in every phase, so the fleet never passes
-// through a low-total-weight window: liveness is preserved mid-seesaw.
+// through a low-total-weight window: liveness is preserved mid-seesaw. A raise
+// is additionally delivered to the P-chain EAGERLY, as soon as its own contract
+// ratchet finishes, so consensus gains the new site's weight per validator
+// instead of after the whole seesaw.
 
 const weightRounds = 100 // initiate-step bound; a full DC seesaw needs ~10
 
@@ -284,20 +287,61 @@ func (e *weightEngine) convergeContract(ctx context.Context) error {
 		if err := e.cli.InitiateWeightUpdate(ctx, next.t.validationID, to); err != nil {
 			return fmt.Errorf("initiate %s -> %d: %w", e.slotName(next.t), to, err)
 		}
+		// Eager delivery: the moment a RAISE reaches its target on the contract,
+		// push it to the P-chain so consensus gains the weight without waiting
+		// for the other validators' ratchets. Best-effort — right after the
+		// initiate, Fuji signature coverage may still be under quorum; the
+		// deliverToPChain phase is the retried catch-up. Lowers are never
+		// delivered eagerly: a lower landing on the P-chain before a
+		// still-undelivered raise would open a low-total-weight window.
+		if next == raise && to == next.t.desired {
+			if err := e.deliverValidator(ctx, next.t); err != nil {
+				fmt.Printf("  weights: %s eager delivery deferred (%v)\n", e.slotName(next.t), err)
+			}
+		}
 	}
 	return fmt.Errorf("contract weights did not converge within %d steps", weightRounds)
 }
 
-// deliverToPChain issues one SetL1ValidatorWeightTx per validator whose
-// P-chain weight differs from the contract's, delivering only the FINAL
-// (highest-nonce) message. Raises land before lowers.
-func (e *weightEngine) deliverToPChain(ctx context.Context) error {
-	type delivery struct {
-		t             stakingTarget
-		nonce, weight uint64
-		raise         bool
+// deliverValidator issues one SetL1ValidatorWeightTx for t if its P-chain
+// weight differs from the contract's, delivering only the FINAL
+// (highest-nonce) message.
+func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) error {
+	v, err := e.cli.GetValidator(ctx, t.validationID)
+	if err != nil {
+		return fmt.Errorf("getValidator(%s): %w", e.slotName(t), err)
 	}
-	var raises, lowers []delivery
+	pv, _, err := e.pClient.GetL1Validator(ctx, t.validationID)
+	if err != nil {
+		return fmt.Errorf("platform.getL1Validator(%s): %w", e.slotName(t), err)
+	}
+	if pv.Weight == v.Weight {
+		return nil
+	}
+	unsigned, err := valmgr.WeightMessage(constants.FujiID, e.cChainID, e.cli.Manager, t.validationID, v.SentNonce, v.Weight)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("  weights: %s deliver weight %d (nonce %d) to the P-chain\n", e.slotName(t), v.Weight, v.SentNonce)
+	signed, err := valmgr.Aggregate(ctx, unsigned, nil)
+	if err != nil {
+		return fmt.Errorf("aggregate weight message for %s: %w", e.slotName(t), err)
+	}
+	w, err := e.pWallet(ctx)
+	if err != nil {
+		return err
+	}
+	if _, err := w.IssueSetL1ValidatorWeightTx(signed.Bytes()); err != nil {
+		return fmt.Errorf("SetL1ValidatorWeightTx for %s: %w", e.slotName(t), err)
+	}
+	return nil
+}
+
+// deliverToPChain delivers every validator whose P-chain weight differs from
+// the contract's. Raises land before lowers. This is the authoritative
+// catch-up behind the eager per-validator deliveries in convergeContract.
+func (e *weightEngine) deliverToPChain(ctx context.Context) error {
+	var raises, lowers []stakingTarget
 	for _, t := range e.targets {
 		v, err := e.cli.GetValidator(ctx, t.validationID)
 		if err != nil {
@@ -310,29 +354,15 @@ func (e *weightEngine) deliverToPChain(ctx context.Context) error {
 		if pv.Weight == v.Weight {
 			continue
 		}
-		d := delivery{t: t, nonce: v.SentNonce, weight: v.Weight, raise: v.Weight > pv.Weight}
-		if d.raise {
-			raises = append(raises, d)
+		if v.Weight > pv.Weight {
+			raises = append(raises, t)
 		} else {
-			lowers = append(lowers, d)
+			lowers = append(lowers, t)
 		}
 	}
-	for _, d := range append(raises, lowers...) {
-		unsigned, err := valmgr.WeightMessage(constants.FujiID, e.cChainID, e.cli.Manager, d.t.validationID, d.nonce, d.weight)
-		if err != nil {
+	for _, t := range append(raises, lowers...) {
+		if err := e.deliverValidator(ctx, t); err != nil {
 			return err
-		}
-		fmt.Printf("  weights: %s deliver weight %d (nonce %d) to the P-chain\n", e.slotName(d.t), d.weight, d.nonce)
-		signed, err := valmgr.Aggregate(ctx, unsigned, nil)
-		if err != nil {
-			return fmt.Errorf("aggregate weight message for %s: %w", e.slotName(d.t), err)
-		}
-		w, err := e.pWallet(ctx)
-		if err != nil {
-			return err
-		}
-		if _, err := w.IssueSetL1ValidatorWeightTx(signed.Bytes()); err != nil {
-			return fmt.Errorf("SetL1ValidatorWeightTx for %s: %w", e.slotName(d.t), err)
 		}
 	}
 	return nil
