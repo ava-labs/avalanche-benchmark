@@ -10,6 +10,7 @@ import (
 	"github.com/ava-labs/avalanchego/api/info"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/utils/constants"
+	"github.com/ava-labs/avalanchego/utils/rpc"
 	"github.com/ava-labs/avalanchego/vms/platformvm"
 	"github.com/ava-labs/avalanchego/vms/secp256k1fx"
 	pwallet "github.com/ava-labs/avalanchego/wallet/chain/p/wallet"
@@ -92,10 +93,28 @@ type weightEngine struct {
 	targets   []stakingTarget
 }
 
-// pchainURI returns the public Fuji API base (PCHAIN_API override). The
-// fleet's own RPC tier is follow-only and can never serve platform.*.
+// pchainURI returns the public Fuji API base (PCHAIN_API override) used for
+// WALLET tx issuance and info.* only: MakePWallet needs /ext/info, which the
+// per-chain publicnode hosts below do not serve. The fleet's own RPC tier is
+// follow-only and can never serve platform.*.
 func pchainURI() string {
 	return envOr("PCHAIN_API", "https://api.avax-test.network")
+}
+
+// The read/contract traffic (every eth_call, initiate/complete tx, and
+// platform.getL1Validator poll — the bulk of our calls) goes to publicnode's
+// per-chain hosts instead, so api.avax-test.network only sees the handful of
+// wallet issuances and stops 429ing us mid-seesaw.
+func cchainRPCURL() string {
+	return envOr("CCHAIN_RPC", "https://avalanche-fuji-c-chain-rpc.publicnode.com")
+}
+
+// pchainReadClient returns the platformvm client for reads. publicnode serves
+// the P-chain API at /ext/bc/P but NOT at /ext/P (the only path
+// platformvm.NewClient can build), so construct the client on the exact URL.
+func pchainReadClient() *platformvm.Client {
+	url := envOr("PCHAIN_RPC", "https://avalanche-fuji-p-chain-rpc.publicnode.com/ext/bc/P")
+	return &platformvm.Client{Requester: rpc.NewEndpointRequester(url)}
 }
 
 // newWeightEngine wires the C-chain client, P-chain client and the
@@ -115,7 +134,7 @@ func newWeightEngine(ctx context.Context, cfg *config, intents []MachineIntent) 
 		return nil, fmt.Errorf("load fuji wallet key: %w", err)
 	}
 	uri := pchainURI()
-	cli, err := valmgr.Dial(ctx, uri+"/ext/bc/C/rpc", key, ethcommon.HexToAddress(managerHex))
+	cli, err := valmgr.Dial(ctx, cchainRPCURL(), key, ethcommon.HexToAddress(managerHex))
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +148,7 @@ func newWeightEngine(ctx context.Context, cfg *config, intents []MachineIntent) 
 		subnetID:  subnetID,
 		cChainID:  cChainID,
 		cli:       cli,
-		pClient:   platformvm.NewClient(uri),
+		pClient:   pchainReadClient(),
 		pchainURI: uri,
 		kc:        secp256k1fx.NewKeychain(key),
 	}
@@ -410,7 +429,7 @@ func weightsReport(cfg *config, intents []MachineIntent) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	pClient := platformvm.NewClient(pchainURI())
+	pClient := pchainReadClient()
 	converged := true
 	var lines []string
 	for _, t := range targets {
