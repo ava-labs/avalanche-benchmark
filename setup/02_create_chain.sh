@@ -3,7 +3,7 @@
 # the PUBLIC Fuji API (our own RPC tier is follow-only, so its platform.* API is
 # gated forever). This SPENDS AVAX (fees + 0.1 AVAX continuous-fee balance per
 # validator) and registers the generated NodeIDs on a public chain, so run it
-# ONCE per chain. Re-deploys of the fleet go through ./deploy.sh, which
+# ONCE per chain. Re-deploys of the fleet go through ./run/01_deploy.sh, which
 # never re-creates (and never re-spends).
 set -e
 
@@ -54,4 +54,4 @@ echo ""
 echo "Saved to: $NETWORK_ENV"
 echo ""
 echo "Next step: ./setup/03_backup_secrets.sh   (bundle staking/ + network.env off this machine)"
-echo "Then:      ./deploy.sh   (deploy chain config and start the remote L1 validators)"
+echo "Then:      ./run/01_deploy.sh   (deploy chain config and start the remote L1 validators)"

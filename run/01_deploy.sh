@@ -18,9 +18,9 @@
 # For an in-place failover (no wipe) use ./fleet. A brand-new chain
 # means re-running setup/02_create_chain.sh first (costs AVAX; usually you don't want that).
 set -e
-trap 'echo "ERROR: deploy.sh failed at line $LINENO. Command: $BASH_COMMAND"' ERR
+trap 'echo "ERROR: run/01_deploy.sh failed at line $LINENO. Command: $BASH_COMMAND"' ERR
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/_common.sh"
 if [ ! -f "$SCRIPT_DIR/network.env" ]; then
     echo "ERROR: network.env not found. Run ./setup/02_create_chain.sh first." >&2
@@ -38,11 +38,11 @@ echo ""
 "$SCRIPT_DIR/fleet" fresh
 
 echo ""
-# Same role=rpc extraction as bombard.sh: co-location-aware ports, both sites.
+# Same role=rpc extraction as run/03_bombard.sh: co-location-aware ports, both sites.
 # bombard fans every tx across ALL of these and rides through a site failover.
 echo "Bombard ingress (all pinned RPC nodes, never promoted to validators):"
 export NODE_IPS BACKUP_SITE_NODE_IPS
 "$SCRIPT_DIR/bin/benchmark-fleet" endpoints | awk -F'\t' -v c="$CHAIN_ID" \
     '$3=="rpc"{printf "  http://%s:%s/ext/bc/%s/rpc\n", $4, $5, c}'
 echo ""
-echo "Next: ./bombard.sh"
+echo "Next: ./run/03_bombard.sh"

@@ -57,7 +57,7 @@ func usage() {
   destroy           kill every node and remove the deploy dir on every machine;
                     keeps network.env (the chain identity costs AVAX to recreate)
   endpoints         print one line per machine: name, site, role, host, HTTP port
-                    (tab-separated; used by monitoring.sh / bombard.sh)`)
+                    (tab-separated; used by run/02_monitoring.sh / run/03_bombard.sh)`)
 	os.Exit(2)
 }
 
@@ -69,7 +69,7 @@ func main() {
 	cmd := os.Args[1]
 
 	// `endpoints` is a pure read of the IP env (no SSH/chain config), so it runs
-	// before the full loadConfig: monitoring.sh/bombard.sh call it with only the
+	// before the full loadConfig: run/02_monitoring.sh and run/03_bombard.sh call it with only the
 	// IP env available.
 	if cmd == "endpoints" {
 		rejectArgs(os.Args[2:])

@@ -90,12 +90,12 @@ old chain; only do that to start over with a new chain.
 ## 2. Deploy and monitor
 
 ```bash
-./deploy.sh        # wipe + deploy every node, start the chain from genesis
-./monitoring.sh    # Prometheus + Grafana on the control host
+./run/01_deploy.sh        # wipe + deploy every node, start the chain from genesis
+./run/02_monitoring.sh    # Prometheus + Grafana on the control host
 ./fleet status     # expect all nodes SERVING, "validators serving: 3/3"
 ```
 
-`deploy.sh` is **destructive by design**: it wipes node data and restarts the
+`run/01_deploy.sh` is **destructive by design**: it wipes node data and restarts the
 chain from genesis (block 0). Re-run it any time you want a clean chain, or
 after editing `chain-config.json`; the Fuji registration persists, so
 re-deploys never re-spend AVAX. First boot of a fresh fleet replays Fuji's
@@ -113,7 +113,7 @@ ssh -i <key> -L3000:localhost:3000 <user>@<control-host>   # open http://localho
 Two dashboards are provisioned: **Benchmark** (per-node TPS,
 consensus, verification) and **Failover** (per-node finalized
 height, the A-to-B finalized gap, node up/down), which shows a site failover
-as it happens. `monitoring.sh` is re-runnable and discovers the fleet
+as it happens. `run/02_monitoring.sh` is re-runnable and discovers the fleet
 from your `.env` topology automatically.
 
 ## 3. Benchmark and failover
@@ -121,7 +121,7 @@ from your `.env` topology automatically.
 Start the load (leave it running through everything below):
 
 ```bash
-./bombard.sh
+./run/03_bombard.sh
 ```
 
 One fixed profile, no flags: **4000 tx/s**, 2000 in-flight cap, 5s resubmit.
@@ -132,7 +132,7 @@ re-adds it when it catches up, and resubmits anything in flight, so ingress
 survives dead nodes, dead sites, and recovering nodes without you touching it.
 The RPC nodes are never promoted to validators, which is what keeps that
 ingress path alive through a failover. To change the profile, edit the
-constants at the top of `bombard.sh`.
+constants at the top of `run/03_bombard.sh`.
 
 Operating the fleet is two independent axes, both via `./fleet`:
 
@@ -205,7 +205,7 @@ Site A proposes 25ms blocks (the hot ~40 blk/s profile); site B proposes
 100ms blocks, and only after a failover makes it the producer. The slower
 backup cadence is what lets a recovering site converge without a rolling
 restart. Tune `min-delay-target` in `chain-config.json` and re-run
-`./deploy.sh`. Throughput is gas-bound, not block-rate-bound: see
+`./run/01_deploy.sh`. Throughput is gas-bound, not block-rate-bound: see
 [docs/throughput-tuning-and-benchmarks.md](docs/throughput-tuning-and-benchmarks.md).
 
 ## Further reading

@@ -202,7 +202,7 @@ whole-second grid, or stacking it with low beta. The safe config does none of it
      this danger zone.
 - **Recovery:** a plain restart will not fix it. Wipe that node's chain DB to
   force re-bootstrap from the canonical chain, keeping its identity:
-  `scripts/failover/clean.sh <m>` (one node) or `03_deploy_chain.sh` (all).
+  `scripts/failover/clean.sh <m>` (one node) or `run/01_deploy.sh` (all).
   After a hard wedge, allow ~25s settle + a low-rps warm-up before measuring.
 - **Rule:** never stack low-beta + sub-1s-window-without-ms-timestamps + overdrive
   + hard kills. (A sub-1s window *with* `proposerMillisecondTimestamps` is safe.)

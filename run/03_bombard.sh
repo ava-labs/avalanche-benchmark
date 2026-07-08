@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/_common.sh"
 
 if [ ! -f "$NETWORK_ENV" ]; then
@@ -17,7 +17,7 @@ if [ -z "$CHAIN_ID" ]; then
 fi
 
 if [ "$#" -ne 0 ]; then
-    echo "ERROR: bombard.sh does not accept flags. Edit the fixed settings in the script if needed."
+    echo "ERROR: 03_bombard.sh does not accept flags. Edit the fixed settings in the script if needed."
     exit 2
 fi
 

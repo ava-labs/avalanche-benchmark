@@ -73,10 +73,10 @@ bin/avalanchego bin/$(SUBNET_EVM_ID):
 	cp $(AVALANCHEGO_BUILD_DIR)/build/subnet-evm bin/$(SUBNET_EVM_ID)
 
 # Monitoring binaries (linux-amd64) for the control host: `make monitoring-deps`,
-# then `./monitoring.sh`. Kept out of `deps` so a normal build doesn't pull
+# then `./run/02_monitoring.sh`. Kept out of `deps` so a normal build doesn't pull
 # ~100MB of grafana; make's file targets make it a no-op once fetched.
 monitoring-deps: bin/prometheus bin/grafana.tar.gz
-	@echo "Monitoring binaries ready (run ./monitoring.sh)."
+	@echo "Monitoring binaries ready (run ./run/02_monitoring.sh)."
 
 bin/prometheus:
 	@mkdir -p bin
@@ -102,9 +102,7 @@ pack: clean-tools deps build monitoring-deps
 		_common.sh \
 		fleet \
 		setup/ \
-		deploy.sh \
-		monitoring.sh \
-		bombard.sh \
+		run/ \
 		scenarios/ \
 		monitoring/grafana-datasources.yml \
 		monitoring/dashboards/ \
@@ -133,9 +131,7 @@ release: clean-tools deps build monitoring-deps
 		bin/grafana.tar.gz \
 		_common.sh \
 		fleet \
-		deploy.sh \
-		monitoring.sh \
-		bombard.sh \
+		run/ \
 		scenarios/ \
 		monitoring/grafana-datasources.yml \
 		monitoring/dashboards/ \

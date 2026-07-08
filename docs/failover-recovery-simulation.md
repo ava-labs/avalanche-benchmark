@@ -289,5 +289,5 @@ binary.
 - `cmd/reconcile/remote.go` — SSH/scp I/O, observe, stop, swap, start, provision.
 - `cmd/reconcile/main.go` — CLI (`fresh`/`down <m>`/`up <m>`/`apply`) + the 3-pass loop.
 - `scripts/failover/{_failover_common,up,down,failover}.sh` — wrappers.
-- `03_deploy_chain.sh` — `reconcile fresh`. `05_benchmark.sh` — bombards the pinned RPC node `m5` only.
+- `run/01_deploy.sh` — `reconcile fresh`. `run/03_bombard.sh` — the load generator (historically bombarded the pinned RPC node `m5` only).
 - `bin/reconcile` — `make build` target.

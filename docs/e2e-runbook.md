@@ -99,8 +99,8 @@ one for the benchmark (left running), one for the failover commands.
 ### Step 1 — generate secrets and fund the Fuji wallet (one time)
 
 ```bash
-./00_gen_secrets.sh
-./01_fund_wallet.sh
+./setup/00_gen_secrets.sh
+./setup/01_fund_wallet.sh
 ```
 
 `00` generates the per-deploy staking identities + the Fuji fund/fee wallet into
@@ -113,7 +113,7 @@ script then moves everything C -> P automatically. Budget: ~0.1 AVAX fees +
 ### Step 2 — create the L1 on Fuji (one time, SPENDS AVAX)
 
 ```bash
-./02_create_chain.sh
+./setup/02_create_chain.sh
 ```
 
 Registers the validator identities (the count from `VALIDATOR_IPS`; 3 by default)
@@ -125,7 +125,7 @@ repeat this step.
 ### Step 3 — deploy the L1 across both sites
 
 ```bash
-./03_deploy_chain.sh
+./run/01_deploy.sh
 ```
 
 Uploads the binaries, plugin, and keys to all 12 nodes and starts the chain from
@@ -140,7 +140,7 @@ BOOTSTRAPPING until then, which is normal.
 ### Step 4 — start monitoring
 
 ```bash
-./04_monitoring.sh
+./run/02_monitoring.sh
 ```
 
 Runs Prometheus + Grafana on the control host and prints the URLs. Two
@@ -179,7 +179,7 @@ throughout the drill.
 ### Step 6 — drive load (terminal 1, leave running)
 
 ```bash
-./05_benchmark.sh
+./run/03_bombard.sh
 ```
 
 Sends ~**4000 tx/s** to the **pinned archive RPC nodes** (`rpc_a1`/`rpc_a2` on A, plus

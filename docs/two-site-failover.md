@@ -206,7 +206,7 @@ gate's per-poll log warns when a target is losing ground.
 
 ## Benchmark across a failover
 
-`05_benchmark.sh` automatically adds `rpc_b1` to bombard's `--rpc` list in two-site
+`run/03_bombard.sh` automatically adds `rpc_b1` to bombard's `--rpc` list in two-site
 mode. Bombard fans sends across reachable endpoints, runs one watcher per
 endpoint, and resubmits in-flight txs — so the run rides through the site
 failover: sends fail over to `rpc_b1` when `rpc_a1` dies with site A, unmined in-flight
@@ -217,8 +217,8 @@ window end-to-end.
 A full demo cycle:
 
 ```bash
-./03_deploy_chain.sh              # deploys all 12 machines
-./05_benchmark.sh                       # in one window
+./run/01_deploy.sh                # deploys all 12 machines
+./run/03_bombard.sh                     # in one window
 ./scripts/failover/site-failover.sh b   # in another: kill site A mid-load
 watch -n 2 ./scripts/failover/status.sh # watch B bootstrap + serve
 ./scripts/failover/site-failover.sh a   # fail back under load
