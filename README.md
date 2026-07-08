@@ -112,11 +112,12 @@ admin). If those ports aren't open to you, tunnel:
 ssh -i <key> -L3000:localhost:3000 <user>@<control-host>   # open http://localhost:3000
 ```
 
-Four dashboards are provisioned: **Failover Overview** (per-server serving
-state and stake tier timelines, successful polls %, chain TPS), **Failover
+Three dashboards are provisioned: **Failover Overview** (per-server serving
+state and stake tier timelines, successful polls %, chain TPS, plus a
+"Load generator (bombard)" row with bombard's end-to-end tx latency p50/p95,
+mined TPS, and resubmits), **Failover
 Details** (per-node finalized height, the A-to-B finalized gap, mempools),
-**Load Generator** (bombard's end-to-end tx latency p50/p95, mined TPS,
-resubmits), and **Benchmark** (per-node TPS, consensus, verification). `run/02_monitoring.sh` is re-runnable and discovers the fleet
+and **Benchmark** (per-node TPS, consensus, verification). `run/02_monitoring.sh` is re-runnable and discovers the fleet
 from your `.env` topology automatically.
 
 ## 3. Benchmark and failover

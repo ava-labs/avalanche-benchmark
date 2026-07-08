@@ -152,14 +152,14 @@ Starts Prometheus (`:9090`) and Grafana (`:3000`, anonymous admin) on the
 control host. Prometheus scrapes three jobs: `avalanche-l1` (every node's
 `/ext/metrics` on its per-slot port), `fleet` (the weight exporter on
 `:9091`, gauges `fleet_desired_weight` / `fleet_actual_weight`), and
-`bombard` (`:9092`). Five dashboards are provisioned:
+`bombard` (`:9092`). Four dashboards are provisioned:
 
 - **Failover Overview**: per-server serving state and stake tier timelines,
-  successful polls %, chain TPS. The one to watch during the drill.
+  successful polls %, chain TPS, plus a "Load generator (bombard)" row with
+  bombard's end-to-end tx latency p50/p95, mined TPS, and resubmits. The one
+  to watch during the drill.
 - **Failover Details**: per-node finalized height, the A-to-B finalized gap,
   mempools.
-- **Load Generator**: bombard's end-to-end tx latency p50/p95, mined TPS,
-  resubmits.
 - **Benchmark**: per-node TPS, consensus, verification.
 - **Machine Metrics**: CPU, memory, disk, network per box.
 

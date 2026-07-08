@@ -100,7 +100,7 @@ export NODE_IPS BACKUP_SITE_NODE_IPS
     done < <("$SCRIPT_DIR/bin/benchmark-fleet" endpoints)
     # Control-host exporters: the fleet weight exporter (started below) and
     # bombard's /metrics (only up while a load run is active; a down target is
-    # expected and the Load Generator board just stays blank).
+    # expected and the Load generator row on Failover Overview just stays blank).
     echo "  - job_name: 'fleet'"
     echo "    scrape_timeout: 4s"
     # The exporter emits its own instance labels (a1..b4, matching the node
@@ -201,7 +201,6 @@ echo "Prometheus: http://$PUBLIC_IP:$PROM_PORT"
 echo "Grafana:    http://$PUBLIC_IP:$GRAFANA_PORT   (anonymous admin, no login)"
 echo "  Failover Overview: http://$PUBLIC_IP:$GRAFANA_PORT/d/failover-overview?refresh=5s&from=now-15m&to=now"
 echo "  Failover Details:  http://$PUBLIC_IP:$GRAFANA_PORT/d/failover?refresh=5s&from=now-15m&to=now"
-echo "  Load Generator:    http://$PUBLIC_IP:$GRAFANA_PORT/d/loadgen?refresh=5s&from=now-15m&to=now"
 echo "  Machine board:     http://$PUBLIC_IP:$GRAFANA_PORT/d/machine?refresh=5s&from=now-15m&to=now"
 echo "  Benchmark board:   http://$PUBLIC_IP:$GRAFANA_PORT/d/benchmark?refresh=5s"
 echo ""
