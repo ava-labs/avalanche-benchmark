@@ -62,10 +62,10 @@ allowance in `node-config.json` (`throttler-inbound-bandwidth-refill-rate`
 
 ## Running a site failover
 
-The worked drills are `scenarios/03_datacenter_failure.sh` (site A dies,
-site B takes consensus) and `scenarios/04_datacenter_failback.sh` (site A
-returns, consensus moves home). Stripped of the reset preamble, the failover
-is three commands:
+The worked drill is `scenarios/03_datacenter_failure.sh` (site A dies,
+site B takes consensus); failing back is just running
+`scenarios/00_healthy.sh` (site A returns, consensus moves home). Stripped
+of the reset preamble, the failover is three commands:
 
 ```bash
 ./fleet down 1 2 3 4 5 6        # site A is gone (simulated: SIGKILL)
@@ -86,8 +86,8 @@ Fuji P-chain db) and state-syncs it onto the live branch, so a returning
 site can never resurrect a stale frontier: there is nothing on disk to
 resurrect. Raise before lower applies across sites exactly as within one.
 
-Note scenario 03 promotes `7 8 9` (three machines) while 04 restores
-`1 2 3 4` (four): the B-side spare `b4` stays at spare weight during the DR
+Note scenario 03 promotes `7 8 9` (three machines) while the failback
+restores `1 2 3 4` (four): the B-side spare `b4` stays at spare weight during the DR
 posture, mirroring a production stance of running the minimum on the backup
 site; the ground state on A is all four.
 

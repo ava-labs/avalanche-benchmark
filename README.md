@@ -162,22 +162,21 @@ Operating the fleet is two independent axes, both via `./fleet`:
 the fleet never passes through a low-weight window. Weights only move when
 you ask: a dead box keeps blocking quorum until you `weight dead` it.
 
-The worked drills live in `scenarios/`. 00-03 and 05 first restore the
+The worked drills live in `scenarios/`. Each one first restores the
 ground state (all machines up, machines 1-4 validating, everything else
-spare), then execute the failure, so they can be run from any starting
-point. 04 is the failback half of 03 and assumes its aftermath: run it
-after 03.
+spare), then executes the failure, so they can be run from any starting
+point.
 
 ```bash
 ./scenarios/00_healthy.sh                  # ground state only
 ./scenarios/01_validator_down.sh           # one validator dies, 3 of 4 remain
 ./scenarios/02_validator_down_replace.sh   # site B machine steps in, back to 4
 ./scenarios/03_datacenter_failure.sh       # site A dies, site B takes over
-./scenarios/04_datacenter_failback.sh      # site A returns, consensus moves home (run after 03)
-./scenarios/05_validator_maintenance.sh    # planned maintenance: drain a1, then power it off
+./scenarios/04_validator_maintenance.sh    # planned maintenance: drain a1, then power it off
 ```
 
-Recovery from any scenario is `./scenarios/00_healthy.sh`.
+Recovery from any scenario is `./scenarios/00_healthy.sh`; failing back
+after 03 is just running it.
 
 ### What to expect when validators drop
 

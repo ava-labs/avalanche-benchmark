@@ -211,8 +211,10 @@ scenario runs from any starting point. Recovery from anything is
 ./scenarios/01_validator_down.sh          # one validator dies, 3 of 4 remain
 ./scenarios/02_validator_down_replace.sh  # a site B machine steps in, back to 4
 ./scenarios/03_datacenter_failure.sh      # site A dies, site B takes over
-./scenarios/04_datacenter_failback.sh     # site A returns, consensus moves home
 ```
+
+Failing back after 03 is just running `./scenarios/00_healthy.sh`: site A
+rebuilds, re-syncs, and consensus moves home.
 
 What a weight move looks like: each `./fleet weight` prints the tier changes,
 then the reconcile against Fuji, e.g.
