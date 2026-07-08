@@ -172,7 +172,7 @@ run from any starting point:
 ./scenarios/01_validator_down.sh           # one validator dies, 3 of 4 remain
 ./scenarios/02_validator_down_replace.sh   # site B machine steps in, back to 4
 ./scenarios/03_datacenter_failure.sh       # site A dies, site B takes over
-./scenarios/04_datacenter_failback.sh      # site A returns, consensus moves home
+./scenarios/04_datacenter_failback.sh      # site A returns, consensus moves home (run after 03)
 ./scenarios/05_validator_maintenance.sh    # planned maintenance: drain a1, then power it off
 ```
 
