@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/ava-labs/avalanchego/ids"
 
@@ -116,5 +117,37 @@ func TestNeedsDelivery(t *testing.T) {
 			t.Errorf("%s: needsDelivery(%d,%d) = %v, want %v",
 				tt.name, tt.sentNonce, tt.minNonce, got, tt.want)
 		}
+	}
+}
+
+// TestDelayForAttempt pins the escalating retry schedule: fast early (cold
+// aggregator resolves in seconds), settling at 2m for slow Fuji coverage.
+func TestDelayForAttempt(t *testing.T) {
+	tests := []struct {
+		attempt int
+		want    time.Duration
+	}{
+		{2, time.Second},
+		{3, 5 * time.Second},
+		{4, 10 * time.Second},
+		{5, 15 * time.Second},
+		{6, 30 * time.Second},
+		{7, time.Minute},
+		{8, 2 * time.Minute},
+		{9, 2 * time.Minute},
+		{24, 2 * time.Minute},
+	}
+	for _, tt := range tests {
+		if got := delayForAttempt(tt.attempt); got != tt.want {
+			t.Errorf("delayForAttempt(%d) = %s, want %s", tt.attempt, got, tt.want)
+		}
+	}
+	// Total wait across all attempts stays within the 30-45 min cap.
+	var total time.Duration
+	for a := 2; a <= weightConvergeAttempts; a++ {
+		total += delayForAttempt(a)
+	}
+	if total < 30*time.Minute || total > 45*time.Minute {
+		t.Errorf("total retry wait %s outside 30-45 min", total)
 	}
 }

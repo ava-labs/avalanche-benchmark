@@ -58,14 +58,35 @@ import (
 const weightRounds = 100 // bound on simulated steps per plan and burst rounds; a full DC seesaw needs ~10 steps in 1 round
 
 const (
-	// weightConverge* pace the outer retry of the whole converge sequence. The
-	// binding constraint is Fuji primary-network signature coverage climbing
-	// past the 67% quorum as a fresh C-chain warp message propagates (minutes),
-	// so retry for ~20 min before deferring to a manual `reconcile apply`.
-	weightConvergeAttempts = 20
-	weightRetryBackoff     = 60 * time.Second
+	// weightConverge* pace the outer retry of the whole converge sequence.
+	// Early retries are fast (the private aggregator's cold start fails once
+	// then succeeds in seconds), then back off to 2m for the slow transient:
+	// Fuji primary-network signature coverage climbing past the 67% quorum as
+	// a fresh C-chain warp message propagates (minutes). 24 attempts on the
+	// escalating schedule below is ~36 min of waiting before deferring to a
+	// manual `reconcile apply`.
+	weightConvergeAttempts = 24
 	weightConvergeTimeout  = 40 * time.Minute
 )
+
+// weightRetrySchedule is the delay before attempts 2, 3, ...; past the end it
+// stays at the last entry.
+var weightRetrySchedule = []time.Duration{
+	time.Second, 5 * time.Second, 10 * time.Second, 15 * time.Second,
+	30 * time.Second, time.Minute, 2 * time.Minute,
+}
+
+// delayForAttempt returns the sleep before the given attempt (attempt >= 2).
+func delayForAttempt(attempt int) time.Duration {
+	i := attempt - 2
+	if i < 0 {
+		i = 0
+	}
+	if i >= len(weightRetrySchedule) {
+		i = len(weightRetrySchedule) - 1
+	}
+	return weightRetrySchedule[i]
+}
 
 // nextWeight returns the furthest weight toward desired reachable in ONE
 // initiateValidatorWeightUpdate, given the churn cap: with period 0 each op
@@ -220,18 +241,20 @@ func reconcileWeights(cfg *config, intents []MachineIntent) {
 	// a C-chain-originated message once they have synced the C-chain block that
 	// emitted the initiate. Right after an initiate, coverage sits below the 67%
 	// quorum (measured ~52% on 2026-07-07) and climbs over MINUTES as the block
-	// propagates. So we retry patiently with a long backoff, not seconds — the
+	// propagates. The schedule retries fast first (aggregator cold starts
+	// resolve in seconds) and settles at 2m for the slow coverage climb; the
 	// chain stays healthy on the current weights throughout (delivery only moves
 	// weight once it lands). Re-run `reconcile apply` to resume past the timeout.
 	var lastErr error
 	for attempt := 1; attempt <= weightConvergeAttempts; attempt++ {
 		if attempt > 1 {
+			delay := delayForAttempt(attempt)
 			fmt.Printf("  weights: attempt %d/%d in %s (last: %v)\n",
-				attempt, weightConvergeAttempts, weightRetryBackoff, lastErr)
+				attempt, weightConvergeAttempts, delay, lastErr)
 			select {
 			case <-ctx.Done():
 				fatalf("weights: %v (re-run `reconcile apply` to resume; every step is idempotent)", ctx.Err())
-			case <-time.After(weightRetryBackoff):
+			case <-time.After(delay):
 			}
 		}
 		if lastErr = e.converge(ctx); lastErr == nil {

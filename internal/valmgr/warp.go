@@ -97,43 +97,110 @@ func addressedCallMessage(networkID uint32, sourceChain ids.ID, sourceAddr []byt
 	return avalancheWarp.NewUnsignedMessage(networkID, sourceChain, call.Bytes())
 }
 
-// defaultAggregatorURL is the public, unauthenticated Glacier signature
-// aggregator for Fuji. Override with AGGREGATOR_URL.
-const defaultAggregatorURL = "https://glacier-api.avax.network/v1/signatureAggregator/fuji/aggregateSignatures"
+// privateAggregatorURL is our own signature aggregator
+// (avaplatform/signature-aggregator v0.5.4 on fly.io, scale-to-zero: the first
+// request after idle takes a few seconds while the machine wakes, hence the
+// 60s client timeout). It aggregates FRESH per request, no per-message cache,
+// which is the whole reason it is primary: Glacier caches aggregates per
+// unsigned message with no cache buster, which livelocked weight moves.
+// Override with the AGGREGATOR_URL env var.
+const privateAggregatorURL = "https://avax-signature-aggregator-fuji.fly.dev/aggregate-signatures"
 
-type aggregateRequest struct {
+// glacierAggregatorURL is the public Glacier aggregator, fallback only
+// (cached responses, see above).
+const glacierAggregatorURL = "https://glacier-api.avax.network/v1/signatureAggregator/fuji/aggregateSignatures"
+
+// aggClient tolerates the fly.io scale-to-zero wake on the first request.
+var aggClient = &http.Client{Timeout: 60 * time.Second}
+
+// Glacier request/response (camelCase).
+type glacierRequest struct {
 	Message          string `json:"message"`
 	Justification    string `json:"justification,omitempty"`
 	QuorumPercentage uint64 `json:"quorumPercentage"`
 }
 
-type aggregateResponse struct {
+type glacierResponse struct {
 	SignedMessage string `json:"signedMessage"`
 	Message       string `json:"message"` // error detail on non-200
 }
 
+// Private aggregator request/response (kebab-case, signed message has no 0x).
+type privateRequest struct {
+	Message          string `json:"message"`
+	Justification    string `json:"justification,omitempty"`
+	QuorumPercentage uint64 `json:"quorum-percentage"`
+}
+
+type privateResponse struct {
+	SignedMessage string `json:"signed-message"`
+	Error         string `json:"error"`
+}
+
 // Aggregate collects a primary-network BLS aggregate signature over the
-// unsigned message via the public aggregator. signingSubnetId is omitted: it
-// defaults to the source chain's subnet, and both our source chains (Fuji C
-// and the P-chain) are the primary network. Retries transient failures a few
-// times; the callers' reconcile loops retry the whole step anyway.
+// unsigned message: our private aggregator first, Glacier as fallback.
+// signing-subnet-id is omitted on both backends: it defaults to the source
+// chain's subnet, and both our source chains (Fuji C and the P-chain) are the
+// primary network. Each backend is retried up to 3 times with 3s pauses; the
+// private aggregator needs this because its first request after a fly.io
+// scale-to-zero wake often errors ("failed to connect to a threshold of
+// stake") while p2p dials complete, and an immediate retry succeeds. Falling
+// back to Glacier on that first cold error would land us back on Glacier's
+// per-message cache, the exact failure mode this backend exists to escape.
+// The callers' reconcile loops retry the whole step anyway.
 func Aggregate(ctx context.Context, unsigned *avalancheWarp.UnsignedMessage, justification []byte) (*avalancheWarp.Message, error) {
+	msgHex := "0x" + hex.EncodeToString(unsigned.Bytes())
+	justHex := ""
+	if len(justification) > 0 {
+		justHex = "0x" + hex.EncodeToString(justification)
+	}
+
 	url := os.Getenv("AGGREGATOR_URL")
 	if url == "" {
-		url = defaultAggregatorURL
+		url = privateAggregatorURL
 	}
-	req := aggregateRequest{
-		Message:          "0x" + hex.EncodeToString(unsigned.Bytes()),
-		QuorumPercentage: 67,
-	}
-	if len(justification) > 0 {
-		req.Justification = "0x" + hex.EncodeToString(justification)
-	}
-	body, err := json.Marshal(req)
+	privBody, err := json.Marshal(privateRequest{Message: msgHex, Justification: justHex, QuorumPercentage: 67})
 	if err != nil {
 		return nil, err
 	}
+	signed, err := aggregateWithRetry(ctx, url, privBody, parsePrivate)
+	if err == nil {
+		return signed, nil
+	}
+	fmt.Printf("private aggregator failed (%v), falling back to Glacier\n", err)
 
+	glacBody, err := json.Marshal(glacierRequest{Message: msgHex, Justification: justHex, QuorumPercentage: 67})
+	if err != nil {
+		return nil, err
+	}
+	return aggregateWithRetry(ctx, glacierAggregatorURL, glacBody, parseGlacier)
+}
+
+func parsePrivate(raw []byte, status int) (*avalancheWarp.Message, error) {
+	var parsed privateResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil || parsed.SignedMessage == "" {
+		return nil, fmt.Errorf("aggregator HTTP %d: %s", status, firstLine(raw))
+	}
+	msgBytes, err := hex.DecodeString(trim0x(parsed.SignedMessage))
+	if err != nil {
+		return nil, fmt.Errorf("aggregator signed message hex: %w", err)
+	}
+	return avalancheWarp.ParseMessage(msgBytes)
+}
+
+func parseGlacier(raw []byte, status int) (*avalancheWarp.Message, error) {
+	var parsed glacierResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil || parsed.SignedMessage == "" {
+		return nil, fmt.Errorf("aggregator HTTP %d: %s", status, firstLine(raw))
+	}
+	msgBytes, err := hex.DecodeString(trim0x(parsed.SignedMessage))
+	if err != nil {
+		return nil, fmt.Errorf("aggregator signed message hex: %w", err)
+	}
+	return avalancheWarp.ParseMessage(msgBytes)
+}
+
+func aggregateWithRetry(ctx context.Context, url string, body []byte, parse func([]byte, int) (*avalancheWarp.Message, error)) (*avalancheWarp.Message, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -143,7 +210,7 @@ func Aggregate(ctx context.Context, unsigned *avalancheWarp.UnsignedMessage, jus
 			case <-time.After(3 * time.Second):
 			}
 		}
-		signed, err := aggregateOnce(ctx, url, body)
+		signed, err := aggregateOnce(ctx, url, body, parse)
 		if err == nil {
 			return signed, nil
 		}
@@ -152,13 +219,13 @@ func Aggregate(ctx context.Context, unsigned *avalancheWarp.UnsignedMessage, jus
 	return nil, lastErr
 }
 
-func aggregateOnce(ctx context.Context, url string, body []byte) (*avalancheWarp.Message, error) {
+func aggregateOnce(ctx context.Context, url string, body []byte, parse func([]byte, int) (*avalancheWarp.Message, error)) (*avalancheWarp.Message, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := aggClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("aggregator: %w", err)
 	}
@@ -167,15 +234,7 @@ func aggregateOnce(ctx context.Context, url string, body []byte) (*avalancheWarp
 	if err != nil {
 		return nil, fmt.Errorf("aggregator read: %w", err)
 	}
-	var parsed aggregateResponse
-	if err := json.Unmarshal(raw, &parsed); err != nil || parsed.SignedMessage == "" {
-		return nil, fmt.Errorf("aggregator HTTP %d: %s", resp.StatusCode, firstLine(raw))
-	}
-	msgBytes, err := hex.DecodeString(trim0x(parsed.SignedMessage))
-	if err != nil {
-		return nil, fmt.Errorf("aggregator signed message hex: %w", err)
-	}
-	return avalancheWarp.ParseMessage(msgBytes)
+	return parse(raw, resp.StatusCode)
 }
 
 func trim0x(s string) string {
