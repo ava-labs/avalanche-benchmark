@@ -139,26 +139,25 @@ Operating the fleet is two independent axes, both via `./fleet`:
 
 - **hardware**: `up` / `down` start or hard-kill avalanchego on a machine.
   `down` is a real crash (SIGKILL); `up` rebuilds the machine clean from
-  genesis and lets it re-sync from the network. Neither touches stake.
-- **stake**: `weight <tier> <machines...> [<tier> <machines...>]` moves
-  on-chain consensus weight between three tiers (`validator`=1000000,
-  `spare`=1000, `dead`=1) through the ValidatorManager contract. It never
-  starts or stops a process.
+  genesis, re-syncs it from the network and blocks until it is SERVING.
+  Neither touches stake.
+- **stake**: `weight <tier> <machines...>` moves the listed machines'
+  on-chain consensus weight to one tier (`validator`=1000000,
+  `spare`=1000, `dead`=1) through the ValidatorManager contract. One tier
+  per invocation; it never starts or stops a process.
 
 ```bash
 ./fleet status --watch                     # live per-DC stake tier + node state
 ./fleet down 1                             # crash machine 1
-./fleet weight validator 7 dead 1          # promote a spare, retire the dead box
+./fleet weight validator 7                 # promote a spare first...
+./fleet weight dead 1                      # ...then retire the dead box
 ./fleet up 1                               # rebuild machine 1, it re-syncs and rejoins
 ```
 
-**Put every tier move of a failover into ONE `weight` invocation.** The
-converge engine raises the incoming validators before lowering the outgoing
-ones, so there is never a low-weight window and the whole move fits the
-churn budget in a handful of contract steps; running raises and lowers as
-separate commands ratchets against a shrinking total and takes many times
-more transactions. Weights only move when you ask: a dead box keeps blocking
-quorum until you `weight dead` it.
+**Raise the replacement validators before lowering the old ones.** Run the
+`weight validator ...` command first and the lowering command second, so
+the fleet never passes through a low-weight window. Weights only move when
+you ask: a dead box keeps blocking quorum until you `weight dead` it.
 
 The worked drills live in `scenarios/`. Each one is idempotent: it first
 restores the ground state (all machines up, machines 1-4 validating,

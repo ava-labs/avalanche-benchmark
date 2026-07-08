@@ -4,7 +4,9 @@ set -e
 cd "$(dirname "$0")/.." || exit 1
 
 # Reset to normal: everyone up, a1-a4 validators, site B spare.
-./scenarios/_ground.sh
+./fleet up 1 2 3 4 5 6 7 8 9 10 11 12
+./fleet weight validator 1 2 3 4
+./fleet weight spare 7 8 9 10
 
 # Scenario: kill machine 1, drop its stake; chain rides on 3 of 4.
 ./fleet down 1

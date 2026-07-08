@@ -91,7 +91,7 @@ func setWeight(prev []MachineIntent, m int, w uint64, t Topology) ([]MachineInte
 		return nil, fmt.Errorf("machine %d out of range 1..%d", m, len(prev))
 	}
 	if !t.IsStakingSlot(m - 1) {
-		return nil, fmt.Errorf("%s is an RPC slot (not a registered validator); it has no weight to set", t.MachineName(m-1))
+		return nil, fmt.Errorf("%s is an RPC node, it never validates and has no weight", t.MachineName(m-1))
 	}
 	next := append([]MachineIntent{}, prev...)
 	next[m-1].Weight = w

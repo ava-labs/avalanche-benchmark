@@ -9,14 +9,12 @@
 //	           from genesis (wipes L1 chainData, keeps the Fuji P-chain).
 //	           Neither touches on-chain weight: killing or reviving a box must
 //	           never depend on Fuji quorum.
-//	weight:    <tier> <m...> [<tier> <m...>]... moves registered identities'
-//	           consensus weight between the three tiers through the
-//	           ValidatorManager contract on Fuji's C-chain (weights.go). One
-//	           invocation is ONE seesaw with raises ordered before lowers, so
-//	           `weight validator 7 8 9 dead 1 2 3` is a whole site failover:
-//	           no low-weight window, and each lower fits a single churn step
-//	           because the raises landed first. Splitting it into two runs
-//	           costs a geometric ratchet against a shrinking total. It never
+//	weight:    <tier> <m...> moves the listed registered identities'
+//	           consensus weight to ONE tier (validator|spare|dead) through
+//	           the ValidatorManager contract on Fuji's C-chain (weights.go).
+//	           One tier per invocation; in a failover the operator raises the
+//	           replacements first, then lowers the old ones as a second
+//	           command, so there is never a low-weight window. It never
 //	           starts or stops a process. `status` shows both axes per DC.
 //
 // The binary self-loads .env + network.env from the repo root, so it is the
@@ -28,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,16 +40,15 @@ func fatalf(format string, args ...any) {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: benchmark-fleet <command>
-  up   <m...>       rebuild the given machines from genesis and start them
-                    (wipes their L1 chain data; on-chain weight untouched);
-                    machines already serving and not marked down are skipped
+  up   <m...>       rebuild the given machines from genesis, start them and wait
+                    until they are SERVING (wipes their L1 chain data; on-chain
+                    weight untouched); machines already serving are skipped
   down <m...>       simulate hardware failure: hard-kill the given machines
                     (data left on disk; on-chain weight untouched)
-  weight <tier> <m...> [<tier> <m...>]...
-                    set on-chain weight; tier = validator|spare|dead (1000000|1000|1)
-                    put all changes of one failover in a single command: new
-                    validators are raised before old ones are lowered,
-                    e.g.: weight validator 7 8 9 dead 1 2 3
+  weight <tier> <m...>
+                    set on-chain weight to ONE tier: validator|spare|dead (1000000|1000|1)
+                    raise replacements first, then lower the old ones:
+                    e.g. weight validator 7 8 9   then   weight dead 1 2 3 4
   status [--watch]  read-only report: stake tier and reachability per datacenter
   fresh             WIPE every machine and redeploy the whole fleet from genesis
                     (site A active; destroys all chain data)
@@ -105,17 +103,17 @@ func main() {
 			// wiping and rebuilding it. Cordoned, unreachable, or
 			// bootstrapping-stuck machines still get the full rebuild.
 			client := &http.Client{Timeout: 4 * time.Second}
+			requested := len(ms)
 			var kept []int
 			for _, m := range ms {
 				if !prev[m-1].Cordoned && probe(client, cfg.rpcURL(m-1)).state == healthServing {
-					fmt.Printf("  %s: already running, skipped\n", topo.MachineName(m-1))
 					continue
 				}
 				kept = append(kept, m)
 			}
 			ms = kept
 			if len(ms) == 0 {
-				fmt.Println("all requested machines already running; nothing to do")
+				fmt.Printf("all %d machines already up\n", requested)
 				return
 			}
 		}
@@ -137,27 +135,54 @@ func main() {
 				cfg.killNode(m - 1)
 			}
 		} else {
-			// Recovery: rebuild each remaining target from genesis, then start.
+			// Recovery: rebuild each remaining target from genesis, start it,
+			// then block until it answers RPC as SERVING.
 			fresh := map[int]bool{}
 			for _, m := range ms {
 				fresh[m-1] = true
 			}
 			reconcile(cfg, intents, fresh, false)
+			waitServing(cfg, ms)
 		}
 
 	case "weight":
 		cfg.warnColocation()
-		assign := parseWeightArgs(os.Args[2:], topo)
-		intents := mustLoadIntents(cfg)
-		for m, w := range assign {
+		w, ms, err := parseWeightArgs(os.Args[2:], topo)
+		if err != nil {
+			fatalf("%v", err)
+		}
+		prev := mustLoadIntents(cfg)
+		intents := prev
+		for _, m := range ms {
+			// Any error (e.g. an RPC slot in the list) aborts BEFORE the save:
+			// the command changes nothing.
 			next, err := setWeight(intents, m, w, topo)
 			if err != nil {
 				fatalf("%v", err)
 			}
 			intents = next
 		}
-		mustSaveIntents(cfg, intents)
-		printIntents(topo, intents)
+		raised, lowered := false, false
+		for _, m := range ms {
+			if intents[m-1].Weight == prev[m-1].Weight {
+				continue
+			}
+			fmt.Printf("  %s: %s -> %s\n",
+				topo.MachineName(m-1), weightRole(prev[m-1].Weight), weightRole(intents[m-1].Weight))
+			if intents[m-1].Weight > prev[m-1].Weight {
+				raised = true
+			} else {
+				lowered = true
+			}
+		}
+		if !raised && !lowered {
+			fmt.Println("weights already as desired")
+		} else {
+			mustSaveIntents(cfg, intents)
+			if lowered && !raised {
+				fmt.Println("hint: raise replacement validators before lowering, if you have not already")
+			}
+		}
 		reconcileWeights(cfg, intents)
 
 	case "exporter":
@@ -231,41 +256,42 @@ func parseMachines(args []string, topo Topology) []int {
 	return out
 }
 
-// parseWeightArgs parses `<tier> <m...> [<tier> <m...>]...` into a
-// machine -> weight assignment, so ONE invocation (and thus one converge, with
-// raises ordered before lowers) can express a whole seesaw:
-// `weight validator 7 8 9 dead 1 2 3`.
-func parseWeightArgs(args []string, topo Topology) map[int]uint64 {
+// parseWeightArgs parses `<tier> <m...>`: exactly ONE tier per invocation.
+// A second tier word in the args is an error; a failover is two commands,
+// raises first (`weight validator 7 8 9`, then `weight dead 1 2 3 4`).
+func parseWeightArgs(args []string, topo Topology) (uint64, []int, error) {
 	tiers := map[string]uint64{
 		"validator": valmgr.ValidatorWeight,
 		"spare":     valmgr.SpareWeight,
 		"dead":      valmgr.DeadWeight,
 	}
-	assign := map[int]uint64{}
-	var w uint64
-	haveTier := false
-	for _, a := range args {
-		if tw, ok := tiers[a]; ok {
-			w = tw
-			haveTier = true
-			continue
+	if len(args) == 0 {
+		return 0, nil, fmt.Errorf("usage: weight <validator|spare|dead> <m...>")
+	}
+	w, ok := tiers[args[0]]
+	if !ok {
+		return 0, nil, fmt.Errorf("expected a tier (validator|spare|dead), got %q", args[0])
+	}
+	var ms []int
+	seen := map[int]bool{}
+	for _, a := range args[1:] {
+		if _, isTier := tiers[a]; isTier {
+			return 0, nil, fmt.Errorf("one tier per command; run `weight %s ...` as a separate command (raise replacements before lowering)", a)
 		}
 		m, err := strconv.Atoi(a)
 		if err != nil || m < 1 || m > topo.Size() {
-			fatalf("expected a tier (validator|spare|dead) or a machine 1..%d, got %q", topo.Size(), a)
+			return 0, nil, fmt.Errorf("machine must be 1..%d, got %q", topo.Size(), a)
 		}
-		if !haveTier {
-			fatalf("machine %d before any tier; usage: weight <tier> <m...> [<tier> <m...>]...", m)
+		if seen[m] {
+			return 0, nil, fmt.Errorf("machine %d listed twice", m)
 		}
-		if _, dup := assign[m]; dup {
-			fatalf("machine %d listed twice", m)
-		}
-		assign[m] = w
+		seen[m] = true
+		ms = append(ms, m)
 	}
-	if len(assign) == 0 {
-		fatalf("usage: weight <validator|spare|dead> <m...> [<tier> <m...>]...")
+	if len(ms) == 0 {
+		return 0, nil, fmt.Errorf("usage: weight <validator|spare|dead> <m...>")
 	}
-	return assign
+	return w, ms, nil
 }
 
 // printEndpoints writes one tab-separated line per pool slot —
@@ -340,7 +366,7 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 				if !cfg.provisioned(host) {
 					fmt.Printf("  %s (%s): missing artifacts, uploading\n", topo.MachineName(i), host)
 					cfg.upload(host)
-				} else {
+				} else if freshSet[i] {
 					fmt.Printf("  %s (%s): provisioned\n", topo.MachineName(i), host)
 				}
 			}(i, host)
@@ -359,7 +385,9 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 	obs := make([]Observed, len(hosts))
 	for i := range hosts {
 		obs[i] = cfg.observe(i)
-		fmt.Printf("  %s: alive=%v key=%d\n", topo.MachineName(i), obs[i].Alive, obs[i].ActualKey)
+		if forceUpload || freshSet[i] {
+			fmt.Printf("  %s: alive=%v key=%d\n", topo.MachineName(i), obs[i].Alive, obs[i].ActualKey)
+		}
 	}
 	actions := Plan(topo, intents, obs)
 
@@ -387,6 +415,51 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 	}
 
 	fmt.Println("\nProcesses reconciled. Watch live node state with:  ./fleet status --watch")
+}
+
+// waitServing blocks until every listed machine answers its L1 RPC as SERVING,
+// polling every 5s with a 10 minute deadline. Prints a line only when a
+// machine's observed state changes (not on every poll); exits non-zero with
+// the stragglers named on timeout.
+func waitServing(cfg *config, ms []int) {
+	const (
+		poll    = 5 * time.Second
+		timeout = 10 * time.Minute
+	)
+	client := &http.Client{Timeout: 4 * time.Second}
+	deadline := time.Now().Add(timeout)
+	last := map[int]nodeHealth{} // zero value healthDown: the just-rebuilt state
+	serving := map[int]bool{}
+	fmt.Printf("waiting for %d machine(s) to reach SERVING (timeout %s)...\n", len(ms), timeout)
+	for {
+		for _, m := range ms {
+			if serving[m] {
+				continue
+			}
+			st := probe(client, cfg.rpcURL(m-1)).state
+			if st != last[m] {
+				fmt.Printf("  %s: %s\n", cfg.topo.MachineName(m-1), st)
+				last[m] = st
+			}
+			if st == healthServing {
+				serving[m] = true
+			}
+		}
+		if len(serving) == len(ms) {
+			return
+		}
+		if time.Now().After(deadline) {
+			var stuck []string
+			for _, m := range ms {
+				if !serving[m] {
+					stuck = append(stuck, cfg.topo.MachineName(m-1))
+				}
+			}
+			fatalf("up: timed out after %s waiting for %s to reach SERVING; check logs or re-run `./fleet up`",
+				timeout, strings.Join(stuck, ", "))
+		}
+		time.Sleep(poll)
+	}
 }
 
 // destroy tears the fleet down: kill avalanchego + plugin children and remove
