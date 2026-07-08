@@ -215,7 +215,7 @@ func weiToNavax(wei *big.Int) uint64 {
 }
 
 func avaxString(navax uint64) string {
-	return fmt.Sprintf("%d.%09d", navax/units.Avax, navax%units.Avax)
+	return fmt.Sprintf("%d.%02d", navax/units.Avax, navax%units.Avax/(units.Avax/100))
 }
 
 // chainStatus renders one chain's funded state: ✅ once it meets the need,
