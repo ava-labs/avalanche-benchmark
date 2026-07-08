@@ -46,7 +46,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "0 = process down or unreachable, 1 = up but bootstrapping (not serving), 2 = bootstrapped and serving the L1.",
+      "description": "Per-server avalanchego process state: down, up but not yet serving, serving.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -126,7 +126,7 @@
           "refId": "A"
         }
       ],
-      "title": "Serving state per server",
+      "title": "avalanchego up/down",
       "type": "state-timeline"
     },
     {
