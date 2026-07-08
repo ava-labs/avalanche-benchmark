@@ -64,7 +64,7 @@ const (
 	// Fuji primary-network signature coverage climbing past the 67% quorum as
 	// a fresh C-chain warp message propagates (minutes). 24 attempts on the
 	// escalating schedule below is ~36 min of waiting before deferring to a
-	// manual `reconcile apply`.
+	// manual re-run of the `fleet weight` command.
 	weightConvergeAttempts = 24
 	weightConvergeTimeout  = 40 * time.Minute
 )
@@ -218,8 +218,8 @@ func stakingTargets(cfg *config, subnetID ids.ID, intents []MachineIntent) ([]st
 }
 
 // reconcileWeights converges the on-chain weights to the intents. Called by
-// every state-changing command after the process passes; also runnable alone
-// via `reconcile apply`. Idempotent and resumable at any point.
+// every state-changing command after the process passes; re-running the same
+// `fleet weight` command resumes it. Idempotent and resumable at any point.
 func reconcileWeights(cfg *config, intents []MachineIntent) {
 	if os.Getenv("MANAGER_ADDRESS") == "" {
 		fmt.Println("[3/3] weights: SKIPPED — MANAGER_ADDRESS not set (pre-manager deploy; on-chain weights are immutable)")
@@ -244,7 +244,7 @@ func reconcileWeights(cfg *config, intents []MachineIntent) {
 	// propagates. The schedule retries fast first (aggregator cold starts
 	// resolve in seconds) and settles at 2m for the slow coverage climb; the
 	// chain stays healthy on the current weights throughout (delivery only moves
-	// weight once it lands). Re-run `reconcile apply` to resume past the timeout.
+	// weight once it lands). Re-run the `fleet weight` command to resume past the timeout.
 	var lastErr error
 	for attempt := 1; attempt <= weightConvergeAttempts; attempt++ {
 		if attempt > 1 {
@@ -253,7 +253,7 @@ func reconcileWeights(cfg *config, intents []MachineIntent) {
 				attempt, weightConvergeAttempts, delay, lastErr)
 			select {
 			case <-ctx.Done():
-				fatalf("weights: %v (re-run `reconcile apply` to resume; every step is idempotent)", ctx.Err())
+				fatalf("weights: %v (re-run the `fleet weight` command to resume; every step is idempotent)", ctx.Err())
 			case <-time.After(delay):
 			}
 		}
@@ -269,7 +269,7 @@ func reconcileWeights(cfg *config, intents []MachineIntent) {
 			lastErr = fmt.Errorf("%w (%v)", lastErr, errFujiCoverage)
 		}
 	}
-	fatalf("weights: %v (re-run `reconcile apply` to resume; every step is idempotent)", lastErr)
+	fatalf("weights: %v (re-run the `fleet weight` command to resume; every step is idempotent)", lastErr)
 }
 
 func (e *weightEngine) converge(ctx context.Context) error {

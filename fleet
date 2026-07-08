@@ -4,8 +4,9 @@
 #
 #   ./fleet up   <m...>                    rebuild + start machines (weight untouched)
 #   ./fleet down <m...>                    simulate hardware failure (hard kill, weight untouched)
-#   ./fleet weight <tier> <m...> [<tier> <m...>]...   one seesaw, raises before lowers
-#                                          e.g. weight validator 7 8 9 dead 1 2 3
+#   ./fleet weight <tier> <m...>           set ONE tier (validator|spare|dead) per invocation;
+#                                          raise before lowering: weight validator 7 8 9,
+#                                          then weight dead 1 2 3
 #   ./fleet status [--watch]               per-DC stake tier + reachability
 #   ./fleet destroy                        kill everything + remove deploy dirs (keeps network.env)
 #

@@ -1,11 +1,10 @@
 #!/bin/bash
-# Fund the generated Fuji wallet. Funding is MANUAL and C-CHAIN ONLY (there is
-# no P-chain faucet): this prints the wallet's C-chain address, waits for you to
-# hit the Fuji faucet, then AUTOMATICALLY moves everything C -> P (atomic export
-# + import), so the P-chain wallet ends up funded with zero extra steps.
+# Fund the generated Fuji wallet. Funding is MANUAL: this prints the wallet's
+# P-chain and C-chain addresses with the required amounts, then polls both
+# balances until each chain is funded at the Fuji faucet. No cross-chain
+# moves: fund each chain directly.
 #
-# Re-runnable: any new C-chain funds get swept to P; if the P balance is already
-# sufficient just Ctrl-C at the prompt.
+# Re-runnable: exits immediately if both balances are already sufficient.
 set -e
 trap 'echo "ERROR: 01_fund_wallet failed at line $LINENO. Command: $BASH_COMMAND"' ERR
 
