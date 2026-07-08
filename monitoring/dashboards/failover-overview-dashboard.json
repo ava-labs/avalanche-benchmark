@@ -46,7 +46,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Per-server avalanchego process state: down, up but not yet serving, serving.",
+      "description": "Per-server avalanchego process state in DC A: down, up but not yet serving, serving.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -93,7 +93,7 @@
       },
       "gridPos": {
         "h": 9,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 0
       },
@@ -120,13 +120,101 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(up{job=\"avalanche-l1\"} + on(instance) group_left() (max by (instance) (avalanche_snowman_bootstrap_finished{chain!~\"C|P|X|all\"}) and on(instance) up{job=\"avalanche-l1\"} == 1)) or (up{job=\"avalanche-l1\"} * 1)",
+          "expr": "(up{job=\"avalanche-l1\",site=\"a\"} + on(instance) group_left() (max by (instance) (avalanche_snowman_bootstrap_finished{chain!~\"C|P|X|all\",site=\"a\"}) and on(instance) up{job=\"avalanche-l1\",site=\"a\"} == 1)) or (up{job=\"avalanche-l1\",site=\"a\"} * 1)",
           "legendFormat": "{{instance}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "avalanchego up/down",
+      "title": "avalanchego up/down - DC A",
+      "type": "state-timeline"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Per-server avalanchego process state in DC B: down, up but not yet serving, serving.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 0,
+            "fillOpacity": 72,
+            "spanNulls": false
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "offline",
+                  "color": "red",
+                  "index": 0
+                },
+                "1": {
+                  "text": "not serving",
+                  "color": "yellow",
+                  "index": 1
+                },
+                "2": {
+                  "text": "serving",
+                  "color": "green",
+                  "index": 2
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "id": 8,
+      "options": {
+        "mergeValues": true,
+        "rowHeight": 0.85,
+        "showValue": "never",
+        "alignValue": "left",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "(up{job=\"avalanche-l1\",site=\"b\"} + on(instance) group_left() (max by (instance) (avalanche_snowman_bootstrap_finished{chain!~\"C|P|X|all\",site=\"b\"}) and on(instance) up{job=\"avalanche-l1\",site=\"b\"} == 1)) or (up{job=\"avalanche-l1\",site=\"b\"} * 1)",
+          "legendFormat": "{{instance}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "avalanchego up/down - DC B",
       "type": "state-timeline"
     },
     {
