@@ -12,7 +12,6 @@ import (
 	"github.com/ava-labs/avalanchego/utils/constants"
 	"github.com/ava-labs/avalanchego/utils/crypto/keychain"
 	"github.com/ava-labs/avalanchego/utils/rpc"
-	"github.com/ava-labs/avalanchego/utils/set"
 	"github.com/ava-labs/avalanchego/vms/platformvm"
 	platformapi "github.com/ava-labs/avalanchego/vms/platformvm/api"
 	"github.com/ava-labs/avalanchego/vms/platformvm/txs"
@@ -400,47 +399,44 @@ const (
 	pchainQuorumDen = 100
 )
 
-// precheckQuorum checks the aggregate's signer weight against the CURRENT
-// proposed-height Fuji primary-network validator set, the exact set the
-// P-chain verifies SetL1ValidatorWeightTx against. Glacier does NOT error on
-// under-quorum: it returns a signedMessage with whatever weight it collected,
-// and right after an initiate most Fuji validators have not yet synced the
-// C-chain block that emitted the message, so the aggregate often starts below
-// 67%. Catching that here turns a doomed P-chain issue into a plain
-// re-aggregate on the next attempt. Best-effort: any error reading the set
-// falls through to the P-chain's own check.
+// precheckQuorum runs the P-chain's exact warp verification (signer weight AND
+// the BLS aggregate) against the CURRENT proposed-height Fuji primary-network
+// validator set before issuing. Two failure modes it catches (both measured
+// live 2026-07-08):
+//   - Glacier does NOT error on under-quorum: it returns a signedMessage with
+//     whatever weight it collected.
+//   - Glacier CACHES the aggregate per message (identical bytes across calls,
+//     hours apart; quorumPercentage/signingSubnetId/justification do not bust
+//     the key). The signer bitset indexes the canonical validator set at
+//     aggregation time; as the Fuji set drifts, the cached bitset can map to
+//     entirely different validators (seen: same signature summing 40.6% then
+//     67.7% as the set changed), so a weight-only check is not enough: only
+//     the full Verify catches a stale mapping.
+//
+// A rejected precheck costs nothing: the message stays undelivered and the
+// next attempt re-checks against the then-current set. Fall-through (cannot
+// read the set) is loud and lets the P-chain judge.
 func (e *weightEngine) precheckQuorum(ctx context.Context, signed *avalancheWarp.Message, name string) error {
-	sig, ok := signed.Signature.(*avalancheWarp.BitSetSignature)
-	if !ok {
-		return nil
-	}
 	vdrs, err := e.pClient.GetValidatorsAt(ctx, constants.PrimaryNetworkID, platformapi.ProposedHeight)
 	if err != nil {
+		fmt.Printf("  weights: %s precheck SKIPPED (platform.getValidatorsAt: %v); issuing and letting the P-chain judge\n", name, err)
 		return nil
 	}
 	warpSet, err := validators.FlattenValidatorSet(vdrs)
 	if err != nil {
+		fmt.Printf("  weights: %s precheck SKIPPED (flatten validator set: %v); issuing and letting the P-chain judge\n", name, err)
 		return nil
 	}
-	signers, err := avalancheWarp.FilterValidators(set.BitsFromBytes(sig.Signers), warpSet.Validators)
-	if err != nil {
-		return nil
-	}
-	sigWeight, err := avalancheWarp.SumWeight(signers)
-	if err != nil {
-		return nil
-	}
-	if err := avalancheWarp.VerifyWeight(sigWeight, warpSet.TotalWeight, pchainQuorumNum, pchainQuorumDen); err != nil {
-		return fmt.Errorf("aggregate for %s carries %d of %d Fuji primary-network stake (%.1f%%, need %d%%): %w",
-			name, sigWeight, warpSet.TotalWeight,
-			float64(sigWeight)*100/float64(warpSet.TotalWeight), pchainQuorumNum, errFujiCoverage)
+	if err := signed.Signature.Verify(&signed.UnsignedMessage, constants.FujiID, warpSet, pchainQuorumNum, pchainQuorumDen); err != nil {
+		return fmt.Errorf("aggregate for %s fails P-chain warp verification against the current proposed-height Fuji set (%v): %w",
+			name, err, errFujiCoverage)
 	}
 	return nil
 }
 
 // errFujiCoverage tags every under-quorum failure (local precheck or a
 // P-chain reject) with the operator explanation.
-var errFujiCoverage = fmt.Errorf("Fuji signature coverage below quorum: not a local fault, Fuji validators sign a C-chain warp message only after syncing the block that emitted it; coverage climbs over minutes and retries continue automatically")
+var errFujiCoverage = fmt.Errorf("Fuji-side signature coverage, not a local fault: Fuji validators sign a C-chain warp message only after syncing the block that emitted it, and Glacier serves a CACHED aggregate per message which can go stale against the drifting Fuji validator set; it self-heals as coverage climbs and the set realigns, retries continue automatically")
 
 // deliverToPChain delivers every validator whose latest contract nonce has not
 // reached the P-chain. Raises land before lowers (weight-neutral nonce
