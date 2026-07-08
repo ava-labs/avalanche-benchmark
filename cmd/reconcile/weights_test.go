@@ -92,3 +92,29 @@ func TestPlanSeesaw(t *testing.T) {
 	}
 	t.Logf("seesaw planned in %d initiates", len(steps))
 }
+
+// TestNeedsDelivery pins the nonce-based delivery trigger: after delivering
+// nonce N the P-chain stores minNonce = N+1, so "delivered" is strictly
+// minNonce > sentNonce. The livelock case (weights equal, contract nonce
+// ahead: demote abandoned mid-flight, then re-promoted) MUST still deliver.
+func TestNeedsDelivery(t *testing.T) {
+	tests := []struct {
+		name                string
+		sentNonce, minNonce uint64
+		want                bool
+	}{
+		{"never initiated", 0, 0, false},
+		{"first initiate undelivered", 1, 0, true},
+		{"delivered and current", 1, 2, false},
+		{"ratchet tail undelivered", 6, 3, true},
+		{"livelock: weights equal, nonce behind", 6, 3, true},
+		{"exactly at minNonce still deliverable", 3, 3, true},
+		{"fully caught up", 6, 7, false},
+	}
+	for _, tt := range tests {
+		if got := needsDelivery(tt.sentNonce, tt.minNonce); got != tt.want {
+			t.Errorf("%s: needsDelivery(%d,%d) = %v, want %v",
+				tt.name, tt.sentNonce, tt.minNonce, got, tt.want)
+		}
+	}
+}

@@ -43,10 +43,12 @@ import (
 //	                               is simulated locally and fired as one burst
 //	                               of consecutive-nonce txs landing in one or
 //	                               two blocks, not one receipt wait per step.
-//	pchain.weight != contract   -> aggregate the FINAL (highest-nonce) warp
+//	pchain.minNonce <= sentNonce -> aggregate the FINAL (highest-nonce) warp
 //	                               message, deliver one SetL1ValidatorWeightTx
 //	                               (P-chain nonce skipping collapses the
-//	                               ratchet intermediates)
+//	                               ratchet intermediates; fires even when the
+//	                               weights already match, because the ack for
+//	                               sentNonce needs the P-chain to record it)
 //	receivedNonce < sentNonce   -> aggregate the P-chain ack, complete on the
 //	                               contract (bookkeeping, keeps contract state
 //	                               equal to P-chain state for observation)
@@ -337,9 +339,21 @@ func planSeesaw(targets []stakingTarget, observed map[ids.ID]uint64, total uint6
 	return steps
 }
 
-// deliverValidator issues one SetL1ValidatorWeightTx for t if its P-chain
-// weight differs from the contract's, delivering only the FINAL
-// (highest-nonce) message.
+// needsDelivery reports whether the contract's latest weight message (nonce
+// sentNonce) has not yet been recorded by the P-chain. Delivering nonce N sets
+// the P-chain's minNonce to N+1, so undelivered means minNonce <= sentNonce.
+// This must NOT be a weight comparison: an abandoned seesaw can leave the
+// weights equal while the contract's nonce is ahead (demote-then-repromote),
+// and the ack for sentNonce can never be signed until that nonce is delivered.
+// SetL1ValidatorWeightTx with an unchanged weight but a higher nonce is legal
+// (ACP-77 nonce skipping) and exists exactly to advance minNonce.
+// sentNonce == 0 means no initiate ever happened: nothing to deliver.
+func needsDelivery(sentNonce, minNonce uint64) bool {
+	return sentNonce > 0 && minNonce <= sentNonce
+}
+
+// deliverValidator issues one SetL1ValidatorWeightTx for t if the contract's
+// FINAL (highest-nonce) message has not reached the P-chain yet.
 func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) error {
 	v, err := e.cli.GetValidator(ctx, t.validationID)
 	if err != nil {
@@ -349,14 +363,19 @@ func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) er
 	if err != nil {
 		return fmt.Errorf("platform.getL1Validator(%s): %w", e.slotName(t), err)
 	}
-	if pv.Weight == v.Weight {
+	if !needsDelivery(v.SentNonce, pv.MinNonce) {
 		return nil
 	}
 	unsigned, err := valmgr.WeightMessage(constants.FujiID, e.cChainID, e.cli.Manager, t.validationID, v.SentNonce, v.Weight)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("  weights: %s deliver weight %d (nonce %d) to the P-chain\n", e.slotName(t), v.Weight, v.SentNonce)
+	if pv.Weight == v.Weight {
+		fmt.Printf("  weights: %s weights match at %d but P-chain nonce %d lags contract nonce %d: delivering nonce %d to unblock acks\n",
+			e.slotName(t), v.Weight, pv.MinNonce, v.SentNonce, v.SentNonce)
+	} else {
+		fmt.Printf("  weights: %s deliver weight %d (nonce %d) to the P-chain\n", e.slotName(t), v.Weight, v.SentNonce)
+	}
 	signed, err := valmgr.Aggregate(ctx, unsigned, nil)
 	if err != nil {
 		return fmt.Errorf("aggregate weight message for %s: %w", e.slotName(t), err)
@@ -423,8 +442,9 @@ func (e *weightEngine) precheckQuorum(ctx context.Context, signed *avalancheWarp
 // P-chain reject) with the operator explanation.
 var errFujiCoverage = fmt.Errorf("Fuji signature coverage below quorum: not a local fault, Fuji validators sign a C-chain warp message only after syncing the block that emitted it; coverage climbs over minutes and retries continue automatically")
 
-// deliverToPChain delivers every validator whose P-chain weight differs from
-// the contract's. Raises land before lowers.
+// deliverToPChain delivers every validator whose latest contract nonce has not
+// reached the P-chain. Raises land before lowers (weight-neutral nonce
+// catch-ups ride with the raises).
 func (e *weightEngine) deliverToPChain(ctx context.Context) error {
 	var raises, lowers []stakingTarget
 	for _, t := range e.targets {
@@ -436,10 +456,10 @@ func (e *weightEngine) deliverToPChain(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("platform.getL1Validator(%s): %w", e.slotName(t), err)
 		}
-		if pv.Weight == v.Weight {
+		if !needsDelivery(v.SentNonce, pv.MinNonce) {
 			continue
 		}
-		if v.Weight > pv.Weight {
+		if v.Weight >= pv.Weight {
 			raises = append(raises, t)
 		} else {
 			lowers = append(lowers, t)
@@ -470,6 +490,12 @@ func (e *weightEngine) completeOnContract(ctx context.Context) error {
 		}
 		if pv.MinNonce == 0 {
 			continue // nothing delivered yet; the next pass delivers first
+		}
+		if pv.MinNonce-1 <= v.ReceivedNonce {
+			// The P-chain's latest signable ack (MinNonce-1) is one the
+			// contract already has: re-sending it cannot advance receivedNonce.
+			// Delivery of sentNonce must land first; the next pass does that.
+			continue
 		}
 		// The P-chain signs the ack only against its exact current state.
 		unsigned, err := valmgr.WeightAckMessage(constants.FujiID, t.validationID, pv.MinNonce-1, pv.Weight)
@@ -502,8 +528,13 @@ func (e *weightEngine) verifyConverged(ctx context.Context) error {
 			return err
 		}
 		if v.Weight != t.desired || pv.Weight != t.desired || v.ReceivedNonce != v.SentNonce {
-			bad = append(bad, fmt.Sprintf("%s desired=%d contract=%d pchain=%d nonces=%d/%d",
-				e.slotName(t), t.desired, v.Weight, pv.Weight, v.ReceivedNonce, v.SentNonce))
+			line := fmt.Sprintf("%s desired=%d contract=%d pchain=%d nonces=%d/%d",
+				e.slotName(t), t.desired, v.Weight, pv.Weight, v.ReceivedNonce, v.SentNonce)
+			if v.Weight == t.desired && pv.Weight == t.desired {
+				line += fmt.Sprintf(" (weights match; P-chain nonce %d lags contract nonce %d, next pass delivers nonce %d to unblock the ack)",
+					pv.MinNonce, v.SentNonce, v.SentNonce)
+			}
+			bad = append(bad, line)
 		}
 	}
 	if len(bad) > 0 {
