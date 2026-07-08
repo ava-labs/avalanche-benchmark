@@ -3,13 +3,25 @@
 set -e
 cd "$(dirname "$0")/.." || exit 1
 
-# Reset to normal: everyone up, a1-a4 validators, site B spare.
+echo
+printf '\033[1m==== 🔄 RESET: everyone up, a1-a4 validators, site B spare ====\033[0m\n'
+echo
 ./fleet up 1 2 3 4 5 6 7 8 9 10 11 12
 ./fleet weight validator 1 2 3 4
 ./fleet weight spare 7 8 9 10
 
-# Scenario: kill all of site A; site B validators take consensus.
+echo
+printf '\033[1m==== 💥 SCENARIO: killing all of site A ====\033[0m\n'
+echo
 ./fleet down 1 2 3 4 5 6
+
+echo
+printf '\033[1m==== ⚖️ WEIGHTS: site B takes consensus ====\033[0m\n'
+echo
 ./fleet weight validator 7 8 9
 ./fleet weight dead 1 2 3 4
+
+echo
+printf '\033[1m==== 📊 STATUS ====\033[0m\n'
+echo
 ./fleet status
