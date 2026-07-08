@@ -224,9 +224,9 @@ then the reconcile against Fuji, e.g.
 [3/3] weights: reconciling via ValidatorManager 0x... (subnet ...)
   weights: firing 2 initiates in one burst:
     b1 -> 801800
-    b1 -> 1000000
-  weights: b1 deliver weight 1000000 (nonce 4) to the P-chain
-  weights: b1 complete (ack nonce 4, weight 1000000)
+    b1 -> 100000
+  weights: b1 deliver weight 100000 (nonce 4) to the P-chain
+  weights: b1 complete (ack nonce 4, weight 100000)
   weights: converged (contract == P-chain == desired)
 ```
 

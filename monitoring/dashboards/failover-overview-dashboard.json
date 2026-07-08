@@ -222,7 +222,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "On-chain consensus weight per DC A server: 1 = dead, 1000 = spare, 1000000 = validator.",
+      "description": "On-chain consensus weight per DC A server: 1 = dead, 1000 = spare, 100000 = validator.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -249,7 +249,7 @@
               "type": "range",
               "options": {
                 "from": 10,
-                "to": 500000,
+                "to": 50000,
                 "result": {
                   "color": "yellow",
                   "index": 1
@@ -259,7 +259,7 @@
             {
               "type": "range",
               "options": {
-                "from": 500000,
+                "from": 50000,
                 "to": 1000000000000,
                 "result": {
                   "color": "green",
@@ -323,7 +323,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "On-chain consensus weight per DC B server: 1 = dead, 1000 = spare, 1000000 = validator.",
+      "description": "On-chain consensus weight per DC B server: 1 = dead, 1000 = spare, 100000 = validator.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -350,7 +350,7 @@
               "type": "range",
               "options": {
                 "from": 10,
-                "to": 500000,
+                "to": 50000,
                 "result": {
                   "color": "yellow",
                   "index": 1
@@ -360,7 +360,7 @@
             {
               "type": "range",
               "options": {
-                "from": 500000,
+                "from": 50000,
                 "to": 1000000000000,
                 "result": {
                   "color": "green",

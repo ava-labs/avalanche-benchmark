@@ -17,7 +17,7 @@ Weight tiers (one per `./fleet weight` invocation):
 
 | Tier | Weight | Meaning |
 |------|--------|---------|
-| `validator` | 1000000 | carries consensus |
+| `validator` | 100000 | carries consensus |
 | `spare` | 1000 | registered, synced, negligible vote |
 | `dead` | 1 | retired (weight 0 would deregister; we never remove) |
 

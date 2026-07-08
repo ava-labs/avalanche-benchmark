@@ -145,7 +145,7 @@ Operating the fleet is two independent axes, both via `./fleet`:
   genesis, re-syncs it from the network and blocks until it is SERVING.
   Neither touches stake.
 - **stake**: `weight <tier> <machines...>` moves the listed machines'
-  on-chain consensus weight to one tier (`validator`=1000000,
+  on-chain consensus weight to one tier (`validator`=100000,
   `spare`=1000, `dead`=1) through the ValidatorManager contract. One tier
   per invocation; it never starts or stops a process.
 

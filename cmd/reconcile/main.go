@@ -46,7 +46,7 @@ func usage() {
   down <m...>       simulate hardware failure: hard-kill the given machines
                     (data left on disk; on-chain weight untouched)
   weight <tier> <m...>
-                    set on-chain weight to ONE tier: validator|spare|dead (1000000|1000|1)
+                    set on-chain weight to ONE tier: validator|spare|dead (100000|1000|1)
                     raise replacements first, then lower the old ones:
                     e.g. weight validator 7 8 9   then   weight dead 1 2 3 4
   status [--watch]  read-only report: stake tier and reachability per datacenter
