@@ -16,9 +16,9 @@
 # and the wallet may hold funds. For a truly fresh identity set, remove
 # staking/ yourself first (and accept that the old chain is unreachable).
 set -e
-trap 'echo "ERROR: 00 failed at line $LINENO. Command: $BASH_COMMAND"' ERR
+trap 'echo "ERROR: 00_gen_secrets failed at line $LINENO. Command: $BASH_COMMAND"' ERR
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/_common.sh"
 
 GENSTAKING="$SCRIPT_DIR/bin/genstaking"
@@ -74,4 +74,4 @@ echo ""
 echo "=== Secrets ready ==="
 echo "Manifest: $NODE_IDS_FILE"
 echo ""
-echo "Next step: ./01_fund_wallet.sh   (manual Fuji faucet -> auto C->P move)"
+echo "Next step: ./setup/01_fund_wallet.sh   (manual Fuji faucet -> auto C->P move)"

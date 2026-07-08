@@ -129,7 +129,7 @@ func loadConfig() *config {
 func loadNodeIDs(path string) map[int]string {
 	vars, err := godotenv.Read(path)
 	if err != nil {
-		fatalf("read %s (run ./00_gen_secrets.sh first): %v", path, err)
+		fatalf("read %s (run ./setup/00_gen_secrets.sh first): %v", path, err)
 	}
 	out := make(map[int]string, len(vars))
 	for k, v := range vars {
@@ -384,7 +384,7 @@ func (c *config) swap(i, keyIdx int) {
 func (c *config) nodeIDForKey(k int) string {
 	id := c.nodeIDByKey[k]
 	if id == "" {
-		fatalf("missing L1_%d_NODE_ID in %s/staking/node-ids.env (run ./00_gen_secrets.sh)", k, c.repoDir)
+		fatalf("missing L1_%d_NODE_ID in %s/staking/node-ids.env (run ./setup/00_gen_secrets.sh)", k, c.repoDir)
 	}
 	return id
 }

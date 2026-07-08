@@ -112,7 +112,7 @@ func pAddress(key *secp256k1.PrivateKey) string {
 func fund(keyPath, api string) {
 	key, err := fujikey.Load(keyPath)
 	if err != nil {
-		fatalf("load wallet key (run ./00_gen_secrets.sh first): %v", err)
+		fatalf("load wallet key (run ./setup/00_gen_secrets.sh first): %v", err)
 	}
 	ctx := context.Background()
 

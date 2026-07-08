@@ -1,4 +1,4 @@
-.PHONY: all clean clean-tools deps build pack monitoring-deps rpm
+.PHONY: all clean clean-tools deps build pack release monitoring-deps rpm
 # The Go tool binaries are phony too: their file rules have no source
 # prerequisites, so without this a stale bin/ silently ships into `pack`
 # (bit us 2026-07-06). go's build cache keeps the rebuild near-instant.
@@ -73,10 +73,10 @@ bin/avalanchego bin/$(SUBNET_EVM_ID):
 	cp $(AVALANCHEGO_BUILD_DIR)/build/subnet-evm bin/$(SUBNET_EVM_ID)
 
 # Monitoring binaries (linux-amd64) for the control host: `make monitoring-deps`,
-# then `./04_monitoring.sh`. Kept out of `deps` so a normal build doesn't pull
+# then `./monitoring.sh`. Kept out of `deps` so a normal build doesn't pull
 # ~100MB of grafana; make's file targets make it a no-op once fetched.
 monitoring-deps: bin/prometheus bin/grafana.tar.gz
-	@echo "Monitoring binaries ready (run ./04_monitoring.sh)."
+	@echo "Monitoring binaries ready (run ./monitoring.sh)."
 
 bin/prometheus:
 	@mkdir -p bin
@@ -101,7 +101,42 @@ pack: clean-tools deps build monitoring-deps
 		bin/ \
 		_common.sh \
 		fleet \
-		0[0-6]_*.sh \
+		setup/ \
+		deploy.sh \
+		monitoring.sh \
+		bombard.sh \
+		examples/ \
+		monitoring/grafana-datasources.yml \
+		monitoring/dashboards/ \
+		node-config.json \
+		chain-config.json \
+		chain-config-rpc.json \
+		subnet-config.json \
+		genesis.json \
+		.env.example \
+		README.md \
+		docs/
+
+# Client release zip for GitHub releases: the generic kit for operators whose
+# chain already exists. Same payload as pack MINUS setup/ (chain creation is
+# vendor-side) and minus the setup-only tool binaries. Secrets (staking/,
+# network.env, fuji-wallet.key) are never in any archive; they ship separately
+# per customer and untar over the unpacked kit root.
+release: clean-tools deps build monitoring-deps
+	rm -f avalanche-l1-kit.zip
+	zip -r avalanche-l1-kit.zip \
+		bin/avalanchego \
+		bin/$(SUBNET_EVM_ID) \
+		bin/benchmark-fleet \
+		bin/bombard \
+		bin/prometheus \
+		bin/grafana.tar.gz \
+		_common.sh \
+		fleet \
+		deploy.sh \
+		monitoring.sh \
+		bombard.sh \
+		examples/ \
 		monitoring/grafana-datasources.yml \
 		monitoring/dashboards/ \
 		node-config.json \

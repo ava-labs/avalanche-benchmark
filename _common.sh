@@ -138,7 +138,7 @@ staking_max_key() {
 
 # ensure_staking_keys verifies every GENERATED staking identity the configured
 # topology will reference (staking/l1/6 .. staking_max_key) actually exists.
-# Keys are generated per deploy by ./00_gen_secrets.sh and are NEVER committed
+# Keys are generated per deploy by ./setup/00_gen_secrets.sh and are NEVER committed
 # (their NodeIDs get bound as validationIDs on Fuji's public P-chain; a leaked
 # staking key = validator impersonation). Pre-flight check, not a generator.
 ensure_staking_keys() {
@@ -148,7 +148,7 @@ ensure_staking_keys() {
         if [ ! -d "$STAKING_DIR/l1/$k" ]; then
             echo "ERROR: the configured topology needs staking key $k, but" >&2
             echo "       $STAKING_DIR/l1/$k is missing. Generate the deploy secrets first:" >&2
-            echo "         ./00_gen_secrets.sh" >&2
+            echo "         ./setup/00_gen_secrets.sh" >&2
             exit 1
         fi
     done

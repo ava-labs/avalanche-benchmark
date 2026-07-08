@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_common.sh"
 
 if [ ! -f "$NETWORK_ENV" ]; then
-    echo "ERROR: network.env not found. Run 02_create_chain.sh first."
+    echo "ERROR: network.env not found. Run ./setup/02_create_chain.sh first."
     exit 1
 fi
 
@@ -17,7 +17,7 @@ if [ -z "$CHAIN_ID" ]; then
 fi
 
 if [ "$#" -ne 0 ]; then
-    echo "ERROR: 05_benchmark.sh does not accept flags. Edit the fixed settings in the script if needed."
+    echo "ERROR: bombard.sh does not accept flags. Edit the fixed settings in the script if needed."
     exit 2
 fi
 

@@ -53,7 +53,7 @@ func usage() {
   destroy                     kill every node and remove the deploy dir on every box;
                               keeps network.env (the chain identity costs AVAX to recreate)
   endpoints                   print per-slot "name<TAB>site<TAB>role<TAB>host<TAB>httpPort"
-                              (used by 04_monitoring.sh / 05_benchmark.sh)`)
+                              (used by monitoring.sh / bombard.sh)`)
 	os.Exit(2)
 }
 
@@ -65,8 +65,10 @@ func main() {
 	cmd := os.Args[1]
 
 	// `endpoints` is a pure read of the IP env (no SSH/chain config), so it runs
-	// before the full loadConfig — 04/05 call it with only the IP env available.
+	// before the full loadConfig: monitoring.sh/bombard.sh call it with only the
+	// IP env available.
 	if cmd == "endpoints" {
+		rejectArgs(os.Args[2:])
 		topo, _, insts := loadPool()
 		printEndpoints(topo, insts)
 		return
@@ -77,7 +79,14 @@ func main() {
 
 	switch cmd {
 	case "status":
-		status(cfg, hasFlag(os.Args[2:], "--watch"))
+		watch := false
+		for _, a := range os.Args[2:] {
+			if a != "--watch" {
+				fatalf("status: unknown argument %q (only --watch)", a)
+			}
+			watch = true
+		}
+		status(cfg, watch)
 
 	case "up", "down":
 		cfg.warnColocation()
@@ -125,9 +134,11 @@ func main() {
 		reconcileWeights(cfg, intents)
 
 	case "destroy":
+		rejectArgs(os.Args[2:])
 		destroy(cfg)
 
 	case "fresh":
+		rejectArgs(os.Args[2:])
 		cfg.warnColocation()
 		intents := seedIntents(topo)
 		mustSaveIntents(cfg, intents)
@@ -159,24 +170,21 @@ func mustSaveIntents(cfg *config, intents []MachineIntent) {
 	}
 }
 
-func hasFlag(args []string, flag string) bool {
-	for _, a := range args {
-		if a == flag {
-			return true
-		}
+// rejectArgs errors on any argument to a verb that takes none. Silently
+// ignoring extras is how `destroy --dry-run` wipes a fleet.
+func rejectArgs(args []string) {
+	if len(args) > 0 {
+		fatalf("unexpected argument %q", args[0])
 	}
-	return false
 }
 
 // parseMachines parses one or more 1-based machine numbers (deduped, order
-// preserved). Flags are skipped; each number must be in range 1..Size.
+// preserved). Each number must be in range 1..Size; there are no flags, and
+// anything flag-shaped is an error rather than a silent skip.
 func parseMachines(args []string, topo Topology) []int {
 	var out []int
 	seen := map[int]bool{}
 	for _, a := range args {
-		if len(a) > 0 && a[0] == '-' {
-			continue // skip flags
-		}
 		m, err := strconv.Atoi(a)
 		if err != nil || m < 1 || m > topo.Size() {
 			fatalf("machine must be 1..%d, got %q", topo.Size(), a)

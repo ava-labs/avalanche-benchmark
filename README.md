@@ -14,9 +14,9 @@ placement**. An IP may repeat to **co-locate** multiple nodes on one machine
 the full topology can run on as few as one box, or one node per box. The default
 example is the validated shape — **3 validators + 1 spare + 2 RPC** per site (6
 machines), site B (backup) running the same shape as zero-weight syncing
-trackers. The validator identities (staking keys) are *conserved* — they move
-between machines, and across sites on a `site-failover`, but are never
-duplicated, so the chain stays a single branch. The pinned RPC nodes are never
+trackers. Every machine wears ONE permanent validator identity (staking key);
+failover moves consensus *weight* between the registered identities through the
+ValidatorManager contract, never the keys, so the chain stays a single branch. The pinned RPC nodes are never
 promoted to validators, so the load generator's ingress survives failover. The
 L1 anchors on **Fuji's public P-chain** (see [FUJI_PLAN.md](FUJI_PLAN.md)):
 every node runs `--network-id=fuji --partial-sync-primary-network
@@ -90,28 +90,39 @@ the dead site's stake out of quorum in a single converge. Single-site behavior
 is unchanged when
 the `BACKUP_*` lists are unset.
 
-> **Staking identities are generated per deploy** by `./00_gen_secrets.sh`
+> **Staking identities are generated per deploy** by `./setup/00_gen_secrets.sh`
 > (gitignored, never committed: on Fuji a leaked staking key means validator
 > impersonation). It sizes the key set to the configured topology automatically;
-> `02_create_chain.sh` pre-flights that every needed key exists.
+> `setup/02_create_chain.sh` pre-flights that every needed key exists.
 > The legacy positional `NODE_IPS` / `BACKUP_SITE_NODE_IPS` (exactly 6 each, fixed
 > 3/1/2) still works if `VALIDATOR_IPS` is unset.
 
 ## Quick start
 
-Run from the kit root on the control host. This is the condensed sequence; the
-full walkthrough — with what to expect at each step — is in
-[docs/e2e-runbook.md](docs/e2e-runbook.md).
+Run from the kit root on the control host. There are two entry points,
+depending on what you were handed. The full walkthrough — with what to expect
+at each step — is in [docs/e2e-runbook.md](docs/e2e-runbook.md).
+
+**Your chain already exists** (you received the kit plus a secrets bundle:
+`staking/`, `network.env`, and the wallet key — untar it over the kit root,
+put your machine IPs in `.env`, then):
 
 ```bash
-./00_gen_secrets.sh                 # per-deploy staking keys + Fuji wallet (gitignored)
-./01_fund_wallet.sh                 # manual Fuji faucet (C-chain), auto C->P move
-./02_create_chain.sh                # ONCE per chain: create the L1 on Fuji (SPENDS AVAX)
-./03_deploy_chain.sh                # deploy all 12 nodes, start chain from genesis (destructive, repeatable)
-./04_monitoring.sh                  # Prometheus + Grafana on the control host
+./deploy.sh                         # deploy all nodes, start the chain from genesis (destructive, repeatable)
+./monitoring.sh                     # Prometheus + Grafana on the control host
 ./fleet status                      # expect all nodes SERVING, "validators serving: N/N" (3/3 by default)
-./05_benchmark.sh                   # drive ~4000 tx/s at the pinned RPC nodes
+./bombard.sh                        # drive ~4000 tx/s at the pinned RPC nodes
 ```
+
+**You need a new chain on Fuji** (one-time, run in order, 02 spends AVAX):
+
+```bash
+./setup/00_gen_secrets.sh           # staking keys + Fuji wallet (gitignored)
+./setup/01_fund_wallet.sh           # manual Fuji faucet (C-chain), auto C->P move
+./setup/02_create_chain.sh          # ONCE per chain: create the L1 on Fuji (SPENDS AVAX)
+```
+
+then continue with `./deploy.sh` above.
 
 Then run the failover drill (separate terminal, benchmark left running):
 
@@ -123,25 +134,25 @@ Then run the failover drill (separate terminal, benchmark left running):
 ./fleet weight validator 1 2 3 spare 7 8 9 # one seesaw: hand the consensus back
 ```
 
-`03_deploy_chain.sh` is **destructive by design**: it wipes node data and
+`deploy.sh` is **destructive by design**: it wipes node data and
 restarts the chain from genesis (block 0). Re-run any time to reset to a clean
 chain; the registration on Fuji's P-chain is preserved, so you never re-run
-`00`-`02` (and never re-spend AVAX) for a re-deploy. Editing `chain-config.json`
-and re-running `03` is how you apply a new chain config. A fresh chain sits at
+`setup/` (and never re-spend AVAX) for a re-deploy. Editing `chain-config.json`
+and re-running `./deploy.sh` is how you apply a new chain config. A fresh chain sits at
 block 0 until the benchmark drives load (Avalanche produces blocks on demand).
 First boot of a fresh fleet full-replays Fuji's P-chain: RPC tier first
 (~minutes), then the validators sync through them.
 
 ## Monitoring (Prometheus + Grafana)
 
-`04_monitoring.sh` runs Prometheus + Grafana **on the control host** — not on a
+`monitoring.sh` runs Prometheus + Grafana **on the control host** — not on a
 pool node, since a pool node disappears during a site failover — and scrapes
 every node's `:9652/ext/metrics`, so the dashboards keep recording the survivors
 as a site drops out.
 
 ```bash
 make monitoring-deps     # one-time (source builds only): fetch prometheus + grafana
-./04_monitoring.sh       # generate scrape config, start both, print URLs
+./monitoring.sh       # generate scrape config, start both, print URLs
 ```
 
 It discovers the fleet from `fleet endpoints` (the single source of truth for
@@ -299,7 +310,7 @@ producing.
 
 ## Benchmark profile
 
-`05_benchmark.sh` intentionally accepts no command-line flags — the failover demo
+`bombard.sh` intentionally accepts no command-line flags — the failover demo
 uses one fixed profile:
 
 - target rate: **4000 rps**, with a 1% overshoot so *mined* TPS lands at or above
@@ -312,7 +323,7 @@ uses one fixed profile:
   survives a failover; bombard fans across all reachable RPCs and resubmits
   in-flight txs, so it rides straight through a `site-failover`.
 
-To change the profile, edit the constants at the top of `05_benchmark.sh`. See
+To change the profile, edit the constants at the top of `bombard.sh`. See
 [docs/throughput-tuning-and-benchmarks.md](docs/throughput-tuning-and-benchmarks.md)
 for why block cadence — not rps — sets the throughput ceiling, and the reasoning
 behind these values.
@@ -336,7 +347,7 @@ deploy time:
   restart. See [docs/two-site-failover.md](docs/two-site-failover.md).
 
 To tune, edit `min-delay-target` in `chain-config.json` and re-run
-`./03_deploy_chain.sh` (which resets the chain to genesis).
+`./deploy.sh` (which resets the chain to genesis).
 
 ## Further reading
 

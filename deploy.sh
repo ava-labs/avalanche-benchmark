@@ -1,5 +1,5 @@
 #!/bin/bash
-# WIPE AND DEPLOY the L1 pool against the chain created (once) by 02. This is
+# WIPE AND DEPLOY the L1 pool against the chain created (once) by setup/02_create_chain.sh. This is
 # the repeatable from-scratch raise: DESTRUCTIVE BY DESIGN. It kills every pool
 # node, WIPES data/ on all of them, and restarts the L1 from genesis (block 0),
 # throwing away any current chain state. Losing the chain data is the design,
@@ -16,14 +16,14 @@
 # through them (serial per hop). Watch ./fleet status --watch, don't panic.
 #
 # For an in-place failover (no wipe) use ./fleet. A brand-new chain
-# means re-running 02 first (costs AVAX; usually you don't want that).
+# means re-running setup/02_create_chain.sh first (costs AVAX; usually you don't want that).
 set -e
-trap 'echo "ERROR: 03 failed at line $LINENO. Command: $BASH_COMMAND"' ERR
+trap 'echo "ERROR: deploy.sh failed at line $LINENO. Command: $BASH_COMMAND"' ERR
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_common.sh"
 if [ ! -f "$SCRIPT_DIR/network.env" ]; then
-    echo "ERROR: network.env not found. Run ./02_create_chain.sh first." >&2
+    echo "ERROR: network.env not found. Run ./setup/02_create_chain.sh first." >&2
     exit 1
 fi
 source "$SCRIPT_DIR/network.env"
@@ -47,4 +47,4 @@ for i in 0 1 2 3; do
     echo "  http://${_ips[$i]}:9652/ext/bc/$CHAIN_ID/rpc"
 done
 echo ""
-echo "Next: ./05_benchmark.sh"
+echo "Next: ./bombard.sh"

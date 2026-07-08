@@ -7,9 +7,9 @@
 # Re-runnable: any new C-chain funds get swept to P; if the P balance is already
 # sufficient just Ctrl-C at the prompt.
 set -e
-trap 'echo "ERROR: 01 failed at line $LINENO. Command: $BASH_COMMAND"' ERR
+trap 'echo "ERROR: 01_fund_wallet failed at line $LINENO. Command: $BASH_COMMAND"' ERR
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/_common.sh"
 
 FUJI_WALLET="$SCRIPT_DIR/bin/fuji-wallet"
@@ -18,7 +18,7 @@ if [ ! -x "$FUJI_WALLET" ]; then
     exit 1
 fi
 if [ ! -f "$FUJI_WALLET_KEY" ]; then
-    echo "ERROR: $FUJI_WALLET_KEY not found. Run ./00_gen_secrets.sh first."
+    echo "ERROR: $FUJI_WALLET_KEY not found. Run ./setup/00_gen_secrets.sh first."
     exit 1
 fi
 

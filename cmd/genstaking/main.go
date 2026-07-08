@@ -3,7 +3,7 @@
 // given key indices and prints the matching node-ids.env manifest lines.
 // The identities are GITIGNORED and never committed: their NodeIDs get bound
 // as validationIDs on Fuji's public P-chain, so a leaked staking key equals
-// validator impersonation. Invoked by ./00_gen_secrets.sh (as bin/genstaking).
+// validator impersonation. Invoked by ./setup/00_gen_secrets.sh (as bin/genstaking).
 //
 // Usage: genstaking <firstIndex> <lastIndex>
 package main

@@ -172,7 +172,7 @@ func run() error {
 	}
 	walletKey, err := fujikey.Load(filepath.Join(stakingDir, "fuji-wallet.key"))
 	if err != nil {
-		return fmt.Errorf("load Fuji wallet key (run ./00_gen_secrets.sh and ./01_fund_wallet.sh first): %w", err)
+		return fmt.Errorf("load Fuji wallet key (run ./setup/00_gen_secrets.sh and ./setup/01_fund_wallet.sh first): %w", err)
 	}
 
 	ctx := context.Background()
@@ -209,7 +209,7 @@ func run() error {
 		return fmt.Errorf("platform.getBalance: %w", err)
 	}
 	if prog.subnet == ids.Empty && uint64(balResp.Balance) < neededP {
-		return fmt.Errorf("P-chain balance %d nAVAX < %d nAVAX needed (%d validators x 0.1 AVAX + fees); run ./01_fund_wallet.sh",
+		return fmt.Errorf("P-chain balance %d nAVAX < %d nAVAX needed (%d validators x 0.1 AVAX + fees); run ./setup/01_fund_wallet.sh",
 			balResp.Balance, neededP, len(stakingSlots))
 	}
 	cli, err := valmgr.Dial(ctx, cChainRPC, walletKey, prog.manager)
@@ -222,7 +222,7 @@ func run() error {
 	}
 	neededC := avaxToWei(cChainGasBudgetAvax)
 	if prog.manager == (ethcommon.Address{}) && cBal.Cmp(neededC) < 0 {
-		return fmt.Errorf("C-chain balance %s wei < %s wei needed for ValidatorManager gas (address %s); run ./01_fund_wallet.sh",
+		return fmt.Errorf("C-chain balance %s wei < %s wei needed for ValidatorManager gas (address %s); run ./setup/01_fund_wallet.sh",
 			cBal, neededC, cli.Sender())
 	}
 
@@ -483,7 +483,7 @@ func buildStakingValidators(t topo.Topology, stakingDir string) ([]stakingValida
 		key := t.KeyOf(s)
 		nodeIDStr := strings.TrimSpace(nodeIDs[fmt.Sprintf("L1_%d_NODE_ID", key)])
 		if nodeIDStr == "" {
-			return nil, fmt.Errorf("missing L1_%d_NODE_ID in %s (run ./00_gen_secrets.sh)", key, nodeIDsPath)
+			return nil, fmt.Errorf("missing L1_%d_NODE_ID in %s (run ./setup/00_gen_secrets.sh)", key, nodeIDsPath)
 		}
 		nodeID, err := ids.NodeIDFromString(nodeIDStr)
 		if err != nil {
