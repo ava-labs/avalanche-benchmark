@@ -120,7 +120,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "(up{job=\"avalanche-l1\"} + on(instance) group_left() (max by (instance) (avalanche_snowman_bootstrap_finished{chain!~\"C|P|X|all\"}) and on(instance) up{job=\"avalanche-l1\"} == 1)) or up{job=\"avalanche-l1\"}",
+          "expr": "(up{job=\"avalanche-l1\"} + on(instance) group_left() (max by (instance) (avalanche_snowman_bootstrap_finished{chain!~\"C|P|X|all\"}) and on(instance) up{job=\"avalanche-l1\"} == 1)) or (up{job=\"avalanche-l1\"} * 1)",
           "legendFormat": "{{instance}}",
           "range": true,
           "refId": "A"
