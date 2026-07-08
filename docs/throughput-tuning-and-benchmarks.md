@@ -5,6 +5,15 @@ Single-issuer throughput study on the 3-validator + 1-tracker L1 (Tokyo
 Goal: stable 4000 TPS, and understand every knob that moves (or doesn't move)
 the ceiling. All numbers from benchmarks on 2026-06-03.
 
+> **Historical document.** The study predates the current fleet (12 machines,
+> Fuji-anchored, weight-based failover) and its topology/keys/script names are
+> the old single-site lab's. The knob analysis and the collapse/fork findings
+> still hold. The deployed profile today: `subnet-config.json` k=30,
+> alphaPreference=16, alphaConfidence=17, beta=12, 100ms proposer window with
+> ms-timestamps; `chain-config.json` min-delay-target 25 (site A) / 100
+> (site B); `run/03_bombard.sh` 4000 rps, inflight 2000, ingress = the pinned
+> RPC nodes of both sites.
+
 > **Update (2026-06-29): the proposer window is no longer fixed at 1s.** The
 > throughput numbers below stand, but the "never go below 1s" guidance was an
 > artifact of the old fork's whole-second timestamp grid, not a fundamental
@@ -18,7 +27,7 @@ the ceiling. All numbers from benchmarks on 2026-06-03.
 
 ---
 
-## TL;DR — recommended SAFE config for stable 4000 TPS
+## TL;DR — recommended SAFE config for stable 4000 TPS (historical, 2026-06-03 lab)
 
 | Parameter | File | Value | Why |
 |---|---|---|---|
@@ -29,8 +38,8 @@ the ceiling. All numbers from benchmarks on 2026-06-03.
 | `k` | `subnet-config.json` | 20 | Default. |
 | `min-delay-target` | `chain-config.json` | **5** | 1ms is a no-op for throughput and added fragility. |
 | `min-delay` initial | `genesis.json` `initialMinDelayMS` | **5** | Matches chain-config; set in genesis or it ramps slowly. |
-| inflight cap | `bombard -inflight` | **750** | Shallow = smooth. Deep (≥5000) = unpredictable + near-wedge. |
-| ingress | `05_benchmark.sh` | **m4 tracker only** | Single funnel = 0% block reject. |
+| inflight cap | `bombard -inflight` | **750** | Shallow = smooth. Deep (≥5000) = unpredictable + near-wedge. (Current fleet: 2000, scaled for the 25ms cadence's higher per-tx latency; see `run/03_bombard.sh`.) |
+| ingress | benchmark script (now `run/03_bombard.sh`) | **m4 tracker only** | Single funnel = 0% block reject. (Current fleet: all pinned RPC nodes, same non-validating principle.) |
 | gasLimit / fee | `genesis.json` | 200M / no throttle | Block size never the limit. |
 | tx-pool caps | `chain-config.json` | 131072 acct-slots etc | Far above any single-issuer need. |
 
@@ -120,6 +129,10 @@ whole-second grid, or stacking it with low beta. The safe config does none of it
 ### `alpha` (subnet-config.json) — per-poll quorum
 - Votes-per-poll needed (of k=20). Backwards-compat field setting both
   AlphaPreference and AlphaConfidence. Must be `> k/2` (so ≥ 11).
+- (The deployed fleet has since split the two: alphaPreference=16 /
+  alphaConfidence=17 at k=30, chosen so a 3-validator quorum survives one
+  node down without tracker mis-finalization; the latency tradeoff measured
+  below still applies.)
 - Does **NOT** change rounds (that's beta). It changes per-poll cost:
   `accept_lat` 16.6 (α=11) → 18.9 (α=12) → 22.7ms (α=15). **α=11 is already
   optimal for latency**; the avalanchego default 15 is worse here.
@@ -202,7 +215,7 @@ whole-second grid, or stacking it with low beta. The safe config does none of it
      this danger zone.
 - **Recovery:** a plain restart will not fix it. Wipe that node's chain DB to
   force re-bootstrap from the canonical chain, keeping its identity:
-  `scripts/failover/clean.sh <m>` (one node) or `run/01_deploy.sh` (all).
+  `./fleet up <m>` (one node) or `./run/01_deploy.sh` (all).
   After a hard wedge, allow ~25s settle + a low-rps warm-up before measuring.
 - **Rule:** never stack low-beta + sub-1s-window-without-ms-timestamps + overdrive
   + hard kills. (A sub-1s window *with* `proposerMillisecondTimestamps` is safe.)

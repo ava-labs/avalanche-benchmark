@@ -1,60 +1,46 @@
-# End-to-End Runbook: Two-Datacenter L1 Failover & Recovery
+# End-to-End Runbook: Two-Datacenter L1 Failover and Recovery
 
-A complete cross-region disaster-recovery drill for an Avalanche L1: stand the
-chain up across two data centers, drive it under sustained load, simulate a
-total loss of the primary site, fail the validator set over to the backup site,
-and gracefully fail back — with a benchmark measuring the impact end to end.
+The full drill, install to failback, with the expected output at each step.
+Commands and vocabulary are the README's; this adds the step-by-step detail
+and what healthy looks like on the way.
 
-Everything is driven from one **control host**. It runs the orchestration, the
-load generator, and the monitoring stack, and it holds no L1 node — so it keeps
-coordinating and recording even when an entire site goes dark.
-
----
+Everything runs from the kit root on one **control host**. It holds the
+orchestration, the load generator, and the monitoring stack, and runs no L1
+node, so it keeps coordinating and recording when a site goes dark.
 
 ## Architecture
 
 | Component | Count | Role |
 |-----------|-------|------|
-| **Control host** | 1 | Orchestration scripts, load generator (bombard), Prometheus + Grafana. Also runs the 5 local primary-network (P-chain) validators the L1 bootstraps against. Holds no L1 node. |
-| **Site A** (primary) | 6 | `a1`–`a4` weighted validators (`a4` doubles as the hot spare) · `rpc_a1`/`rpc_a2` pinned archive RPC nodes |
-| **Site B** (backup) | 6 | `b1`–`b3` zero-weight syncing trackers · `b4` spare · `rpc_b1`/`rpc_b2` pinned archive RPC nodes |
+| Control host | 1 | `./fleet`, bombard, Prometheus + Grafana. No L1 node. |
+| Site A (primary) | 6 | machines 1-6: `a1..a4` stake slots (all four at validator weight), `rpc_a1`/`rpc_a2` pinned RPCs |
+| Site B (backup) | 6 | machines 7-12: `b1..b4` stake slots at spare weight, `rpc_b1`/`rpc_b2` pinned RPCs |
 
-Put the two sites in **different regions** so cross-site sync latency is real.
-
-Two invariants make the drill faithful to a production failover:
-
-- **Consensus runs in one site at a time.** The three validator identities
-  (staking keys) are *conserved* — they move between machines and across sites
-  on a failover, but are never duplicated. The chain stays a single branch with
-  no equivocation.
-- **Site B tracks site A live.** B's nodes are zero-weight trackers at the tip
-  during normal operation, so when the validator keys arrive on failover their
-  chain data is already current — that's what makes the cutover fast.
-
----
+All 8 stake slots are registered on Fuji's P-chain once, at chain creation.
+Failover moves consensus weight between them via the ValidatorManager
+contract on Fuji's C-chain; keys never move, so no drill can fork the chain.
+Put the sites in different regions so the cross-site latency is real.
 
 ## Prerequisites
 
-- **13 Linux hosts**: 1 control host + 12 nodes (`linux-amd64`), 6 per site,
-  the two sites in two regions.
-- The control host can **SSH to all 12 nodes** with a single private key.
-- Open on each node: port **22** (SSH) and **9652–9653** (L1 RPC / staking).
-- **Grafana `:3000`** and **Prometheus `:9090`** reachable on the control host
-  (or tunnel them over SSH — see Step 4).
-
----
+- 13 Linux hosts (`linux-amd64`): 1 control host + 12 nodes.
+- Control host SSHes to all 12 with one key.
+- Open on each node: 22 (SSH), 9652-9653 (L1 RPC / staking). RPC machines
+  additionally need one outbound TCP to the pinned public Fuji peer
+  (default `18.192.93.241:9651`).
+- Grafana `:3000` / Prometheus `:9090` reachable on the control host, or
+  tunneled (step 4).
 
 ## Install (control host)
 
 ```bash
-sudo rpm -i avalanche-benchmark-2026.06.23.x86_64.rpm
+sudo rpm -i avalanche-benchmark-*.rpm
 cd /opt/avalanche-benchmark
 ```
 
-Airgap-friendly: the RPM bundles Prometheus + Grafana and the pinned AvalancheGo
-build, with no runtime dependencies. (On a non-RHEL control host, extract
-`remote-benchmark.tar.gz` and run from the extracted directory instead — the
-commands below are identical.)
+Airgap-friendly: the RPM bundles Prometheus, Grafana, and the pinned
+AvalancheGo build. On a non-RHEL host, extract `remote-benchmark.tar.gz`
+anywhere and run from there; the commands are identical.
 
 ## Configure
 
@@ -63,229 +49,239 @@ cp .env.example .env
 # then edit .env
 ```
 
-Fill in the SSH settings and the per-role IP lists (`.env.example` documents every
-field and shows alternate shapes):
+Fill in the SSH settings and the per-role IP lists (`.env.example` documents
+every field and shows co-located shapes):
 
 ```ini
 SSH_USER=ubuntu
 SSH_KEY_PATH=/path/to/your-fleet-key
 
-# Site A — list LENGTH is the count, VALUES are the placement (repeat an IP to
-# co-locate). VALIDATOR_IPS >= 3, RPC_IPS >= 2 (a redundant RPC is required so one
-# can be snapshotted on restore while its twin serves), SPARE_IPS >= 0.
+# List LENGTH is the node count, VALUES are the placement (repeat an IP to
+# co-locate). VALIDATOR_IPS >= 3, RPC_IPS >= 1 per site.
 VALIDATOR_IPS=A1,A2,A3
 SPARE_IPS=A4
 RPC_IPS=A5,A6
 
-# Site B (backup) — set these to enable two-site mode; same shape as A.
+# Site B: set these to enable two-site mode; same shape as A.
 BACKUP_VALIDATOR_IPS=B1,B2,B3
 BACKUP_SPARE_IPS=B4
 BACKUP_RPC_IPS=B5,B6
 ```
 
-The counts are whatever you list — the example above is the default 3 validators
-+ 1 spare + 2 RPCs. Run `./bin/reconcile endpoints` after editing to print the
-resulting per-node layout before deploying. (The legacy positional `NODE_IPS` /
-`BACKUP_SITE_NODE_IPS` — exactly 6 each — still works if `VALIDATOR_IPS` is unset.)
+Preview the resulting layout before touching anything:
 
----
+```bash
+./fleet endpoints
+```
 
-## The drill
+One tab-separated line per node: name, site, role, host, HTTP port.
 
-Run everything from the kit root on the control host. Steps 1–4 stand the
-network up; steps 5–8 are the drill itself. Use **two terminals** for the drill:
-one for the benchmark (left running), one for the failover commands.
+## Step 1: secrets and funding (one time)
 
-### Step 1 — generate secrets and fund the Fuji wallet (one time)
+> Received a secrets bundle (`staking/`, `network.env`, wallet key)? Untar it
+> over the kit root and skip to step 3. Your chain already exists on Fuji.
 
 ```bash
 ./setup/00_gen_secrets.sh
 ./setup/01_fund_wallet.sh
 ```
 
-`00` generates the per-deploy staking identities + the Fuji fund/fee wallet into
-gitignored paths (`staking/`) and writes the NodeID manifest. `01` prints the
-wallet's C-chain address: fund it manually at the Fuji faucet
-(https://core.app/tools/testnet-faucet/, the faucet is C-chain only), and the
-script then moves everything C -> P automatically. Budget: ~0.1 AVAX fees +
-0.1 AVAX per validator (a ~5-6 day deposit; top up for longer runs).
+`00` generates one permanent staking identity per pool slot plus the Fuji
+wallet, all into gitignored `staking/`. `01` prints two faucet targets and
+polls until both are funded at https://core.app/tools/testnet-faucet/
+(2 AVAX per request, pick the chain per request):
 
-### Step 2 — create the L1 on Fuji (one time, SPENDS AVAX)
+- **P-chain address**: 0.1 AVAX per registered validator (a multi-day
+  continuous-fee deposit) plus fees.
+- **C-chain address**: gas for the ValidatorManager deploy and every weight
+  move.
+
+The script exits on its own once both balances clear.
+
+## Step 2: create the L1 on Fuji (one time, SPENDS AVAX)
 
 ```bash
 ./setup/02_create_chain.sh
 ```
 
-Registers the validator identities (the count from `VALIDATOR_IPS`; 3 by default)
-on Fuji's public P-chain via `api.avax-test.network` and writes `network.env`
-(the new `SUBNET_ID` / `CHAIN_ID`). It pre-flights the staking keys and the
-wallet balance before issuing anything. Run once per chain; re-deploys never
-repeat this step.
+Creates the subnet and chain on Fuji's public P-chain, deploys the
+ValidatorManager to the Fuji C-chain, and registers all 8 stake slots in one
+conversion (site A at validator weight, site B at spare weight). Expected
+tail:
 
-### Step 3 — deploy the L1 across both sites
+```
+=== L1 Created ===
+
+Subnet ID: <...>
+Chain ID:  <...>
+Manager:   0x<...> (ValidatorManager on the Fuji C-chain)
+
+Saved to: .../network.env
+```
+
+Then bundle the secrets and store the tarball off-machine:
+
+```bash
+./setup/03_backup_secrets.sh
+```
+
+That tarball is also the operator hand-off: untarring it over a fresh kit
+root is the whole restore.
+
+## Step 3: deploy
 
 ```bash
 ./run/01_deploy.sh
 ```
 
-Uploads the binaries, plugin, and keys to all 12 nodes and starts the chain from
-genesis (block 0): **site A validating, site B tracking**. **Destructive by
-design** — it wipes node data and restarts the chain; losing the L1 state is the
-point. Re-run any time to reset to a clean chain; the registration on Fuji is
-preserved, so you do **not** re-run steps 1–2 (and spend nothing). First boot of
-a fresh fleet full-replays Fuji's P-chain: the RPC tier syncs first (~minutes),
-then the validators sync through it (serial per hop) — nodes sit in
-BOOTSTRAPPING until then, which is normal.
+Wipes every node, uploads binaries/plugin/keys/configs, and starts the chain
+from genesis. **Destructive by design**; re-run any time for a clean chain.
+The Fuji registration persists, so re-deploys never re-spend AVAX. First
+boot of a fresh fleet replays Fuji's P-chain: RPC tier first (~minutes),
+then validators sync through them; nodes sit in `BOOTSTRAPPING` until then.
+Watch the progress with `./fleet status --watch`. (Later single-machine
+recoveries via `./fleet up` do block until the machine is SERVING.)
 
-### Step 4 — start monitoring
+## Step 4: monitoring
 
 ```bash
 ./run/02_monitoring.sh
 ```
 
-Runs Prometheus + Grafana on the control host and prints the URLs. Two
-dashboards are provisioned:
+Starts Prometheus (`:9090`) and Grafana (`:3000`, anonymous admin) on the
+control host. Prometheus scrapes three jobs: `avalanche-l1` (every node's
+`/ext/metrics` on its per-slot port), `fleet` (the weight exporter on
+`:9091`, gauges `fleet_desired_weight` / `fleet_actual_weight`), and
+`bombard` (`:9092`). Five dashboards are provisioned:
 
-- **Benchmark** (`/d/benchmark`) — per-node TPS, consensus,
-  verification.
-- **Failover** (`/d/failover`) — per-node finalized height,
-  the **A→B finalized gap**, node up/down, block-acceptance rate. **This is the
-  one to watch during the drill** — you see site A flatline and site B take over
-  live.
+- **Failover Overview**: per-server serving state and stake tier timelines,
+  successful polls %, chain TPS. The one to watch during the drill.
+- **Failover Details**: per-node finalized height, the A-to-B finalized gap,
+  mempools.
+- **Load Generator**: bombard's end-to-end tx latency p50/p95, mined TPS,
+  resubmits.
+- **Benchmark**: per-node TPS, consensus, verification.
+- **Machine Metrics**: CPU, memory, disk, network per box.
 
-Grafana is on `:3000`, Prometheus on `:9090` (anonymous, no login). If those
-ports aren't open to you, tunnel over SSH:
+Not reachable? Tunnel:
 
 ```bash
 ssh -i <key> -L3000:localhost:3000 -L9090:localhost:9090 <user>@<control-host>
-# then open http://localhost:3000
 ```
 
-### Step 5 — confirm health
+## Step 5: confirm health
 
 ```bash
-./scripts/failover/status.sh
+./fleet status
 ```
 
-Read-only. Expect all 12 nodes `SERVING` and **`validators serving: 4/4`** (the
-validators are `a1`–`a4` on site A). `status.sh` reports each node's *actual*
-state (`SERVING@block` / `BOOTSTRAPPING` / `DOWN`), so it's the source of truth
-throughout the drill.
+Expect every node `SERVING` and the summary line:
 
-> A freshly deployed chain sits at `block=0` until Step 6 drives load —
-> Avalanche produces blocks on demand, so an idle chain showing `SERVING` at
-> `block=0` is healthy, not stuck.
+```
+validators serving: 4/4 (intended up: 4/4)
+```
 
-### Step 6 — drive load (terminal 1, leave running)
+The table shows one row per machine (its number is the CLI handle for
+`down`/`up`/`weight`), grouped by DC, with its stake tier (`validator`,
+`spare`, `dead`, `rpc`) and reachability (`SERVING block=N`,
+`BOOTSTRAPPING`, `DOWN`, or `off (down by intent)`). A fresh chain sits at
+`block=0` until load arrives; that is healthy, Avalanche produces blocks on
+demand. `./fleet status --watch` refreshes continuously.
+
+## Step 6: drive load (terminal 1, leave running)
 
 ```bash
 ./run/03_bombard.sh
 ```
 
-Sends ~**4000 tx/s** to the **pinned archive RPC nodes** (`rpc_a1`/`rpc_a2` on A, plus
-`rpc_b1`/`rpc_b2` on B) — never to the validators, so consensus stays healthy and
-ingress survives a failover. bombard fans sends across every reachable RPC, runs
-a watcher per endpoint, and resubmits in-flight transactions, so it rides
-straight through the failover and its latency report captures the whole recovery
-window. Leave it running — it's your live witness.
+One fixed profile: 4000 tx/s, 2000 in-flight cap, 5s resubmit, targeting
+every pinned RPC on both sites. bombard broadcasts each tx to all of them,
+health-checks each endpoint, drops laggards from rotation and re-adds them,
+and resubmits anything in flight, so ingress rides through everything below
+without intervention. Leave it running; it is the live witness.
 
-### Step 7 — simulate the disaster: fail site A over to site B (terminal 2)
+## Step 7: the drills (terminal 2)
 
-```bash
-./scripts/failover/site-failover.sh b
-```
-
-This models a **real region outage**, not a graceful drain:
-
-1. **Nuke site A first** — every site-A node is hard-killed (SIGKILL) at once,
-   freezing A's tip at the true data-loss boundary before anything else happens.
-2. **Site B reconciles itself** — already a live tracker, B forms consensus on
-   the blocks it *already holds*. **Zero state is pulled from the dead site.** A
-   validator within 100 blocks of the tip is promoted as-is (AvalancheGo
-   self-heals the small gap); one further behind is wiped and state-synced from
-   site B's **own** archive RPC. The decision is logged per validator.
-
-What you'll see:
-
-- **Failover dashboard** — site A heights flatline; site B picks up production
-  and the A→B gap closes.
-- **`status.sh`** — `b1`–`b3` become the serving validators (`3/3`); site A
-  shows `DOWN`.
-- **bombard** (terminal 1) — sends fail over to `rpc_b1`/`rpc_b2`, in-flight
-  transactions resubmit, and throughput recovers at site B's cadence.
-
-> While you are failed over to B (a DR posture) the chain produces at ~10 blk/s
-> vs. site A's ~40 blk/s. TPS is unaffected — same load, larger blocks.
-
-### Step 8 — graceful failback to site A
-
-Once the site-A hosts are reachable again:
+Each scenario first restores the ground state (all machines up, 1-4
+validating, everything else spare), then executes its failure, so any
+scenario runs from any starting point. Recovery from anything is
+`./scenarios/00_healthy.sh`.
 
 ```bash
-./scripts/failover/restore.sh a
+./scenarios/01_validator_down.sh          # one validator dies, 3 of 4 remain
+./scenarios/02_validator_down_replace.sh  # a site B machine steps in, back to 4
+./scenarios/03_datacenter_failure.sh      # site A dies, site B takes over
+./scenarios/04_datacenter_failback.sh     # site A returns, consensus moves home
 ```
 
-Rolls the validator set back to site A **one validator at a time**, holding the
-chain at ≥2/3 throughout — **no chain downtime, no fork**. It seeds each
-recovering node from a live snapshot, waits for it to reach the tip, then moves
-one validator key at a time with a health gate between each. The hot profile
-(~40 blk/s) resumes on its own once the keys land on A.
+What a weight move looks like: each `./fleet weight` prints the tier changes,
+then the reconcile against Fuji, e.g.
 
-> For a *true* site-A outage (A actually gone, its data stale), the hard
-> failback is `./scripts/failover/site-failover.sh a` — but read the rollback
-> caveat in [two-site-failover.md](two-site-failover.md) first. With both sites
-> healthy, always use the graceful `restore`.
+```
+  b1: spare -> validator
+[3/3] weights: reconciling via ValidatorManager 0x... (subnet ...)
+  weights: firing 2 initiates in one burst:
+    b1 -> 801800
+    b1 -> 1000000
+  weights: b1 deliver weight 1000000 (nonce 4) to the P-chain
+  weights: b1 complete (ack nonce 4, weight 1000000)
+  weights: converged (contract == P-chain == desired)
+```
 
-### Step 9 — tear down (optional)
+Fuji's signature coverage for a fresh warp message can take minutes to reach
+quorum; the command retries on an escalating schedule (up to ~36 min) and
+prints each attempt. The chain stays healthy on its current weights while it
+waits. If it does time out, re-running the same `./fleet weight` command
+resumes; every step is idempotent. Weight lines that read
+`weights match ... nonce ... lags` or a mention of Glacier caching are the
+known Fuji-side transients; see
+[failover-recovery-simulation.md](failover-recovery-simulation.md).
+
+What to watch during scenario 03:
+
+- **Failover Overview**: site A serving states drop, stake tier timelines
+  seesaw, TPS dips and recovers at site B's cadence (~10 blk/s; TPS is
+  unaffected, blocks are just bigger).
+- **`./fleet status`**: machines 1-6 `off (down by intent)`, `b1`-`b3` at
+  tier `validator`, summary `validators serving: 3/3`.
+- **bombard** (terminal 1): sends fail over to `rpc_b1`/`rpc_b2`, in-flight
+  txs resubmit, throughput recovers.
+
+## Step 8: halt and recover (optional but instructive)
+
+```bash
+./scenarios/00_healthy.sh
+./fleet down 1 2        # 2 of 4 validators dead: quorum lost, chain HALTS
+./fleet status          # prints the quorum WARNING
+./fleet up 1 2          # both back: latch clears, chain resumes in seconds
+```
+
+The non-obvious part: bringing back only ONE validator leaves the chain
+halted. A recovering validator stays `BOOTSTRAPPING` until ~75% of validator
+stake is connected (`./fleet up` waits for SERVING and would time out after
+10 minutes on a lone machine); `status` prints a HINT naming the threshold.
+Bring the machines back together, as above, and they clear the latch as a
+group.
+
+## Step 9: tear down (optional)
 
 ```bash
 ./fleet destroy
 ```
 
-Stops every node and removes the remote deployment directories. It keeps the
-local `network.env` (delete it manually only if you really want to abandon the
-chain) and does not touch `staking/` (the generated secrets) or anything on
-Fuji; the chain remains registered there.
-
----
+Stops every node and removes the remote deploy dirs. Keeps `network.env`
+(the chain identity cost AVAX) and `staking/`; the chain stays registered on
+Fuji, so a later `./run/01_deploy.sh` brings the fleet back on the same
+chain for free.
 
 ## Reading the results as DR metrics
 
-- **RPO (data loss)** — compare the block height where site A froze at the nuke
-  to where site B resumed. Nuke-first makes this honest: B never imports a single
-  block A produced after the cut, so the gap you measure is the real recovery
-  point, not an artifact of letting A drain.
-- **RTO (time to recover)** — from issuing `site-failover.sh b` to
-  `validators serving: 3/3` on site B with height advancing. Watch it on the
-  failover dashboard and confirm with `status.sh`.
-- **No fork / no equivocation** — prove it directly:
-
-  ```bash
-  ./scripts/failover/verify.sh
-  ```
-
-  Read-only proof the live network is **one branch** with a healthy quorum.
-
----
-
-## Command reference
-
-```bash
-./scripts/failover/status.sh             # read-only: actual state of every node
-./scripts/failover/verify.sh             # read-only: prove one branch + quorum
-./scripts/failover/site-failover.sh b    # hard cutover: nuke A, fail the set to B
-./scripts/failover/site-failover.sh a    # hard cutover the other way (true outage)
-./scripts/failover/restore.sh a          # graceful rolling failback to A (no downtime)
-./scripts/failover/down.sh <m>           # take one machine offline (within-site failover)
-./scripts/failover/up.sh <m>             # return a machine to service
-./scripts/failover/clean.sh <m>          # wipe one node's chain data and re-bootstrap it
-```
-
-## Further reading
-
-- [two-site-failover.md](two-site-failover.md) — design, mechanics, identity
-  map, and what is simulated vs. production.
-- [failover-recovery-simulation.md](failover-recovery-simulation.md) — the
-  single-site failover model (taking validators down/up within one site).
-- [throughput-tuning-and-benchmarks.md](throughput-tuning-and-benchmarks.md) —
-  the 4000-rps profile and how block cadence drives throughput.
+- **RTO**: from issuing the scenario to `validators serving: 3/3` on site B
+  with height advancing. Watch it on Failover Overview.
+- **RPO**: zero by construction. Site B was at tip when the weight arrived
+  and the chain is one branch; nothing finalized is lost. The measurable
+  loss is bombard's in-flight window, which its resubmits recover; the
+  latency report captures the whole dip end to end.
+- **No fork**: keys never moved, so equivocation is structurally impossible.
+  Spot-check by comparing `eth_getBlockByNumber` hashes at a common height
+  across nodes.

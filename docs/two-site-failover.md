@@ -1,298 +1,130 @@
-# Two-Site Failover (Site A/B Simulation)
+# Two-Site Failover (Site A/B)
 
-Extension of the [single-site failover simulation](failover-recovery-simulation.md)
-that adds a **backup data center (site B)**: a second fixed pool of 6 machines
-running as **live zero-weight syncing trackers**, onto which the whole validator
-set can be swapped when the primary site (site A) suffers a full outage —
-mirroring the production design where consensus runs in one DC and a backup DC
-holds non-voting nodes that are BLS/cert-swapped into the active set on a
-full-site failure.
-
-Everything from the single-site doc still applies; this doc only covers the
-deltas. Single-site mode (no `BACKUP_*` lists) is byte-for-byte unchanged.
+The two-site design: a primary data center carrying consensus and a backup
+data center holding registered-but-spare validators, onto which consensus is
+moved by weight when the primary is lost. The weight mechanics themselves are
+in [failover-recovery-simulation.md](failover-recovery-simulation.md); this
+doc covers what is specific to running two sites and what the simulation does
+and does not model.
 
 ## Topology
 
-Each site is **N validators + S spares + R pinned dedicated RPCs**, set per site by
-the `.env` per-role lists (`VALIDATOR_IPS`/`SPARE_IPS`/`RPC_IPS` and the
-`BACKUP_*` equivalents) — list length = count, values = placement, and a repeated
-IP co-locates nodes on one machine. Both sites must share the same shape, since
-the validator set migrates between them on failover. The default (and the worked
-example throughout this doc) is **3 validators + 1 spare + 2 RPCs** = 6 machines
-per site; the slot layout per site is always `[validators…, spares…, rpcs…]`.
+Each site is N validators + S spares + R pinned dedicated RPCs, set per site
+by the `.env` per-role lists (`VALIDATOR_IPS`/`SPARE_IPS`/`RPC_IPS` and the
+`BACKUP_*` equivalents). List length = count, values = placement, a repeated
+IP co-locates nodes on one box. Both sites must share the same shape. The
+default is 3 validators + 1 spare + 2 RPCs per site, 12 machines:
 
-- **Site A (primary)** = `VALIDATOR_IPS` + `SPARE_IPS` + `RPC_IPS`: `a1`-`a3`
-  weighted validators, `a4` hot spare, `rpc_a1`/`rpc_a2` pinned dedicated RPCs
-  (for the default shape).
-- **Site B (backup)** = the `BACKUP_*` lists: `b1`-`b3` zero-weight syncing
-  trackers, `b4` spare, `rpc_b1`/`rpc_b2` pinned dedicated RPCs. For realistic
-  results put site B in a different region/DC so the cross-site sync latency is
-  real (e.g. site A in us-east-1, site B in us-east-2). Co-locating sites on the
-  same boxes (the single-network POC case) works for exercising the orchestration
-  but removes fault isolation — `site-failover` then kills the down site's
-  *processes*, not its boxes.
-- **Every role now uses the same sync rules** (state-sync + pruning). The RPCs keep
-  their own config file (`chain-config-rpc.json`, so RPC-only settings stay tunable
-  separately from the validators' `chain-config.json`), but that file is no longer an
-  archive profile — it's state-sync + pruning like the rest. So all nodes share one
-  snapshot shape, and any node (RPCs included) self-heals via state-sync if it falls
-  more than `state-sync-min-blocks` behind. Trade-off: the RPCs can't serve
-  arbitrary-height historical `eth_` queries anymore, but a borked RPC now recovers by
-  a plain resync instead of an archive→archive DB clone. One RPC per site is therefore
-  enough (a 2nd is optional ingress redundancy).
-- Site B nodes are **never registered on the P-chain**. They track the subnet
-  exactly like `a4`/`rpc_a1` do — full chain state, no consensus weight — which is
-  what makes site failover fast: their `data/` is already at tip when the
-  validator keys arrive.
+- **Site A (primary)**: machines 1-6, named `a1..a4` (stake slots) and
+  `rpc_a1 rpc_a2`. All four stake slots start at validator weight, so the
+  "spare" `a4` validates from day one: the ground state is 4 active
+  validators.
+- **Site B (backup)**: machines 7-12, named `b1..b4` and `rpc_b1 rpc_b2`.
+  Stake slots start at spare weight (1000): registered on the P-chain at
+  conversion, fully synced trackers, negligible vote. Put site B in a
+  different region so cross-site sync latency is real; co-locating both
+  sites on the same boxes exercises the orchestration but removes fault
+  isolation (`down` then kills processes, not boxes).
+
+RPC slots are never registered and never gain weight, which is what keeps
+the ingress path alive through any failover. Only the RPC machines talk to
+the outside world: one outbound TCP to the pinned public Fuji peer
+(`FUJI_UPSTREAM_IPS`, default `18.192.93.241:9651`); validators sync the
+Fuji P-chain through their own site's RPCs. All nodes run the same
+state-sync + pruning profile (`state-sync-enabled`, `state-sync-min-blocks`
+10000), so any node that falls behind or gets rebuilt self-heals by
+state-syncing from the live network.
 
 ## Block cadence and the failover throttle
 
-The two sites run **different block cadences**, set in their chain-config at deploy
-time (`deployChainConfig`, keyed on site):
+The two sites run different block cadences, baked into their chain-config at
+deploy time (`deployChainConfig` in `cmd/reconcile/remote.go`):
 
-- **Site A (primary): 25 ms** (`min-delay-target` in `chain-config.json`) — the hot,
-  ~40 blk/s headline profile.
-- **Site B (backup): 100 ms** (`backupSiteMinDelayMS`) — ~10 blk/s **whenever it
-  produces**, i.e. only after a failover.
+- **Site A: 25 ms** (`min-delay-target` in `chain-config.json`), the hot
+  ~40 blk/s profile.
+- **Site B: 100 ms** (`backupSiteMinDelayMS`), ~10 blk/s, and only when it
+  produces, i.e. after a failover.
 
-`min-delay-target` governs a node *only while it is producing* (proposing); a tracker
-applying another site's blocks ignores it. So site B tracks A's 25 ms blocks at full
-speed during normal operation, and only its **own** production (post-failover) runs at
-100 ms. That matters because a node replaying a backlog tops out at ~14 blk/s
-(subnet-evm's own figure): at the primary's 40 blk/s a recovering site could never
-close the gap, but at 100 ms (10 blk/s, below the ~14 ceiling) it converges. Baking
-the slow cadence into site B's config means the restore catch-up needs **no
-block-production throttle and no rolling restart** — the source is already slow. The
-tradeoff is that while you are failed over and living on B (a DR posture) the chain
-runs at 10 blk/s; TPS is unaffected (same data, bigger blocks). On failback to A the
-validators land on A's 25 ms config and the hot profile resumes on its own.
+`min-delay-target` governs a node only while it is proposing; a tracker
+applying another site's blocks ignores it. So site B follows A's 25 ms
+blocks at full speed normally, and only its own post-failover production
+runs at 100 ms. The point: a node replaying a backlog tops out around
+14 blk/s (subnet-evm's figure). At A's 40 blk/s a recovering site could
+never close the gap; at B's 10 blk/s it converges. The slow backup cadence
+is what lets a failed-back site A catch up with no throttle and no rolling
+restart. The cost of living on B (a DR posture) is ~10 blk/s; TPS is
+unaffected, since throughput is gas-bound, not block-rate-bound (same load,
+bigger blocks).
 
-Recovering nodes also fetch faster thanks to a raised inbound bandwidth allowance in
-`node-config.json` (`throttler-inbound-bandwidth-refill-rate` 8 MiB/s, burst 16 MiB)
-so a behind node isn't capped at the 512 KiB/s-per-peer default while pulling the
-backlog.
+Recovering nodes also pull faster thanks to a raised inbound bandwidth
+allowance in `node-config.json` (`throttler-inbound-bandwidth-refill-rate`
+8 MiB/s, burst 16 MiB).
 
-## Identity map (keys, conserved)
+## Running a site failover
 
-The single-site model's "6 keys" grows to 15 (indices 6-20). Every machine always
-holds exactly one identity; no two **live** machines ever share one:
-
-| Key | Role |
-|-----|------|
-| 6-8 | `v1-v3` — the only P-chain-registered validator identities. Move between machines; cross sites **only** via `site-failover`. |
-| 9 | `a4`'s home: site-A spare |
-| 10, 19 | `rpc_a1`/`rpc_a2` pinned RPC identities, site A (never promoted) |
-| 11-13 | `a1-a3`'s home identities — worn when displaced (e.g. while site B is active) |
-| 14-16 | `b1-b3`'s home identities — zero-weight sync trackers |
-| 17 | `b4`'s home: site-B spare |
-| 18, 20 | `rpc_b1`/`rpc_b2` pinned RPC identities, site B (never promoted) |
-
-(See `twoSiteHomes` in `cmd/reconcile/plan.go` for the machine→home mapping.) Unique
-homes (vs. the single shared `nv` key 9) exist because a backup site means several
-live non-validating machines at once, and live machines can't share a NodeID. In
-single-site mode the shared-9 behavior is preserved unchanged. Identities 11-20 were
-generated with `go run ./cmd/genstaking 11 20` (NodeIDs in `staking/node-ids.env`).
-
-## Mapping policy delta
-
-One rule is added to the sticky mapping in `cmd/reconcile/plan.go`:
-
-> **Orphaned validator keys never cross sites implicitly.** A single-machine
-> cordon reassigns the orphan within that machine's own site (A-side fault → a4;
-> post-failover b-fault → b4). With no same-site spare the key stays uncovered
-> and quorum drops — by design, matching the "consensus is single-site"
-> invariant. Only an explicit `site-failover` moves the validator set.
-
-## Commands
-
-All wrappers work over the full pool by machine number (`down.sh 8` cordons `b2`)
-because they delegate to the topology-aware reconcile binary — including
-`clean.sh`, which now calls `reconcile clean <m>` and so handles any machine on
-either site (and is co-location-safe: it wipes only that instance's data, not its
-housemates'). One new wrapper:
+The worked drills are `scenarios/03_datacenter_failure.sh` (site A dies,
+site B takes consensus) and `scenarios/04_datacenter_failback.sh` (site A
+returns, consensus moves home). Stripped of the reset preamble, the failover
+is three commands:
 
 ```bash
-./scripts/failover/site-failover.sh b   # full site-A outage: cordon all of A,
-                                        # v1-v3 swap onto b1-b3, b4 = new spare
-./scripts/failover/site-failover.sh a   # hard failback: cordon B, restore A (see caveat)
+./fleet down 1 2 3 4 5 6        # site A is gone (simulated: SIGKILL)
+./fleet weight validator 7 8 9  # raise site B first
+./fleet weight dead 1 2 3 4     # then retire site A's stake
 ```
 
-`site-failover` is a **hard cutover** — it cordons a whole site and swaps the
-set across in one shot. That's correct for an *outage* (the primary is already
-gone), but using it to fail *back* onto a site whose data is stale reproduces
-the rollback fork (below). For a planned return with both DCs healthy, use the
-graceful rolling restore instead.
-
-### Graceful rolling restore (no chain downtime)
-
-`restore <a|b>` migrates the validator set onto a site **one validator at a
-time**, keeping the chain at ≥2/3 throughout — the operational answer to
-"restore the original DC after a failover, ideally without downtime."
+and the failback is:
 
 ```bash
-./scripts/failover/restore.sh a   # roll the set back to site A, gracefully
+./fleet up 1 2 3 4 5 6          # rebuild site A, blocks until SERVING
+./fleet weight validator 1 2 3 4
+./fleet weight spare 7 8 9 10
 ```
 
-It runs in two phases:
+`up` rebuilds each machine clean (wipes its L1 chain data, keeps the synced
+Fuji P-chain db) and state-syncs it onto the live branch, so a returning
+site can never resurrect a stale frontier: there is nothing on disk to
+resurrect. Raise before lower applies across sites exactly as within one.
 
-1. **Seed + trackers + sync gate** — seed each recovering node from a fresh **DB
-   snapshot of the live source site** (the default; `RESTORE_MODE=state-sync` forces a
-   from-scratch state-sync, which is also the automatic fallback when no snapshot
-   source is available), discarding the node's stale chain data first. Then uncordon
-   the target site so its nodes rejoin as zero-weight trackers and catch up the small
-   remaining delta to the live tip (within `syncToleranceBlocks`) before any stake
-   moves. Discarding the stale data is what makes the failback fork-proof: a node that
-   kept its stale post-failover data would resurrect a frontier the live validators
-   never had and never converge. The snapshot source is the zero-weight sync tracker
-   (b4) or spare (a4) — stopped briefly for a consistent on-disk copy, so neither
-   quorum nor ingress is touched — and it is provenance-gated to the canonical active
-   site so a stale frontier can never be re-imported. Only the machines about to take a
-   validator key are gated: the spare and pinned-RPC trackers carry no vote, so they
-   finish syncing on their own and can't fork — or block — the restore. No stake moves
-   until those targets are at tip, so no node is ever promoted onto a stale/divergent
-   branch — this is what eliminates the fork.
-2. **Rolling swap** — move v1, then v2, then v3 onto the target site, one key at
-   a time, with a health gate (`waitForFullValidatorSet`) between each. Dropping
-   one validator leaves 2/3 live, so the chain never halts; the promoted node's
-   `data/` is preserved, so it continues the live branch in well under a second.
+Note scenario 03 promotes `7 8 9` (three machines) while 04 restores
+`1 2 3 4` (four): the B-side spare `b4` stays at spare weight during the DR
+posture, mirroring a production stance of running the minimum on the backup
+site; the ground state on A is all four.
 
-End state equals the steady seed with the target site active. Because the chain
-never stops and the target is always at tip, **there is no fork and nothing to
-replay** — unlike the hard `site-failover` cutover.
+## What this simulates vs production
 
-**Seed source depends on what's spare to stop.** A snapshot requires briefly
-stopping the source node, so restore only snapshots a node it can stop *without*
-touching live quorum or ingress; otherwise it seeds from scratch. The choice is
-made per role:
+Simulated faithfully:
 
-| Source site has… | Seed for ALL roles (validators, spare, RPCs) |
-|---|---|
-| spare | one pruned snapshot (of the spare) |
-| **no spare** | **state-sync** (automatic) |
+- one validator set registered once, consensus moved by weight only, no key
+  material ever crossing sites;
+- backup-site trackers at tip when weight arrives;
+- ingress cutover: bombard targets all four pinned RPCs, health-checks each,
+  and resubmits in-flight txs, so the load rides through the site loss;
+- halt-and-recover when too much weight goes down at once, including the
+  ~75% bootstrap latch;
+- recovery-time measurement under load (Failover Overview / Failover
+  Details dashboards).
 
-Every role now runs the same light (state-sync + pruning) profile, so restore seeds
-**every** target — validators, spare, and RPCs — from **one** pruned snapshot of the
-source site's spare tracker; there is no separate archive snapshot. The spare holds no
-vote and serves no ingress, so snapshotting it is always free — and when there's no
-spare, there's nothing safe to copy, so every role state-syncs automatically (RPCs
-included, since they self-heal now). This is why a single RPC per site is fine (the old
-≥2-RPC rule existed only so restore could snapshot one RPC while its twin served).
-`RESTORE_MODE=state-sync` overrides everything at once, forcing the from-scratch path.
+Not simulated:
 
-**What "no downtime" does and doesn't mean.** No *chain* downtime: quorum holds
-the whole time, so the ATS/settlement path (which talks to the RPC, not the
-validators) sees no interruption. It is *not* a live process hot-migration —
-each of the three validators restarts (~5s) as its key lands, and while one is
-down its proposer slots stall briefly (Ilya's ~1s-per-slot finding), so there
-are three short latency/throughput dips, not an outage. Erasing even those dips
-would require temporarily running stake in *both* DCs (a real P-chain
-validator-set change), which violates the single-DC-consensus invariant — a
-topology decision, not a tooling one.
+- the anchor chain failing: the P-chain and the ValidatorManager's C-chain
+  are Fuji's public networks and stay up throughout (the production
+  equivalent is "the control plane survives the DC loss");
+- DNS/VIP cutover mechanics in front of the RPCs;
+- a concurrent split with both sites producing: impossible here by
+  construction, one weight set exists and the churn-capped seesaw moves it.
 
-The swap wipes only `staking/active`, never `data/`, and reconcile's two-pass
-order (all stops before any starts) holds across the whole pool — so all three
-validators come up on site B together, satisfying the 75%-stake bootstrap latch
-in one shot rather than stalling on it.
+## Historical: the key-swap era (pre 2026-06)
 
-**Snapshot seeding makes failback load-tolerant.** Because each target starts from a
-recent DB snapshot, it only replays the few blocks accumulated since the copy, so the
-sync gate clears in seconds rather than racing the tip. This is the structural fix for
-the old "failback is sync-bound under sustained load" problem: recovering nodes
-formerly pulled the whole state trie from peers that were themselves under ingress
-load and could lose ground to the tip indefinitely (and, on memory-tight boxes, thrash
-hard enough to wedge). The from-scratch `RESTORE_MODE=state-sync` fallback is still
-sync-bound under heavy write load — **fail back during a lull** when using it — and the
-gate's per-poll log warns when a target is losing ground.
-
-## Benchmark across a failover
-
-`run/03_bombard.sh` automatically adds `rpc_b1` to bombard's `--rpc` list in two-site
-mode. Bombard fans sends across reachable endpoints, runs one watcher per
-endpoint, and resubmits in-flight txs — so the run rides through the site
-failover: sends fail over to `rpc_b1` when `rpc_a1` dies with site A, unmined in-flight
-txs get resubmitted to the new validator set (the "replay unmined transactions"
-step of the production runbook), and the latency report captures the recovery
-window end-to-end.
-
-A full demo cycle:
-
-```bash
-./run/01_deploy.sh                # deploys all 12 machines
-./run/03_bombard.sh                     # in one window
-./scripts/failover/site-failover.sh b   # in another: kill site A mid-load
-watch -n 2 ./scripts/failover/status.sh # watch B bootstrap + serve
-./scripts/failover/site-failover.sh a   # fail back under load
-```
-
-## Validated run (2026-06-12, us-east-1 ↔ us-east-2)
-
-> Historical: this run predates the current 6-machine/site topology, the 25 ms/100 ms
-> A/B cadence split, and the 4000 TPS profile. The measured findings below — recovery
-> time and especially the failback rollback hazard — still hold; the hazard is now
-> handled automatically by the graceful `restore` command (see above), and recovery
-> under sustained load is handled by snapshot seeding + the slow backup cadence.
-
-10× m6a.xlarge (+1 control), ~1000 rps bombard via both pinned RPCs:
-
-- **Failover A→B under load: 17.8s** for the reconcile (stop site A, swap
-  v1-v3 onto b1-b3, start), **~30s more to 3/3 serving** from the backup site.
-  bombard rode through on the backup RPC with a catch-up burst, zero manual
-  intervention. All three new validators in lockstep immediately — the
-  trackers were at tip, and the all-stops-before-any-starts ordering cleared
-  the 75% bootstrap latch in one pass.
-- **Failback B→A exposed the rollback hazard (by design of the test):**
-  `site-failover a` stops every site-B node and restarts site A from its
-  pre-failover state. Site A bootstrapped only to its own highest block — the
-  ~7.7k blocks site B mined during its tenure were on stopped machines, so the
-  chain resumed ~2 minutes in the past. Same branch, no equivocation (block
-  hashes at the divergence point matched exactly), but everything mined during
-  the backup tenure was discarded, and the load generator's nonce line
-  straddled the discard → 0 TPS until restarted.
-- **Discarded-branch cleanup is itself a hazard:** archiving only
-  `data/validator/db` was not enough — the rejoining backup nodes recovered
-  the discarded 15k-block frontier from surviving VM state and reported a
-  height the validators didn't have. Archiving the **entire `data/validator`
-  dir** and rejoining resynced all 10 nodes onto the live branch, verified by
-  matching heights and a clean follow-up load run (0 resubmits).
-
-**Failback procedure (until state hand-back is automated):**
-
-1. Bring site A up as *trackers first* while B still validates: `up.sh 1..6`
-   (they wear home identities 11-13/9/10/19 and sync the B-tenure history).
-2. Wait until site A is at tip (`status.sh` heights match).
-3. Then `site-failover.sh a` — no history is lost, no rollback.
-
-A naive immediate `site-failover.sh a` after a real outage (site A state stale)
-re-creates the rollback above. This is exactly the gap the
-deterministic-EVM-sync protocol ask (request #8) closes.
-
-## What this simulates vs. production
-
-- **Simulated faithfully:** key/identity conservation, zero-weight backup
-  trackers at tip, all-at-once BLS/cert swap onto the backup site, in-flight tx
-  replay, ingress cutover to the backup RPC, recovery-time measurement under
-  load, and the failback rollback hazard (measured above).
-- **Not simulated:** the P-chain itself failing (the 5 P-chain validators run
-  on the dev machine and stay up throughout — equivalent to the production
-  assumption that P-chain state is frozen/controllable during failover); DNS/VIP
-  cutover mechanics; a *concurrent* split (both sites mining at once is
-  impossible here because the validator keys are conserved — one site holds
-  them at a time).
-
-## Open items
-
-- ~~**Staged failback automation:** encode the failback procedure as a single
-  command (uncordon-as-trackers → wait-for-tip → swap).~~ **Done** —
-  `restore <a|b>` (rolling, one validator at a time; see above).
-- **Truly seamless (zero-dip) restore:** would need a transient dual-DC
-  validator set via real P-chain validator-management txns — relaxes the
-  single-DC-consensus invariant; pending a topology decision.
-- **Honest health for idle chains:** `status.sh` reports SERVING from
-  `eth_blockNumber` even when no blocks are being produced; add a
-  height-advancing check so a post-failback stall is visible.
-- **Terraform:** `terraform-aws/` provisions one site; parameterize a
-  second region for site B.
-- **Configurable site sizes:** both sites are pinned at 6 machines; production
-  asks may want asymmetric sites (e.g. 4 backup trackers, no backup spare).
-- **`staking/node-ids.env` is stale:** it lists only identities 6-18 (the old
-  5/site map); regenerate it to cover 19-20 (`rpc_a2`/`rpc_b2`) and refresh the comment.
+Earlier iterations moved staking keys between machines instead of moving
+weight (only 3 identities existed; failover copied them onto backup boxes).
+A validated 2026-06-12 run measured failover A to B at ~18s under load, and
+exposed the design's fatal failback hazard: restarting a stale site rolled
+the chain back ~7.7k blocks, and rejoining backup nodes resurrected a
+discarded frontier from surviving VM state. Fixing that required snapshot
+seeding, sync gates, and a rolling restore command. The weight model made
+the whole apparatus unnecessary: identities never move, a returning site is
+rebuilt empty and state-syncs, and the failback is the same two weight
+commands as the failover. The measured facts that outlived the redesign are
+the ~14 blk/s replay ceiling (hence the 100 ms backup cadence) and the
+full-`data/` wipe rule for rejoining nodes (hence `up` rebuilding clean).

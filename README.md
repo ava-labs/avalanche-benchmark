@@ -213,12 +213,13 @@ restart. Tune `min-delay-target` in `chain-config.json` and re-run
 
 ## Further reading
 
-- [docs/e2e-runbook.md](docs/e2e-runbook.md): the full end-to-end drill,
-  install to failback.
-- [docs/two-site-failover.md](docs/two-site-failover.md): two-site design and
-  what is simulated vs production.
+- [docs/e2e-runbook.md](docs/e2e-runbook.md): the full end-to-end drill with
+  expected output, install to failback.
+- [docs/two-site-failover.md](docs/two-site-failover.md): the two-site design,
+  block cadence split, and what is simulated vs production.
 - [docs/failover-recovery-simulation.md](docs/failover-recovery-simulation.md):
-  the failover model and stalled-chain recovery theory.
+  the failover model: weight seesaw, warp message path, halt/recovery theory.
 - [docs/throughput-tuning-and-benchmarks.md](docs/throughput-tuning-and-benchmarks.md):
-  the 4000 tx/s profile and cadence tuning.
-- [FUJI_PLAN.md](FUJI_PLAN.md): how the L1 anchors on Fuji's public P-chain.
+  the 2026-06-03 throughput study behind the 4000 tx/s profile (historical).
+- [FUJI_PLAN.md](FUJI_PLAN.md): the original design plan for anchoring on
+  Fuji's public P-chain (historical).

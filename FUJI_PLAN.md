@@ -1,5 +1,9 @@
 # Fuji migration plan: anchor the benchmark L1's P-chain on Fuji testnet
 
+> This is the original design plan, kept as a historical record. Script names
+> and details below have since drifted; the README and docs/ describe the
+> current system.
+
 Status: IMPLEMENTED 2026-07-04 (code + scripts, locally verified; see
 "Implementation status" at the bottom for what remains e2e-pending). Written
 against this repo tip and avalanchego `containerman17/fde` @
