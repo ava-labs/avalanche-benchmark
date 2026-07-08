@@ -239,12 +239,13 @@ one validator key at a time with a health gate between each. The hot profile
 ### Step 9 — tear down (optional)
 
 ```bash
-./06_cleanup.sh
+./fleet destroy
 ```
 
-Stops every node, removes the remote deployment directories, and deletes the
-local `network.env`. It does not touch `staking/` (the generated secrets) or
-anything on Fuji; the chain remains registered there.
+Stops every node and removes the remote deployment directories. It keeps the
+local `network.env` (delete it manually only if you really want to abandon the
+chain) and does not touch `staking/` (the generated secrets) or anything on
+Fuji; the chain remains registered there.
 
 ---
 

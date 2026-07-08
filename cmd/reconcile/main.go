@@ -50,6 +50,8 @@ func usage() {
   status [--watch]            read-only report: per-datacenter stake tier + reachability
   fresh                       WIPE + redeploy the whole fleet from genesis, reseed intents
                               (site A active), force re-upload binaries, converge weights
+  destroy                     kill every node and remove the deploy dir on every box;
+                              keeps network.env (the chain identity costs AVAX to recreate)
   endpoints                   print per-slot "name<TAB>site<TAB>role<TAB>host<TAB>httpPort"
                               (used by 04_monitoring.sh / 05_benchmark.sh)`)
 	os.Exit(2)
@@ -121,6 +123,9 @@ func main() {
 		mustSaveIntents(cfg, intents)
 		printIntents(topo, intents)
 		reconcileWeights(cfg, intents)
+
+	case "destroy":
+		destroy(cfg)
 
 	case "fresh":
 		cfg.warnColocation()
@@ -332,6 +337,27 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 	}
 
 	fmt.Println("\nProcesses reconciled. Watch live node state with:  ./fleet status --watch")
+}
+
+// destroy tears the fleet down: kill avalanchego + plugin children and remove
+// the whole deploy dir on every box, then drop the local process-state file.
+// network.env is deliberately KEPT: it records the chain identity (subnet,
+// chain, manager, registered validators), which persists on Fuji and costs
+// AVAX to recreate. Deleting it is a manual decision, never a side effect.
+func destroy(cfg *config) {
+	done := map[string]bool{}
+	for i, host := range cfg.nodeIPs {
+		if done[host] {
+			continue
+		}
+		done[host] = true
+		fmt.Printf("== destroy %s (%s): kill all + rm %s ==\n", cfg.topo.MachineName(i), host, cfg.remoteDir)
+		cfg.ssh(host, "pkill -KILL -x avalanchego || true; pkill -KILL -f '"+pluginPat+"' || true; rm -rf "+cfg.remoteDir)
+	}
+	if err := os.Remove(cfg.stateFile); err != nil && !os.IsNotExist(err) {
+		fatalf("remove %s: %v", cfg.stateFile, err)
+	}
+	fmt.Println("\nFleet destroyed. network.env kept; redeploy with ./fleet fresh.")
 }
 
 // status runs ONLY the read-only report against the current intents — no
