@@ -74,7 +74,11 @@ itself to your topology):
 ./setup/00_gen_secrets.sh    # staking identities + Fuji wallet
 ./setup/01_fund_wallet.sh    # prints the address, you hit the Fuji faucet, it does the rest
 ./setup/02_create_chain.sh   # creates the L1 on Fuji. SPENDS AVAX. Once per chain.
+./setup/03_backup_secrets.sh # bundle staking/ + network.env into a tar.gz, store it off-machine
 ```
+
+The backup tarball is also the secrets bundle you hand to an operator:
+untarring it over a fresh kit root is the whole restore.
 
 `02` writes the chain's identity to `network.env`; everything after
 this point only reads it. The generated `staking/` and wallet key are secrets:

@@ -25,6 +25,9 @@
 
 # Deployment packages
 /remote-benchmark.tar.gz
+/avalanche-l1-kit.zip
+# Secrets bundles (setup/03_backup_secrets.sh)
+/secrets-backup-*.tar.gz
 /avalanche-benchmark-*.tar.gz
 /avalanche-benchmark-*.rpm
 # RPM staging tree (make rpm)
