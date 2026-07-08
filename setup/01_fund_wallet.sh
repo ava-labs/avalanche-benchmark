@@ -23,4 +23,7 @@ if [ ! -f "$FUJI_WALLET_KEY" ]; then
 fi
 
 # PCHAIN_API from .env overrides the default public Fuji API inside fuji-wallet.
-exec "$FUJI_WALLET" fund -key "$FUJI_WALLET_KEY"
+"$FUJI_WALLET" fund -key "$FUJI_WALLET_KEY"
+
+echo ""
+echo "Next step: ./setup/02_create_chain.sh   (creates the L1 on Fuji, SPENDS AVAX)"
