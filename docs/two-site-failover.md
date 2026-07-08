@@ -35,26 +35,14 @@ state-sync + pruning profile (`state-sync-enabled`, `state-sync-min-blocks`
 10000), so any node that falls behind or gets rebuilt self-heals by
 state-syncing from the live network.
 
-## Block cadence and the failover throttle
+## Block cadence
 
-The two sites run different block cadences, baked into their chain-config at
-deploy time (`deployChainConfig` in `cmd/reconcile/remote.go`):
-
-- **Site A: 25 ms** (`min-delay-target` in `chain-config.json`), the hot
-  ~40 blk/s profile.
-- **Site B: 100 ms** (`backupSiteMinDelayMS`), ~10 blk/s, and only when it
-  produces, i.e. after a failover.
-
-`min-delay-target` governs a node only while it is proposing; a tracker
-applying another site's blocks ignores it. So site B follows A's 25 ms
-blocks at full speed normally, and only its own post-failover production
-runs at 100 ms. The point: a node replaying a backlog tops out around
-14 blk/s (subnet-evm's figure). At A's 40 blk/s a recovering site could
-never close the gap; at B's 10 blk/s it converges. The slow backup cadence
-is what lets a failed-back site A catch up with no throttle and no rolling
-restart. The cost of living on B (a DR posture) is ~10 blk/s; TPS is
-unaffected, since throughput is gas-bound, not block-rate-bound (same load,
-bigger blocks).
+Both sites run the same cadence: `min-delay-target` 25 ms in
+`chain-config.json` (the hot ~40 blk/s profile), deployed verbatim to every
+node by `deployChainConfig` in `cmd/reconcile/remote.go`. Historical note:
+site B used to be throttled to 100 ms so a recovering site never had to
+catch up to ~40 blk/s of live production, but the current rebuild+resync
+recovery path handles that catch-up, so the asymmetric cadence was dropped.
 
 Recovering nodes also pull faster thanks to a raised inbound bandwidth
 allowance in `node-config.json` (`throttler-inbound-bandwidth-refill-rate`

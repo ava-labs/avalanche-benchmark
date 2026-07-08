@@ -10,8 +10,8 @@ the ceiling. All numbers from benchmarks on 2026-06-03.
 > the old single-site lab's. The knob analysis and the collapse/fork findings
 > still hold. The deployed profile today: `subnet-config.json` k=30,
 > alphaPreference=16, alphaConfidence=17, beta=12, 100ms proposer window with
-> ms-timestamps; `chain-config.json` min-delay-target 25 (site A) / 100
-> (site B); `run/03_bombard.sh` 4000 rps, inflight 2000, ingress = the pinned
+> ms-timestamps; `chain-config.json` min-delay-target 25 (uniform, both
+> sites); `run/03_bombard.sh` 4000 rps, inflight 2000, ingress = the pinned
 > RPC nodes of both sites.
 
 > **Update (2026-06-29): the proposer window is no longer fixed at 1s.** The

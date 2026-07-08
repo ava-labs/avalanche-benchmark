@@ -206,10 +206,11 @@ with the same identity.
 
 ## Block cadence
 
-Site A proposes 25ms blocks (the hot ~40 blk/s profile); site B proposes
-100ms blocks, and only after a failover makes it the producer. The slower
-backup cadence is what lets a recovering site converge without a rolling
-restart. Tune `min-delay-target` in `chain-config.json` and re-run
+All nodes propose 25ms blocks (the hot ~40 blk/s profile), uniform across
+both sites. Historically site B ran a slower 100ms backup cadence so a
+recovering site never had to catch up to ~40 blk/s of production; the
+current rebuild+resync path handles that, so the split was dropped. Tune
+`min-delay-target` in `chain-config.json` and re-run
 `./run/01_deploy.sh`. Throughput is gas-bound, not block-rate-bound: see
 [docs/throughput-tuning-and-benchmarks.md](docs/throughput-tuning-and-benchmarks.md).
 
@@ -218,7 +219,7 @@ restart. Tune `min-delay-target` in `chain-config.json` and re-run
 - [docs/e2e-runbook.md](docs/e2e-runbook.md): the full end-to-end drill with
   expected output, install to failback.
 - [docs/two-site-failover.md](docs/two-site-failover.md): the two-site design,
-  block cadence split, and what is simulated vs production.
+  block cadence, and what is simulated vs production.
 - [docs/failover-recovery-simulation.md](docs/failover-recovery-simulation.md):
   the failover model: weight seesaw, warp message path, halt/recovery theory.
 - [docs/throughput-tuning-and-benchmarks.md](docs/throughput-tuning-and-benchmarks.md):
