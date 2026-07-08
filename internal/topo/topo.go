@@ -5,9 +5,8 @@
 // all derive from it, so the slot -> key -> validationID mapping can never
 // drift between them.
 //
-// Committed staking-key layout (staking/l1/<idx>): indices 1..5 are the
-// P-chain primaries (not pool machines); pool keys begin at KeyBase. Every
-// pool slot wears ONE permanent identity: KeyOf(i) = KeyBase + i. Identities
+// Staking-key layout (staking/l1/<idx>): pool keys are 1-based, KeyOf(i) =
+// KeyBase + i for slot i. Every pool slot wears ONE permanent identity. Identities
 // never move between machines (key-swap failover produced forks); instead the
 // validator+spare slots of BOTH sites are all registered as L1 validators at
 // conversion and failover only changes their weights through the
@@ -20,8 +19,8 @@ import (
 	"strings"
 )
 
-// KeyBase is the first committed key index used by pool machines.
-const KeyBase = 6
+// KeyBase is the first staking key index; slot i wears key KeyBase+i.
+const KeyBase = 1
 
 const (
 	SiteA = 0

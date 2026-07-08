@@ -93,7 +93,7 @@ SUBNET_EVM_ID="srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy"
 STAKING_DIR="$SCRIPT_DIR/staking"
 NODE_IDS_FILE="$STAKING_DIR/node-ids.env"
 FUJI_WALLET_KEY="$STAKING_DIR/fuji-wallet.key"
-L1_VALIDATOR_START_INDEX=6
+L1_VALIDATOR_START_INDEX=1
 
 # Public Fuji peer the RPC tier's P-chain follows: the fleet's ONE allowed
 # outgoing TCP. Default: the first Fuji entry in the pinned avalanchego commit's

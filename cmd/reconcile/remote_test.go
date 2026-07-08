@@ -9,8 +9,8 @@ import (
 )
 
 // fujiTestConfig builds a two-site 3v/1s/2r config with a seeded intentions
-// file. Permanent key scheme: KeyOf(i) = 6+i, so m1..m6 wear 6..11 (RPCs
-// 10,11) and b1..b6 wear 12..17 (RPCs 16,17).
+// file. Permanent key scheme: KeyOf(i) = 1+i, so m1..m6 wear 1..6 (RPCs
+// 5,6) and b1..b6 wear 7..12 (RPCs 11,12).
 func fujiTestConfig(t *testing.T) *config {
 	t.Helper()
 	topo := Topology{TwoSite: true, NVal: 3, NSpare: 1, NRPC: 2}
@@ -42,11 +42,11 @@ func fujiTestConfig(t *testing.T) *config {
 
 func TestLoadNodeIDs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "node-ids.env")
-	if err := os.WriteFile(path, []byte("L1_6_NODE_ID=NodeID-abc\nL1_17_NODE_ID=NodeID-xyz\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("L1_1_NODE_ID=NodeID-abc\nL1_12_NODE_ID=NodeID-xyz\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	got := loadNodeIDs(path)
-	if got[6] != "NodeID-abc" || got[17] != "NodeID-xyz" || len(got) != 2 {
+	if got[1] != "NodeID-abc" || got[12] != "NodeID-xyz" || len(got) != 2 {
 		t.Errorf("loadNodeIDs = %v", got)
 	}
 }
@@ -68,16 +68,16 @@ func TestPchainBeacons(t *testing.T) {
 	if ips != "10.0.0.5:9653,10.0.0.6:9653" {
 		t.Errorf("validator beacon ips = %q", ips)
 	}
-	if ids != c.nodeIDByKey[10]+","+c.nodeIDByKey[11] {
+	if ids != c.nodeIDByKey[5]+","+c.nodeIDByKey[6] {
 		t.Errorf("validator beacon ids = %q", ids)
 	}
 
-	// A site-B node follows site B's RPC slots (permanent keys 16,17).
+	// A site-B node follows site B's RPC slots (permanent keys 11,12).
 	ips, ids = c.pchainBeacons(6)
 	if ips != "10.1.0.5:9653,10.1.0.6:9653" {
 		t.Errorf("site-B beacon ips = %q", ips)
 	}
-	if ids != c.nodeIDByKey[16]+","+c.nodeIDByKey[17] {
+	if ids != c.nodeIDByKey[11]+","+c.nodeIDByKey[12] {
 		t.Errorf("site-B beacon ids = %q", ids)
 	}
 }
@@ -85,22 +85,22 @@ func TestPchainBeacons(t *testing.T) {
 func TestSiblingSeeds(t *testing.T) {
 	c := fujiTestConfig(t)
 
-	// m1 (key 6) seeds every OTHER slot under its permanent identity.
+	// m1 (key 1) seeds every OTHER slot under its permanent identity.
 	ips, ids := c.siblingSeeds(0)
 	ipList := strings.Split(ips, ",")
 	idList := strings.Split(ids, ",")
 	if len(ipList) != 11 || len(idList) != 11 {
 		t.Fatalf("want 11 sibling seeds, got %d/%d", len(ipList), len(idList))
 	}
-	if ipList[0] != "10.0.0.2:9653" || idList[0] != c.nodeIDByKey[7] {
-		t.Errorf("first seed = %s/%s, want m2 with key 7", ipList[0], idList[0])
+	if ipList[0] != "10.0.0.2:9653" || idList[0] != c.nodeIDByKey[2] {
+		t.Errorf("first seed = %s/%s, want m2 with key 2", ipList[0], idList[0])
 	}
-	// Spare m4 wears its permanent key 9.
-	if idList[2] != c.nodeIDByKey[9] {
-		t.Errorf("m4 seed id = %s, want key 9's NodeID", idList[2])
+	// Spare m4 wears its permanent key 4.
+	if idList[2] != c.nodeIDByKey[4] {
+		t.Errorf("m4 seed id = %s, want key 4's NodeID", idList[2])
 	}
 	for _, id := range idList {
-		if id == c.nodeIDByKey[6] {
+		if id == c.nodeIDByKey[1] {
 			t.Errorf("slot 0's own identity found in its sibling seeds")
 		}
 	}

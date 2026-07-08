@@ -198,8 +198,8 @@ a **cordoned** machine — is reassigned, to a free uncordoned machine (the curr
 spare), chosen deterministically (lowest machine number). When there is no free
 machine, the orphaned key simply stays uncovered.
 
-**The pinned RPC machine (`m5`, key 10) is excluded from this entirely.** It is
-checked first in `ComputeMapping` and always keeps key 10 — it is never counted
+**The pinned RPC machine (`m5`, key 5) is excluded from this entirely.** It is
+checked first in `ComputeMapping` and always keeps key 5 — it is never counted
 as a "free" machine, so an orphaned validator key can never be assigned to it,
 even when that key would otherwise go uncovered (it just stays uncovered, exactly
 as it would without `m5`). The pin is sticky across cordon/uncordon of `m5`

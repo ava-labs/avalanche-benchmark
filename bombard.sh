@@ -31,7 +31,7 @@ if [ ! -x "$BOMBARD" ]; then
 fi
 
 # Bombard the PINNED dedicated archive RPC nodes (role=rpc: m5+m6 on site A, plus
-# b5+b6 in two-site mode — keys 10/19/18/20, zero-weight non-validators that track
+# b5+b6 in two-site mode — zero-weight non-validators that track
 # the subnet and serve RPC). The failover engine never promotes them to validators,
 # so this clean ingress path survives failover events — unlike the hot spare m4
 # (key 9), which becomes a validator whenever one of m1-m3 goes down. Ingress on the

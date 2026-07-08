@@ -6,7 +6,7 @@
 # not a recovery path. It never touches Fuji's P-chain, so re-deploys never
 # re-spend on chain creation (the subnet/chain/validator registration from 02
 # persists on Fuji). It then force-re-uploads binary/plugin/configs/keys,
-# reseeds the intentions to the default mapping (validator keys 6..5+NVal on
+# reseeds the intentions to the default mapping (validator keys 1..NVal on
 # site A's validator slots, pinned home identities everywhere else), and starts
 # all nodes (validators + hot spare + pinned dedicated-RPC trackers). After
 # this, drive the fleet with ./fleet {up,down,mark,status}.

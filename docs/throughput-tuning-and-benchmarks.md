@@ -54,7 +54,7 @@ whole-second grid, or stacking it with low beta. The safe config does none of it
 
 ## Topology & ingress
 
-- 3 validators (m1–m3, keys 6/7/8) + 1 non-validating tracker (m4, key 9, zero
+- 3 validators (m1–m3, keys 1/2/3) + 1 non-validating tracker (m4, key 4, zero
   weight, sybil-ON, serves chain RPC on 9652) + control box (5 P-chain primaries
   + `bombard`). Sybil protection ON everywhere (dev-network semantics).
 - **Bombard the m4 tracker only**, never the validators directly:
