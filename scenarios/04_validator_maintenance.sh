@@ -1,5 +1,5 @@
 #!/bin/bash
-# SCENARIO 05: planned maintenance of a1, stake drained before shutdown so consensus never notices.
+# SCENARIO 04: planned maintenance of a1, stake drained before shutdown so consensus never notices.
 set -e
 cd "$(dirname "$0")/.." || exit 1
 
