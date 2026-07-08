@@ -24,8 +24,5 @@ fi
 OUT="${1:-$SCRIPT_DIR/secrets-backup-$(date +%Y%m%d-%H%M%S).tar.gz}"
 tar -czf "$OUT" -C "$SCRIPT_DIR" "${FILES[@]}"
 
-echo "=== Secrets backed up ==="
-echo "  $OUT  ($(du -h "$OUT" | cut -f1))"
-echo ""
-echo "Contains: ${FILES[*]}. Store it OUTSIDE this machine (it is not in git)."
-echo "Restore / hand to an operator: tar -xzf $(basename "$OUT") -C <kit root>"
+echo "Backed up ${FILES[*]} -> $OUT ($(du -h "$OUT" | cut -f1))"
+echo "Restore: tar -xzf $(basename "$OUT") -C <kit root>"
