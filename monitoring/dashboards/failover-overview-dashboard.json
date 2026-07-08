@@ -38,7 +38,7 @@
   "timezone": "",
   "title": "Failover Overview",
   "uid": "failover-overview",
-  "version": 1,
+  "version": 2,
   "weekStart": "",
   "panels": [
     {
@@ -260,7 +260,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 8,
         "x": 0,
         "y": 18
       },
@@ -318,8 +318,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 8,
         "y": 18
       },
       "id": 4,
@@ -348,6 +348,64 @@
         }
       ],
       "title": "Chain TPS (accepted)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "L1 accepted-block rate, max across nodes. ~40 blk/s at 25ms cadence, ~9.5 at 100ms, 0 when idle.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0,
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 18
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max(rate(avalanche_snowman_blks_accepted_count{chain!~\"C|P|X|all\"}[1m]))",
+          "legendFormat": "blocks/s",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Blocks per second (accepted)",
       "type": "timeseries"
     },
     {
