@@ -225,6 +225,7 @@
             "showPoints": "never",
             "spanNulls": false
           },
+          "min": 0,
           "unit": "ops"
         },
         "overrides": []

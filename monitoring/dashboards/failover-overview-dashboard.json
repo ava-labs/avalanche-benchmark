@@ -50,7 +50,7 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "palette-classic"
           },
           "custom": {
             "lineWidth": 0,
@@ -138,7 +138,7 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "mode": "palette-classic"
           },
           "custom": {
             "lineWidth": 0,
@@ -165,7 +165,7 @@
                 "to": 500000,
                 "result": {
                   "text": "spare",
-                  "color": "blue",
+                  "color": "yellow",
                   "index": 1
                 }
               }
@@ -311,6 +311,7 @@
             "showPoints": "never",
             "spanNulls": false
           },
+          "min": 0,
           "unit": "none"
         },
         "overrides": []
@@ -563,6 +564,7 @@
             "showPoints": "never",
             "spanNulls": false
           },
+          "min": 0,
           "unit": "none"
         },
         "overrides": []
