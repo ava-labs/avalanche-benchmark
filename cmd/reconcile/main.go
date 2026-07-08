@@ -40,21 +40,22 @@ func fatalf(format string, args ...any) {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: benchmark-fleet <command>
-  up   <m...>                 (re)build the given machines from genesis and start them
-                              (wipes L1 chain data, keeps the Fuji P-chain; weight untouched)
-  down <m...>                 simulate hardware failure: hard-kill the given machines
-                              (data left on disk; weight untouched)
+  up   <m...>       rebuild the given machines from genesis and start them
+                    (wipes their L1 chain data; on-chain weight untouched)
+  down <m...>       simulate hardware failure: hard-kill the given machines
+                    (data left on disk; on-chain weight untouched)
   weight <tier> <m...> [<tier> <m...>]...
-                              tier = validator|spare|dead (1000000|1000|1): set on-chain
-                              consensus weight tiers and converge them as ONE seesaw
-                              (raises before lowers), e.g.: weight validator 7 8 9 dead 1 2 3
-  status [--watch]            read-only report: per-datacenter stake tier + reachability
-  fresh                       WIPE + redeploy the whole fleet from genesis, reseed intents
-                              (site A active), force re-upload binaries, converge weights
-  destroy                     kill every node and remove the deploy dir on every box;
-                              keeps network.env (the chain identity costs AVAX to recreate)
-  endpoints                   print per-slot "name<TAB>site<TAB>role<TAB>host<TAB>httpPort"
-                              (used by monitoring.sh / bombard.sh)`)
+                    set on-chain weight; tier = validator|spare|dead (1000000|1000|1)
+                    put all changes of one failover in a single command: new
+                    validators are raised before old ones are lowered,
+                    e.g.: weight validator 7 8 9 dead 1 2 3
+  status [--watch]  read-only report: stake tier and reachability per datacenter
+  fresh             WIPE every machine and redeploy the whole fleet from genesis
+                    (site A active; destroys all chain data)
+  destroy           kill every node and remove the deploy dir on every machine;
+                    keeps network.env (the chain identity costs AVAX to recreate)
+  endpoints         print one line per machine: name, site, role, host, HTTP port
+                    (tab-separated; used by monitoring.sh / bombard.sh)`)
 	os.Exit(2)
 }
 
@@ -143,7 +144,7 @@ func main() {
 		cfg.warnColocation()
 		intents := seedIntents(topo)
 		mustSaveIntents(cfg, intents)
-		fmt.Println("== benchmark-fleet fresh: reseeded intents (site A active) ==")
+		fmt.Println("== benchmark-fleet fresh: full redeploy from genesis (site A active) ==")
 		printIntents(topo, intents)
 		all := map[int]bool{}
 		for i := range intents {

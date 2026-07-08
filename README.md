@@ -153,7 +153,7 @@ Operating the fleet is two independent axes, both via `./fleet`:
 
 **Put every tier move of a failover into ONE `weight` invocation.** The
 converge engine raises the incoming validators before lowering the outgoing
-ones, so there is never a low-weight window and the whole seesaw fits the
+ones, so there is never a low-weight window and the whole move fits the
 churn budget in a handful of contract steps; running raises and lowers as
 separate commands ratchets against a shrinking total and takes many times
 more transactions. Weights only move when you ask: a dead box keeps blocking
@@ -167,7 +167,7 @@ script:
 ./examples/datacenter_failover.sh    # site A dies, site B takes the consensus
 ```
 
-Failing back is the same seesaw in reverse: `./fleet up 1 2 3`, wait for
+Failing back is the same move in reverse: `./fleet up 1 2 3`, wait for
 SERVING, then `./fleet weight validator 1 2 3 spare 7 8 9`.
 
 ### What to expect when validators drop
