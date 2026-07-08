@@ -173,6 +173,8 @@ point.
 ./scenarios/02_validator_down_replace.sh   # site B machine steps in, back to 4
 ./scenarios/03_datacenter_failure.sh       # site A dies, site B takes over
 ./scenarios/04_validator_maintenance.sh    # planned maintenance: drain a1, then power it off
+./scenarios/05_2x2.sh                      # 2x2 split: consensus spread across both DCs
+./scenarios/06_all_validators.sh           # all eight stake slots validating, four per DC
 ```
 
 Recovery from any scenario is `./scenarios/00_healthy.sh`; failing back
