@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/_common.sh"
 
 # Prometheus + Grafana, run LOCALLY on this control host — NOT on a benchmark
-# node. Failover monitoring has to outlive any single site: node 1 (m1) is a
+# node. Failover monitoring has to outlive any single site: node 1 (a1) is a
 # validator that goes DOWN during a site-A failover, so hosting the monitor
 # there would blind you exactly when the failover happens. The control host is
 # the one machine that stays up across both site outages and already reaches
@@ -74,7 +74,7 @@ emit_target() {  # host port site machine instance role
 # validator/spare/RPC counts, any co-location — with correct per-node labels.
 # No hardcoded slot count or role names. Each endpoint line is:
 #   name <TAB> site <TAB> role <TAB> host <TAB> port
-# where name is the machine id (m1..mN, b1..bN) and role is v1..vN / spare / rpc.
+# where name is the machine id (a1../b1.. for stake slots, rpc_a*/rpc_b* for RPCs) and role is v1..vN / spare / rpc.
 export NODE_IPS BACKUP_SITE_NODE_IPS
 {
     echo "global:"
@@ -181,5 +181,5 @@ echo "  Failover board:  http://$PUBLIC_IP:$GRAFANA_PORT/d/avalanche-failover?re
 echo "  Consensus board: http://$PUBLIC_IP:$GRAFANA_PORT/d/avalanche-consensus?refresh=5s&from=now-15m&to=now"
 echo "  Benchmark board: http://$PUBLIC_IP:$GRAFANA_PORT/d/avalanche-benchmark?refresh=5s"
 echo ""
-echo "Scraping $TARGET_COUNT node(s) at /ext/metrics on their per-slot ports (site a = m1-m6, site b = b1-b6)."
+echo "Scraping $TARGET_COUNT node(s) at /ext/metrics on their per-slot ports (site a = machines 1-6, site b = 7-12)."
 echo "Stop with:  kill \$(cat $DATA_DIR/prometheus.pid $DATA_DIR/grafana.pid)"

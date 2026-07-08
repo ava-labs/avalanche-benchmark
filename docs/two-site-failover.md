@@ -21,11 +21,11 @@ the validator set migrates between them on failover. The default (and the worked
 example throughout this doc) is **3 validators + 1 spare + 2 RPCs** = 6 machines
 per site; the slot layout per site is always `[validators…, spares…, rpcs…]`.
 
-- **Site A (primary)** = `VALIDATOR_IPS` + `SPARE_IPS` + `RPC_IPS`: `m1`-`m3`
-  weighted validators, `m4` hot spare, `m5`/`m6` pinned dedicated RPCs
+- **Site A (primary)** = `VALIDATOR_IPS` + `SPARE_IPS` + `RPC_IPS`: `a1`-`a3`
+  weighted validators, `a4` hot spare, `rpc_a1`/`rpc_a2` pinned dedicated RPCs
   (for the default shape).
 - **Site B (backup)** = the `BACKUP_*` lists: `b1`-`b3` zero-weight syncing
-  trackers, `b4` spare, `b5`/`b6` pinned dedicated RPCs. For realistic
+  trackers, `b4` spare, `rpc_b1`/`rpc_b2` pinned dedicated RPCs. For realistic
   results put site B in a different region/DC so the cross-site sync latency is
   real (e.g. site A in us-east-1, site B in us-east-2). Co-locating sites on the
   same boxes (the single-network POC case) works for exercising the orchestration
@@ -41,7 +41,7 @@ per site; the slot layout per site is always `[validators…, spares…, rpcs…
   a plain resync instead of an archive→archive DB clone. One RPC per site is therefore
   enough (a 2nd is optional ingress redundancy).
 - Site B nodes are **never registered on the P-chain**. They track the subnet
-  exactly like `m4`/`m5` do — full chain state, no consensus weight — which is
+  exactly like `a4`/`rpc_a1` do — full chain state, no consensus weight — which is
   what makes site failover fast: their `data/` is already at tip when the
   validator keys arrive.
 
@@ -80,12 +80,12 @@ holds exactly one identity; no two **live** machines ever share one:
 | Key | Role |
 |-----|------|
 | 6-8 | `v1-v3` — the only P-chain-registered validator identities. Move between machines; cross sites **only** via `site-failover`. |
-| 9 | `m4`'s home: site-A spare |
-| 10, 19 | `m5`/`m6` pinned RPC identities, site A (never promoted) |
-| 11-13 | `m1-m3`'s home identities — worn when displaced (e.g. while site B is active) |
+| 9 | `a4`'s home: site-A spare |
+| 10, 19 | `rpc_a1`/`rpc_a2` pinned RPC identities, site A (never promoted) |
+| 11-13 | `a1-a3`'s home identities — worn when displaced (e.g. while site B is active) |
 | 14-16 | `b1-b3`'s home identities — zero-weight sync trackers |
 | 17 | `b4`'s home: site-B spare |
-| 18, 20 | `b5`/`b6` pinned RPC identities, site B (never promoted) |
+| 18, 20 | `rpc_b1`/`rpc_b2` pinned RPC identities, site B (never promoted) |
 
 (See `twoSiteHomes` in `cmd/reconcile/plan.go` for the machine→home mapping.) Unique
 homes (vs. the single shared `nv` key 9) exist because a backup site means several
@@ -98,7 +98,7 @@ generated with `go run ./cmd/genstaking 11 20` (NodeIDs in `staking/node-ids.env
 One rule is added to the sticky mapping in `cmd/reconcile/plan.go`:
 
 > **Orphaned validator keys never cross sites implicitly.** A single-machine
-> cordon reassigns the orphan within that machine's own site (m-fault → m4;
+> cordon reassigns the orphan within that machine's own site (A-side fault → a4;
 > post-failover b-fault → b4). With no same-site spare the key stays uncovered
 > and quorum drops — by design, matching the "consensus is single-site"
 > invariant. Only an explicit `site-failover` moves the validator set.
@@ -144,7 +144,7 @@ It runs in two phases:
    moves. Discarding the stale data is what makes the failback fork-proof: a node that
    kept its stale post-failover data would resurrect a frontier the live validators
    never had and never converge. The snapshot source is the zero-weight sync tracker
-   (b4) or spare (m4) — stopped briefly for a consistent on-disk copy, so neither
+   (b4) or spare (a4) — stopped briefly for a consistent on-disk copy, so neither
    quorum nor ingress is touched — and it is provenance-gated to the canonical active
    site so a stale frontier can never be re-imported. Only the machines about to take a
    validator key are gated: the spare and pinned-RPC trackers carry no vote, so they
@@ -206,10 +206,10 @@ gate's per-poll log warns when a target is losing ground.
 
 ## Benchmark across a failover
 
-`05_benchmark.sh` automatically adds `b5` to bombard's `--rpc` list in two-site
+`05_benchmark.sh` automatically adds `rpc_b1` to bombard's `--rpc` list in two-site
 mode. Bombard fans sends across reachable endpoints, runs one watcher per
 endpoint, and resubmits in-flight txs — so the run rides through the site
-failover: sends fail over to `b5` when `m5` dies with site A, unmined in-flight
+failover: sends fail over to `rpc_b1` when `rpc_a1` dies with site A, unmined in-flight
 txs get resubmitted to the new validator set (the "replay unmined transactions"
 step of the production runbook), and the latency report captures the recovery
 window end-to-end.
@@ -295,4 +295,4 @@ deterministic-EVM-sync protocol ask (request #8) closes.
 - **Configurable site sizes:** both sites are pinned at 6 machines; production
   asks may want asymmetric sites (e.g. 4 backup trackers, no backup spare).
 - **`staking/node-ids.env` is stale:** it lists only identities 6-18 (the old
-  5/site map); regenerate it to cover 19-20 (`m6`/`b6`) and refresh the comment.
+  5/site map); regenerate it to cover 19-20 (`rpc_a2`/`rpc_b2`) and refresh the comment.

@@ -56,9 +56,10 @@ Each list's LENGTH is the node count, its VALUES are the placement. Repeat an
 IP to co-locate several nodes on one box (ports and data dirs auto-offset), so
 the full topology fits on as few machines as you have; `.env.example` shows
 the worked co-located shapes. Run `./fleet endpoints` to preview the resulting
-layout before deploying. Machines are numbered in list order: site A is
-`m1..m6` (1-6), site B is `b1..b6` (7-12); the failover commands below use
-those numbers.
+layout before deploying. Machines are numbered in list order: site A is 1-6,
+site B is 7-12; the failover commands below use those numbers. Names encode
+the role: site A stake slots (validators + spare) are `a1..a4` and its RPCs
+`rpc_a1 rpc_a2`; site B mirrors them as `b1..b4` and `rpc_b1 rpc_b2`.
 
 ## 1. Create your chain (one-time)
 
@@ -124,7 +125,7 @@ Start the load (leave it running through everything below):
 ```
 
 One fixed profile, no flags: **4000 tx/s**, 2000 in-flight cap, 5s resubmit.
-Ingress is **every pinned RPC node on both sites** (`m5` `m6` `b5` `b6` in the
+Ingress is **every pinned RPC node on both sites** (`rpc_a1` `rpc_a2` `rpc_b1` `rpc_b2` in the
 default shape). bombard broadcasts each tx to ALL of them, health-checks every
 endpoint continuously, drops one from rotation when it falls behind and
 re-adds it when it catches up, and resubmits anything in flight, so ingress

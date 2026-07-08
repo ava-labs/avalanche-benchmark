@@ -70,12 +70,20 @@ func (t Topology) IsRPCSlot(i int) bool { return t.SlotInSite(i) >= t.NVal+t.NSp
 // conversion (validators and spares of every site; RPC slots never validate).
 func (t Topology) IsStakingSlot(i int) bool { return !t.IsRPCSlot(i) }
 
-// MachineName renders the operator-facing name: m1.. (site A), b1.. (site B).
+// MachineName renders the operator-facing name, encoding role and site:
+// stake-bearing slots (validators+spares) are a1..aN (site A) / b1..bN
+// (site B); RPC slots are rpc_a1.. / rpc_b1... Fleet commands still address
+// machines by pool number (1-based slot index), which status prints alongside.
 func (t Topology) MachineName(i int) string {
+	site := "a"
 	if t.Site(i) == SiteB {
-		return "b" + strconv.Itoa(i-t.SitePool()+1)
+		site = "b"
 	}
-	return "m" + strconv.Itoa(i+1)
+	s := t.SlotInSite(i)
+	if s < t.NVal+t.NSpare {
+		return site + strconv.Itoa(s+1)
+	}
+	return "rpc_" + site + strconv.Itoa(s-t.NVal-t.NSpare+1)
 }
 
 // KeyOf is slot i's permanent committed staking key index.

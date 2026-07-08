@@ -9,8 +9,8 @@ import (
 )
 
 // fujiTestConfig builds a two-site 3v/1s/2r config with a seeded intentions
-// file. Permanent key scheme: KeyOf(i) = 1+i, so m1..m6 wear 1..6 (RPCs
-// 5,6) and b1..b6 wear 7..12 (RPCs 11,12).
+// file. Permanent key scheme: KeyOf(i) = 1+i, so site A slots wear keys 1..6 (RPCs
+// 5,6) and site B slots wear 7..12 (RPCs 11,12).
 func fujiTestConfig(t *testing.T) *config {
 	t.Helper()
 	topo := Topology{TwoSite: true, NVal: 3, NSpare: 1, NRPC: 2}
@@ -85,7 +85,7 @@ func TestPchainBeacons(t *testing.T) {
 func TestSiblingSeeds(t *testing.T) {
 	c := fujiTestConfig(t)
 
-	// m1 (key 1) seeds every OTHER slot under its permanent identity.
+	// a1 (key 1) seeds every OTHER slot under its permanent identity.
 	ips, ids := c.siblingSeeds(0)
 	ipList := strings.Split(ips, ",")
 	idList := strings.Split(ids, ",")
@@ -95,9 +95,9 @@ func TestSiblingSeeds(t *testing.T) {
 	if ipList[0] != "10.0.0.2:9653" || idList[0] != c.nodeIDByKey[2] {
 		t.Errorf("first seed = %s/%s, want m2 with key 2", ipList[0], idList[0])
 	}
-	// Spare m4 wears its permanent key 4.
+	// Spare a4 wears its permanent key 4.
 	if idList[2] != c.nodeIDByKey[4] {
-		t.Errorf("m4 seed id = %s, want key 4's NodeID", idList[2])
+		t.Errorf("a4 seed id = %s, want key 4's NodeID", idList[2])
 	}
 	for _, id := range idList {
 		if id == c.nodeIDByKey[1] {

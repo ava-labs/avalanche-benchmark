@@ -22,7 +22,7 @@ func TestSetCordon(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !next[0].Cordoned {
-		t.Error("m1 should be cordoned")
+		t.Error("a1 should be cordoned")
 	}
 	if next[0].Weight != intents[0].Weight {
 		t.Errorf("cordon changed weight: %d -> %d", intents[0].Weight, next[0].Weight)
@@ -36,7 +36,7 @@ func TestSetCordon(t *testing.T) {
 		t.Fatal(err)
 	}
 	if back[0].Cordoned {
-		t.Error("m1 should be uncordoned")
+		t.Error("a1 should be uncordoned")
 	}
 }
 
@@ -46,12 +46,12 @@ func TestSetWeight(t *testing.T) {
 	topo := stdTopo()
 	intents := seedIntents(topo)
 
-	next, err := setWeight(intents, 4, valmgr.ValidatorWeight, topo) // promote spare m4
+	next, err := setWeight(intents, 4, valmgr.ValidatorWeight, topo) // promote spare a4
 	if err != nil {
 		t.Fatal(err)
 	}
 	if next[3].Weight != valmgr.ValidatorWeight {
-		t.Errorf("m4 weight = %d, want %d", next[3].Weight, valmgr.ValidatorWeight)
+		t.Errorf("a4 weight = %d, want %d", next[3].Weight, valmgr.ValidatorWeight)
 	}
 	if next[3].Cordoned != intents[3].Cordoned {
 		t.Error("setWeight changed cordon")
@@ -66,7 +66,7 @@ func TestSetWeight(t *testing.T) {
 		t.Fatal(err)
 	}
 	if dead[3].Weight != valmgr.DeadWeight {
-		t.Errorf("m4 weight = %d, want dead %d", dead[3].Weight, valmgr.DeadWeight)
+		t.Errorf("a4 weight = %d, want dead %d", dead[3].Weight, valmgr.DeadWeight)
 	}
 }
 

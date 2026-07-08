@@ -16,8 +16,8 @@ coordinating and recording even when an entire site goes dark.
 | Component | Count | Role |
 |-----------|-------|------|
 | **Control host** | 1 | Orchestration scripts, load generator (bombard), Prometheus + Grafana. Also runs the 5 local primary-network (P-chain) validators the L1 bootstraps against. Holds no L1 node. |
-| **Site A** (primary) | 6 | `m1`–`m3` weighted validators · `m4` hot spare · `m5`/`m6` pinned archive RPC nodes |
-| **Site B** (backup) | 6 | `b1`–`b3` zero-weight syncing trackers · `b4` spare · `b5`/`b6` pinned archive RPC nodes |
+| **Site A** (primary) | 6 | `a1`–`a3` weighted validators · `a4` hot spare · `rpc_a1`/`rpc_a2` pinned archive RPC nodes |
+| **Site B** (backup) | 6 | `b1`–`b3` zero-weight syncing trackers · `b4` spare · `rpc_b1`/`rpc_b2` pinned archive RPC nodes |
 
 Put the two sites in **different regions** so cross-site sync latency is real.
 
@@ -168,7 +168,7 @@ ssh -i <key> -L3000:localhost:3000 -L9090:localhost:9090 <user>@<control-host>
 ```
 
 Read-only. Expect all 12 nodes `SERVING` and **`validators serving: 3/3`** (the
-validators are `m1`–`m3` on site A). `status.sh` reports each node's *actual*
+validators are `a1`–`a3` on site A). `status.sh` reports each node's *actual*
 state (`SERVING@block` / `BOOTSTRAPPING` / `DOWN`), so it's the source of truth
 throughout the drill.
 
@@ -182,8 +182,8 @@ throughout the drill.
 ./05_benchmark.sh
 ```
 
-Sends ~**4000 tx/s** to the **pinned archive RPC nodes** (`m5`/`m6` on A, plus
-`b5`/`b6` on B) — never to the validators, so consensus stays healthy and
+Sends ~**4000 tx/s** to the **pinned archive RPC nodes** (`rpc_a1`/`rpc_a2` on A, plus
+`rpc_b1`/`rpc_b2` on B) — never to the validators, so consensus stays healthy and
 ingress survives a failover. bombard fans sends across every reachable RPC, runs
 a watcher per endpoint, and resubmits in-flight transactions, so it rides
 straight through the failover and its latency report captures the whole recovery
@@ -211,7 +211,7 @@ What you'll see:
   and the A→B gap closes.
 - **`status.sh`** — `b1`–`b3` become the serving validators (`3/3`); site A
   shows `DOWN`.
-- **bombard** (terminal 1) — sends fail over to `b5`/`b6`, in-flight
+- **bombard** (terminal 1) — sends fail over to `rpc_b1`/`rpc_b2`, in-flight
   transactions resubmit, and throughput recovers at site B's cadence.
 
 > While you are failed over to B (a DR posture) the chain produces at ~10 blk/s

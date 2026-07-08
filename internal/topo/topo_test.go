@@ -25,6 +25,19 @@ func TestStakingSlotsTwoSite(t *testing.T) {
 	}
 }
 
+func TestMachineName(t *testing.T) {
+	tp := Topology{TwoSite: true, NVal: 3, NSpare: 1, NRPC: 2}
+	want := []string{
+		"a1", "a2", "a3", "a4", "rpc_a1", "rpc_a2",
+		"b1", "b2", "b3", "b4", "rpc_b1", "rpc_b2",
+	}
+	for i, w := range want {
+		if got := tp.MachineName(i); got != w {
+			t.Errorf("MachineName(%d) = %q, want %q", i, got, w)
+		}
+	}
+}
+
 func TestFromEnv(t *testing.T) {
 	env := map[string]string{
 		"VALIDATOR_IPS":        "1.1.1.1,1.1.1.2,1.1.1.3",

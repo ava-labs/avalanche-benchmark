@@ -190,6 +190,8 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 	t := cfg.topo
 	total := totalWeight(intents)
 
+	// The leading number is the machine's CLI handle: `fleet down 7` etc.
+	numW := len(strconv.Itoa(len(intents)))
 	nameW := len("node")
 	for i := range intents {
 		if f := fmt.Sprintf("%s (%s)", t.MachineName(i), cfg.nodeIPs[i]); len(f) > nameW {
@@ -207,7 +209,7 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 
 	for _, site := range sites {
 		fmt.Printf("DC %s\n", strings.ToUpper(siteName(site)))
-		fmt.Printf("  %-*s  %-9s  %s\n", nameW, "node", "stake", "reachable")
+		fmt.Printf("  %-*s  %-*s  %-9s  %s\n", numW, "#", nameW, "node", "stake", "reachable")
 		for i, in := range intents {
 			if t.Site(i) != site {
 				continue
@@ -228,7 +230,7 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 			default:
 				reach = "DOWN (not responding!)"
 			}
-			fmt.Printf("  %-*s  %-9s  %s\n", nameW, field, weightRole(in.Weight), reach)
+			fmt.Printf("  %-*d  %-*s  %-9s  %s\n", numW, i+1, nameW, field, weightRole(in.Weight), reach)
 
 			if in.Cordoned {
 				continue
