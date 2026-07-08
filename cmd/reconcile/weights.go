@@ -410,9 +410,41 @@ func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) er
 		return err
 	}
 	if _, err := w.IssueSetL1ValidatorWeightTx(signed.Bytes()); err != nil {
+		if strings.Contains(err.Error(), avalancheWarp.ErrInvalidSignature.Error()) {
+			e.nudgePChain(ctx, w)
+			return fmt.Errorf("SetL1ValidatorWeightTx for %s: %w (%v)", e.slotName(t), err, errStaleProposerContext)
+		}
 		return fmt.Errorf("SetL1ValidatorWeightTx for %s: %w", e.slotName(t), err)
 	}
 	return nil
+}
+
+// errStaleProposerContext explains a P-chain "signature is invalid" reject
+// that our own full precheck passed: the node verifies IssueTx warp messages
+// at its preferred block's PROPOSER CONTEXT height (or GetMinimumHeight), not
+// the tip (platformvm block/executor manager.VerifyTx). If the Fuji primary
+// set changed since the preferred block was proposed, the aggregate's signer
+// bitset resolves to different BLS keys at that stale height and the BLS
+// check fails; re-aggregating cannot help until a NEW P-chain block refreshes
+// the context, and on a quiet Fuji P-chain no block may come for ~40min
+// (measured live 2026-07-08: set changed at height 286675, then zero blocks
+// for 38min; every fresh aggregate verified OK at the tip and was rejected at
+// the stale context height).
+var errStaleProposerContext = fmt.Errorf("the P-chain verifies at its preferred block's proposer-context height, which predates a Fuji validator-set change; a no-op BaseTx was issued to force a fresh block, the next retry should pass")
+
+// nudgePChain issues a no-op BaseTx (all change back to our own key) purely to
+// land a fresh P-chain block: the new block carries a current proposer-context
+// height, unsticking warp verification after a validator-set change on an
+// otherwise idle Fuji P-chain. Our stuck SetL1ValidatorWeightTx cannot do this
+// itself because it is rejected at admission, before ever reaching a block.
+// Cost: one base fee. Best-effort: on failure the retry loop just waits for a
+// third-party block as before.
+func (e *weightEngine) nudgePChain(ctx context.Context, w pwallet.Wallet) {
+	if _, err := w.IssueBaseTx(nil, walletcommon.WithContext(ctx)); err != nil {
+		fmt.Printf("  weights: P-chain nudge BaseTx failed (%v); waiting for a third-party block to refresh the proposer context\n", err)
+		return
+	}
+	fmt.Println("  weights: issued a no-op BaseTx to advance the P-chain proposer context past the validator-set change")
 }
 
 // pchainQuorum mirrors the warp quorum the P-chain enforces on
