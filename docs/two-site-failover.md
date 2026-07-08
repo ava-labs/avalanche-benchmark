@@ -73,6 +73,13 @@ of the reset preamble, the failover is three commands:
 ./fleet weight dead 1 2 3 4     # then retire site A's stake
 ```
 
+Expect a pause of up to ~5 minutes between the weight flip and site B's
+first block: post-Durango proposer selection still derives from the parent
+block's pre-flip P-chain height, so a spare-weight (1000) B validator must
+win a slot by lottery against the dead site's stale 1,000,000 weights before
+its first block re-anchors the schedule onto the new set (measured 3m58s in
+the 2026-07-08 drill).
+
 and the failback is:
 
 ```bash
