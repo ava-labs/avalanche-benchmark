@@ -97,7 +97,7 @@ func splitIPs(csv string) []string {
 func loadPool() (Topology, []string, []instance) {
 	t, pool, err := topo.FromEnv(os.Getenv)
 	if err != nil {
-		fatalf("%v (set the per-role IP lists in .env)", err)
+		fatalf("%v", err)
 	}
 	return t, pool, buildInstances(pool)
 }

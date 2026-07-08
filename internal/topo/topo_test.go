@@ -2,6 +2,7 @@ package topo
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -67,5 +68,22 @@ func TestFromEnv(t *testing.T) {
 	env["BACKUP_VALIDATOR_IPS"] = "2.1.1.1" // shape mismatch
 	if _, _, err := FromEnv(func(k string) string { return env[k] }); err == nil {
 		t.Error("mismatched backup shape must error")
+	}
+
+	_, _, err = FromEnv(func(string) string { return "" }) // no .env at all
+	if err == nil || !strings.Contains(err.Error(), "no fleet topology configured") {
+		t.Errorf("all-empty env: got %v, want 'no fleet topology configured'", err)
+	}
+
+	short := map[string]string{"VALIDATOR_IPS": "1.1.1.1,1.1.1.2", "RPC_IPS": "1.1.1.5"}
+	_, _, err = FromEnv(func(k string) string { return short[k] })
+	if err == nil || !strings.Contains(err.Error(), "at least 3 validator slots") {
+		t.Errorf("2 validators: got %v, want 'at least 3 validator slots'", err)
+	}
+
+	noRPC := map[string]string{"VALIDATOR_IPS": "1.1.1.1,1.1.1.2,1.1.1.3"}
+	_, _, err = FromEnv(func(k string) string { return noRPC[k] })
+	if err == nil || !strings.Contains(err.Error(), "at least 1 RPC slot") {
+		t.Errorf("0 RPC: got %v, want 'at least 1 RPC slot'", err)
 	}
 }

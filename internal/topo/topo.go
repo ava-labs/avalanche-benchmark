@@ -179,11 +179,14 @@ func FromEnv(getenv func(string) string) (Topology, []string, error) {
 	valA := splitIPs(getenv("VALIDATOR_IPS"))
 	spareA := splitIPs(getenv("SPARE_IPS"))
 	rpcA := splitIPs(getenv("RPC_IPS"))
+	if len(valA) == 0 && len(spareA) == 0 && len(rpcA) == 0 {
+		return Topology{}, nil, fmt.Errorf("no fleet topology configured (VALIDATOR_IPS etc. are empty); copy .env.example to .env and set the per-role IP lists; if you meant to drive a remote fleet, run this on its control host")
+	}
 	if len(valA) < 3 {
-		return Topology{}, nil, fmt.Errorf("VALIDATOR_IPS has %d IP(s); a live L1 needs at least 3 validators", len(valA))
+		return Topology{}, nil, fmt.Errorf("VALIDATOR_IPS has %d IP(s); the topology needs at least 3 validator slots per site (stake tiers are set separately via fleet weight)", len(valA))
 	}
 	if len(rpcA) < 1 {
-		return Topology{}, nil, fmt.Errorf("RPC_IPS has %d IP(s); need at least 1 RPC node per site to serve ingress", len(rpcA))
+		return Topology{}, nil, fmt.Errorf("RPC_IPS has %d IP(s); the topology needs at least 1 RPC slot per site to serve ingress", len(rpcA))
 	}
 
 	t := Topology{NVal: len(valA), NSpare: len(spareA), NRPC: len(rpcA)}
