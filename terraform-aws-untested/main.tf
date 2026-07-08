@@ -107,6 +107,26 @@ resource "aws_security_group_rule" "control_avax" {
   description       = "Avalanchego API/staking/primary-bootstrap (cross-region)"
 }
 
+resource "aws_security_group_rule" "control_grafana" {
+  type              = "ingress"
+  from_port         = 3000
+  to_port           = 3000
+  protocol          = "tcp"
+  security_group_id = aws_security_group.control.id
+  cidr_blocks       = ["0.0.0.0/0"]
+  description       = "Grafana (anonymous-admin, throwaway benchmark stack)"
+}
+
+resource "aws_security_group_rule" "control_prometheus" {
+  type              = "ingress"
+  from_port         = 9090
+  to_port           = 9090
+  protocol          = "tcp"
+  security_group_id = aws_security_group.control.id
+  cidr_blocks       = ["0.0.0.0/0"]
+  description       = "Prometheus"
+}
+
 resource "aws_security_group_rule" "control_egress" {
   type              = "egress"
   from_port         = 0
