@@ -483,7 +483,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Canonically accepted transactions per second, max across nodes to ignore a lagging scrape.",
+      "description": "Canonically accepted transactions per second, one line per node.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -498,7 +498,7 @@
             "spanNulls": false
           },
           "min": 0,
-          "unit": "none"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -527,8 +527,8 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max(rate(avalanche_subnetevm_vm_eth_chain_txs_accepted[1m]))",
-          "legendFormat": "chain",
+          "expr": "rate(avalanche_subnetevm_vm_eth_chain_txs_accepted[1m])",
+          "legendFormat": "{{instance}}",
           "range": true,
           "refId": "A"
         }
