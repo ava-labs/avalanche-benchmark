@@ -222,7 +222,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "On-chain consensus weight per server: 1 = dead, 1000 = spare, 1000000 = validator.",
+      "description": "On-chain consensus weight per DC A server: 1 = dead, 1000 = spare, 1000000 = validator.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -240,7 +240,6 @@
                 "from": 0,
                 "to": 10,
                 "result": {
-                  "text": "dead",
                   "color": "red",
                   "index": 0
                 }
@@ -252,7 +251,6 @@
                 "from": 10,
                 "to": 500000,
                 "result": {
-                  "text": "spare",
                   "color": "yellow",
                   "index": 1
                 }
@@ -264,7 +262,6 @@
                 "from": 500000,
                 "to": 1000000000000,
                 "result": {
-                  "text": "validator",
                   "color": "green",
                   "index": 2
                 }
@@ -285,7 +282,7 @@
       },
       "gridPos": {
         "h": 9,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 9
       },
@@ -293,7 +290,7 @@
       "options": {
         "mergeValues": true,
         "rowHeight": 0.85,
-        "showValue": "never",
+        "showValue": "auto",
         "alignValue": "left",
         "legend": {
           "displayMode": "list",
@@ -312,13 +309,114 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "fleet_actual_weight",
+          "expr": "fleet_actual_weight{instance=~\"a[0-9]+\"}",
           "legendFormat": "{{instance}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Weight per server (P-chain)",
+      "title": "Weight per server - DC A",
+      "type": "state-timeline"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "On-chain consensus weight per DC B server: 1 = dead, 1000 = spare, 1000000 = validator.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 0,
+            "fillOpacity": 72,
+            "spanNulls": false
+          },
+          "mappings": [
+            {
+              "type": "range",
+              "options": {
+                "from": 0,
+                "to": 10,
+                "result": {
+                  "color": "red",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 10,
+                "to": 500000,
+                "result": {
+                  "color": "yellow",
+                  "index": 1
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 500000,
+                "to": 1000000000000,
+                "result": {
+                  "color": "green",
+                  "index": 2
+                }
+              }
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 9
+      },
+      "id": 9,
+      "options": {
+        "mergeValues": true,
+        "rowHeight": 0.85,
+        "showValue": "auto",
+        "alignValue": "left",
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "fleet_actual_weight{instance=~\"b[0-9]+\"}",
+          "legendFormat": "{{instance}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Weight per server - DC B",
       "type": "state-timeline"
     },
     {
@@ -501,63 +599,6 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "All failed consensus request ops per site over 5m.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 26
-      },
-      "id": 5,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (site) (increase(avalanche_handler_messages{chain!~\"C|P|X|all\",op=~\".*_failed\"}[5m]))",
-          "legendFormat": "{{site}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Requests failed",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
       "description": "Stake each site currently benches as unresponsive. Nonzero means peers are skipping a validator.",
       "fieldConfig": {
         "defaults": {
@@ -578,8 +619,8 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
-        "x": 12,
+        "w": 24,
+        "x": 0,
         "y": 26
       },
       "id": 6,
