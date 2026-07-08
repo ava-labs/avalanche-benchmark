@@ -146,9 +146,9 @@ BOOTSTRAPPING until then, which is normal.
 Runs Prometheus + Grafana on the control host and prints the URLs. Two
 dashboards are provisioned:
 
-- **Avalanche Benchmark** (`/d/avalanche-benchmark`) — per-node TPS, consensus,
+- **Benchmark** (`/d/benchmark`) — per-node TPS, consensus,
   verification.
-- **Avalanche Failover** (`/d/avalanche-failover`) — per-node finalized height,
+- **Failover** (`/d/failover`) — per-node finalized height,
   the **A→B finalized gap**, node up/down, block-acceptance rate. **This is the
   one to watch during the drill** — you see site A flatline and site B take over
   live.

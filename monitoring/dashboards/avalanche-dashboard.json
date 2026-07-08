@@ -1796,7 +1796,7 @@
  },
  "timepicker": {},
  "timezone": "browser",
- "title": "Avalanche Benchmark",
- "uid": "avalanche-benchmark",
+ "title": "Benchmark",
+ "uid": "benchmark",
  "version": 1
 }

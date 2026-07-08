@@ -1166,8 +1166,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "Avalanche Failover",
-  "uid": "avalanche-failover",
+  "title": "Failover",
+  "uid": "failover",
   "version": 1,
   "weekStart": ""
 }

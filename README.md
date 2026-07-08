@@ -110,8 +110,8 @@ admin). If those ports aren't open to you, tunnel:
 ssh -i <key> -L3000:localhost:3000 <user>@<control-host>   # open http://localhost:3000
 ```
 
-Two dashboards are provisioned: **Avalanche Benchmark** (per-node TPS,
-consensus, verification) and **Avalanche Failover** (per-node finalized
+Two dashboards are provisioned: **Benchmark** (per-node TPS,
+consensus, verification) and **Failover** (per-node finalized
 height, the A-to-B finalized gap, node up/down), which shows a site failover
 as it happens. `monitoring.sh` is re-runnable and discovers the fleet
 from your `.env` topology automatically.

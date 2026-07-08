@@ -382,8 +382,8 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "Avalanche Machine Metrics",
-  "uid": "avalanche-machine",
+  "title": "Machine Metrics",
+  "uid": "machine",
   "version": 1,
   "weekStart": ""
 }
