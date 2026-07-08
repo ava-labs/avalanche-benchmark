@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/valmgr"
@@ -281,29 +282,40 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 				cfg.freshClean(i)
 			}
 		}
+		// Uploads are per-host independent (all state is remote), so fan out;
+		// any failure fatalfs and aborts the whole run, same as sequentially.
 		uploaded := map[string]bool{}
+		var wg sync.WaitGroup
 		for i, host := range hosts {
 			if uploaded[host] {
 				continue
 			}
 			uploaded[host] = true
 			fmt.Printf("  %s (%s): upload artifacts\n", topo.MachineName(i), host)
-			cfg.upload(host)
+			wg.Add(1)
+			go func(h string) { defer wg.Done(); cfg.upload(h) }(host)
 		}
+		wg.Wait()
 	} else {
 		checked := map[string]bool{}
+		var wg sync.WaitGroup
 		for i, host := range hosts {
 			if intents[i].Cordoned || checked[host] {
 				continue
 			}
 			checked[host] = true
-			if !cfg.provisioned(host) {
-				fmt.Printf("  %s (%s): missing artifacts, uploading\n", topo.MachineName(i), host)
-				cfg.upload(host)
-			} else {
-				fmt.Printf("  %s (%s): provisioned\n", topo.MachineName(i), host)
-			}
+			wg.Add(1)
+			go func(i int, host string) {
+				defer wg.Done()
+				if !cfg.provisioned(host) {
+					fmt.Printf("  %s (%s): missing artifacts, uploading\n", topo.MachineName(i), host)
+					cfg.upload(host)
+				} else {
+					fmt.Printf("  %s (%s): provisioned\n", topo.MachineName(i), host)
+				}
+			}(i, host)
 		}
+		wg.Wait()
 		for i := range hosts {
 			if freshSet[i] {
 				fmt.Printf("  %s (%s): rebuild from genesis\n", topo.MachineName(i), hosts[i])
