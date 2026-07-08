@@ -1,9 +1,8 @@
 #!/bin/bash
-# SCENARIO 00: healthy baseline. Brings the whole fleet to the ground state:
-# all machines running, machines 1-3 validating, everything else spare.
-# Also the recovery step after any other scenario.
+# SCENARIO 00: healthy baseline, also the recovery step after any scenario.
 set -e
 cd "$(dirname "$0")/.." || exit 1
 
+# Reset to normal: everyone up, a1-a4 validators, site B spare.
 ./scenarios/_ground.sh
 ./fleet status
