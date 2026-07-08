@@ -162,10 +162,11 @@ Operating the fleet is two independent axes, both via `./fleet`:
 the fleet never passes through a low-weight window. Weights only move when
 you ask: a dead box keeps blocking quorum until you `weight dead` it.
 
-The worked drills live in `scenarios/`. Each one is idempotent: it first
-restores the ground state (all machines up, machines 1-4 validating,
-everything else spare), then executes the failure, so any scenario can be
-run from any starting point:
+The worked drills live in `scenarios/`. 00-03 and 05 first restore the
+ground state (all machines up, machines 1-4 validating, everything else
+spare), then execute the failure, so they can be run from any starting
+point. 04 is the failback half of 03 and assumes its aftermath: run it
+after 03.
 
 ```bash
 ./scenarios/00_healthy.sh                  # ground state only
