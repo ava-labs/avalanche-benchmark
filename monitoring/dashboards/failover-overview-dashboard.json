@@ -134,7 +134,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "On-chain weight from the fleet exporter, bucketed into tiers: dead=1, spare=1000, validator=1000000. Mid-ratchet intermediate weights land in the nearest tier.",
+      "description": "On-chain consensus weight per server: 1 = dead, 1000 = spare, 1000000 = validator.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -174,7 +174,7 @@
               "type": "range",
               "options": {
                 "from": 500000,
-                "to": null,
+                "to": 1000000000000,
                 "result": {
                   "text": "validator",
                   "color": "green",
@@ -230,7 +230,7 @@
           "refId": "A"
         }
       ],
-      "title": "Stake tier per server (P-chain)",
+      "title": "Weight per server (P-chain)",
       "type": "state-timeline"
     },
     {
