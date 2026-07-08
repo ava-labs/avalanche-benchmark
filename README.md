@@ -147,7 +147,7 @@ Operating the fleet is two independent axes, both via `./fleet`:
 ```bash
 ./fleet status --watch                     # live per-DC stake tier + node state
 ./fleet down 1                             # crash machine 1
-./fleet weight validator 4 dead 1          # promote the spare, retire the dead box
+./fleet weight validator 7 dead 1          # promote a spare, retire the dead box
 ./fleet up 1                               # rebuild machine 1, it re-syncs and rejoins
 ```
 
@@ -160,36 +160,36 @@ more transactions. Weights only move when you ask: a dead box keeps blocking
 quorum until you `weight dead` it.
 
 The worked drills live in `scenarios/`. Each one is idempotent: it first
-restores the ground state (all machines up, machines 1-3 validating,
+restores the ground state (all machines up, machines 1-4 validating,
 everything else spare), then executes the failure, so any scenario can be
 run from any starting point:
 
 ```bash
-./scenarios/00_healthy.sh                          # ground state only
-./scenarios/01_validator_down.sh                   # one validator dies, 2 of 3 remain
-./scenarios/02_validator_down_spare_takes_over.sh  # spare promoted, back to 3
-./scenarios/03_datacenter_failure.sh               # site A dies, site B takes over
+./scenarios/00_healthy.sh                  # ground state only
+./scenarios/01_validator_down.sh           # one validator dies, 3 of 4 remain
+./scenarios/02_validator_down_replace.sh   # site B machine steps in, back to 4
+./scenarios/03_datacenter_failure.sh       # site A dies, site B takes over
 ```
 
 Recovery from any scenario is `./scenarios/00_healthy.sh`.
 
 ### What to expect when validators drop
 
-With 3 active validators (thresholds scale with your configured count):
+With 4 active validators (thresholds scale with your configured count):
 
 | Action | Result |
 |--------|--------|
-| 1 of 3 down, spare promoted | back to 3 active, full speed |
-| 1 of 3 down, no spare | keeps producing on 2/3, ~1/3 of proposer slots stall ~1s |
-| 2 of 3 down | quorum lost, chain **HALTS** (expected, recoverable) |
+| 1 of 4 down, replacement promoted | back to 4 active, full speed |
+| 1 of 4 down, no replacement | keeps full quorum on 3/4, consensus rides through |
+| 2 of 4 down | quorum lost, chain **HALTS** (expected, recoverable) |
 | bring back one validator into a halted chain | still halted, see below |
-| bring back all three | chain resumes within seconds |
+| bring back the rest | chain resumes within seconds |
 
 Row 4 is the non-obvious one: a **(re)starting validator can't bootstrap until ~75%
-of validator stake is online** (all 3, with 3 equal validators). Normal
-failover never hits this because the other two are still running; but
-recovering a fully halted chain needs ALL validators up, and nothing happens
-until the last one connects, at which point they all clear the latch
+of validator stake is online** (3 of 4, with 4 equal validators). Normal
+failover never hits this because the other three are still running; but
+recovering a fully halted chain needs enough validators up to clear the
+latch, and nothing happens until they connect, at which point they clear it
 together. `./fleet status` shows a node stuck on the latch as
 `BOOTSTRAPPING`.
 

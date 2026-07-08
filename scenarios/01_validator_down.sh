@@ -1,10 +1,9 @@
 #!/bin/bash
-# SCENARIO 01: one validator dies, no spare promoted.
+# SCENARIO 01: one validator dies, no replacement promoted.
 #
-# Machine 1 is killed and its stake dropped to the dead tier, leaving 2 of 3
-# validators. The chain keeps producing (2/3 quorum holds), but roughly a
-# third of proposer slots belong to the dead node, so about every third block
-# stalls for around a second until the next proposer takes over.
+# Machine 1 is killed and its stake dropped to the dead tier, leaving 3 of 4
+# validators. The chain keeps full quorum on 3 of 4: consensus is tuned to
+# ride through one lost validator, so block production continues smoothly.
 set -e
 cd "$(dirname "$0")/.." || exit 1
 

@@ -498,8 +498,8 @@ func (c *config) start(i int) {
 }
 
 // freshClean kills the process for pool slot i and resets it to a from-genesis
-// L1 while PRESERVING the already-synced Fuji P-chain. Used only by `reconcile
-// fresh`. It wipes ONLY the L1 EVM state (data/validator/chainData) and
+// L1 while PRESERVING the already-synced Fuji P-chain. Used by `reconcile
+// fresh` and `fleet up`. It wipes ONLY the L1 EVM state (data/validator/chainData) and
 // staking/active (so the next observe reads dead + key 0), NOT the whole data
 // dir: keeping data/validator/db keeps the P-chain, so a fresh raise no longer
 // re-replays Fuji (minutes, bursty) before the fleet can serve.

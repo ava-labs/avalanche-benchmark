@@ -1,12 +1,13 @@
 #!/bin/bash
 # SCENARIO 03: the whole primary datacenter (site A) goes dark.
 #
-# Every site A box is killed, including the two site A RPC nodes; the load
-# generator keeps pushing transactions through the site B RPCs. ONE weight
-# command raises site B's validators (7 8 9) and drops all site A stake to
-# dead (raises land before lowers, so the chain never loses quorum and each
-# lower fits a single churn step). Result: site B runs consensus, ingress
-# survives on site B RPCs.
+# Every site A box is killed (all four validators 1-4 plus the two site A
+# RPC nodes); the load generator keeps pushing transactions through the
+# site B RPCs. ONE weight command raises three site B machines (7 8 9) to
+# the validator tier and drops all four site A validators to dead (raises
+# land before lowers, so the chain never loses quorum and each lower fits a
+# single churn step). Result: site B's three validators run consensus,
+# ingress survives on site B RPCs, machine 10 stays spare.
 set -e
 cd "$(dirname "$0")/.." || exit 1
 
