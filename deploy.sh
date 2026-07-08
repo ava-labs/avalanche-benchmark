@@ -38,13 +38,11 @@ echo ""
 "$SCRIPT_DIR/fleet" fresh
 
 echo ""
-IFS=',' read -ra _ips <<< "$NODE_IPS"
-echo "Bombard ingress: the dedicated RPC node m5 (key 10, never promoted):"
-echo "  http://${_ips[4]}:9652/ext/bc/$CHAIN_ID/rpc"
-echo ""
-echo "Validator RPC endpoints (m1-m3) and hot spare (m4) for reference:"
-for i in 0 1 2 3; do
-    echo "  http://${_ips[$i]}:9652/ext/bc/$CHAIN_ID/rpc"
-done
+# Same role=rpc extraction as bombard.sh: co-location-aware ports, both sites.
+# bombard fans every tx across ALL of these and rides through a site failover.
+echo "Bombard ingress (all pinned RPC nodes, never promoted to validators):"
+export NODE_IPS BACKUP_SITE_NODE_IPS
+"$SCRIPT_DIR/bin/benchmark-fleet" endpoints | awk -F'\t' -v c="$CHAIN_ID" \
+    '$3=="rpc"{printf "  http://%s:%s/ext/bc/%s/rpc\n", $4, $5, c}'
 echo ""
 echo "Next: ./bombard.sh"
