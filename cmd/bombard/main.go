@@ -111,6 +111,7 @@ func (t *tracker) onMined(hash common.Hash, observedAt time.Time) {
 		total = 0
 	}
 	t.latSince = append(t.latSince, total)
+	e2eLatency.Observe(total.Seconds())
 	t.mu.Unlock()
 
 	t.mined.Add(1)
@@ -205,7 +206,12 @@ func main() {
 	tuiFlag := flag.Bool("tui", true, "Render a live terminal UI when stdout is a terminal. Set false to force one-line STATS output.")
 	scrapeFlag := flag.String("scrape", "", "Comma-separated RPC URLs to scrape /ext/metrics from at run start/end (decoupled from -rpc). Empty = scrape the -rpc nodes. Lets you send to the tracker but observe every validator.")
 	sampleFlag := flag.Duration("sample", 0, "If >0, scrape a focused set of rate/gauge node metrics every interval (e.g. 1s) and print compact SAMPLE rows. Forces -tui=false. Reveals per-second dynamics the begin/end panel hides.")
+	metricsFlag := flag.String("metrics", ":9092", "Listen address for the Prometheus /metrics endpoint (e2e latency histogram, issued/mined/resubmit counters). Empty disables.")
 	flag.Parse()
+
+	if *metricsFlag != "" {
+		serveMetrics(*metricsFlag)
+	}
 
 	if *rps <= 0 {
 		fmt.Println("--rps must be > 0")

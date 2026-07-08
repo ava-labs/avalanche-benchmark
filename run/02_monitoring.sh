@@ -98,6 +98,21 @@ export NODE_IPS BACKUP_SITE_NODE_IPS
         esac
         emit_target "$host" "$port" "$site" "$name" "$name" "$drole"
     done < <("$SCRIPT_DIR/bin/benchmark-fleet" endpoints)
+    # Control-host exporters: the fleet weight exporter (started below) and
+    # bombard's /metrics (only up while a load run is active; a down target is
+    # expected and the Load Generator board just stays blank).
+    echo "  - job_name: 'fleet'"
+    echo "    scrape_timeout: 4s"
+    # The exporter emits its own instance labels (a1..b4, matching the node
+    # scrape vocabulary); without honor_labels Prometheus would rename them to
+    # exported_instance and stamp localhost:9091 as instance.
+    echo "    honor_labels: true"
+    echo "    static_configs:"
+    echo "      - targets: ['localhost:9091']"
+    echo "  - job_name: 'bombard'"
+    echo "    scrape_timeout: 4s"
+    echo "    static_configs:"
+    echo "      - targets: ['localhost:9092']"
 } > "$PROM_YML"
 
 TARGET_COUNT=$(grep -c "      - targets:" "$PROM_YML")
@@ -126,9 +141,10 @@ echo "  OK ($(ls "$DASH_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ') dashboards)
 # ------------------------------------------------------------------------------
 # [4/5] (Re)start prometheus + grafana
 # ------------------------------------------------------------------------------
-echo "[4/5] Starting prometheus + grafana..."
+echo "[4/5] Starting prometheus + grafana + fleet exporter..."
 pkill -f "$SCRIPT_DIR/bin/prometheus" 2>/dev/null || true
 pkill -f "$GRAFANA_HOME/bin/grafana" 2>/dev/null || true
+pkill -f "benchmark-fleet exporter" 2>/dev/null || true
 sleep 1
 
 # Fresh Prometheus TSDB each run. When a target's labels change (e.g. switching
@@ -158,6 +174,12 @@ GF_AUTH_DISABLE_LOGIN_FORM="true" \
     >"$DATA_DIR/grafana.log" 2>&1 &
 echo $! > "$DATA_DIR/grafana.pid"
 
+# Fleet weight exporter: fleet_desired_weight / fleet_actual_weight on :9091,
+# scraped by the 'fleet' job for the stake panels.
+nohup "$SCRIPT_DIR/bin/benchmark-fleet" exporter \
+    >"$DATA_DIR/fleet-exporter.log" 2>&1 &
+echo $! > "$DATA_DIR/fleet-exporter.pid"
+
 # ------------------------------------------------------------------------------
 # [5/5] Wait for readiness
 # ------------------------------------------------------------------------------
@@ -177,9 +199,11 @@ echo ""
 echo "=== Monitoring ready ==="
 echo "Prometheus: http://$PUBLIC_IP:$PROM_PORT"
 echo "Grafana:    http://$PUBLIC_IP:$GRAFANA_PORT   (anonymous admin, no login)"
-echo "  Failover board:  http://$PUBLIC_IP:$GRAFANA_PORT/d/failover?refresh=5s&from=now-15m&to=now"
-echo "  Machine board:   http://$PUBLIC_IP:$GRAFANA_PORT/d/machine?refresh=5s&from=now-15m&to=now"
-echo "  Benchmark board: http://$PUBLIC_IP:$GRAFANA_PORT/d/benchmark?refresh=5s"
+echo "  Failover Overview: http://$PUBLIC_IP:$GRAFANA_PORT/d/failover-overview?refresh=5s&from=now-15m&to=now"
+echo "  Failover Details:  http://$PUBLIC_IP:$GRAFANA_PORT/d/failover?refresh=5s&from=now-15m&to=now"
+echo "  Load Generator:    http://$PUBLIC_IP:$GRAFANA_PORT/d/loadgen?refresh=5s&from=now-15m&to=now"
+echo "  Machine board:     http://$PUBLIC_IP:$GRAFANA_PORT/d/machine?refresh=5s&from=now-15m&to=now"
+echo "  Benchmark board:   http://$PUBLIC_IP:$GRAFANA_PORT/d/benchmark?refresh=5s"
 echo ""
-echo "Scraping $TARGET_COUNT node(s) at /ext/metrics on their per-slot ports (site a = machines 1-6, site b = 7-12)."
+echo "Scraping $TARGET_COUNT targets: every node's /ext/metrics on its per-slot port, plus the fleet exporter (:9091) and bombard (:9092) on this host."
 echo "Stop with:  kill \$(cat $DATA_DIR/prometheus.pid $DATA_DIR/grafana.pid)"

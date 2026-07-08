@@ -57,7 +57,9 @@ func usage() {
   destroy           kill every node and remove the deploy dir on every machine;
                     keeps network.env (the chain identity costs AVAX to recreate)
   endpoints         print one line per machine: name, site, role, host, HTTP port
-                    (tab-separated; used by run/02_monitoring.sh / run/03_bombard.sh)`)
+                    (tab-separated; used by run/02_monitoring.sh / run/03_bombard.sh)
+  exporter          serve fleet_desired_weight / fleet_actual_weight Prometheus
+                    gauges on :9091 (started by run/02_monitoring.sh)`)
 	os.Exit(2)
 }
 
@@ -157,6 +159,10 @@ func main() {
 		mustSaveIntents(cfg, intents)
 		printIntents(topo, intents)
 		reconcileWeights(cfg, intents)
+
+	case "exporter":
+		rejectArgs(os.Args[2:])
+		runExporter(cfg, ":9091")
 
 	case "destroy":
 		rejectArgs(os.Args[2:])

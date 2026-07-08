@@ -254,7 +254,7 @@
             "uid": "prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (site) (rate(avalanche_subnetevm_vm_eth_chain_txs_processed[1m]))",
+          "expr": "max by (site) (rate(avalanche_subnetevm_vm_eth_chain_txs_accepted[1m]))",
           "legendFormat": "{{site}}",
           "range": true,
           "refId": "A"
@@ -1149,6 +1149,67 @@
       ],
       "title": "Mempool pending+queued by node \u2014 site b",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Raw P-chain weight from the fleet exporter on a log scale; shows every ratchet step of a weight seesaw.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "scaleDistribution": {
+              "type": "log",
+              "log": 10
+            }
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 83
+      },
+      "id": 124,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "fleet_actual_weight",
+          "legendFormat": "{{instance}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Actual on-chain weight per server (log)",
+      "type": "timeseries"
     }
   ],
   "refresh": "5s",
@@ -1166,7 +1227,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "Failover",
+  "title": "Failover Details",
   "uid": "failover",
   "version": 1,
   "weekStart": ""

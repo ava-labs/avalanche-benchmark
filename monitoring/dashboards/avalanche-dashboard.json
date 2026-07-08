@@ -1347,7 +1347,7 @@
       "uid": "prometheus"
      },
      "editorMode": "code",
-     "expr": "max by (instance) (\n  rate(\n    avalanche_subnetevm_vm_eth_chain_txs_processed{chain=~\".*\"}[5m]\n  )\n)",
+     "expr": "max by (instance) (\n  rate(\n    avalanche_subnetevm_vm_eth_chain_txs_accepted{chain=~\".*\"}[5m]\n  )\n)",
      "legendFormat": "{{instance}}",
      "range": true,
      "rawQuery": false,
