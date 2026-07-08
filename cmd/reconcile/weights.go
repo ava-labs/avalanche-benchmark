@@ -8,11 +8,15 @@ import (
 	"time"
 
 	"github.com/ava-labs/avalanchego/ids"
+	"github.com/ava-labs/avalanchego/snow/validators"
 	"github.com/ava-labs/avalanchego/utils/constants"
 	"github.com/ava-labs/avalanchego/utils/crypto/keychain"
 	"github.com/ava-labs/avalanchego/utils/rpc"
+	"github.com/ava-labs/avalanchego/utils/set"
 	"github.com/ava-labs/avalanchego/vms/platformvm"
+	platformapi "github.com/ava-labs/avalanchego/vms/platformvm/api"
 	"github.com/ava-labs/avalanchego/vms/platformvm/txs"
+	avalancheWarp "github.com/ava-labs/avalanchego/vms/platformvm/warp"
 	"github.com/ava-labs/avalanchego/vms/secp256k1fx"
 	pchain "github.com/ava-labs/avalanchego/wallet/chain/p"
 	pbuilder "github.com/ava-labs/avalanchego/wallet/chain/p/builder"
@@ -233,6 +237,13 @@ func reconcileWeights(cfg *config, intents []MachineIntent) {
 			fmt.Println("  weights: converged (contract == P-chain == desired)")
 			return
 		}
+		// The precheck normally catches under-quorum before issuing; if the
+		// P-chain still rejects (validator set moved between check and issue),
+		// give the operator the same explanation.
+		if strings.Contains(lastErr.Error(), avalancheWarp.ErrInsufficientWeight.Error()) &&
+			!strings.Contains(lastErr.Error(), errFujiCoverage.Error()) {
+			lastErr = fmt.Errorf("%w (%v)", lastErr, errFujiCoverage)
+		}
 	}
 	fatalf("weights: %v (re-run `reconcile apply` to resume; every step is idempotent)", lastErr)
 }
@@ -350,6 +361,9 @@ func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) er
 	if err != nil {
 		return fmt.Errorf("aggregate weight message for %s: %w", e.slotName(t), err)
 	}
+	if err := e.precheckQuorum(ctx, signed, e.slotName(t)); err != nil {
+		return err
+	}
 	w, err := e.pWallet(ctx)
 	if err != nil {
 		return err
@@ -359,6 +373,55 @@ func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) er
 	}
 	return nil
 }
+
+// pchainQuorum mirrors the warp quorum the P-chain enforces on
+// SetL1ValidatorWeightTx: 67/100 of the Fuji primary-network stake.
+const (
+	pchainQuorumNum = 67
+	pchainQuorumDen = 100
+)
+
+// precheckQuorum checks the aggregate's signer weight against the CURRENT
+// proposed-height Fuji primary-network validator set, the exact set the
+// P-chain verifies SetL1ValidatorWeightTx against. Glacier does NOT error on
+// under-quorum: it returns a signedMessage with whatever weight it collected,
+// and right after an initiate most Fuji validators have not yet synced the
+// C-chain block that emitted the message, so the aggregate often starts below
+// 67%. Catching that here turns a doomed P-chain issue into a plain
+// re-aggregate on the next attempt. Best-effort: any error reading the set
+// falls through to the P-chain's own check.
+func (e *weightEngine) precheckQuorum(ctx context.Context, signed *avalancheWarp.Message, name string) error {
+	sig, ok := signed.Signature.(*avalancheWarp.BitSetSignature)
+	if !ok {
+		return nil
+	}
+	vdrs, err := e.pClient.GetValidatorsAt(ctx, constants.PrimaryNetworkID, platformapi.ProposedHeight)
+	if err != nil {
+		return nil
+	}
+	warpSet, err := validators.FlattenValidatorSet(vdrs)
+	if err != nil {
+		return nil
+	}
+	signers, err := avalancheWarp.FilterValidators(set.BitsFromBytes(sig.Signers), warpSet.Validators)
+	if err != nil {
+		return nil
+	}
+	sigWeight, err := avalancheWarp.SumWeight(signers)
+	if err != nil {
+		return nil
+	}
+	if err := avalancheWarp.VerifyWeight(sigWeight, warpSet.TotalWeight, pchainQuorumNum, pchainQuorumDen); err != nil {
+		return fmt.Errorf("aggregate for %s carries %d of %d Fuji primary-network stake (%.1f%%, need %d%%): %w",
+			name, sigWeight, warpSet.TotalWeight,
+			float64(sigWeight)*100/float64(warpSet.TotalWeight), pchainQuorumNum, errFujiCoverage)
+	}
+	return nil
+}
+
+// errFujiCoverage tags every under-quorum failure (local precheck or a
+// P-chain reject) with the operator explanation.
+var errFujiCoverage = fmt.Errorf("Fuji signature coverage below quorum: not a local fault, Fuji validators sign a C-chain warp message only after syncing the block that emitted it; coverage climbs over minutes and retries continue automatically")
 
 // deliverToPChain delivers every validator whose P-chain weight differs from
 // the contract's. Raises land before lowers.
