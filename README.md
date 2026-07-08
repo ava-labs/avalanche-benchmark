@@ -1,28 +1,28 @@
 # Avalanche L1 Failover Benchmark
 
-Stand up an Avalanche L1 across **two data centers**, drive it with ~4000 tx/s,
-and **survive losing a whole site**: consensus weight moves onto the backup
-site through the ValidatorManager contract, the chain never forks, and the
-load generator rides straight through the outage.
+Tooling to run an Avalanche L1 across two data centers and test site failover
+under transaction load (~4000 tx/s with the default profile). All validators
+of both sites are registered on the L1 once, at chain creation. A failover is
+a change of consensus weight between them, issued through a ValidatorManager
+contract on Fuji's C-chain. Keys never move between machines, so a failover
+cannot fork the chain.
 
-Each site runs **3 validators + 1 hot spare + 2 pinned RPC nodes** (counts are
-configurable in `.env`), plus one shared **control host** that runs the
-orchestration, the load generator, and the monitoring stack. The control host
-runs no L1 node, so it keeps coordinating through a full-site outage. Every
-machine wears ONE permanent validator identity; failover moves consensus
-*weight* between the registered identities, never the keys. The L1 anchors on
-Fuji's public P-chain: validators need zero external connectivity, only the
-RPC machines make one outbound TCP to a pinned public Fuji peer.
+Each site runs 3 validators + 1 hot spare + 2 fixed RPC nodes (counts
+configurable in `.env`), plus one shared control host for orchestration, load
+generation, and monitoring. The control host runs no L1 node, so it keeps
+working when a site is lost. The L1 anchors on Fuji's public P-chain:
+validators need no external connectivity, only the RPC machines make one
+outbound TCP connection to a pinned public Fuji peer.
 
 Everything below runs from the kit root on the control host, in order:
 
 1. **[Create your chain](#1-create-your-chain-one-time)**: generate secrets,
    fund the wallet, create the L1 on Fuji. One-time. **Skip this step if you
    received a secrets bundle**: untar it over the kit root and go to step 2.
-2. **[Deploy and monitor](#2-deploy-and-monitor)**: raise the fleet, watch it
-   in Grafana.
-3. **[Benchmark and failover](#3-benchmark-and-failover)**: full load, kill a
-   machine, kill a data center, recover.
+2. **[Deploy and monitor](#2-deploy-and-monitor)**: start all nodes, bring up
+   Grafana.
+3. **[Benchmark and failover](#3-benchmark-and-failover)**: run the load
+   generator, kill a machine, kill a data center, recover.
 
 The full walkthrough with expected output at each step is in
 [docs/e2e-runbook.md](docs/e2e-runbook.md).
@@ -76,11 +76,11 @@ itself to your topology):
 ./setup/02_create_chain.sh   # creates the L1 on Fuji. SPENDS AVAX. Once per chain.
 ```
 
-That's it. `02` writes the chain's identity to `network.env`; everything after
+`02` writes the chain's identity to `network.env`; everything after
 this point only reads it. The generated `staking/` and wallet key are secrets:
 gitignored, never in any archive, a leaked staking key means validator
-impersonation. Re-running `00` mints a new identity set and orphans the old
-chain, so don't, unless you want a new chain.
+impersonation. Re-running `00` generates a new identity set and orphans the
+old chain; only do that to start over with a new chain.
 
 ## 2. Deploy and monitor
 
@@ -94,9 +94,9 @@ chain, so don't, unless you want a new chain.
 chain from genesis (block 0). Re-run it any time you want a clean chain, or
 after editing `chain-config.json`; the Fuji registration persists, so
 re-deploys never re-spend AVAX. First boot of a fresh fleet replays Fuji's
-P-chain (RPC tier first, ~minutes, then validators sync through them). Watch
-`./fleet status --watch` and don't panic. A fresh chain sits at block 0 until
-load arrives (Avalanche produces blocks on demand).
+P-chain (RPC tier first, ~minutes, then validators sync through them). Progress is visible in
+`./fleet status --watch`. A fresh chain sits at block 0 until load arrives
+(Avalanche produces blocks on demand).
 
 Grafana is on the control host at `:3000`, Prometheus at `:9090` (anonymous
 admin). If those ports aren't open to you, tunnel:
@@ -107,8 +107,8 @@ ssh -i <key> -L3000:localhost:3000 <user>@<control-host>   # open http://localho
 
 Two dashboards are provisioned: **Avalanche Benchmark** (per-node TPS,
 consensus, verification) and **Avalanche Failover** (per-node finalized
-height, the A-to-B finalized gap, node up/down): watch site A flatline and
-site B take over live. `monitoring.sh` is re-runnable and discovers the fleet
+height, the A-to-B finalized gap, node up/down), which shows a site failover
+as it happens. `monitoring.sh` is re-runnable and discovers the fleet
 from your `.env` topology automatically.
 
 ## 3. Benchmark and failover
@@ -154,8 +154,8 @@ separate commands ratchets against a shrinking total and takes many times
 more transactions. Weights only move when you ask: a dead box keeps blocking
 quorum until you `weight dead` it.
 
-The two worked drills live in `examples/` (read them, they are four lines
-each):
+The two worked drills live in `examples/`; each is a commented four-line
+script:
 
 ```bash
 ./examples/machine_failure.sh        # one validator dies, spare takes over
@@ -177,7 +177,7 @@ With 3 active validators (thresholds scale with your configured count):
 | bring back one validator into a halted chain | still halted, see below |
 | bring back all three | chain resumes within seconds |
 
-The surprise in row 4: a **(re)starting validator can't bootstrap until ~75%
+Row 4 is the non-obvious one: a **(re)starting validator can't bootstrap until ~75%
 of validator stake is online** (all 3, with 3 equal validators). Normal
 failover never hits this because the other two are still running; but
 recovering a fully halted chain needs ALL validators up, and nothing happens
