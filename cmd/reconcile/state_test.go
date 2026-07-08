@@ -46,17 +46,17 @@ func TestSetWeight(t *testing.T) {
 	topo := stdTopo()
 	intents := seedIntents(topo)
 
-	next, err := setWeight(intents, 4, valmgr.ValidatorWeight, topo) // promote spare a4
+	next, err := setWeight(intents, 4, valmgr.SpareWeight, topo) // demote a4 (seeds at validator tier)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if next[3].Weight != valmgr.ValidatorWeight {
-		t.Errorf("a4 weight = %d, want %d", next[3].Weight, valmgr.ValidatorWeight)
+	if next[3].Weight != valmgr.SpareWeight {
+		t.Errorf("a4 weight = %d, want %d", next[3].Weight, valmgr.SpareWeight)
 	}
 	if next[3].Cordoned != intents[3].Cordoned {
 		t.Error("setWeight changed cordon")
 	}
-	if intents[3].Weight == valmgr.ValidatorWeight {
+	if intents[3].Weight == valmgr.SpareWeight {
 		t.Error("setWeight mutated its input")
 	}
 

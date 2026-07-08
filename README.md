@@ -8,7 +8,9 @@ contract on Fuji's C-chain. Keys never move between machines, so a failover
 cannot fork the chain.
 
 Each site runs 3 validators + 1 hot spare + 2 fixed RPC nodes (counts
-configurable in `.env`), plus one shared control host for orchestration, load
+configurable in `.env`); on the primary site all 4 stake slots (validators and
+spare alike) start at validator weight, so the spare validates from day one.
+One shared control host handles orchestration, load
 generation, and monitoring. The control host runs no L1 node, so it keeps
 working when a site is lost. The L1 anchors on Fuji's public P-chain:
 validators need no external connectivity, only the RPC machines make one
@@ -92,7 +94,7 @@ old chain; only do that to start over with a new chain.
 ```bash
 ./run/01_deploy.sh        # wipe + deploy every node, start the chain from genesis
 ./run/02_monitoring.sh    # Prometheus + Grafana on the control host
-./fleet status     # expect all nodes SERVING, "validators serving: 3/3"
+./fleet status     # expect all nodes SERVING, "validators serving: 4/4"
 ```
 
 `run/01_deploy.sh` is **destructive by design**: it wipes node data and restarts the

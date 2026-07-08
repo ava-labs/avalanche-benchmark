@@ -16,7 +16,7 @@ coordinating and recording even when an entire site goes dark.
 | Component | Count | Role |
 |-----------|-------|------|
 | **Control host** | 1 | Orchestration scripts, load generator (bombard), Prometheus + Grafana. Also runs the 5 local primary-network (P-chain) validators the L1 bootstraps against. Holds no L1 node. |
-| **Site A** (primary) | 6 | `a1`–`a3` weighted validators · `a4` hot spare · `rpc_a1`/`rpc_a2` pinned archive RPC nodes |
+| **Site A** (primary) | 6 | `a1`–`a4` weighted validators (`a4` doubles as the hot spare) · `rpc_a1`/`rpc_a2` pinned archive RPC nodes |
 | **Site B** (backup) | 6 | `b1`–`b3` zero-weight syncing trackers · `b4` spare · `rpc_b1`/`rpc_b2` pinned archive RPC nodes |
 
 Put the two sites in **different regions** so cross-site sync latency is real.
@@ -167,8 +167,8 @@ ssh -i <key> -L3000:localhost:3000 -L9090:localhost:9090 <user>@<control-host>
 ./scripts/failover/status.sh
 ```
 
-Read-only. Expect all 12 nodes `SERVING` and **`validators serving: 3/3`** (the
-validators are `a1`–`a3` on site A). `status.sh` reports each node's *actual*
+Read-only. Expect all 12 nodes `SERVING` and **`validators serving: 4/4`** (the
+validators are `a1`–`a4` on site A). `status.sh` reports each node's *actual*
 state (`SERVING@block` / `BOOTSTRAPPING` / `DOWN`), so it's the source of truth
 throughout the drill.
 

@@ -26,7 +26,7 @@ func TestSeedIntents(t *testing.T) {
 		switch {
 		case topo.IsRPCSlot(i):
 			want = 0
-		case i < 3: // site A validators
+		case i < 4: // all site A staking slots (validators + spare)
 			want = valmgr.ValidatorWeight
 		}
 		if in.Weight != want {
@@ -36,8 +36,8 @@ func TestSeedIntents(t *testing.T) {
 			active++
 		}
 	}
-	if active != 3 {
-		t.Errorf("active validators in seed = %d, want 3", active)
+	if active != 4 {
+		t.Errorf("active validators in seed = %d, want 4", active)
 	}
 }
 

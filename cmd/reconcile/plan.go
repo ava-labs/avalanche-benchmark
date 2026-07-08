@@ -30,9 +30,9 @@ type MachineIntent struct {
 }
 
 // seedIntents is the state a fresh deploy resets to, matching the conversion
-// weights create-l1 registered: site A's validator slots carry the consensus
-// at ValidatorWeight; every other staking slot idles at SpareWeight; RPC slots
-// are unregistered. All uncordoned.
+// weights create-l1 registered: every site A staking slot (validators and
+// spare) carries the consensus at ValidatorWeight; site B staking slots idle
+// at SpareWeight; RPC slots are unregistered. All uncordoned.
 func seedIntents(t Topology) []MachineIntent {
 	intents := make([]MachineIntent, t.Size())
 	for i := range intents {
@@ -45,7 +45,7 @@ func seedWeight(t Topology, i int) uint64 {
 	switch {
 	case !t.IsStakingSlot(i):
 		return 0
-	case t.Site(i) == siteA && t.IsValidatorSlot(i):
+	case t.Site(i) == siteA:
 		return valmgr.ValidatorWeight
 	default:
 		return valmgr.SpareWeight
