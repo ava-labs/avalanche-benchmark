@@ -159,16 +159,19 @@ separate commands ratchets against a shrinking total and takes many times
 more transactions. Weights only move when you ask: a dead box keeps blocking
 quorum until you `weight dead` it.
 
-The two worked drills live in `examples/`; each is a commented four-line
-script:
+The worked drills live in `scenarios/`. Each one is idempotent: it first
+restores the ground state (all machines up, machines 1-3 validating,
+everything else spare), then executes the failure, so any scenario can be
+run from any starting point:
 
 ```bash
-./examples/machine_failure.sh        # one validator dies, spare takes over
-./examples/datacenter_failover.sh    # site A dies, site B takes the consensus
+./scenarios/00_healthy.sh                          # ground state only
+./scenarios/01_validator_down.sh                   # one validator dies, 2 of 3 remain
+./scenarios/02_validator_down_spare_takes_over.sh  # spare promoted, back to 3
+./scenarios/03_datacenter_failure.sh               # site A dies, site B takes over
 ```
 
-Failing back is the same move in reverse: `./fleet up 1 2 3`, wait for
-SERVING, then `./fleet weight validator 1 2 3 spare 7 8 9`.
+Recovery from any scenario is `./scenarios/00_healthy.sh`.
 
 ### What to expect when validators drop
 

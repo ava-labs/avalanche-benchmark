@@ -25,6 +25,7 @@ package main
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"sync"
@@ -41,7 +42,8 @@ func fatalf(format string, args ...any) {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: benchmark-fleet <command>
   up   <m...>       rebuild the given machines from genesis and start them
-                    (wipes their L1 chain data; on-chain weight untouched)
+                    (wipes their L1 chain data; on-chain weight untouched);
+                    machines already serving and not marked down are skipped
   down <m...>       simulate hardware failure: hard-kill the given machines
                     (data left on disk; on-chain weight untouched)
   weight <tier> <m...> [<tier> <m...>]...
@@ -93,8 +95,29 @@ func main() {
 	case "up", "down":
 		cfg.warnColocation()
 		ms := parseMachines(os.Args[2:], topo)
-		intents := mustLoadIntents(cfg)
+		prev := mustLoadIntents(cfg)
 		down := cmd == "down"
+		if !down {
+			// Idempotence: a machine that was NOT cordoned and whose node
+			// already answers RPC is healthy — leave it alone instead of
+			// wiping and rebuilding it. Cordoned, unreachable, or
+			// bootstrapping-stuck machines still get the full rebuild.
+			client := &http.Client{Timeout: 4 * time.Second}
+			var kept []int
+			for _, m := range ms {
+				if !prev[m-1].Cordoned && probe(client, cfg.rpcURL(m-1)).state == healthServing {
+					fmt.Printf("  %s: already running, skipped\n", topo.MachineName(m-1))
+					continue
+				}
+				kept = append(kept, m)
+			}
+			ms = kept
+			if len(ms) == 0 {
+				fmt.Println("all requested machines already running; nothing to do")
+				return
+			}
+		}
+		intents := prev
 		for _, m := range ms {
 			next, err := setCordon(intents, m, down)
 			if err != nil {
@@ -112,7 +135,7 @@ func main() {
 				cfg.killNode(m - 1)
 			}
 		} else {
-			// Recovery: rebuild each target from genesis, then start.
+			// Recovery: rebuild each remaining target from genesis, then start.
 			fresh := map[int]bool{}
 			for _, m := range ms {
 				fresh[m-1] = true

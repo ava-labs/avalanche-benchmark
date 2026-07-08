@@ -105,7 +105,7 @@ pack: clean-tools deps build monitoring-deps
 		deploy.sh \
 		monitoring.sh \
 		bombard.sh \
-		examples/ \
+		scenarios/ \
 		monitoring/grafana-datasources.yml \
 		monitoring/dashboards/ \
 		node-config.json \
@@ -136,7 +136,7 @@ release: clean-tools deps build monitoring-deps
 		deploy.sh \
 		monitoring.sh \
 		bombard.sh \
-		examples/ \
+		scenarios/ \
 		monitoring/grafana-datasources.yml \
 		monitoring/dashboards/ \
 		node-config.json \
