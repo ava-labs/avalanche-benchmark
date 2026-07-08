@@ -4,7 +4,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/_common.sh"
 
-# Prometheus + Grafana, run LOCALLY on this control host — NOT on a benchmark
+# Prometheus + Grafana, run LOCALLY on this control host - NOT on a benchmark
 # node. Failover monitoring has to outlive any single site: node 1 (a1) is a
 # validator that goes DOWN during a site-A failover, so hosting the monitor
 # there would blind you exactly when the failover happens. The control host is
@@ -51,10 +51,10 @@ fi
 echo "  OK."
 
 # ------------------------------------------------------------------------------
-# [2/5] Generate prometheus.yml — scrape every node in both sites. Each target
+# [2/5] Generate prometheus.yml - scrape every node in both sites. Each target
 # gets a friendly `instance` (so dashboards read "validator-1", "rpc-1" instead
 # of an IP:port), plus site / machine / role labels for grouping. Names are the
-# HOME role: after a failover a "backup-N" node is the one now validating — which
+# HOME role: after a failover a "backup-N" node is the one now validating - which
 # is exactly the story the dashboards show.
 # ------------------------------------------------------------------------------
 echo "[2/5] Generating prometheus.yml..."
@@ -70,8 +70,8 @@ emit_target() {  # host port site machine instance role
 }
 
 # Targets AND labels come ENTIRELY from `reconcile endpoints` (the single source
-# of truth), so monitoring tracks whatever topology is configured — any
-# validator/spare/RPC counts, any co-location — with correct per-node labels.
+# of truth), so monitoring tracks whatever topology is configured - any
+# validator/spare/RPC counts, any co-location - with correct per-node labels.
 # No hardcoded slot count or role names. Each endpoint line is:
 #   name <TAB> site <TAB> role <TAB> host <TAB> port
 # where name is the machine id (a1../b1.. for stake slots, rpc_a*/rpc_b* for RPCs) and role is v1..vN / spare / rpc.

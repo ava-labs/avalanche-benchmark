@@ -48,7 +48,7 @@ func mustEnv(key string) string {
 // runs directly with no wrapper. Values already in the real environment win
 // (godotenv never overrides), so an ad-hoc `FOO=bar benchmark-fleet ...` still
 // overrides a file. The per-role IP lists, SSH_USER, and the chain IDs have no
-// defaults — they must come from the files (topo.FromEnv / mustEnv report a
+// defaults - they must come from the files (topo.FromEnv / mustEnv report a
 // clear error if absent).
 func loadEnvFiles() {
 	repo := os.Getenv("REPO_DIR")
@@ -66,7 +66,7 @@ func loadEnvFiles() {
 	setDefault("SSH_KEY_PATH", "/home/ubuntu/.ssh/ilya-solohin-failover-bench-2026-05-04")
 	setDefault("SUBNET_EVM_ID", "srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy")
 	// Public Fuji peer the RPC tier follows (kept in sync with _common.sh; rotates
-	// on an AVALANCHEGO_COMMIT bump — see bootstrappers.json).
+	// on an AVALANCHEGO_COMMIT bump - see bootstrappers.json).
 	setDefault("FUJI_UPSTREAM_IPS", "18.192.93.241:9651")
 	setDefault("FUJI_UPSTREAM_IDS", "NodeID-2m38qc95mhHXtrhjyGbe7r2NhniqHHJRB")
 	setDefault("FAILOVER_STATE_FILE", filepath.Join(repo, "fleet-state.json"))
@@ -508,7 +508,7 @@ func (c *config) start(i int) {
 // its outer blocks are all above the now-empty inner frontier, rolls the L1
 // back to genesis, and state-syncs to tip. This REQUIRES that fixed binary: on
 // the pre-fix binary a chainData-only wipe bricks chain creation ("inner block
-// unavailable for deduplicated block"). C-chain is unaffected — its coreth ethdb
+// unavailable for deduplicated block"). C-chain is unaffected - its coreth ethdb
 // lives inside db/ and its chainData dir is empty, so this never resets it.
 // Only this instance's dirs are removed, so co-located housemates are intact.
 func (c *config) freshClean(i int) {

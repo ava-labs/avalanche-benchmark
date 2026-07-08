@@ -27,20 +27,20 @@ import (
 
 // Single-issuer bombard.
 //
-// One key, one strictly increasing nonce — a production-shaped workload (a
+// One key, one strictly increasing nonce - a production-shaped workload (a
 // single web2->web3 gateway issuing transactions in order). Two governors:
 //
 //  1. Rate limiter: a rolling token bucket. Tokens accrue at `rps`(×overshoot)
 //     per second and are capped at a 1-second burst, so a deficit in the
 //     trailing ~1s (send workers briefly saturated, inflight grazing the cap)
-//     is made up instead of being dropped at a wall-second boundary — the old
+//     is made up instead of being dropped at a wall-second boundary - the old
 //     per-second-reset budget leaked the tail of every second (~the last few
 //     txs each second), so mined always sat a hair under target. Carry-over is
 //     bounded to 1s so a long stall (e.g. a failover dip) cannot trigger an
 //     unbounded catch-up flood; at most one second is recovered.
 //  2. In-flight cap: we never let ourselves get more than `inflight` nonces
 //     ahead of the last-mined nonce. Hitting the cap is the backpressure /
-//     "falling behind" signal — there is no timeout counter.
+//     "falling behind" signal - there is no timeout counter.
 //
 // Resilience: a tx leaves the system only when its nonce mines. Anything still
 // in flight after the resubmit interval is re-sent verbatim (same bytes, same
@@ -118,7 +118,7 @@ func (t *tracker) onMined(hash common.Hash, observedAt time.Time) {
 }
 
 // inFlight is how many nonces we are ahead of the last-mined nonce. Abandoned
-// (dropped) txs don't count — they're no longer waiting to mine, so the in-flight
+// (dropped) txs don't count - they're no longer waiting to mine, so the in-flight
 // cap unblocks the moment a resync drops the stranded set.
 func (t *tracker) inFlight() uint64 {
 	return t.issued.Load() - t.mined.Load() - t.dropped.Load()
@@ -355,7 +355,7 @@ func main() {
 	// all nodes. We deliberately use NonceAt(latest), NOT PendingNonceAt: the
 	// pending nonce counts mempool txs, so leftover in-flight txs from a previous
 	// run inflate it ABOVE a gap and a fresh run would issue past the missing
-	// nonce — stranding the account behind an unfilled gap. The accepted nonce is
+	// nonce - stranding the account behind an unfilled gap. The accepted nonce is
 	// the true chain frontier and can never skip a gap; re-issuing from there is
 	// safe because every tx is idempotent (deterministic signing -> same hash)
 	// and a re-sent already-known/already-mined nonce is a benign no-op. MAX
@@ -458,7 +458,7 @@ func main() {
 // issuer releases nonces under a rolling token bucket and the in-flight cap.
 // Tokens accrue at the configured rate (rps×overshoot) and are bounded by `burst`
 // (= 1 second's worth), so the issuer makes up a deficit from the trailing ~1s
-// instead of dropping the tail of each wall-second — while the burst cap keeps a
+// instead of dropping the tail of each wall-second - while the burst cap keeps a
 // long stall from triggering an unbounded catch-up flood.
 func issuer(ctx context.Context, sendCh chan<- uint64, baseRPS, overshoot float64, cap, startNonce uint64) {
 	ticker := time.NewTicker(time.Millisecond)
@@ -522,14 +522,14 @@ func issuer(ctx context.Context, sendCh chan<- uint64, baseRPS, overshoot float6
 // reorg) can leave the chain's accepted nonce BELOW our lowest in-flight nonce: the
 // chain then expects a nonce we already "mined" on the old frontier and will never
 // see, so it can never mine our in-flight txs (an unfillable gap) and we wedge
-// at-cap forever — issuing, resubmitting, mining nothing. When the live frontier
+// at-cap forever - issuing, resubmitting, mining nothing. When the live frontier
 // sits below our lowest in-flight nonce for two consecutive checks (so a momentary
 // race can't trigger it), we request a resync to the live frontier; the issuer then
 // jumps there and abandons the stranded set. This is what lets bombard ride through
 // a hard failover without a restart.
 //
 // A clean failover (new site already at the old tip) keeps frontier == lowest
-// in-flight, so this never fires — only a genuine regression does.
+// in-flight, so this never fires - only a genuine regression does.
 func monitorNonce(ctx context.Context, bc *broadcaster, address common.Address) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -538,7 +538,7 @@ func monitorNonce(ctx context.Context, bc *broadcaster, address common.Address) 
 	resync := func(frontier uint64, why string) {
 		resyncTarget.Store(frontier)
 		resyncPending.Store(true)
-		fmt.Fprintf(os.Stderr, "\nnonce: %s — resyncing issuer to live frontier %d\n", why, frontier)
+		fmt.Fprintf(os.Stderr, "\nnonce: %s - resyncing issuer to live frontier %d\n", why, frontier)
 		stalls = 0
 	}
 
@@ -553,7 +553,7 @@ func monitorNonce(ctx context.Context, bc *broadcaster, address common.Address) 
 		inflight := track.inFlight()
 		frontier, ok := maxAcceptedNonce(ctx, bc, address)
 
-		// Fast path: we're AHEAD of the frontier (a gap — e.g. failover to a site
+		// Fast path: we're AHEAD of the frontier (a gap - e.g. failover to a site
 		// behind the old tip). Our in-flight can never mine; resync down to it now.
 		if ok && inflight > 0 {
 			if low, have := track.lowestInflightNonce(); have && frontier < low {
@@ -563,12 +563,12 @@ func monitorNonce(ctx context.Context, bc *broadcaster, address common.Address) 
 			}
 		}
 
-		// General path: mined FROZEN while we still hold in-flight work is a stall —
+		// General path: mined FROZEN while we still hold in-flight work is a stall -
 		// our nonce view has desynced from the chain (e.g. the watcher missed mines
 		// during node churn, leaving already-accepted "zombie" nonces that pin the
 		// in-flight cap and starve new issuance). Confirm over a few ticks (so a
 		// normal cutover pause doesn't twitch it), then resync to the live frontier:
-		// jump the issuer there and drop the stale in-flight — the manual-restart
+		// jump the issuer there and drop the stale in-flight - the manual-restart
 		// recovery, automatic. (Resyncing during a benign pause is harmless: the same
 		// nonces re-issue to the same deterministic txs.)
 		if mined == lastMined && inflight > 0 {
@@ -584,7 +584,7 @@ func monitorNonce(ctx context.Context, bc *broadcaster, address common.Address) 
 }
 
 // maxAcceptedNonce reads the issuer account's accepted (latest-block) nonce from
-// every HEALTHY node and returns the max — the live chain frontier. Healthy-only so
+// every HEALTHY node and returns the max - the live chain frontier. Healthy-only so
 // a downed/lagging site (e.g. the one we just failed away from) can't report a
 // stale-high nonce and mask a regression. Returns false if nothing is reachable.
 func maxAcceptedNonce(ctx context.Context, bc *broadcaster, address common.Address) (uint64, bool) {
@@ -624,7 +624,7 @@ func sendWorker(
 		}
 		now := time.Now()
 		track.register(nonce, &txState{signed: signed, firstSend: now, lastSend: now})
-		// Fire-and-forget to every node; a failed/dropped send is fine — the tx
+		// Fire-and-forget to every node; a failed/dropped send is fine - the tx
 		// stays in flight and the resubmit loop re-broadcasts it. We only drop
 		// it from accounting when it mines.
 		bc.broadcast(signed)
@@ -647,7 +647,7 @@ func resubmitLoop(ctx context.Context, bc *broadcaster, interval time.Duration) 
 }
 
 // benignSendErr reports send errors that mean the tx is already accepted or
-// already mined — expected when resubmitting an identical transaction.
+// already mined - expected when resubmitting an identical transaction.
 func benignSendErr(err error) bool {
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "already known") ||

@@ -16,7 +16,7 @@
 # (which it loads itself). No other shell: the binary is the whole interface.
 cd "$(dirname "$(readlink -f "$0")")" || exit 1
 if [ ! -x bin/benchmark-fleet ]; then
-    echo "bin/benchmark-fleet not found — run 'make build' first." >&2
+    echo "bin/benchmark-fleet not found - run 'make build' first." >&2
     exit 1
 fi
 exec ./bin/benchmark-fleet "$@"

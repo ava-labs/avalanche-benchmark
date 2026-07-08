@@ -7,12 +7,12 @@ import (
 )
 
 // instance describes ONE avalanchego process in the pool. In the validated prod
-// layout every pool machine runs exactly one — 6 distinct IPs per site, one process
+// layout every pool machine runs exactly one - 6 distinct IPs per site, one process
 // each. To let a smaller machine count host the full fixed topology (e.g. a 3-box
 // test running all 6 slots of a site), an IP may REPEAT in NODE_IPS /
 // BACKUP_SITE_NODE_IPS; each repeat launches another avalanchego on the same box,
 // offset onto its own ports and data/staking subdirs so the co-located processes
-// never collide. The 6-slots-per-site topology is unchanged — only WHERE each slot
+// never collide. The 6-slots-per-site topology is unchanged - only WHERE each slot
 // physically runs becomes flexible.
 //
 // The FIRST occurrence of a host (idx 0) uses the exact ports and paths the
@@ -21,8 +21,8 @@ import (
 // proven path; only a co-located 2nd+ instance on a box gets the "-N" dir suffix and
 // the +10*N port bump.
 //
-// NOTE: co-location is a TEST affordance. It trades away fault isolation — a box
-// hosting two nodes loses both at once — so it is NOT a representative DR test (the
+// NOTE: co-location is a TEST affordance. It trades away fault isolation - a box
+// hosting two nodes loses both at once - so it is NOT a representative DR test (the
 // failover/restore guarantees assume the redundancy pairs live on separate boxes).
 // loadConfig warns when a box carries more than one node.
 type instance struct {
@@ -54,7 +54,7 @@ func makeInstance(host string, idx int) instance {
 	http := baseHTTPPort + portStridePerInstance*idx
 	portStr := strconv.Itoa(http)
 	// Bracket the first digit so the literal pgrep/pkill argv ("--http-port=[9]652")
-	// is NOT matched by its own regex ("--http-port=9652") — same self-match guard the
+	// is NOT matched by its own regex ("--http-port=9652") - same self-match guard the
 	// plugin reaper uses with pluginPat. Only needed when a box is shared (see killNode).
 	procPat := "--http-port=[" + portStr[:1] + "]" + portStr[1:]
 	return instance{
@@ -127,7 +127,7 @@ func (c *config) warnColocation() {
 	if hosts == 0 {
 		return
 	}
-	fmt.Fprintf(os.Stderr, "note: co-location TEST mode — %d host(s) run >1 node; a box loss takes all co-located nodes (not a representative DR test).\n", hosts)
+	fmt.Fprintf(os.Stderr, "note: co-location TEST mode - %d host(s) run >1 node; a box loss takes all co-located nodes (not a representative DR test).\n", hosts)
 	if valShareHosts > 0 {
 		fmt.Fprintf(os.Stderr, "      %d host(s) carry 2+ validators → a single box loss could drop quorum.\n", valShareHosts)
 	}

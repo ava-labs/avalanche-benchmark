@@ -3,7 +3,7 @@ package main
 import "testing"
 
 func TestMakeInstanceFirstOccurrenceIsLegacyLayout(t *testing.T) {
-	// idx 0 MUST reproduce the single-process layout byte-for-byte — this is what
+	// idx 0 MUST reproduce the single-process layout byte-for-byte - this is what
 	// keeps a 6-distinct-IP deploy identical to the validated prod path.
 	in := makeInstance("10.0.0.1", 0)
 	if in.httpPort != 9652 || in.stakingPort != 9653 {

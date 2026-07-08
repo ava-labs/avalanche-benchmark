@@ -16,13 +16,13 @@ source "$SCRIPT_DIR/_common.sh"
 # ------------------------------------------------------------------------------
 # Resume semantics: create-l1 persists every step's result to network.env as it
 # completes and SKIPS anything already present, so re-running here never creates
-# a second chain or double-spends — it resumes/verifies the recorded one
+# a second chain or double-spends - it resumes/verifies the recorded one
 # (including finishing a failed initializeValidatorSet). To force a genuinely
 # NEW L1, delete network.env first (the old chain becomes unreachable).
 # ------------------------------------------------------------------------------
 if [ -f "$NETWORK_ENV" ]; then
     source "$NETWORK_ENV"
-    echo "network.env exists — resuming/verifying the recorded L1 (no new creation):"
+    echo "network.env exists - resuming/verifying the recorded L1 (no new creation):"
     echo "  Subnet ID: ${SUBNET_ID:-<pending>}"
     echo "  Chain ID:  ${CHAIN_ID:-<pending>}"
     echo "  Manager:   ${MANAGER_ADDRESS:-<pending>}"

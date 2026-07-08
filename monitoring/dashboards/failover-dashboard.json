@@ -25,7 +25,7 @@
     {
       "type": "row",
       "collapsed": false,
-      "title": "Overview \u2014 Site A vs Site B (overlay)",
+      "title": "Overview - Site A vs Site B (overlay)",
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -40,7 +40,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Max finalized height per site. B overtakes A at failover; A catches up on restore. A flat segment is a halt \u2014 its width is downtime.",
+      "description": "Max finalized height per site. B overtakes A at failover; A catches up on restore. A flat segment is a halt - its width is downtime.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -89,7 +89,7 @@
           "refId": "A"
         }
       ],
-      "title": "Finalized (last-accepted) height \u2014 A vs B",
+      "title": "Finalized (last-accepted) height - A vs B",
       "type": "timeseries"
     },
     {
@@ -146,7 +146,7 @@
           "refId": "A"
         }
       ],
-      "title": "Finalized gap \u2014 A \u2212 B (blocks)",
+      "title": "Finalized gap - A \u2212 B (blocks)",
       "type": "timeseries"
     },
     {
@@ -154,7 +154,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Where consensus is actually producing. Drops to 0 on the down site / during a halt \u2014 the liveness signal.",
+      "description": "Where consensus is actually producing. Drops to 0 on the down site / during a halt - the liveness signal.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -203,7 +203,7 @@
           "refId": "A"
         }
       ],
-      "title": "Block production rate \u2014 A vs B (blk/s)",
+      "title": "Block production rate - A vs B (blk/s)",
       "type": "timeseries"
     },
     {
@@ -261,7 +261,7 @@
           "refId": "A"
         }
       ],
-      "title": "TPS \u2014 A vs B (tx/s)",
+      "title": "TPS - A vs B (tx/s)",
       "type": "timeseries"
     },
     {
@@ -320,7 +320,7 @@
           "refId": "A"
         }
       ],
-      "title": "Nodes up \u2014 A vs B (of 6)",
+      "title": "Nodes up - A vs B (of 6)",
       "type": "timeseries"
     },
     {
@@ -377,7 +377,7 @@
           "refId": "A"
         }
       ],
-      "title": "Benched validator weight \u2014 A vs B",
+      "title": "Benched validator weight - A vs B",
       "type": "timeseries"
     },
     {
@@ -434,7 +434,7 @@
           "refId": "A"
         }
       ],
-      "title": "Successful polls % \u2014 A vs B",
+      "title": "Successful polls % - A vs B",
       "type": "timeseries"
     },
     {
@@ -491,7 +491,7 @@
           "refId": "A"
         }
       ],
-      "title": "Avg block verification time \u2014 A vs B (ms)",
+      "title": "Avg block verification time - A vs B (ms)",
       "type": "timeseries"
     },
     {
@@ -548,7 +548,7 @@
           "refId": "A"
         }
       ],
-      "title": "Block verifications failed \u2014 A vs B",
+      "title": "Block verifications failed - A vs B",
       "type": "timeseries"
     },
     {
@@ -556,7 +556,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Blocks rejected by consensus per DC (5m). A fork/divergence indicator \u2014 should stay 0 through failover/restore.",
+      "description": "Blocks rejected by consensus per DC (5m). A fork/divergence indicator - should stay 0 through failover/restore.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -605,7 +605,7 @@
           "refId": "A"
         }
       ],
-      "title": "Rejected blocks \u2014 A vs B",
+      "title": "Rejected blocks - A vs B",
       "type": "timeseries"
     },
     {
@@ -662,13 +662,13 @@
           "refId": "A"
         }
       ],
-      "title": "Requests failed \u2014 A vs B",
+      "title": "Requests failed - A vs B",
       "type": "timeseries"
     },
     {
       "type": "row",
       "collapsed": false,
-      "title": "Site A (us-east-1) \u2014 per node",
+      "title": "Site A (us-east-1) - per node",
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -683,7 +683,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Per-node finalized height \u2014 spot a lagging node within the site.",
+      "description": "Per-node finalized height - spot a lagging node within the site.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -732,7 +732,7 @@
           "refId": "A"
         }
       ],
-      "title": "Finalized height by node \u2014 site a",
+      "title": "Finalized height by node - site a",
       "type": "timeseries"
     },
     {
@@ -789,7 +789,7 @@
           "refId": "A"
         }
       ],
-      "title": "Block production rate by node \u2014 site a (blk/s)",
+      "title": "Block production rate by node - site a (blk/s)",
       "type": "timeseries"
     },
     {
@@ -848,7 +848,7 @@
           "refId": "A"
         }
       ],
-      "title": "Nodes up \u2014 site a",
+      "title": "Nodes up - site a",
       "type": "timeseries"
     },
     {
@@ -905,13 +905,13 @@
           "refId": "A"
         }
       ],
-      "title": "Mempool pending+queued by node \u2014 site a",
+      "title": "Mempool pending+queued by node - site a",
       "type": "timeseries"
     },
     {
       "type": "row",
       "collapsed": false,
-      "title": "Site B (us-east-2) \u2014 per node",
+      "title": "Site B (us-east-2) - per node",
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -926,7 +926,7 @@
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Per-node finalized height \u2014 spot a lagging node within the site.",
+      "description": "Per-node finalized height - spot a lagging node within the site.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -975,7 +975,7 @@
           "refId": "A"
         }
       ],
-      "title": "Finalized height by node \u2014 site b",
+      "title": "Finalized height by node - site b",
       "type": "timeseries"
     },
     {
@@ -1032,7 +1032,7 @@
           "refId": "A"
         }
       ],
-      "title": "Block production rate by node \u2014 site b (blk/s)",
+      "title": "Block production rate by node - site b (blk/s)",
       "type": "timeseries"
     },
     {
@@ -1091,7 +1091,7 @@
           "refId": "A"
         }
       ],
-      "title": "Nodes up \u2014 site b",
+      "title": "Nodes up - site b",
       "type": "timeseries"
     },
     {
@@ -1148,7 +1148,7 @@
           "refId": "A"
         }
       ],
-      "title": "Mempool pending+queued by node \u2014 site b",
+      "title": "Mempool pending+queued by node - site b",
       "type": "timeseries"
     },
     {

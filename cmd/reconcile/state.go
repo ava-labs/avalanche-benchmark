@@ -31,7 +31,7 @@ func loadIntents(path string, t Topology) ([]MachineIntent, error) {
 	for _, r := range raw {
 		if r.Key != 0 {
 			return nil, fmt.Errorf(
-				"%s is in the old key-swap format; its subnet predates C-chain managed weights and cannot be managed by this version — redeploy fresh (run/01_deploy.sh) or remove the state file",
+				"%s is in the old key-swap format; its subnet predates C-chain managed weights and cannot be managed by this version - redeploy fresh (run/01_deploy.sh) or remove the state file",
 				path)
 		}
 	}

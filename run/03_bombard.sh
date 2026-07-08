@@ -31,9 +31,9 @@ if [ ! -x "$BOMBARD" ]; then
 fi
 
 # Bombard the PINNED dedicated archive RPC nodes (role=rpc: m5+m6 on site A, plus
-# b5+b6 in two-site mode — zero-weight non-validators that track
+# b5+b6 in two-site mode - zero-weight non-validators that track
 # the subnet and serve RPC). The failover engine never promotes them to validators,
-# so this clean ingress path survives failover events — unlike the hot spare m4
+# so this clean ingress path survives failover events - unlike the hot spare m4
 # (key 9), which becomes a validator whenever one of m1-m3 goes down. Ingress on the
 # consensus-critical validators (m1-m3) wedges/throttles consensus; routing all load
 # through the dedicated non-validating RPC nodes keeps the validators healthy and
@@ -50,23 +50,23 @@ export NODE_IPS BACKUP_SITE_NODE_IPS
 mapfile -t RPC_URLS < <("$RECONCILE_BIN" endpoints | awk -F'\t' -v c="$CHAIN_ID" \
     '$3=="rpc"{printf "http://%s:%s/ext/bc/%s/rpc\n", $4, $5, c}')
 if [ "${#RPC_URLS[@]}" -eq 0 ]; then
-    echo "ERROR: 'reconcile endpoints' returned no RPC nodes — check NODE_IPS/bin/benchmark-fleet." >&2
+    echo "ERROR: 'reconcile endpoints' returned no RPC nodes - check NODE_IPS/bin/benchmark-fleet." >&2
     exit 1
 fi
 RPC_LIST="$(IFS=,; echo "${RPC_URLS[*]}")"
 
-# Full throughput. Throttling rps was a dead end — block rate is set by the block
+# Full throughput. Throttling rps was a dead end - block rate is set by the block
 # cadence (min-delay-target / initialMinDelayMS), not by rps, so the cross-region
 # standby could never keep up at any useful rps. The fix is the block cadence: at
 # ~30ms blocks the active site produces ~22 blk/s (under site B's ~43 blk/s
 # consensus-follow ceiling), so B stays synced (keep-up ratio -> 1.0) at FULL rps.
 # Throughput is gas-bound, not block-rate-bound, so fat 30ms blocks still sustain 4000+
-# (measured: blocks ~1% full at 4000 rps — the chain is nowhere near the gas limit).
+# (measured: blocks ~1% full at 4000 rps - the chain is nowhere near the gas limit).
 #
 # INFLIGHT must scale with per-tx latency, not stay at the fast-block value. By Little's
 # law mined_tps = inflight / latency; the 30ms cadence raised submit->mined latency to
 # ~330ms, so the old 750 cap throttled to ~2300 tps (chain starved, mempool ~empty).
-# 2000 gives mined headroom (~6000) so the rps limiter — not the inflight cap — binds.
+# 2000 gives mined headroom (~6000) so the rps limiter - not the inflight cap - binds.
 TARGET_RPS=4000
 INFLIGHT=2000
 RESUBMIT_INTERVAL=5s
@@ -82,7 +82,7 @@ echo "Chain ID: $CHAIN_ID"
 echo "Target:   $TARGET_RPS rps  (inflight cap $INFLIGHT, +$(echo "$OVERSHOOT*100" | bc)% overshoot)"
 echo "Resubmit: $RESUBMIT_INTERVAL"
 echo ""
-echo "Ingress: pinned dedicated RPC node(s) — never promoted to validators:"
+echo "Ingress: pinned dedicated RPC node(s) - never promoted to validators:"
 for u in "${RPC_URLS[@]}"; do echo "  $u"; done
 echo ""
 

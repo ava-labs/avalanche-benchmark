@@ -53,13 +53,13 @@ const (
 	// sets a slot to one of them (`fleet weight validator|spare|dead`); the
 	// seesaw ratchets the on-chain weight there.
 	//
-	//   ValidatorWeight — acting consensus member of the active DC.
-	//   SpareWeight     — alive but idle: the standby DC. At 0.1% of an active
+	//   ValidatorWeight - acting consensus member of the active DC.
+	//   SpareWeight     - alive but idle: the standby DC. At 0.1% of an active
 	//                     peer it still holds real (nonzero) proposer-slot
 	//                     probability, so it is a live consensus participant the
 	//                     set can be moved onto WITHOUT the post-Durango proposer
 	//                     deadlock a weight-1 standby would hit.
-	//   DeadWeight      — stake pulled out of quorum: a failed box goes here so
+	//   DeadWeight      - stake pulled out of quorum: a failed box goes here so
 	//                     its unreachable weight stops blocking finalization.
 	//
 	// Ratios are 1000:1 between adjacent tiers. A healthy DC of 4 validators

@@ -16,7 +16,7 @@ AVALANCHEGO_BUILD_DIR=/tmp/avalanchego-build-$(AVALANCHEGO_COMMIT)
 
 SUBNET_EVM_ID=srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
 
-# Monitoring stack — run on the control host (linux-amd64 binaries)
+# Monitoring stack - run on the control host (linux-amd64 binaries)
 PROMETHEUS_VERSION=2.54.1
 GRAFANA_VERSION=11.2.2
 PROMETHEUS_BASE_URL=https://github.com/prometheus/prometheus/releases/download/v$(PROMETHEUS_VERSION)

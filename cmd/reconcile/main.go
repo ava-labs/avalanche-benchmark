@@ -99,7 +99,7 @@ func main() {
 		down := cmd == "down"
 		if !down {
 			// Idempotence: a machine that was NOT cordoned and whose node
-			// already answers RPC is healthy — leave it alone instead of
+			// already answers RPC is healthy - leave it alone instead of
 			// wiping and rebuilding it. Cordoned, unreachable, or
 			// bootstrapping-stuck machines still get the full rebuild.
 			client := &http.Client{Timeout: 4 * time.Second}
@@ -127,7 +127,7 @@ func main() {
 		}
 		mustSaveIntents(cfg, intents)
 		if down {
-			// Simulated hardware failure: hard SIGKILL, no wipe — the box "dies"
+			// Simulated hardware failure: hard SIGKILL, no wipe - the box "dies"
 			// with its data intact. Weight is untouched (killing must never
 			// depend on Fuji quorum); flip stake with `weight`.
 			for _, m := range ms {
@@ -294,8 +294,8 @@ func parseWeightArgs(args []string, topo Topology) (uint64, []int, error) {
 	return w, ms, nil
 }
 
-// printEndpoints writes one tab-separated line per pool slot —
-// name, site (a|b), role (v1/v2/v3/spare/rpc), host, httpPort — so bash callers
+// printEndpoints writes one tab-separated line per pool slot -
+// name, site (a|b), role (v1/v2/v3/spare/rpc), host, httpPort - so bash callers
 // (monitoring, benchmark) target each node's ACTUAL port instead of assuming 9652,
 // which is wrong for a co-located 2nd+ instance on a box.
 func printEndpoints(topo Topology, insts []instance) {
@@ -391,7 +391,7 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 	}
 	actions := Plan(topo, intents, obs)
 
-	// Pass 1 — stop-swap (every stop+swap before any start). Swaps only ever
+	// Pass 1 - stop-swap (every stop+swap before any start). Swaps only ever
 	// install a slot's permanent key (first provision / healing).
 	fmt.Println("[1/3] stop-swap...")
 	for _, a := range actions {
@@ -405,7 +405,7 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 		}
 	}
 
-	// Pass 2 — start.
+	// Pass 2 - start.
 	fmt.Println("[2/3] start...")
 	for _, a := range actions {
 		if a.Start {
@@ -483,7 +483,7 @@ func destroy(cfg *config) {
 	fmt.Println("\nFleet destroyed. network.env kept; redeploy with ./fleet fresh.")
 }
 
-// status runs ONLY the read-only report against the current intents — no
+// status runs ONLY the read-only report against the current intents - no
 // provisioning, stop/start, or weight changes. With watch it repeats until
 // interrupted.
 func status(cfg *config, watch bool) {

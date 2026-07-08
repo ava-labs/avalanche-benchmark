@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// nodeHealth is the ACTUAL state of a node, observed read-only over its RPC —
+// nodeHealth is the ACTUAL state of a node, observed read-only over its RPC -
 // distinct from intent. This is what makes the summary honest: a node can be
 // "intended up" yet still BOOTSTRAPPING (alive but not voting/serving).
 type nodeHealth int
@@ -53,18 +53,18 @@ func classifyHealth(connErr bool, status int, body string) (nodeHealth, uint64) 
 			}
 		}
 	}
-	// Reachable but unexpected — treat as still coming up rather than serving.
+	// Reachable but unexpected - treat as still coming up rather than serving.
 	return healthBootstrapping, 0
 }
 
 // neededOnlineToRejoin is the number of validators that must be connected for a
 // (re)starting validator to clear avalanchego's bootstrap startup latch:
-// ceil(75% of the validator set) — see chains/manager.go NewStartup(...,(3*W+3)/4)
+// ceil(75% of the validator set) - see chains/manager.go NewStartup(...,(3*W+3)/4)
 // and the wiki note on recovering a fully-stalled L1. For 3 validators this is 3.
 func neededOnlineToRejoin(nVal int) int { return (3*nVal + 3) / 4 }
 
 // quorumNeeded is the minimum validators that must be serving for the chain to
-// keep producing — ceil(2/3 of the set). For 3 validators this is 2.
+// keep producing - ceil(2/3 of the set). For 3 validators this is 2.
 func quorumNeeded(nVal int) int { return (2*nVal + 2) / 3 }
 
 type healthResult struct {
@@ -93,19 +93,19 @@ func probe(client *http.Client, url string) healthResult {
 }
 
 // consensusHealth probes a node's AvalancheGo /ext/health for the L1 chain and
-// returns the signals that actually indicate "ready to participate in consensus" —
+// returns the signals that actually indicate "ready to participate in consensus" -
 // far stronger than classifyHealth's bare eth_blockNumber answer:
 //   - percentConnected: fraction of the chain's validator STAKE this node is
 //     connected to (1.0 == it sees the whole validator set; a just-restarted
 //     validator answers eth_blockNumber within seconds but climbs from <1 here as
-//     it re-handshakes the consensus mesh — this is the gap that let the rolling
+//     it re-handshakes the consensus mesh - this is the gap that let the rolling
 //     restore fire the next swap too early);
 //   - longestProcessing: how long the oldest undecided block has been in flight
 //     (grows when consensus is stalled);
 //   - lastAccepted: the consensus-accepted tip (advances only while producing).
 //
 // ok is false if the endpoint is unreachable or the L1 chain's check is absent
-// (node still coming up) — callers treat that as not-ready. A 503 (node-unhealthy)
+// (node still coming up) - callers treat that as not-ready. A 503 (node-unhealthy)
 // still carries the JSON body, so the per-chain numbers are parsed regardless.
 func (c *config) consensusHealth(i int) (percentConnected float64, longestProcessing time.Duration, lastAccepted uint64, ok bool) {
 	in := c.instances[i]
@@ -121,9 +121,9 @@ func (c *config) consensusHealth(i int) (percentConnected float64, longestProces
 
 // parseConsensusHealth extracts the L1 chain's consensus signals from an
 // /ext/health/health body. It decodes the chain's check ON ITS OWN (via
-// json.RawMessage) because the checks map mixes message shapes — an object for a
+// json.RawMessage) because the checks map mixes message shapes - an object for a
 // chain, a bare string for "bls" ("node is not a validator"), an empty array for
-// "bootstrapped" — so decoding the whole map into one typed struct fails on those
+// "bootstrapped" - so decoding the whole map into one typed struct fails on those
 // non-object messages and reports every node as unreadable. Pure + unit-tested.
 func parseConsensusHealth(body []byte, chainID string) (percentConnected float64, longestProcessing time.Duration, lastAccepted uint64, ok bool) {
 	var top struct {
@@ -158,7 +158,7 @@ func parseConsensusHealth(body []byte, chainID string) (percentConnected float64
 
 // checkHealth probes every uncordoned machine's RPC once, in parallel, and returns
 // a point-in-time snapshot. Read-only and non-blocking: it never stops/swaps/starts
-// anything and never waits — run status.sh again (or `watch` it) to see changes.
+// anything and never waits - run status.sh again (or `watch` it) to see changes.
 // Cordoned machines are skipped (they are meant to be down).
 func (c *config) checkHealth(intents []MachineIntent) []healthResult {
 	client := &http.Client{Timeout: 4 * time.Second}
@@ -178,9 +178,9 @@ func (c *config) checkHealth(intents []MachineIntent) []healthResult {
 	return results
 }
 
-// reportHealth prints each node grouped by datacenter with two columns — its
+// reportHealth prints each node grouped by datacenter with two columns - its
 // desired STAKE tier (validator/spare/dead/rpc) and its physical REACHABILITY
-// (SERVING/BOOTSTRAPPING/DOWN, or off when intentionally down) — then an honest
+// (SERVING/BOOTSTRAPPING/DOWN, or off when intentionally down) - then an honest
 // summary and hints for the two non-obvious failure modes (lost quorum, and the
 // 75% rejoin latch that keeps a single brought-up validator from recovering a
 // stalled chain). "Validator" in the summary means a slot whose DESIRED weight
@@ -255,7 +255,7 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 		servingValidators, activeSlots, intendedValidators, activeSlots)
 
 	if servingValidators < quorumNeeded(activeSlots) {
-		fmt.Printf("WARNING: fewer than %d validators serving — chain lacks quorum and is HALTED until restored.\n", quorumNeeded(activeSlots))
+		fmt.Printf("WARNING: fewer than %d validators serving - chain lacks quorum and is HALTED until restored.\n", quorumNeeded(activeSlots))
 	}
 	if bootstrappingValidator && intendedValidators < neededOnlineToRejoin(activeSlots) {
 		fmt.Printf("HINT: a rejoining validator needs >=%d of %d validators connected to clear the bootstrap\n",
@@ -263,6 +263,6 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult) 
 		fmt.Println("      startup latch. Bring up the remaining validator machine(s) so they recover together.")
 	}
 	if downUncordoned {
-		fmt.Println("NOTE: an uncordoned node is not responding — check its logs, or `up` it to rebuild.")
+		fmt.Println("NOTE: an uncordoned node is not responding - check its logs, or `up` it to rebuild.")
 	}
 }

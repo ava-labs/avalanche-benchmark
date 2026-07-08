@@ -43,7 +43,7 @@ func TestNeededOnlineToRejoin(t *testing.T) {
 func TestParseConsensusHealth(t *testing.T) {
 	const chainID = "24TbaJDZibLELkqPYUBGzCPfFyRp7ZdfTJYqCdGQnHEo4zFrvd"
 	// Mirrors a real /ext/health/health body: the chain's message is an OBJECT,
-	// while "bls" is a STRING and "bootstrapped" is an ARRAY — the mix that broke
+	// while "bls" is a STRING and "bootstrapped" is an ARRAY - the mix that broke
 	// the first cut (decoding the whole map into one object struct failed on those).
 	healthy := `{"checks":{
 		"` + chainID + `":{"message":{"engine":{"consensus":{"lastAcceptedHeight":515187,"longestProcessingBlock":"0s","processingBlocks":0}},"networking":{"percentConnected":1,"disconnectedValidators":[]}},"timestamp":"2026-06-24T21:17:55Z","duration":766376},
@@ -53,7 +53,7 @@ func TestParseConsensusHealth(t *testing.T) {
 	},"healthy":true}`
 	pc, longest, last, ok := parseConsensusHealth([]byte(healthy), chainID)
 	if !ok {
-		t.Fatalf("ok=false on a valid body — the mixed message types must not break parsing")
+		t.Fatalf("ok=false on a valid body - the mixed message types must not break parsing")
 	}
 	if pc != 1 {
 		t.Errorf("percentConnected = %v, want 1", pc)

@@ -129,7 +129,7 @@ func fund(keyPath, api string) {
 
 	fmt.Println("================================================================")
 	fmt.Println("  FUND AT THE FUJI FAUCET (https://core.app/tools/testnet-faucet/,")
-	fmt.Println("  2 AVAX/request — pick the chain per request, no cross-chain moves):")
+	fmt.Println("  2 AVAX/request - pick the chain per request, no cross-chain moves):")
 	fmt.Println()
 	printFaucetTarget("P-Chain", pAddress(key), pBal, requiredP, "0.1 per registered validator + fees")
 	printFaucetTarget("C-Chain", key.EthAddress().Hex(), cBal, requiredCNavax, "ValidatorManager deploy + weight ops gas")

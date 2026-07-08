@@ -222,7 +222,7 @@ func stakingTargets(cfg *config, subnetID ids.ID, intents []MachineIntent) ([]st
 // `fleet weight` command resumes it. Idempotent and resumable at any point.
 func reconcileWeights(cfg *config, intents []MachineIntent) {
 	if os.Getenv("MANAGER_ADDRESS") == "" {
-		fmt.Println("[3/3] weights: SKIPPED — MANAGER_ADDRESS not set (pre-manager deploy; on-chain weights are immutable)")
+		fmt.Println("[3/3] weights: SKIPPED - MANAGER_ADDRESS not set (pre-manager deploy; on-chain weights are immutable)")
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), weightConvergeTimeout)
@@ -667,7 +667,7 @@ func weightsReport(cfg *config, intents []MachineIntent) {
 		fmt.Println("weights: converged (P-chain == desired)")
 		return
 	}
-	fmt.Println("weights: PENDING — re-run the ./fleet weight that set this tier (Fuji signature coverage may still be catching up)")
+	fmt.Println("weights: PENDING - re-run the ./fleet weight that set this tier (Fuji signature coverage may still be catching up)")
 	for _, l := range lines {
 		fmt.Println(l)
 	}

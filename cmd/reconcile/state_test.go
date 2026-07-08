@@ -11,7 +11,7 @@ import (
 func stdTopo() Topology    { return Topology{NVal: 3, NSpare: 1, NRPC: 2} }
 func stdTwoSite() Topology { return Topology{TwoSite: true, NVal: 3, NSpare: 1, NRPC: 2} }
 
-// TestSetCordon: cordon is the pure hardware axis — it flips the flag and
+// TestSetCordon: cordon is the pure hardware axis - it flips the flag and
 // leaves weight (and the input slice) untouched.
 func TestSetCordon(t *testing.T) {
 	topo := stdTopo()
@@ -40,7 +40,7 @@ func TestSetCordon(t *testing.T) {
 	}
 }
 
-// TestSetWeight: setWeight is pure stake intent — it sets the weight tier and
+// TestSetWeight: setWeight is pure stake intent - it sets the weight tier and
 // leaves cordon (and the input slice) untouched.
 func TestSetWeight(t *testing.T) {
 	topo := stdTopo()

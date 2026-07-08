@@ -133,7 +133,7 @@
           "refId": "A"
         }
       ],
-      "title": "Memory \u2014 avalanchego RSS (box = 16 GB)",
+      "title": "Memory - avalanchego RSS (box = 16 GB)",
       "type": "timeseries"
     },
     {
