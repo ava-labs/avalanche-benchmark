@@ -10,12 +10,14 @@ import (
 )
 
 // e2eLatency records, per tx, first-submit to first observation in an accepted
-// block (observed in tracker.onMined, same place latSince is fed). Buckets
-// stretch to 64s to cover failover proposer stalls.
+// block (observed in tracker.onMined, same place latSince is fed). Buckets are
+// 5ms steps across the healthy 40-140ms band (targets: 70ms and 120ms), then a
+// coarse tail out to 30s for failover proposer stalls.
 var e2eLatency = prometheus.NewHistogram(prometheus.HistogramOpts{
-	Name:    "bombard_e2e_latency_seconds",
-	Help:    "Per-tx latency from first submit to first observation in an accepted block.",
-	Buckets: []float64{0.25, 0.5, 1, 2, 4, 8, 16, 32, 64},
+	Name: "bombard_e2e_latency_seconds",
+	Help: "Per-tx latency from first submit to first observation in an accepted block.",
+	Buckets: append(prometheus.LinearBuckets(0.04, 0.005, 21),
+		0.17, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.75, 1, 2, 5, 10, 30),
 })
 
 // serveMetrics exposes /metrics for the control-host Prometheus. The counters
