@@ -494,11 +494,14 @@ func status(cfg *config, watch bool) {
 		intents := mustLoadIntents(cfg)
 		fmt.Println("== benchmark-fleet status ==")
 		results := cfg.checkHealth(intents)
-		reportHealth(cfg, intents, results)
-		weightsReport(cfg, intents)
+		// One batch of P-chain reads per refresh, shared by both reports.
+		actual, actualErr := fetchActualWeights(cfg, intents)
+		reportHealth(cfg, intents, results, actual)
+		weightsReport(cfg, intents, actual, actualErr)
 		if !watch {
 			return
 		}
-		time.Sleep(2 * time.Second)
+		// 5s (was 2s): every refresh now also reads the P-chain per slot.
+		time.Sleep(5 * time.Second)
 	}
 }

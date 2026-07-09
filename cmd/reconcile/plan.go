@@ -76,6 +76,21 @@ func weightRole(w uint64) string {
 	}
 }
 
+// stakeCell renders the status stake column: the ACTUAL on-chain tier first,
+// with a pending marker when the desired tier differs (a weight change still
+// in flight on the P-chain). haveActual=false means the P-chain was
+// unreadable: fall back to the desired tier. RPC slots (weight 0) are never
+// registered, so they have no on-chain weight to show.
+func stakeCell(desired, actual uint64, haveActual bool) string {
+	if desired == 0 {
+		return "rpc"
+	}
+	if !haveActual || actual == desired {
+		return weightRole(desired)
+	}
+	return weightRole(actual) + " -> " + weightRole(desired) + " pending"
+}
+
 func totalWeight(intents []MachineIntent) uint64 {
 	var sum uint64
 	for _, in := range intents {

@@ -131,3 +131,27 @@ func TestWeightRole(t *testing.T) {
 		}
 	}
 }
+
+func TestStakeCell(t *testing.T) {
+	v, s, d := valmgr.ValidatorWeight, valmgr.SpareWeight, valmgr.DeadWeight
+	cases := []struct {
+		name            string
+		desired, actual uint64
+		haveActual      bool
+		want            string
+	}{
+		{"rpc slot", 0, 0, false, "rpc"},
+		{"converged validator", v, v, true, "validator"},
+		{"converged spare", s, s, true, "spare"},
+		{"demotion in flight shows actual first", s, v, true, "validator -> spare pending"},
+		{"promotion in flight", v, s, true, "spare -> validator pending"},
+		{"kill in flight", d, v, true, "validator -> dead pending"},
+		{"mid-ratchet raw weight", s, 40_600, true, "w=40600 -> spare pending"},
+		{"pchain unreadable falls back to desired", s, 0, false, "spare"},
+	}
+	for _, c := range cases {
+		if got := stakeCell(c.desired, c.actual, c.haveActual); got != c.want {
+			t.Errorf("%s: stakeCell(%d, %d, %v) = %q, want %q", c.name, c.desired, c.actual, c.haveActual, got, c.want)
+		}
+	}
+}

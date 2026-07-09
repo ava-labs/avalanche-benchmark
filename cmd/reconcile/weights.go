@@ -672,42 +672,56 @@ func makePWalletNoInfo(ctx context.Context, pClient *platformvm.Client, kc keych
 	), nil
 }
 
-// weightsReport prints the desired vs on-chain (P-chain) weight per staking
-// slot for `status`. Read-only, best-effort: any error is reported as a note
-// rather than failing the health snapshot.
-func weightsReport(cfg *config, intents []MachineIntent) {
+// fetchActualWeights reads every staking slot's CURRENT P-chain weight in one
+// pass (slot index -> weight). This is the single batch of P-chain reads a
+// status invocation makes: reportHealth and weightsReport both consume the
+// result. Any failure (Fuji flaky, MANAGER_ADDRESS unset) returns a nil map
+// and the reason; callers degrade to desired-weight display, never crash.
+func fetchActualWeights(cfg *config, intents []MachineIntent) (map[int]uint64, error) {
 	if os.Getenv("MANAGER_ADDRESS") == "" {
-		fmt.Println("weights: MANAGER_ADDRESS not set (immutable pre-manager deploy)")
-		return
+		return nil, fmt.Errorf("MANAGER_ADDRESS not set (immutable pre-manager deploy)")
 	}
 	subnetID, err := ids.FromString(cfg.subnetID)
 	if err != nil {
-		fmt.Printf("weights: parse SUBNET_ID: %v\n", err)
-		return
+		return nil, fmt.Errorf("parse SUBNET_ID: %w", err)
 	}
 	targets, err := stakingTargets(cfg, subnetID, intents)
 	if err != nil {
-		fmt.Printf("weights: %v\n", err)
-		return
+		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	pClient := pchainReadClient()
-	converged := true
-	var lines []string
+	actual := make(map[int]uint64, len(targets))
 	for _, t := range targets {
 		pv, _, err := pClient.GetL1Validator(ctx, t.validationID)
 		if err != nil {
-			fmt.Printf("weights: platform.getL1Validator(%s): %v\n", cfg.topo.MachineName(t.slot), err)
-			return
+			return nil, fmt.Errorf("platform.getL1Validator(%s): %w", cfg.topo.MachineName(t.slot), err)
 		}
+		actual[t.slot] = pv.Weight
+	}
+	return actual, nil
+}
+
+// weightsReport prints the desired vs on-chain (P-chain) weight per staking
+// slot for `status`, from the weights fetchActualWeights already read.
+// Best-effort: a fetch error is reported as a note rather than failing the
+// health snapshot.
+func weightsReport(cfg *config, intents []MachineIntent, actual map[int]uint64, fetchErr error) {
+	if fetchErr != nil {
+		fmt.Printf("weights: %v\n", fetchErr)
+		return
+	}
+	converged := true
+	var lines []string
+	for _, s := range cfg.topo.StakingSlots() {
 		mark := ""
-		if pv.Weight != t.desired {
+		if actual[s] != intents[s].Weight {
 			mark = "  <- PENDING"
 			converged = false
 		}
 		lines = append(lines, fmt.Sprintf("  %-3s desired=%-10d pchain=%-10d%s",
-			cfg.topo.MachineName(t.slot), t.desired, pv.Weight, mark))
+			cfg.topo.MachineName(s), intents[s].Weight, actual[s], mark))
 	}
 	if converged {
 		fmt.Println("weights: converged (P-chain == desired)")
