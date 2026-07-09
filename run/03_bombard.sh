@@ -25,6 +25,13 @@ elif [ "$#" -ne 0 ]; then
     exit 2
 fi
 
+# bombard is single-account: a second concurrent instance issues duplicate
+# nonces and mines zero transactions for its whole life. Refuse to double-start.
+if RUNNING_PID="$(pgrep -x -d ' ' bombard)"; then
+    echo "ERROR: bombard already running (pid $RUNNING_PID). Kill it first: kill $RUNNING_PID"
+    exit 1
+fi
+
 # Load generator: the prebuilt local bombard (bin/bombard, built by `make`).
 # Using the prebuilt binary means the release ships and runs without the Go
 # source on the operator box.
