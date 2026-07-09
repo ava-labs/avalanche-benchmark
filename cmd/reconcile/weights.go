@@ -262,10 +262,11 @@ func reconcileWeights(cfg *config, intents []MachineIntent) {
 			return
 		}
 		// The precheck normally catches under-quorum before issuing; if the
-		// P-chain still rejects (validator set moved between check and issue),
-		// give the operator the same explanation.
+		// P-chain still rejects and deliverValidator did not already identify a
+		// stale proposer context, give the operator the coverage explanation.
 		if strings.Contains(lastErr.Error(), avalancheWarp.ErrInsufficientWeight.Error()) &&
-			!strings.Contains(lastErr.Error(), errFujiCoverage.Error()) {
+			!strings.Contains(lastErr.Error(), errFujiCoverage.Error()) &&
+			!strings.Contains(lastErr.Error(), errStaleProposerContext.Error()) {
 			lastErr = fmt.Errorf("%w (%v)", lastErr, errFujiCoverage)
 		}
 	}
@@ -402,7 +403,8 @@ func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) er
 	if err != nil {
 		return fmt.Errorf("aggregate weight message for %s: %w", e.slotName(t), err)
 	}
-	if err := e.precheckQuorum(ctx, signed, e.slotName(t)); err != nil {
+	verified, err := e.precheckQuorum(ctx, signed, e.slotName(t))
+	if err != nil {
 		return err
 	}
 	w, err := e.pWallet(ctx)
@@ -410,7 +412,15 @@ func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) er
 		return err
 	}
 	if _, err := w.IssueSetL1ValidatorWeightTx(signed.Bytes()); err != nil {
-		if strings.Contains(err.Error(), avalancheWarp.ErrInvalidSignature.Error()) {
+		// Stale proposer context: "signature is invalid" is always it (never a
+		// coverage problem), and "signature weight is insufficient" is it too
+		// WHEN our own full verification just passed at the current height (the
+		// bitset summed low only at the node's frozen pre-drift context;
+		// measured live 2026-07-09: same aggregate 67.74% at tip 286989, 40.59%
+		// at preferred 286984, byte-identical to the P-chain's reject).
+		stale := strings.Contains(err.Error(), avalancheWarp.ErrInvalidSignature.Error()) ||
+			(verified && strings.Contains(err.Error(), avalancheWarp.ErrInsufficientWeight.Error()))
+		if stale {
 			e.nudgePChain(ctx, w)
 			return fmt.Errorf("SetL1ValidatorWeightTx for %s: %w (%v)", e.slotName(t), err, errStaleProposerContext)
 		}
@@ -419,17 +429,18 @@ func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) er
 	return nil
 }
 
-// errStaleProposerContext explains a P-chain "signature is invalid" reject
-// that our own full precheck passed: the node verifies IssueTx warp messages
-// at its preferred block's PROPOSER CONTEXT height (or GetMinimumHeight), not
-// the tip (platformvm block/executor manager.VerifyTx). If the Fuji primary
-// set changed since the preferred block was proposed, the aggregate's signer
-// bitset resolves to different BLS keys at that stale height and the BLS
-// check fails; re-aggregating cannot help until a NEW P-chain block refreshes
-// the context, and on a quiet Fuji P-chain no block may come for ~40min
-// (measured live 2026-07-08: set changed at height 286675, then zero blocks
-// for 38min; every fresh aggregate verified OK at the tip and was rejected at
-// the stale context height).
+// errStaleProposerContext explains a P-chain warp reject that our own full
+// precheck passed: the node verifies IssueTx warp messages at its preferred
+// block's PROPOSER CONTEXT height (or GetMinimumHeight), not the tip
+// (platformvm block/executor manager.VerifyTx). If the Fuji primary set
+// changed since the preferred block was proposed, the aggregate's signer
+// bitset resolves to different validators at that stale height; depending on
+// how the canonical indices shift this surfaces as "signature is invalid"
+// (BLS key mismatch, seen 2026-07-08) or as "signature weight is insufficient"
+// (the shifted bits undercount; the weight check runs before the BLS check and
+// masks it, seen 2026-07-09: same aggregate 67.74% at tip, 40.59% one height
+// earlier). Re-aggregating cannot help until a NEW P-chain block refreshes the
+// context, and on a quiet Fuji P-chain no block may come for ~40min.
 var errStaleProposerContext = fmt.Errorf("the P-chain verifies at its preferred block's proposer-context height, which predates a Fuji validator-set change; a no-op BaseTx was issued to force a fresh block, the next retry should pass")
 
 // nudgePChain issues a no-op BaseTx (all change back to our own key) purely to
@@ -471,27 +482,30 @@ const (
 // A rejected precheck costs nothing: the message stays undelivered and the
 // next attempt re-checks against the then-current set. Fall-through (cannot
 // read the set) is loud and lets the P-chain judge.
-func (e *weightEngine) precheckQuorum(ctx context.Context, signed *avalancheWarp.Message, name string) error {
+// It returns verified=true only when the full Verify ran and passed: that is
+// the evidence that a subsequent P-chain weight-insufficient reject is a stale
+// proposer context, not a coverage problem.
+func (e *weightEngine) precheckQuorum(ctx context.Context, signed *avalancheWarp.Message, name string) (bool, error) {
 	vdrs, err := e.pClient.GetValidatorsAt(ctx, constants.PrimaryNetworkID, platformapi.ProposedHeight)
 	if err != nil {
 		fmt.Printf("  weights: %s precheck SKIPPED (platform.getValidatorsAt: %v); issuing and letting the P-chain judge\n", name, err)
-		return nil
+		return false, nil
 	}
 	warpSet, err := validators.FlattenValidatorSet(vdrs)
 	if err != nil {
 		fmt.Printf("  weights: %s precheck SKIPPED (flatten validator set: %v); issuing and letting the P-chain judge\n", name, err)
-		return nil
+		return false, nil
 	}
 	if err := signed.Signature.Verify(&signed.UnsignedMessage, constants.FujiID, warpSet, pchainQuorumNum, pchainQuorumDen); err != nil {
-		return fmt.Errorf("aggregate for %s fails P-chain warp verification against the current proposed-height Fuji set (%v): %w",
+		return false, fmt.Errorf("aggregate for %s fails P-chain warp verification against the current proposed-height Fuji set (%v): %w",
 			name, err, errFujiCoverage)
 	}
-	return nil
+	return true, nil
 }
 
 // errFujiCoverage tags every under-quorum failure (local precheck or a
 // P-chain reject) with the operator explanation.
-var errFujiCoverage = fmt.Errorf("Fuji-side signature coverage, not a local fault: Fuji validators sign a C-chain warp message only after syncing the block that emitted it, and Glacier serves a CACHED aggregate per message which can go stale against the drifting Fuji validator set; it self-heals as coverage climbs and the set realigns, retries continue automatically")
+var errFujiCoverage = fmt.Errorf("Fuji-side signature coverage, not a local fault: Fuji validators sign a C-chain warp message only after syncing the block that emitted it, so coverage climbs over minutes and retries continue automatically; if the Glacier FALLBACK served this aggregate it may also be a stale per-message cache entry, which only heals when the Fuji set realigns")
 
 // deliverToPChain delivers every validator whose latest contract nonce has not
 // reached the P-chain. Raises land before lowers (weight-neutral nonce
