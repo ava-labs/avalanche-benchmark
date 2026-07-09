@@ -23,6 +23,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -487,10 +488,7 @@ func destroy(cfg *config) {
 // provisioning, stop/start, or weight changes. With watch it repeats until
 // interrupted.
 func status(cfg *config, watch bool) {
-	for {
-		if watch {
-			fmt.Print("\033[H\033[2J") // clear screen
-		}
+	render := func() {
 		intents := mustLoadIntents(cfg)
 		fmt.Println("== benchmark-fleet status ==")
 		results := cfg.checkHealth(intents)
@@ -498,9 +496,35 @@ func status(cfg *config, watch bool) {
 		actual, actualErr := fetchActualWeights(cfg, intents)
 		reportHealth(cfg, intents, results, actual)
 		weightsReport(cfg, intents, actual, actualErr)
-		if !watch {
-			return
+	}
+	if !watch {
+		render()
+		return
+	}
+	fmt.Print("\033[2J") // full clear once at watch start
+	for {
+		// No-flicker repaint: the reports print straight to stdout and the
+		// health/P-chain reads take seconds, so clearing up front leaves the
+		// terminal blank for the whole check. Instead buffer the frame (swap
+		// os.Stdout for a pipe while render runs), then emit it in ONE write:
+		// cursor home + frame + clear-to-end, so a shrinking frame (e.g. a
+		// weight-pending note disappearing) leaves no stale lines behind.
+		real := os.Stdout
+		r, w, err := os.Pipe()
+		if err != nil {
+			fatalf("status: pipe: %v", err)
 		}
+		os.Stdout = w
+		captured := make(chan []byte, 1)
+		go func() {
+			b, _ := io.ReadAll(r)
+			captured <- b
+		}()
+		render()
+		w.Close()
+		os.Stdout = real
+		frame := <-captured
+		fmt.Printf("\033[H%s\033[0J", frame)
 		// 5s (was 2s): every refresh now also reads the P-chain per slot.
 		time.Sleep(5 * time.Second)
 	}
