@@ -403,24 +403,8 @@ func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) er
 	} else {
 		fmt.Printf("  weights: %s deliver weight %d (nonce %d) to the P-chain\n", e.slotName(t), v.Weight, v.SentNonce)
 	}
-	signed, err := valmgr.Aggregate(ctx, unsigned, nil)
+	signed, verified, err := e.aggregateVerified(ctx, unsigned, t.validationID, e.slotName(t))
 	if err != nil {
-		return fmt.Errorf("aggregate weight message for %s: %w", e.slotName(t), err)
-	}
-	// Byte-identical to the last under-quorum failure: Glacier's per-message
-	// cache is serving the same stale aggregate on every retry (it can never
-	// heal on its own while the primary-network set drifts). Sidestep the cache
-	// by re-aggregating from the primary aggregator ONLY.
-	if prev, ok := e.lastFailedAggregate[t.validationID]; ok && bytes.Equal(signed.Bytes(), prev) {
-		fmt.Printf("  weights: %s aggregate is cached and under quorum (byte-identical to the last failed attempt); re-aggregating from the primary aggregator only\n", e.slotName(t))
-		signed, err = valmgr.AggregatePrimary(ctx, unsigned, nil)
-		if err != nil {
-			return fmt.Errorf("primary-only re-aggregation for %s (Glacier cache is under quorum): %w", e.slotName(t), err)
-		}
-	}
-	verified, err := e.precheckQuorum(ctx, signed, e.slotName(t))
-	if err != nil {
-		e.lastFailedAggregate[t.validationID] = signed.Bytes()
 		return err
 	}
 	w, err := e.pWallet(ctx)
@@ -447,6 +431,48 @@ func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) er
 	}
 	delete(e.lastFailedAggregate, t.validationID)
 	return nil
+}
+
+// aggregateVerified aggregates a warp message and verifies it against the
+// current primary-network set BEFORE anything is spent on it (a P-chain tx or
+// C-chain gas). Shared by delivery and complete: both consume aggregates that
+// can be under quorum right after the state they attest changed (validators
+// only sign once their own chain has the emitting block), and Glacier's
+// fallback returns under-quorum aggregates without erroring. Measured live
+// 2026-07-09 (mainnet): completeValidatorWeightUpdate fired with an unchecked
+// under-quorum ack reverts on-chain (predicate invalid -> InvalidWarpMessage,
+// gas burned) for ~3 min until coverage climbs; the precheck turns that into a
+// free local retry. A byte-identical repeat of the last failed aggregate is
+// Glacier's per-message cache and is sidestepped by re-aggregating from the
+// primary aggregator only. verified=true means the full Verify ran and passed
+// (see precheckQuorum).
+func (e *weightEngine) aggregateVerified(
+	ctx context.Context,
+	unsigned *avalancheWarp.UnsignedMessage,
+	validationID ids.ID,
+	name string,
+) (*avalancheWarp.Message, bool, error) {
+	signed, err := valmgr.Aggregate(ctx, unsigned, nil)
+	if err != nil {
+		return nil, false, fmt.Errorf("aggregate for %s: %w", name, err)
+	}
+	// Byte-identical to the last under-quorum failure: Glacier's per-message
+	// cache is serving the same stale aggregate on every retry (it can never
+	// heal on its own while the primary-network set drifts). Sidestep the cache
+	// by re-aggregating from the primary aggregator ONLY.
+	if prev, ok := e.lastFailedAggregate[validationID]; ok && bytes.Equal(signed.Bytes(), prev) {
+		fmt.Printf("  weights: %s aggregate is cached and under quorum (byte-identical to the last failed attempt); re-aggregating from the primary aggregator only\n", name)
+		signed, err = valmgr.AggregatePrimary(ctx, unsigned, nil)
+		if err != nil {
+			return nil, false, fmt.Errorf("primary-only re-aggregation for %s (Glacier cache is under quorum): %w", name, err)
+		}
+	}
+	verified, err := e.precheckQuorum(ctx, signed, name)
+	if err != nil {
+		e.lastFailedAggregate[validationID] = signed.Bytes()
+		return nil, false, err
+	}
+	return signed, verified, nil
 }
 
 // errStaleProposerContext explains a P-chain warp reject that our own full
@@ -588,13 +614,14 @@ func (e *weightEngine) completeOnContract(ctx context.Context) error {
 			return err
 		}
 		fmt.Printf("  weights: %s complete (ack nonce %d, weight %d)\n", e.slotName(t), pv.MinNonce-1, pv.Weight)
-		signed, err := valmgr.Aggregate(ctx, unsigned, nil)
+		signed, _, err := e.aggregateVerified(ctx, unsigned, t.validationID, e.slotName(t))
 		if err != nil {
-			return fmt.Errorf("aggregate ack for %s: %w", e.slotName(t), err)
+			return err
 		}
 		if err := e.cli.CompleteWeightUpdate(ctx, signed.Bytes()); err != nil {
 			return fmt.Errorf("completeValidatorWeightUpdate for %s: %w", e.slotName(t), err)
 		}
+		delete(e.lastFailedAggregate, t.validationID)
 	}
 	return nil
 }
