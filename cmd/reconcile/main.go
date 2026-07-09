@@ -24,7 +24,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -42,8 +41,9 @@ func fatalf(format string, args ...any) {
 func usage() {
 	fmt.Fprintln(os.Stderr, `usage: benchmark-fleet <command>
   up   <m...>       rebuild the given machines from genesis, start them and wait
-                    until they are SERVING (wipes their L1 chain data; on-chain
-                    weight untouched); machines already serving are skipped
+                    until they are SERVING at the fleet tip (wipes their L1 chain
+                    data; on-chain weight untouched); machines already serving at
+                    tip are skipped, machines merely catching up are waited on
   down <m...>       simulate hardware failure: hard-kill the given machines
                     (data left on disk; on-chain weight untouched)
   weight <tier> <m...>
@@ -98,22 +98,33 @@ func main() {
 		ms := parseMachines(os.Args[2:], topo)
 		prev := mustLoadIntents(cfg)
 		down := cmd == "down"
+		var wait []int
 		if !down {
 			// Idempotence: a machine that was NOT cordoned and whose node
-			// already answers RPC is healthy - leave it alone instead of
-			// wiping and rebuilding it. Cordoned, unreachable, or
-			// bootstrapping-stuck machines still get the full rebuild.
-			client := &http.Client{Timeout: 4 * time.Second}
+			// already answers RPC AT THE FLEET TIP is healthy - leave it
+			// alone instead of wiping and rebuilding it. A CATCHING UP node
+			// (answering RPC but behind tip) is also left running - a wipe
+			// would only restart its sync - but `up` still blocks until it
+			// reaches the tip. Cordoned, unreachable, or bootstrapping-stuck
+			// machines get the full rebuild.
+			results := cfg.checkHealth(prev)
 			requested := len(ms)
-			var kept []int
+			var rebuild []int
 			for _, m := range ms {
-				if !prev[m-1].Cordoned && probe(client, cfg.rpcURL(m-1)).state == healthServing {
-					continue
+				if !prev[m-1].Cordoned {
+					switch results[m-1].state {
+					case healthServing:
+						continue
+					case healthCatchingUp:
+						wait = append(wait, m)
+						continue
+					}
 				}
-				kept = append(kept, m)
+				rebuild = append(rebuild, m)
+				wait = append(wait, m)
 			}
-			ms = kept
-			if len(ms) == 0 {
+			ms = rebuild
+			if len(wait) == 0 {
 				fmt.Printf("all %d machines already up\n", requested)
 				return
 			}
@@ -136,14 +147,17 @@ func main() {
 				cfg.killNode(m - 1)
 			}
 		} else {
-			// Recovery: rebuild each remaining target from genesis, start it,
-			// then block until it answers RPC as SERVING.
-			fresh := map[int]bool{}
-			for _, m := range ms {
-				fresh[m-1] = true
+			// Recovery: rebuild each target from genesis, start it, then block
+			// until every waited-on machine answers RPC as SERVING at the
+			// fleet tip (within catchUpThreshold of the fleet max height).
+			if len(ms) > 0 {
+				fresh := map[int]bool{}
+				for _, m := range ms {
+					fresh[m-1] = true
+				}
+				reconcile(cfg, intents, fresh, false)
 			}
-			reconcile(cfg, intents, fresh, false)
-			waitServing(cfg, ms)
+			waitServing(cfg, intents, wait)
 		}
 
 	case "weight":
@@ -418,31 +432,38 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 	fmt.Println("\nProcesses reconciled. Watch live node state with:  ./fleet status --watch")
 }
 
-// waitServing blocks until every listed machine answers its L1 RPC as SERVING,
-// polling every 5s with a 10 minute deadline. Prints a line only when a
-// machine's observed state changes (not on every poll); exits non-zero with
-// the stragglers named on timeout.
-func waitServing(cfg *config, ms []int) {
+// waitServing blocks until every listed machine answers its L1 RPC as SERVING
+// AND is within catchUpThreshold of the fleet max height, polling every 5s with
+// a 10 minute deadline. Each poll probes the WHOLE fleet (checkHealth) so the
+// fleet max is fresh; if no other node responds, the fleet max is the machine's
+// own height and it passes trivially (no deadlock bringing up a lone node).
+// Prints a line when a machine's state changes, plus a progress line every poll
+// while it is catching up; exits non-zero with the stragglers named on timeout.
+func waitServing(cfg *config, intents []MachineIntent, ms []int) {
 	const (
 		poll    = 5 * time.Second
 		timeout = 10 * time.Minute
 	)
-	client := &http.Client{Timeout: 4 * time.Second}
 	deadline := time.Now().Add(timeout)
 	last := map[int]nodeHealth{} // zero value healthDown: the just-rebuilt state
 	serving := map[int]bool{}
-	fmt.Printf("waiting for %d machine(s) to reach SERVING (timeout %s)...\n", len(ms), timeout)
+	fmt.Printf("waiting for %d machine(s) to reach SERVING at fleet tip (timeout %s)...\n", len(ms), timeout)
 	for {
+		results := cfg.checkHealth(intents)
+		fleetMax := fleetMaxBlock(results)
 		for _, m := range ms {
 			if serving[m] {
 				continue
 			}
-			st := probe(client, cfg.rpcURL(m-1)).state
-			if st != last[m] {
-				fmt.Printf("  %s: %s\n", cfg.topo.MachineName(m-1), st)
-				last[m] = st
+			r := results[m-1]
+			switch {
+			case r.state == healthCatchingUp:
+				fmt.Printf("  %s catching up: %d/%d\n", cfg.topo.MachineName(m-1), r.block, fleetMax)
+			case r.state != last[m]:
+				fmt.Printf("  %s: %s\n", cfg.topo.MachineName(m-1), r.state)
 			}
-			if st == healthServing {
+			last[m] = r.state
+			if r.state == healthServing {
 				serving[m] = true
 			}
 		}
@@ -452,11 +473,18 @@ func waitServing(cfg *config, ms []int) {
 		if time.Now().After(deadline) {
 			var stuck []string
 			for _, m := range ms {
-				if !serving[m] {
-					stuck = append(stuck, cfg.topo.MachineName(m-1))
+				if serving[m] {
+					continue
 				}
+				s := cfg.topo.MachineName(m - 1)
+				if r := results[m-1]; r.state == healthCatchingUp {
+					s += fmt.Sprintf(" (still behind by %d blocks: %d/%d)", fleetMax-r.block, r.block, fleetMax)
+				} else {
+					s += fmt.Sprintf(" (%s)", results[m-1].state)
+				}
+				stuck = append(stuck, s)
 			}
-			fatalf("up: timed out after %s waiting for %s to reach SERVING; check logs or re-run `./fleet up`",
+			fatalf("up: timed out after %s; not at fleet tip: %s; check logs or re-run `./fleet up`",
 				timeout, strings.Join(stuck, ", "))
 		}
 		time.Sleep(poll)

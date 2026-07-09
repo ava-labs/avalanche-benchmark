@@ -33,6 +33,49 @@ func TestClassifyHealth(t *testing.T) {
 	}
 }
 
+func TestMarkCatchingUp(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      []healthResult
+		wantMax uint64
+		want    []nodeHealth
+	}{
+		{"all at tip stay serving",
+			[]healthResult{{healthServing, 47100}, {healthServing, 47099}, {healthServing, 47100}},
+			47100,
+			[]nodeHealth{healthServing, healthServing, healthServing}},
+		{"node 2013 behind is catching up",
+			[]healthResult{{healthServing, 47100}, {healthServing, 45087}, {healthServing, 47095}},
+			47100,
+			[]nodeHealth{healthServing, healthCatchingUp, healthServing}},
+		{"exactly threshold behind stays serving, one more is catching up",
+			[]healthResult{{healthServing, 1000}, {healthServing, 1000 - catchUpThreshold}, {healthServing, 1000 - catchUpThreshold - 1}},
+			1000,
+			[]nodeHealth{healthServing, healthServing, healthCatchingUp}},
+		{"single responding node is trivially serving",
+			[]healthResult{{healthDown, 0}, {healthServing, 42}, {healthDown, 0}},
+			42,
+			[]nodeHealth{healthDown, healthServing, healthDown}},
+		{"down and bootstrapping heights (0) do not drag the max down",
+			[]healthResult{{healthBootstrapping, 0}, {healthServing, 50000}, {healthDown, 0}},
+			50000,
+			[]nodeHealth{healthBootstrapping, healthServing, healthDown}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			markCatchingUp(tt.in)
+			if got := fleetMaxBlock(tt.in); got != tt.wantMax {
+				t.Errorf("fleetMaxBlock = %d, want %d", got, tt.wantMax)
+			}
+			for i, r := range tt.in {
+				if r.state != tt.want[i] {
+					t.Errorf("node %d: state = %v, want %v", i, r.state, tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestNeededOnlineToRejoin(t *testing.T) {
 	// 3 equal validators: ceil(75%) = 3 (all must be online to clear the latch).
 	if got := neededOnlineToRejoin(3); got != 3 {

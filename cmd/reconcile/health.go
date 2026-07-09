@@ -19,6 +19,7 @@ type nodeHealth int
 const (
 	healthDown nodeHealth = iota
 	healthBootstrapping
+	healthCatchingUp
 	healthServing
 )
 
@@ -26,10 +27,44 @@ func (h nodeHealth) String() string {
 	switch h {
 	case healthServing:
 		return "SERVING"
+	case healthCatchingUp:
+		return "CATCHING UP"
 	case healthBootstrapping:
 		return "BOOTSTRAPPING"
 	default:
 		return "DOWN"
+	}
+}
+
+// catchUpThreshold: a node whose height is more than this many blocks below the
+// fleet max is CATCHING UP, not SERVING. At 25-80ms blocks 200 blocks is only
+// seconds of production - wide enough to absorb sampling skew across the
+// sequential polls of one cycle, narrow enough to catch a genuinely-behind node.
+const catchUpThreshold = 200
+
+// fleetMaxBlock is the highest height any responding node reported this cycle.
+func fleetMaxBlock(results []healthResult) uint64 {
+	var max uint64
+	for _, r := range results {
+		if (r.state == healthServing || r.state == healthCatchingUp) && r.block > max {
+			max = r.block
+		}
+	}
+	return max
+}
+
+// markCatchingUp downgrades SERVING results more than catchUpThreshold blocks
+// below the fleet max. A bare eth_blockNumber answer is not "serving": a node
+// thousands of blocks behind tip both misleads status and is fork-risk (the
+// documented sibling-race self-finalization). With a single responding node the
+// max is its own height, so it stays SERVING - bringing one node up while the
+// rest of the fleet is down never deadlocks.
+func markCatchingUp(results []healthResult) {
+	max := fleetMaxBlock(results)
+	for i := range results {
+		if results[i].state == healthServing && results[i].block+catchUpThreshold < max {
+			results[i].state = healthCatchingUp
+		}
 	}
 }
 
@@ -175,6 +210,9 @@ func (c *config) checkHealth(intents []MachineIntent) []healthResult {
 		}(i)
 	}
 	wg.Wait()
+	// One RPC round per cycle: the heights just fetched double as the
+	// fleet-max sample for the CATCHING UP classification.
+	markCatchingUp(results)
 	return results
 }
 
@@ -249,6 +287,9 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, 
 				reach = "off (down by intent)"
 			case results[i].state == healthServing:
 				reach = fmt.Sprintf("SERVING block=%d", results[i].block)
+			case results[i].state == healthCatchingUp:
+				reach = fmt.Sprintf("CATCHING UP (behind %d) block=%d",
+					fleetMaxBlock(results)-results[i].block, results[i].block)
 			case results[i].state == healthBootstrapping:
 				reach = "BOOTSTRAPPING (catching up)"
 			default:
@@ -266,6 +307,9 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, 
 				switch results[i].state {
 				case healthServing:
 					servingValidators++
+				case healthCatchingUp:
+					// Alive and syncing: not serving (behind tip), not down,
+					// and past bootstrap so the rejoin-latch hint doesn't apply.
 				case healthBootstrapping:
 					bootstrappingValidator = true
 				default:
