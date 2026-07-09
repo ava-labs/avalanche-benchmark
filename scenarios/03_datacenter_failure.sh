@@ -18,7 +18,7 @@ echo
 echo
 printf '\033[1m==== ⚖️ WEIGHTS: site B takes consensus ====\033[0m\n'
 echo
-./fleet weight validator 7 8 9
+./fleet weight validator 7 8 9 10
 ./fleet weight dead 1 2 3 4
 
 echo
