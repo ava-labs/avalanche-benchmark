@@ -117,7 +117,7 @@ chain from genesis (block 0). Re-run it any time you want a clean chain, or
 after editing `chain-config.json`; the Fuji registration persists, so
 re-deploys never re-spend AVAX. First boot of a fresh fleet replays Fuji's
 P-chain (RPC tier first, ~minutes, then validators sync through them). Progress is visible in
-`./fleet status --watch`. A fresh chain sits at block 0 until load arrives
+`watch -n5 ./fleet status`. A fresh chain sits at block 0 until load arrives
 (Avalanche produces blocks on demand).
 
 Grafana is on the control host at `:3000`, Prometheus at `:9090` (anonymous
@@ -165,7 +165,7 @@ Operating the fleet is two independent axes, both via `./fleet`:
   per invocation; it never starts or stops a process.
 
 ```bash
-./fleet status --watch                     # live per-DC stake tier + node state
+watch -n5 ./fleet status                   # live per-DC stake tier + node state
 ./fleet down 1                             # crash machine 1
 ./fleet weight validator 7                 # promote a spare first...
 ./fleet weight dead 1                      # ...then retire the dead box

@@ -13,7 +13,7 @@
 #
 # First boot on a fresh fleet: the RPC tier full-replays Fuji's P-chain
 # (~minutes) and the validators idle until their RPC beacons finish, then sync
-# through them (serial per hop). Watch ./fleet status --watch, don't panic.
+# through them (serial per hop). Watch with: watch -n5 ./fleet status, don't panic.
 #
 # For an in-place failover (no wipe) use ./fleet. A brand-new chain
 # means re-running setup/02_create_chain.sh first (costs AVAX; usually you don't want that).

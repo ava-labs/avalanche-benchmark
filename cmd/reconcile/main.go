@@ -23,7 +23,6 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -50,7 +49,7 @@ func usage() {
                     set on-chain weight to ONE tier: validator|spare|dead (100000|1000|1)
                     raise replacements first, then lower the old ones:
                     e.g. weight validator 7 8 9   then   weight dead 1 2 3 4
-  status [--watch]  read-only report: stake tier and reachability per datacenter
+  status            read-only report: stake tier and reachability per datacenter
   fresh             WIPE every machine and redeploy the whole fleet from genesis
                     (site A active; destroys all chain data)
   destroy           kill every node and remove the deploy dir on every machine;
@@ -84,14 +83,8 @@ func main() {
 
 	switch cmd {
 	case "status":
-		watch := false
-		for _, a := range os.Args[2:] {
-			if a != "--watch" {
-				fatalf("status: unknown argument %q (only --watch)", a)
-			}
-			watch = true
-		}
-		status(cfg, watch)
+		rejectArgs(os.Args[2:])
+		status(cfg)
 
 	case "up", "down":
 		cfg.warnColocation()
@@ -429,7 +422,7 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 		}
 	}
 
-	fmt.Println("\nProcesses reconciled. Watch live node state with:  ./fleet status --watch")
+	fmt.Println("\nProcesses reconciled. Check node state with:  ./fleet status")
 }
 
 // waitServing blocks until every listed machine answers its L1 RPC as SERVING
@@ -513,47 +506,13 @@ func destroy(cfg *config) {
 }
 
 // status runs ONLY the read-only report against the current intents - no
-// provisioning, stop/start, or weight changes. With watch it repeats until
-// interrupted.
-func status(cfg *config, watch bool) {
-	render := func() {
-		intents := mustLoadIntents(cfg)
-		fmt.Println("== benchmark-fleet status ==")
-		results := cfg.checkHealth(intents)
-		// One batch of P-chain reads per refresh, shared by both reports.
-		actual, actualErr := fetchActualWeights(cfg, intents)
-		reportHealth(cfg, intents, results, actual)
-		weightsReport(cfg, intents, actual, actualErr)
-	}
-	if !watch {
-		render()
-		return
-	}
-	fmt.Print("\033[2J") // full clear once at watch start
-	for {
-		// No-flicker repaint: the reports print straight to stdout and the
-		// health/P-chain reads take seconds, so clearing up front leaves the
-		// terminal blank for the whole check. Instead buffer the frame (swap
-		// os.Stdout for a pipe while render runs), then emit it in ONE write:
-		// cursor home + frame + clear-to-end, so a shrinking frame (e.g. a
-		// weight-pending note disappearing) leaves no stale lines behind.
-		real := os.Stdout
-		r, w, err := os.Pipe()
-		if err != nil {
-			fatalf("status: pipe: %v", err)
-		}
-		os.Stdout = w
-		captured := make(chan []byte, 1)
-		go func() {
-			b, _ := io.ReadAll(r)
-			captured <- b
-		}()
-		render()
-		w.Close()
-		os.Stdout = real
-		frame := <-captured
-		fmt.Printf("\033[H%s\033[0J", frame)
-		// 5s (was 2s): every refresh now also reads the P-chain per slot.
-		time.Sleep(5 * time.Second)
-	}
+// provisioning, stop/start, or weight changes.
+func status(cfg *config) {
+	intents := mustLoadIntents(cfg)
+	fmt.Println("== benchmark-fleet status ==")
+	results := cfg.checkHealth(intents)
+	// One batch of P-chain reads, shared by both reports.
+	actual, actualErr := fetchActualWeights(cfg, intents)
+	reportHealth(cfg, intents, results, actual)
+	weightsReport(cfg, intents, actual, actualErr)
 }

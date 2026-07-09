@@ -139,7 +139,7 @@ from genesis. **Destructive by design**; re-run any time for a clean chain.
 The Fuji registration persists, so re-deploys never re-spend AVAX. First
 boot of a fresh fleet replays Fuji's P-chain: RPC tier first (~minutes),
 then validators sync through them; nodes sit in `BOOTSTRAPPING` until then.
-Watch the progress with `./fleet status --watch`. (Later single-machine
+Watch the progress with `watch -n5 ./fleet status`. (Later single-machine
 recoveries via `./fleet up` do block until the machine is SERVING.)
 
 ## Step 4: monitoring
@@ -186,7 +186,7 @@ The table shows one row per machine (its number is the CLI handle for
 `spare`, `dead`, `rpc`) and reachability (`SERVING block=N`,
 `BOOTSTRAPPING`, `DOWN`, or `off (down by intent)`). A fresh chain sits at
 `block=0` until load arrives; that is healthy, Avalanche produces blocks on
-demand. `./fleet status --watch` refreshes continuously.
+demand. `watch -n5 ./fleet status` refreshes continuously.
 
 ## Step 6: drive load (terminal 1, leave running)
 
