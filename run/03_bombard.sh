@@ -16,8 +16,12 @@ if [ -z "$CHAIN_ID" ]; then
     exit 1
 fi
 
-if [ "$#" -ne 0 ]; then
-    echo "ERROR: 03_bombard.sh does not accept flags. Edit the fixed settings in the script if needed."
+# Optional -tps N overrides TARGET_RPS (default 4000). No other flags.
+TPS_OVERRIDE=""
+if [ "$#" -eq 2 ] && [ "$1" = "-tps" ] && [[ "$2" =~ ^[1-9][0-9]*$ ]]; then
+    TPS_OVERRIDE="$2"
+elif [ "$#" -ne 0 ]; then
+    echo "ERROR: usage: 03_bombard.sh [-tps N] (N a positive integer; other settings are fixed in the script)."
     exit 2
 fi
 
@@ -67,7 +71,7 @@ RPC_LIST="$(IFS=,; echo "${RPC_URLS[*]}")"
 # law mined_tps = inflight / latency; the 30ms cadence raised submit->mined latency to
 # ~330ms, so the old 750 cap throttled to ~2300 tps (chain starved, mempool ~empty).
 # 2000 gives mined headroom (~6000) so the rps limiter - not the inflight cap - binds.
-TARGET_RPS=4000
+TARGET_RPS=${TPS_OVERRIDE:-4000}
 INFLIGHT=2000
 RESUBMIT_INTERVAL=5s
 # Issue 1% over target. The rolling token-bucket pacer no longer leaks the tail

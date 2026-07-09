@@ -143,7 +143,7 @@ Start the load (leave it running through everything below):
 ./run/03_bombard.sh
 ```
 
-One fixed profile, no flags: **4000 tx/s**, 2000 in-flight cap, 5s resubmit.
+One fixed profile: **4000 tx/s** (override with `-tps N`), 2000 in-flight cap, 5s resubmit.
 Ingress is **every pinned RPC node on both sites** (`rpc_a1` `rpc_a2` `rpc_b1` `rpc_b2` in the
 default shape). bombard broadcasts each tx to ALL of them, health-checks every
 endpoint continuously, drops one from rotation when it falls behind and
