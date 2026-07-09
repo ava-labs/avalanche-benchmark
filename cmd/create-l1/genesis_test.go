@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"testing"
@@ -74,5 +75,14 @@ func TestTemplateGenesis(t *testing.T) {
 	// totalSupply (raw slot 2, not address-keyed) must be untouched.
 	if got := erc20.Storage["0x0000000000000000000000000000000000000000000000000000000000000002"]; got != maxBal {
 		t.Errorf("totalSupply slot changed: %q", got)
+	}
+
+	// Large feeConfig numbers must survive the round-trip byte-exact. A
+	// float64-based decode mangles targetGas 2^64-1 to 18446744073709552000,
+	// which the VM wraps to 384 and the base fee creeps +1 wei per block.
+	for _, n := range []string{"18446744073709551615", "9223372036854775807"} {
+		if !bytes.Contains(out, []byte(n)) {
+			t.Errorf("feeConfig value %s did not survive templating byte-exact", n)
+		}
 	}
 }

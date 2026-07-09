@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -39,7 +40,12 @@ func mappingSlot(addr ethcommon.Address, slotIndex uint64) ethcommon.Hash {
 // Non-address-keyed storage (totalSupply etc.) is untouched.
 func templateGenesis(genesisBytes []byte, addr ethcommon.Address) ([]byte, error) {
 	var g map[string]any
-	if err := json.Unmarshal(genesisBytes, &g); err != nil {
+	// UseNumber: plain Unmarshal parses numbers as float64, which mangles
+	// large feeConfig values (targetGas 2^64-1 became 18446744073709552000,
+	// wrapping to 384 in the VM and creeping the base fee +1 wei per block).
+	dec := json.NewDecoder(bytes.NewReader(genesisBytes))
+	dec.UseNumber()
+	if err := dec.Decode(&g); err != nil {
 		return nil, fmt.Errorf("parse genesis: %w", err)
 	}
 	alloc, ok := g["alloc"].(map[string]any)
