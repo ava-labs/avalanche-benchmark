@@ -48,12 +48,6 @@ import (
 // / "nonce too low" send errors are benign no-ops.
 
 const (
-	// ewoqPrivateKey is the WELL-KNOWN public test key. Only used behind the
-	// explicit -ewoq flag: chains created before create-l1 templated the
-	// genesis to the deploy wallet prefund ewoq (the pre-2026-07 Fuji
-	// benchmark chain does); everything newer prefunds the -key wallet.
-	ewoqPrivateKey = "56289e99c94b6912bfc12adc093c9b51124f0dc54ac7a766b2bc5ccf558d8027"
-
 	gasLimitNative = 21000
 	gasPrice       = 25
 )
@@ -210,8 +204,7 @@ func main() {
 	scrapeFlag := flag.String("scrape", "", "Comma-separated RPC URLs to scrape /ext/metrics from at run start/end (decoupled from -rpc). Empty = scrape the -rpc nodes. Lets you send to the tracker but observe every validator.")
 	sampleFlag := flag.Duration("sample", 0, "If >0, scrape a focused set of rate/gauge node metrics every interval (e.g. 1s) and print compact SAMPLE rows. Forces -tui=false. Reveals per-second dynamics the begin/end panel hides.")
 	metricsFlag := flag.String("metrics", ":9092", "Listen address for the Prometheus /metrics endpoint (e2e latency histogram, issued/mined/resubmit counters). Empty disables.")
-	keyFlag := flag.String("key", "staking/fuji-wallet.key", "Hex private key file for the sender (new chains prefund this deploy wallet in genesis)")
-	ewoqFlag := flag.Bool("ewoq", false, "Sign with the well-known ewoq test key instead of -key (chains created before the wallet-key genesis template)")
+	keyFlag := flag.String("key", "staking/fuji-wallet.key", "Hex private key file for the sender (create-l1 prefunds this deploy wallet in genesis)")
 	flag.Parse()
 
 	if *metricsFlag != "" {
@@ -348,16 +341,12 @@ func main() {
 	}
 	fmt.Printf("Chain ID: %s\n", chainID)
 
-	keyHex := ewoqPrivateKey
-	if !*ewoqFlag {
-		raw, err := os.ReadFile(*keyFlag)
-		if err != nil {
-			fmt.Printf("Failed to read sender key %s (set -key, or -ewoq for chains whose genesis prefunds ewoq): %v\n", *keyFlag, err)
-			os.Exit(1)
-		}
-		keyHex = strings.TrimSpace(string(raw))
+	raw, err := os.ReadFile(*keyFlag)
+	if err != nil {
+		fmt.Printf("Failed to read sender key %s: %v\n", *keyFlag, err)
+		os.Exit(1)
 	}
-	privateKey, err := crypto.HexToECDSA(keyHex)
+	privateKey, err := crypto.HexToECDSA(strings.TrimSpace(string(raw)))
 	if err != nil {
 		fmt.Printf("Failed to load key: %v\n", err)
 		os.Exit(1)

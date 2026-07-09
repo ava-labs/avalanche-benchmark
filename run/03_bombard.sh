@@ -77,16 +77,6 @@ RESUBMIT_INTERVAL=5s
 # measured 4032 TPS, inflight ~244, 0 resubmits (2% starts grazing the cap).
 OVERSHOOT=0.01
 
-# Sender key: the deploy wallet, whose address create-l1 templates into the
-# chain's genesis prefund. BOMBARD_EWOQ=1 (env or .env) keeps the legacy ewoq
-# sender for chains created BEFORE the genesis template existed (their
-# committed genesis prefunds ewoq only; the pre-2026-07 Fuji chain is one).
-if [ "${BOMBARD_EWOQ:-0}" = "1" ]; then
-    KEY_ARGS=(-ewoq)
-else
-    KEY_ARGS=(-key "$FUJI_WALLET_KEY")
-fi
-
 echo "=== Benchmark ==="
 echo "Chain ID: $CHAIN_ID"
 echo "Target:   $TARGET_RPS rps  (inflight cap $INFLIGHT, +$(echo "$OVERSHOOT*100" | bc)% overshoot)"
@@ -96,4 +86,4 @@ echo "Ingress: pinned dedicated RPC node(s) - never promoted to validators:"
 for u in "${RPC_URLS[@]}"; do echo "  $u"; done
 echo ""
 
-exec "$BOMBARD" --rpc "$RPC_LIST" -rps "$TARGET_RPS" -inflight "$INFLIGHT" -resubmit "$RESUBMIT_INTERVAL" -overshoot "$OVERSHOOT" "${KEY_ARGS[@]}"
+exec "$BOMBARD" --rpc "$RPC_LIST" -rps "$TARGET_RPS" -inflight "$INFLIGHT" -resubmit "$RESUBMIT_INTERVAL" -overshoot "$OVERSHOOT" -key "$FUJI_WALLET_KEY"

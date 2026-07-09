@@ -15,9 +15,7 @@ import (
 // placeholder for the deploy's own wallet address at chain-creation time, so
 // the publicly-known ewoq key never controls funds on a live chain. Templating
 // changes the genesis bytes and therefore the chain ID, which is why it runs
-// before IssueCreateChainTx and never against an existing chain (chains
-// created before this template keep their committed ewoq genesis; bombard
-// them with -ewoq).
+// before IssueCreateChainTx and never against an existing chain.
 var ewoqAddr = ethcommon.HexToAddress("0x8db97C7cEcE249c2b98bDC0226Cc4C2A57BF52FC")
 
 // mappingSlotScan bounds the Solidity storage-slot indices we probe when
