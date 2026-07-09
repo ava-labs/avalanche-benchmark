@@ -467,6 +467,7 @@ setsid ./bin/avalanchego \
     --http-host=0.0.0.0 \
     --public-ip=%[4]s \
     --db-dir=%[7]s/db \
+    --db-type=pebbledb \
     --log-dir=%[7]s/logs \
     --data-dir=%[7]s \
     --network-id=%[14]s \
