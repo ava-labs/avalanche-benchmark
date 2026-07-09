@@ -11,6 +11,7 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/netcfg"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/topo"
 )
 
@@ -65,10 +66,11 @@ func loadEnvFiles() {
 	setDefault("REMOTE_DIR", "~/avalanche-benchmark")
 	setDefault("SSH_KEY_PATH", "/home/ubuntu/.ssh/ilya-solohin-failover-bench-2026-05-04")
 	setDefault("SUBNET_EVM_ID", "srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy")
-	// Public Fuji peer the RPC tier follows (kept in sync with _common.sh; rotates
-	// on an AVALANCHEGO_COMMIT bump - see bootstrappers.json).
-	setDefault("FUJI_UPSTREAM_IPS", "18.192.93.241:9651")
-	setDefault("FUJI_UPSTREAM_IDS", "NodeID-2m38qc95mhHXtrhjyGbe7r2NhniqHHJRB")
+	// Public peer the RPC tier follows (kept in sync with _common.sh; rotates
+	// on an AVALANCHEGO_COMMIT bump - see bootstrappers.json). Per-network
+	// default; netcfg resolves NETWORK from the network.env loaded above.
+	setDefault("FUJI_UPSTREAM_IPS", netcfg.Get().UpstreamIPs)
+	setDefault("FUJI_UPSTREAM_IDS", netcfg.Get().UpstreamIDs)
 	setDefault("FAILOVER_STATE_FILE", filepath.Join(repo, "fleet-state.json"))
 }
 
@@ -439,8 +441,9 @@ func (c *config) siblingSeeds(i int) (ips, nodeIDs string) {
 // own ports and dirs; for a normal node these are the original 9652/9653 +
 // data/validator values.
 //
-// Fuji flags (see FUJI_PLAN.md): the primary network is Fuji itself
-// (--network-id=fuji, built-in genesis); --partial-sync-primary-network syncs
+// Primary-network flags (see FUJI_PLAN.md): the primary network is the anchor
+// network itself (--network-id=fuji|mainnet, built-in genesis, per netcfg);
+// --partial-sync-primary-network syncs
 // ONLY the P-chain (skips Fuji X/C); --p-chain-follow-only keeps the P-chain
 // permanently bootstrapping off the beacons: REQUIRED on the inside tiers (a
 // stock partial-sync node behind non-validator peers freezes after the
@@ -466,7 +469,7 @@ setsid ./bin/avalanchego \
     --db-dir=%[7]s/db \
     --log-dir=%[7]s/logs \
     --data-dir=%[7]s \
-    --network-id=fuji \
+    --network-id=%[14]s \
     --partial-sync-primary-network=true \
     --p-chain-follow-only=true \
     --network-allow-private-ips=true \
@@ -485,7 +488,7 @@ setsid ./bin/avalanchego \
     >%[7]s/logs/avalanchego.out 2>&1 < /dev/null &
 `, c.remoteDir, c.chainID, c.subnetID, in.host, beaconIPs, beaconIDs,
 		in.dataDir, in.chainCfg, in.httpPort, in.stakingPort, in.activeDir,
-		seedIPs, seedIDs)
+		seedIPs, seedIDs, netcfg.Get().Name)
 }
 
 func (c *config) start(i int) {

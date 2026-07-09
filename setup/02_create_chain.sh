@@ -10,8 +10,27 @@ set -e
 # Error handler to show what went wrong
 trap 'echo "ERROR: Script failed at line $LINENO. Command: $BASH_COMMAND"' ERR
 
+# --mainnet creates the L1 anchored on Avalanche mainnet (REAL AVAX). The
+# choice is persisted as NETWORK in network.env by create-l1; on resume that
+# record wins and a conflicting flag is rejected below.
+REQUESTED_NETWORK=""
+for arg in "$@"; do
+    case "$arg" in
+        --mainnet) REQUESTED_NETWORK=mainnet; export AVALANCHE_NETWORK=mainnet ;;
+        *) echo "usage: $0 [--mainnet]"; exit 2 ;;
+    esac
+done
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/_common.sh"
+
+# _common.sh resolved AVALANCHE_NETWORK (network.env NETWORK wins). A flag that
+# contradicts an already-created chain is an operator error, not a migration.
+if [ -n "$REQUESTED_NETWORK" ] && [ "$REQUESTED_NETWORK" != "$AVALANCHE_NETWORK" ]; then
+    echo "ERROR: --$REQUESTED_NETWORK requested but network.env records NETWORK=$AVALANCHE_NETWORK."
+    echo "       Delete network.env to create a NEW chain on another network."
+    exit 1
+fi
 
 # ------------------------------------------------------------------------------
 # Resume semantics: create-l1 persists every step's result to network.env as it
@@ -36,7 +55,7 @@ ensure_staking_keys
 # ------------------------------------------------------------------------------
 # Create L1 (subnet + chain + convert) on Fuji
 # ------------------------------------------------------------------------------
-echo "=== Creating L1 on Fuji ==="
+echo "=== Creating L1 on $AVALANCHE_NETWORK ==="
 echo ""
 
 "$SCRIPT_DIR/bin/create-l1" -output "$NETWORK_ENV"

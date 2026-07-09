@@ -48,6 +48,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/fujikey"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/netcfg"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/topo"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/valmgr"
 )
@@ -57,21 +58,17 @@ var (
 	deployOnly bool
 )
 
-const (
-	// defaultPChainAPI is the public Fuji API. Our own RPC tier is follow-only,
-	// so its platform.* API is gated forever: P-chain txs MUST go against a
-	// public node (FUJI_PLAN.md gotchas). Override with PCHAIN_API in .env.
-	defaultPChainAPI = "https://api.avax-test.network"
-	// validatorBalance is the per-validator continuous-fee deposit paid by the
-	// conversion tx. 0.1 AVAX lasts ~5-6 days on Fuji, plenty per run; balance 0
-	// makes the validator INACTIVE and takes the whole L1 down. Top up any time
-	// with IncreaseL1ValidatorBalanceTx (anyone can fund, no owner auth needed).
-	validatorBalance = 100 * units.MilliAvax
-	// cChainGasBudget is the minimum C-chain balance (wei) required before we
-	// start: ValidatorManager deploy (~2.5M gas) + initialize +
-	// initializeValidatorSet + headroom for later weight ops.
-	cChainGasBudgetAvax = 0.15
-)
+// The per-validator continuous-fee deposit (netcfg.ValidatorBalance; balance 0
+// makes the validator INACTIVE and takes the whole L1 down) and the public API
+// (netcfg.API; our own RPC tier is follow-only, its platform.* API is gated
+// forever, so P-chain txs MUST go against a public node, see FUJI_PLAN.md) are
+// per-network. Top up balances any time with `fuji-wallet topup` (anyone can
+// fund any validationID, no owner auth needed).
+//
+// cChainGasBudgetAvax is the minimum C-chain balance required before we
+// start: ValidatorManager deploy (~2.5M gas) + initialize +
+// initializeValidatorSet + headroom for later weight ops.
+const cChainGasBudgetAvax = 0.15
 
 func main() {
 	flag.StringVar(&outputFile, "output", "", "Persist/resume SUBNET_ID, CHAIN_ID, MANAGER_ADDRESS in this file")
@@ -88,6 +85,7 @@ func main() {
 // their steps complete; a re-run skips anything already present.
 type progress struct {
 	path    string
+	network string // netcfg name, recorded at creation so resumes stay pinned
 	subnet  ids.ID
 	chain   ids.ID
 	manager ethcommon.Address
@@ -126,6 +124,9 @@ func (p *progress) save() error {
 		return nil
 	}
 	var b strings.Builder
+	if p.network != "" {
+		fmt.Fprintf(&b, "NETWORK=%s\n", p.network)
+	}
 	if p.subnet != ids.Empty {
 		fmt.Fprintf(&b, "SUBNET_ID=%s\n", p.subnet)
 	}
@@ -160,10 +161,17 @@ func run() error {
 		return fmt.Errorf("failed to load .env: %w", err)
 	}
 
-	pchainURI := defaultPChainAPI
-	if v := os.Getenv("PCHAIN_API"); v != "" {
-		pchainURI = v
+	// The created chain's network is recorded as NETWORK in the -output file;
+	// on resume it wins over the shell's AVALANCHE_NETWORK so a resumed run
+	// can never flip networks mid-creation.
+	if outputFile != "" {
+		if vars, err := godotenv.Read(outputFile); err == nil && vars["NETWORK"] != "" {
+			os.Setenv("NETWORK", vars["NETWORK"])
+		}
 	}
+	net := netcfg.Get()
+	validatorBalance := net.ValidatorBalance
+	pchainURI := net.API
 	cChainRPC := pchainURI + "/ext/bc/C/rpc"
 
 	stakingDir := findStakingDir()
@@ -191,8 +199,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	prog.network = net.Name
 
-	fmt.Println("=== Create L1 (on Fuji: this SPENDS AVAX, resumable via -output) ===")
+	fmt.Printf("=== Create L1 (on %s: this SPENDS AVAX, resumable via -output) ===\n", net.Name)
 	fmt.Printf("  P-chain API: %s\n", pchainURI)
 	fmt.Printf("  Registered validators: %d staking slots (both sites; RPC slots excluded)\n", len(stakingSlots))
 	for _, s := range stakingSlots {
@@ -209,8 +218,8 @@ func run() error {
 		return fmt.Errorf("platform.getBalance: %w", err)
 	}
 	if prog.subnet == ids.Empty && uint64(balResp.Balance) < neededP {
-		return fmt.Errorf("P-chain balance %d nAVAX < %d nAVAX needed (%d validators x 0.1 AVAX + fees); run ./setup/01_fund_wallet.sh",
-			balResp.Balance, neededP, len(stakingSlots))
+		return fmt.Errorf("P-chain balance %d nAVAX < %d nAVAX needed (%d validators x %d nAVAX + fees); run ./setup/01_fund_wallet.sh",
+			balResp.Balance, neededP, len(stakingSlots), validatorBalance)
 	}
 	cli, err := valmgr.Dial(ctx, cChainRPC, walletKey, prog.manager)
 	if err != nil {
@@ -234,6 +243,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("failed to read genesis: %w", err)
 	}
+	genesisBytes, err = templateGenesis(genesisBytes, walletKey.EthAddress())
+	if err != nil {
+		return fmt.Errorf("template genesis: %w", err)
+	}
+	fmt.Printf("  Genesis prefund: %s (deploy wallet; ewoq placeholder replaced)\n", walletKey.EthAddress().Hex())
 
 	fmt.Println("[1/6] Creating P-chain wallet...")
 	kc := secp256k1fx.NewKeychain(walletKey)
@@ -453,7 +467,7 @@ func initializeValidatorSet(
 		return fmt.Errorf("compute conversionID: %w", err)
 	}
 
-	unsigned, err := valmgr.ConversionMessage(constants.FujiID, conversionID)
+	unsigned, err := valmgr.ConversionMessage(netcfg.Get().NetworkID, conversionID)
 	if err != nil {
 		return fmt.Errorf("build conversion message: %w", err)
 	}

@@ -89,6 +89,20 @@ gitignored, never in any archive, a leaked staking key means validator
 impersonation. Re-running `00` generates a new identity set and orphans the
 old chain; only do that to start over with a new chain.
 
+### Mainnet
+
+Pass `--mainnet` to `01` and `02` to anchor the L1 on Avalanche mainnet
+instead of Fuji; `02` records the choice in `network.env` and every later
+command follows it. There is no faucet: `01` prints the P- and C-chain
+addresses and you fund them with your own AVAX (0.15 AVAX per registered
+validator plus ~0.25 AVAX in fee budget). Treat the network as disposable: the
+0.15 AVAX deposit covers roughly 3 days of the mainnet continuous fee
+(512 nAVAX/s per validator), after which validators deactivate and the L1
+halts. Extend a run with `bin/fuji-wallet topup [days]` (default 3 days,
+funded from the same wallet). The RPC machines' single outbound TCP goes to
+the pinned public mainnet peer (default `54.232.137.108:9651`); update the
+firewall egress rule accordingly.
+
 ## 2. Deploy and monitor
 
 ```bash

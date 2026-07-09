@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"time"
 
 	ethereum "github.com/ava-labs/libevm"
@@ -21,6 +20,8 @@ import (
 	avalancheWarp "github.com/ava-labs/avalanchego/vms/platformvm/warp"
 	warpmessage "github.com/ava-labs/avalanchego/vms/platformvm/warp/message"
 	warppayload "github.com/ava-labs/avalanchego/vms/platformvm/warp/payload"
+
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/netcfg"
 )
 
 // ValidationID derives the validationID of the index-th conversion-time
@@ -97,18 +98,15 @@ func addressedCallMessage(networkID uint32, sourceChain ids.ID, sourceAddr []byt
 	return avalancheWarp.NewUnsignedMessage(networkID, sourceChain, call.Bytes())
 }
 
-// privateAggregatorURL is our own signature aggregator
+// The primary aggregator is our own signature aggregator
 // (avaplatform/signature-aggregator v0.5.4 on fly.io, scale-to-zero: the first
 // request after idle takes a few seconds while the machine wakes, hence the
 // 60s client timeout). It aggregates FRESH per request, no per-message cache,
 // which is the whole reason it is primary: Glacier caches aggregates per
 // unsigned message with no cache buster, which livelocked weight moves.
-// Override with the AGGREGATOR_URL env var.
-const privateAggregatorURL = "https://avax-signature-aggregator-fuji.fly.dev/aggregate-signatures"
-
-// glacierAggregatorURL is the public Glacier aggregator, fallback only
-// (cached responses, see above).
-const glacierAggregatorURL = "https://glacier-api.avax.network/v1/signatureAggregator/fuji/aggregateSignatures"
+// Glacier is fallback only (cached responses, see above). Both URLs are
+// per-network (netcfg.AggregatorURL / netcfg.GlacierURL, env overrides
+// AGGREGATOR_URL / GLACIER_URL).
 
 // aggClient tolerates the fly.io scale-to-zero wake on the first request.
 var aggClient = &http.Client{Timeout: 60 * time.Second}
@@ -155,15 +153,11 @@ func Aggregate(ctx context.Context, unsigned *avalancheWarp.UnsignedMessage, jus
 		justHex = "0x" + hex.EncodeToString(justification)
 	}
 
-	url := os.Getenv("AGGREGATOR_URL")
-	if url == "" {
-		url = privateAggregatorURL
-	}
 	privBody, err := json.Marshal(privateRequest{Message: msgHex, Justification: justHex, QuorumPercentage: 67})
 	if err != nil {
 		return nil, err
 	}
-	signed, err := aggregateWithRetry(ctx, url, privBody, parsePrivate)
+	signed, err := aggregateWithRetry(ctx, netcfg.Get().AggregatorURL, privBody, parsePrivate)
 	if err == nil {
 		return signed, nil
 	}
@@ -173,7 +167,7 @@ func Aggregate(ctx context.Context, unsigned *avalancheWarp.UnsignedMessage, jus
 	if err != nil {
 		return nil, err
 	}
-	return aggregateWithRetry(ctx, glacierAggregatorURL, glacBody, parseGlacier)
+	return aggregateWithRetry(ctx, netcfg.Get().GlacierURL, glacBody, parseGlacier)
 }
 
 func parsePrivate(raw []byte, status int) (*avalancheWarp.Message, error) {

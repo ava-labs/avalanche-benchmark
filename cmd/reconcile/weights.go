@@ -26,6 +26,7 @@ import (
 	ethcommon "github.com/ava-labs/libevm/common"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/fujikey"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/netcfg"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/valmgr"
 )
 
@@ -134,22 +135,15 @@ type weightEngine struct {
 // cchainRPCURL is where every ValidatorManager eth_call and initiate/complete
 // tx goes.
 func cchainRPCURL() string {
-	return envOr("CCHAIN_RPC", "https://avalanche-fuji-c-chain-rpc.publicnode.com")
+	return netcfg.Get().CChainRPC
 }
 
 // pchainReadClient returns the platformvm client used for reads AND wallet tx
 // issuance. publicnode serves the P-chain API at /ext/bc/P but NOT at /ext/P
 // (the only path platformvm.NewClient builds), so construct it on the exact URL.
 func pchainReadClient() *platformvm.Client {
-	url := envOr("PCHAIN_RPC", "https://avalanche-fuji-p-chain-rpc.publicnode.com/ext/bc/P")
-	return &platformvm.Client{Requester: rpc.NewEndpointRequester(url)}
+	return &platformvm.Client{Requester: rpc.NewEndpointRequester(netcfg.Get().PChainRPC)}
 }
-
-// fujiCChainIDStr is the Fuji C-chain blockchain ID: the ValidatorManager's
-// chain and the warp source chain. A fixed network constant, hardcoded so we
-// never call info.getBlockchainID (publicnode does not serve /ext/info, and the
-// official API rate-limits it).
-const fujiCChainIDStr = "yH8D7ThNJkxmtkuv2jgBa4P1Rn3Qpr4pPr7QYNfcdoS6k6HWp"
 
 // gasPriceMultiplier mirrors wallet/chain/p.gasPriceMultiplier (headroom for
 // issuing several txs in a row).
@@ -175,7 +169,10 @@ func newWeightEngine(ctx context.Context, cfg *config, intents []MachineIntent) 
 	if err != nil {
 		return nil, err
 	}
-	cChainID, err := ids.FromString(fujiCChainIDStr)
+	// The network's C-chain blockchain ID is a fixed constant (netcfg),
+	// hardcoded so we never call info.getBlockchainID (publicnode does not
+	// serve /ext/info, and the official API rate-limits it).
+	cChainID, err := ids.FromString(netcfg.Get().CChainID)
 	if err != nil {
 		return nil, err
 	}
@@ -389,7 +386,7 @@ func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) er
 	if !needsDelivery(v.SentNonce, pv.MinNonce) {
 		return nil
 	}
-	unsigned, err := valmgr.WeightMessage(constants.FujiID, e.cChainID, e.cli.Manager, t.validationID, v.SentNonce, v.Weight)
+	unsigned, err := valmgr.WeightMessage(netcfg.Get().NetworkID, e.cChainID, e.cli.Manager, t.validationID, v.SentNonce, v.Weight)
 	if err != nil {
 		return err
 	}
@@ -496,7 +493,7 @@ func (e *weightEngine) precheckQuorum(ctx context.Context, signed *avalancheWarp
 		fmt.Printf("  weights: %s precheck SKIPPED (flatten validator set: %v); issuing and letting the P-chain judge\n", name, err)
 		return false, nil
 	}
-	if err := signed.Signature.Verify(&signed.UnsignedMessage, constants.FujiID, warpSet, pchainQuorumNum, pchainQuorumDen); err != nil {
+	if err := signed.Signature.Verify(&signed.UnsignedMessage, netcfg.Get().NetworkID, warpSet, pchainQuorumNum, pchainQuorumDen); err != nil {
 		return false, fmt.Errorf("aggregate for %s fails P-chain warp verification against the current proposed-height Fuji set (%v): %w",
 			name, err, errFujiCoverage)
 	}
@@ -563,7 +560,7 @@ func (e *weightEngine) completeOnContract(ctx context.Context) error {
 			continue
 		}
 		// The P-chain signs the ack only against its exact current state.
-		unsigned, err := valmgr.WeightAckMessage(constants.FujiID, t.validationID, pv.MinNonce-1, pv.Weight)
+		unsigned, err := valmgr.WeightAckMessage(netcfg.Get().NetworkID, t.validationID, pv.MinNonce-1, pv.Weight)
 		if err != nil {
 			return err
 		}
@@ -630,8 +627,8 @@ func (e *weightEngine) pWallet(ctx context.Context) (pwallet.Wallet, error) {
 // primary.MakePWallet fetches the network ID from info, which publicnode's
 // per-chain P RPC does not serve; every other input (AVAX asset, fee
 // config/state, UTXOs, tx issuance) is a P-chain API call publicnode does
-// serve, and the network ID is the Fuji constant. This is a faithful copy of
-// MakePWallet's body with the info dependency swapped for constants.FujiID.
+// serve, and the network ID is a per-network constant. This is a faithful copy
+// of MakePWallet's body with the info dependency swapped for netcfg's ID.
 func makePWalletNoInfo(ctx context.Context, pClient *platformvm.Client, kc keychain.Keychain) (pwallet.Wallet, error) {
 	addrs := kc.Addresses()
 
@@ -648,7 +645,7 @@ func makePWalletNoInfo(ctx context.Context, pClient *platformvm.Client, kc keych
 		return nil, fmt.Errorf("get fee state: %w", err)
 	}
 	pctx := &pbuilder.Context{
-		NetworkID:         constants.FujiID,
+		NetworkID:         netcfg.Get().NetworkID,
 		AVAXAssetID:       avaxAssetID,
 		ComplexityWeights: feeConfig.Weights,
 		GasPrice:          gasPriceMultiplier * gasPrice,
