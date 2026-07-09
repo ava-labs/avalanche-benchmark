@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -126,6 +127,11 @@ type weightEngine struct {
 	kc       *secp256k1fx.Keychain
 	wallet   pwallet.Wallet // built lazily; only P-chain deliveries need it
 	targets  []stakingTarget
+	// lastFailedAggregate remembers, per validationID, the signed message
+	// bytes of the last under-quorum failure. A retry that aggregates to the
+	// SAME bytes is Glacier's per-message cache serving a stale aggregate; the
+	// only escape is re-aggregating from the primary aggregator only.
+	lastFailedAggregate map[ids.ID][]byte
 }
 
 // The whole seesaw runs off publicnode's per-chain Fuji RPC, never touching the
@@ -178,12 +184,13 @@ func newWeightEngine(ctx context.Context, cfg *config, intents []MachineIntent) 
 	}
 
 	e := &weightEngine{
-		cfg:      cfg,
-		subnetID: subnetID,
-		cChainID: cChainID,
-		cli:      cli,
-		pClient:  pchainReadClient(),
-		kc:       secp256k1fx.NewKeychain(key),
+		cfg:                 cfg,
+		subnetID:            subnetID,
+		cChainID:            cChainID,
+		cli:                 cli,
+		pClient:             pchainReadClient(),
+		kc:                  secp256k1fx.NewKeychain(key),
+		lastFailedAggregate: make(map[ids.ID][]byte),
 	}
 	e.targets, err = stakingTargets(cfg, subnetID, intents)
 	return e, err
@@ -262,9 +269,9 @@ func reconcileWeights(cfg *config, intents []MachineIntent) {
 		// P-chain still rejects and deliverValidator did not already identify a
 		// stale proposer context, give the operator the coverage explanation.
 		if strings.Contains(lastErr.Error(), avalancheWarp.ErrInsufficientWeight.Error()) &&
-			!strings.Contains(lastErr.Error(), errFujiCoverage.Error()) &&
+			!strings.Contains(lastErr.Error(), errCoverage.Error()) &&
 			!strings.Contains(lastErr.Error(), errStaleProposerContext.Error()) {
-			lastErr = fmt.Errorf("%w (%v)", lastErr, errFujiCoverage)
+			lastErr = fmt.Errorf("%w (%v)", lastErr, errCoverage)
 		}
 	}
 	fatalf("weights: %v (re-run the `fleet weight` command to resume; every step is idempotent)", lastErr)
@@ -400,8 +407,20 @@ func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) er
 	if err != nil {
 		return fmt.Errorf("aggregate weight message for %s: %w", e.slotName(t), err)
 	}
+	// Byte-identical to the last under-quorum failure: Glacier's per-message
+	// cache is serving the same stale aggregate on every retry (it can never
+	// heal on its own while the primary-network set drifts). Sidestep the cache
+	// by re-aggregating from the primary aggregator ONLY.
+	if prev, ok := e.lastFailedAggregate[t.validationID]; ok && bytes.Equal(signed.Bytes(), prev) {
+		fmt.Printf("  weights: %s aggregate is cached and under quorum (byte-identical to the last failed attempt); re-aggregating from the primary aggregator only\n", e.slotName(t))
+		signed, err = valmgr.AggregatePrimary(ctx, unsigned, nil)
+		if err != nil {
+			return fmt.Errorf("primary-only re-aggregation for %s (Glacier cache is under quorum): %w", e.slotName(t), err)
+		}
+	}
 	verified, err := e.precheckQuorum(ctx, signed, e.slotName(t))
 	if err != nil {
+		e.lastFailedAggregate[t.validationID] = signed.Bytes()
 		return err
 	}
 	w, err := e.pWallet(ctx)
@@ -409,6 +428,9 @@ func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) er
 		return err
 	}
 	if _, err := w.IssueSetL1ValidatorWeightTx(signed.Bytes()); err != nil {
+		if strings.Contains(err.Error(), avalancheWarp.ErrInsufficientWeight.Error()) {
+			e.lastFailedAggregate[t.validationID] = signed.Bytes()
+		}
 		// Stale proposer context: "signature is invalid" is always it (never a
 		// coverage problem), and "signature weight is insufficient" is it too
 		// WHEN our own full verification just passed at the current height (the
@@ -423,6 +445,7 @@ func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) er
 		}
 		return fmt.Errorf("SetL1ValidatorWeightTx for %s: %w", e.slotName(t), err)
 	}
+	delete(e.lastFailedAggregate, t.validationID)
 	return nil
 }
 
@@ -438,7 +461,7 @@ func (e *weightEngine) deliverValidator(ctx context.Context, t stakingTarget) er
 // masks it, seen 2026-07-09: same aggregate 67.74% at tip, 40.59% one height
 // earlier). Re-aggregating cannot help until a NEW P-chain block refreshes the
 // context, and on a quiet Fuji P-chain no block may come for ~40min.
-var errStaleProposerContext = fmt.Errorf("the P-chain verifies at its preferred block's proposer-context height, which predates a Fuji validator-set change; a no-op BaseTx was issued to force a fresh block, the next retry should pass")
+var errStaleProposerContext = fmt.Errorf("the P-chain verifies at its preferred block's proposer-context height, which predates a primary-network validator-set change; a no-op BaseTx was issued to force a fresh block, the next retry should pass")
 
 // nudgePChain issues a no-op BaseTx (all change back to our own key) purely to
 // land a fresh P-chain block: the new block carries a current proposer-context
@@ -494,15 +517,15 @@ func (e *weightEngine) precheckQuorum(ctx context.Context, signed *avalancheWarp
 		return false, nil
 	}
 	if err := signed.Signature.Verify(&signed.UnsignedMessage, netcfg.Get().NetworkID, warpSet, pchainQuorumNum, pchainQuorumDen); err != nil {
-		return false, fmt.Errorf("aggregate for %s fails P-chain warp verification against the current proposed-height Fuji set (%v): %w",
-			name, err, errFujiCoverage)
+		return false, fmt.Errorf("aggregate for %s fails P-chain warp verification against the current proposed-height primary-network set (%v): %w",
+			name, err, errCoverage)
 	}
 	return true, nil
 }
 
-// errFujiCoverage tags every under-quorum failure (local precheck or a
+// errCoverage tags every under-quorum failure (local precheck or a
 // P-chain reject) with the operator explanation.
-var errFujiCoverage = fmt.Errorf("Fuji-side signature coverage, not a local fault: Fuji validators sign a C-chain warp message only after syncing the block that emitted it, so coverage climbs over minutes and retries continue automatically; if the Glacier FALLBACK served this aggregate it may also be a stale per-message cache entry, which only heals when the Fuji set realigns")
+var errCoverage = fmt.Errorf("primary-network signature coverage, not a local fault: primary-network validators sign a C-chain warp message only after syncing the block that emitted it, so coverage climbs over minutes and retries continue automatically; if the Glacier FALLBACK served this aggregate it may also be a stale per-message cache entry, which the next attempt sidesteps by re-aggregating from the primary aggregator only")
 
 // deliverToPChain delivers every validator whose latest contract nonce has not
 // reached the P-chain. Raises land before lowers (weight-neutral nonce
@@ -724,7 +747,7 @@ func weightsReport(cfg *config, intents []MachineIntent, actual map[int]uint64, 
 		fmt.Println("weights: converged (P-chain == desired)")
 		return
 	}
-	fmt.Println("weights: PENDING - re-run the ./fleet weight that set this tier (Fuji signature coverage may still be catching up)")
+	fmt.Println("weights: PENDING - re-run the ./fleet weight that set this tier (primary-network signature coverage may still be catching up)")
 	for _, l := range lines {
 		fmt.Println(l)
 	}

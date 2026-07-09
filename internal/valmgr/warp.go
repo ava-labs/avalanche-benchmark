@@ -111,6 +111,12 @@ func addressedCallMessage(networkID uint32, sourceChain ids.ID, sourceAddr []byt
 // aggClient tolerates the fly.io scale-to-zero wake on the first request.
 var aggClient = &http.Client{Timeout: 60 * time.Second}
 
+// requestQuorum is the quorum we ASK the aggregators for: 75 instead of the
+// P-chain's 67 threshold, so validator-set drift between aggregation and
+// delivery cannot sink the aggregate below the protocol's 67 (the P-chain's
+// own check is untouched; this is only client-side headroom).
+const requestQuorum = 75
+
 // Glacier request/response (camelCase).
 type glacierRequest struct {
 	Message          string `json:"message"`
@@ -147,27 +153,40 @@ type privateResponse struct {
 // per-message cache, the exact failure mode this backend exists to escape.
 // The callers' reconcile loops retry the whole step anyway.
 func Aggregate(ctx context.Context, unsigned *avalancheWarp.UnsignedMessage, justification []byte) (*avalancheWarp.Message, error) {
-	msgHex := "0x" + hex.EncodeToString(unsigned.Bytes())
-	justHex := ""
-	if len(justification) > 0 {
-		justHex = "0x" + hex.EncodeToString(justification)
-	}
-
-	privBody, err := json.Marshal(privateRequest{Message: msgHex, Justification: justHex, QuorumPercentage: 67})
-	if err != nil {
-		return nil, err
-	}
-	signed, err := aggregateWithRetry(ctx, netcfg.Get().AggregatorURL, privBody, parsePrivate)
+	signed, err := AggregatePrimary(ctx, unsigned, justification)
 	if err == nil {
 		return signed, nil
 	}
 	fmt.Printf("private aggregator failed (%v), falling back to Glacier\n", err)
 
-	glacBody, err := json.Marshal(glacierRequest{Message: msgHex, Justification: justHex, QuorumPercentage: 67})
+	msgHex, justHex := hexInputs(unsigned, justification)
+	glacBody, err := json.Marshal(glacierRequest{Message: msgHex, Justification: justHex, QuorumPercentage: requestQuorum})
 	if err != nil {
 		return nil, err
 	}
 	return aggregateWithRetry(ctx, netcfg.Get().GlacierURL, glacBody, parseGlacier)
+}
+
+// AggregatePrimary aggregates from the private aggregator ONLY, never falling
+// back to Glacier. Use it when a Glacier-cached aggregate is known-bad (byte
+// identical retries under quorum): Glacier keys its cache on the unsigned
+// message with no buster (quorumPercentage does not vary the key), so only the
+// primary, which aggregates fresh per request, can produce new bytes.
+func AggregatePrimary(ctx context.Context, unsigned *avalancheWarp.UnsignedMessage, justification []byte) (*avalancheWarp.Message, error) {
+	msgHex, justHex := hexInputs(unsigned, justification)
+	privBody, err := json.Marshal(privateRequest{Message: msgHex, Justification: justHex, QuorumPercentage: requestQuorum})
+	if err != nil {
+		return nil, err
+	}
+	return aggregateWithRetry(ctx, netcfg.Get().AggregatorURL, privBody, parsePrivate)
+}
+
+func hexInputs(unsigned *avalancheWarp.UnsignedMessage, justification []byte) (msgHex, justHex string) {
+	msgHex = "0x" + hex.EncodeToString(unsigned.Bytes())
+	if len(justification) > 0 {
+		justHex = "0x" + hex.EncodeToString(justification)
+	}
+	return msgHex, justHex
 }
 
 func parsePrivate(raw []byte, status int) (*avalancheWarp.Message, error) {
