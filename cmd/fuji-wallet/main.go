@@ -9,9 +9,12 @@
 //	    addresses with the required amounts and poll until BOTH are funded
 //	    (Fuji: at the faucet; mainnet: from your own AVAX). No cross-chain
 //	    moves: fund each chain directly.
-//	fuji-wallet topup [days]                        add <days> (default 3) of
-//	    continuous fee to EVERY staking slot's validator balance
-//	    (IncreaseL1ValidatorBalanceTx; anyone may fund any validationID).
+//	fuji-wallet topup [days]                        top up EVERY staking
+//	    slot's validator balance so each has at least <days> (default 3) of
+//	    continuous-fee runway (IncreaseL1ValidatorBalanceTx; anyone may fund
+//	    any validationID). Validators already at or above the target are
+//	    untouched; deficits are rounded down to whole days, so re-running
+//	    right away is a no-op.
 package main
 
 import (
@@ -40,6 +43,7 @@ import (
 	"github.com/ava-labs/avalanchego/utils/units"
 	"github.com/ava-labs/avalanchego/vms/platformvm"
 	"github.com/ava-labs/avalanchego/vms/secp256k1fx"
+	pwallet "github.com/ava-labs/avalanchego/wallet/chain/p/wallet"
 	"github.com/ava-labs/avalanchego/wallet/subnet/primary"
 	"github.com/joho/godotenv"
 )
@@ -66,7 +70,7 @@ func fatalf(format string, args ...any) {
 
 func main() {
 	if len(os.Args) < 2 {
-		fatalf("usage: fuji-wallet <gen|fund|topup> [-key <path>] [-api <uri>] [topup: days]")
+		fatalf("usage: fuji-wallet <gen|fund|topup> [-key <path>] [-api <uri>] [topup: target days of runway]")
 	}
 	loadEnvFiles()
 	net := netcfg.Get()
@@ -204,18 +208,19 @@ func requiredPBalance(validatorBalance uint64) uint64 {
 	return uint64(len(t.StakingSlots()))*validatorBalance + feeBudget
 }
 
-// topup adds <days> (default 3) worth of continuous fee to every staking
-// slot's validator balance with one IncreaseL1ValidatorBalanceTx each, and
-// prints each balance before/after. Chain state (SUBNET_ID) comes from
-// network.env, node IDs from staking/node-ids.env next to the wallet key.
+// topup brings every staking slot's validator balance up to at least
+// <target> (default 3) days of continuous-fee runway, one
+// IncreaseL1ValidatorBalanceTx per short validator. Chain state (SUBNET_ID)
+// comes from network.env, node IDs from staking/node-ids.env next to the
+// wallet key.
 func topup(keyPath, api string, args []string) {
-	days := 3
+	target := 3
 	if len(args) > 0 {
 		d, err := strconv.Atoi(args[0])
 		if err != nil || d <= 0 {
 			fatalf("topup: bad days %q (want a positive integer)", args[0])
 		}
-		days = d
+		target = d
 	}
 	key, err := fujikey.Load(keyPath)
 	if err != nil {
@@ -228,33 +233,57 @@ func topup(keyPath, api string, args []string) {
 	if _, price, _, err := pClient.GetValidatorFeeState(ctx); err == nil && uint64(price) > rate {
 		rate = uint64(price)
 	}
-	amount := uint64(days) * 24 * 3600 * rate
+	perDay := rate * 24 * 3600
 
 	vids, names, err := stakingValidationIDs(keyPath)
 	if err != nil {
 		fatalf("%v", err)
 	}
-	fmt.Printf("Top-up: %d day(s) x %d nAVAX/s = %s AVAX per validator (%d validators, %s AVAX total)\n",
-		days, rate, avaxString(amount), len(vids), avaxString(amount*uint64(len(vids))))
+	fmt.Printf("Top-up target: %d day(s) of runway at %d nAVAX/s (%s AVAX per validator-day)\n",
+		target, rate, avaxString(perDay))
 
-	wallet, err := primary.MakePWallet(ctx, api, secp256k1fx.NewKeychain(key), primary.WalletConfig{})
-	if err != nil {
-		fatalf("make P-chain wallet: %v", err)
-	}
+	var wallet pwallet.Wallet // made lazily: a fully-topped-up fleet needs none
+	var total uint64
 	for i, vid := range vids {
-		before, _, err := pClient.GetL1Validator(ctx, vid)
+		v, _, err := pClient.GetL1Validator(ctx, vid)
 		if err != nil {
 			fatalf("platform.getL1Validator(%s): %v", names[i], err)
 		}
+		runway := float64(v.Balance) / float64(perDay)
+		add := topupDeficitDays(v.Balance, rate, target)
+		if add == 0 {
+			fmt.Printf("  %-3s %5.1f days  ok\n", names[i], runway)
+			continue
+		}
+		if wallet == nil {
+			if wallet, err = primary.MakePWallet(ctx, api, secp256k1fx.NewKeychain(key), primary.WalletConfig{}); err != nil {
+				fatalf("make P-chain wallet: %v", err)
+			}
+		}
+		amount := uint64(add) * perDay
 		if _, err := wallet.IssueIncreaseL1ValidatorBalanceTx(vid, amount); err != nil {
 			fatalf("IncreaseL1ValidatorBalanceTx(%s): %v", names[i], err)
 		}
-		after, _, err := pClient.GetL1Validator(ctx, vid)
-		if err != nil {
-			fatalf("platform.getL1Validator(%s) after top-up: %v", names[i], err)
-		}
-		fmt.Printf("  %-3s %s  balance %s -> %s AVAX\n", names[i], vid, avaxString(before.Balance), avaxString(after.Balance))
+		total += amount
+		fmt.Printf("  %-3s %5.1f days  +%d day(s) = %s AVAX\n", names[i], runway, add, avaxString(amount))
 	}
+	if total == 0 {
+		fmt.Printf("all validators at or above %d days\n", target)
+	} else {
+		fmt.Printf("total spent: %s AVAX\n", avaxString(total))
+	}
+}
+
+// topupDeficitDays returns the whole days of continuous fee to add so a
+// validator's balance reaches at least targetDays of runway at ratePerSec.
+// The deficit is rounded DOWN to whole days, so sub-day deficits return 0
+// and re-running minutes after a top-up is a no-op.
+func topupDeficitDays(balance, ratePerSec uint64, targetDays int) int {
+	need := uint64(targetDays) * ratePerSec * 24 * 3600
+	if balance >= need {
+		return 0
+	}
+	return int((need - balance) / (ratePerSec * 24 * 3600))
 }
 
 // stakingValidationIDs derives every registered validator's validationID the
