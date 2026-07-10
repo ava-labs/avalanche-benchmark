@@ -100,6 +100,13 @@ type Client struct {
 	sender  common.Address
 	chainID *big.Int
 	Manager common.Address // contract address; zero until deployed or configured
+
+	// InitiateVia, when set, is where initiateValidatorWeightUpdate txs are
+	// SENT: the PoAManager wrapper that owns the ValidatorManager (its
+	// initiate signature is identical, so the same ABI packs the call).
+	// Reads and warp-message reconstruction stay on Manager. Zero means
+	// initiate directly on Manager (fresh deploys before any PoAManager).
+	InitiateVia common.Address
 }
 
 // Dial connects to a C-chain RPC and prepares a transactor for the wallet key.
@@ -265,6 +272,10 @@ func (c *Client) InitiateWeightUpdates(ctx context.Context, steps []WeightStep) 
 	if err != nil {
 		return fmt.Errorf("nonce: %w", err)
 	}
+	target := c.Manager
+	if c.InitiateVia != (common.Address{}) {
+		target = c.InitiateVia
+	}
 	hashes := make([]common.Hash, len(steps))
 	for i, s := range steps {
 		data, err := c.abi.Pack("initiateValidatorWeightUpdate", [32]byte(s.ValidationID), s.Weight)
@@ -273,7 +284,7 @@ func (c *Client) InitiateWeightUpdates(ctx context.Context, steps []WeightStep) 
 		}
 		// Fixed gas: estimating step i>0 against the pre-batch state would
 		// falsely revert on the churn check. Unused gas is refunded.
-		h, err := c.sendTx(ctx, nonce+uint64(i), warpTxGas, &c.Manager, data, nil)
+		h, err := c.sendTx(ctx, nonce+uint64(i), warpTxGas, &target, data, nil)
 		if err != nil {
 			return fmt.Errorf("send initiate %d/%d: %w", i+1, len(steps), err)
 		}

@@ -129,6 +129,12 @@ func newWeightEngine(ctx context.Context, cfg *config, intents []MachineIntent) 
 	if managerHex == "" {
 		return nil, fmt.Errorf("MANAGER_ADDRESS is not set: this deploy has no ValidatorManager, weights cannot be reconciled (subnets created before C-chain managed weights are immutable)")
 	}
+	// The ValidatorManager is owned by a PoAManager wrapper (so the courier's
+	// completes are permissionless); initiates must go through it.
+	poaHex := os.Getenv("POA_MANAGER_ADDRESS")
+	if poaHex == "" {
+		return nil, fmt.Errorf("POA_MANAGER_ADDRESS is not set: initiates go through the PoAManager that owns the ValidatorManager (add it to network.env)")
+	}
 	subnetID, err := ids.FromString(cfg.subnetID)
 	if err != nil {
 		return nil, fmt.Errorf("parse SUBNET_ID: %w", err)
@@ -141,6 +147,7 @@ func newWeightEngine(ctx context.Context, cfg *config, intents []MachineIntent) 
 	if err != nil {
 		return nil, err
 	}
+	cli.InitiateVia = ethcommon.HexToAddress(poaHex)
 
 	e := &weightEngine{
 		cfg:      cfg,
@@ -192,7 +199,7 @@ func reconcileWeights(cfg *config, intents []MachineIntent) {
 	if err != nil {
 		fatalf("weights: %v", err)
 	}
-	fmt.Printf("[3/3] weights: reconciling via ValidatorManager %s (subnet %s)\n", e.cli.Manager.Hex(), e.subnetID)
+	fmt.Printf("[3/3] weights: reconciling ValidatorManager %s via PoAManager %s (subnet %s)\n", e.cli.Manager.Hex(), e.cli.InitiateVia.Hex(), e.subnetID)
 	fmt.Println("  weights: this command only initiates on the contract; P-chain delivery and the contract ack are the warp-courier daemon's job (a stall here means check the courier)")
 
 	// The whole sequence is retried: each pass re-observes everything, so a
