@@ -4,8 +4,9 @@ Tooling to run an Avalanche L1 across two data centers and test site failover
 under transaction load (~4000 tx/s with the default profile). All validators
 of both sites are registered on the L1 once, at chain creation. A failover is
 a change of consensus weight between them, issued through a ValidatorManager
-contract on the anchor network's C-chain and delivered to the P-chain via
-warp. Keys never move between machines, so a failover cannot fork the chain.
+contract on the anchor network's C-chain; a standalone warp-courier daemon
+delivers the emitted warp messages to the P-chain and acks them back. Keys
+never move between machines, so a failover cannot fork the chain.
 
 Each site runs 3 validators + 1 hot spare + 2 fixed RPC nodes (counts
 configurable in `.env`); on the primary site all 4 stake slots (validators and
@@ -198,8 +199,10 @@ Operating the fleet is two independent axes, both via `./fleet`:
 - **stake**: `weight <tier> <machines...>` moves the listed machines'
   on-chain consensus weight to one tier (`validator`=100000,
   `spare`=1000, `dead`=1) through the ValidatorManager contract on the
-  C-chain, delivered to the P-chain via warp. One tier per invocation; it
-  never starts or stops a process, and no keys move.
+  C-chain. The command only initiates on the contract; the standalone
+  warp-courier daemon delivers the emitted warp message to the P-chain and
+  acks it back to the contract, and the command polls until both agree. One
+  tier per invocation; it never starts or stops a process, and no keys move.
 
 ```bash
 watch -n5 ./fleet status                   # live per-DC stake tier + node state

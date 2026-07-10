@@ -47,38 +47,6 @@ func predicateAccessList(signedMsg []byte) types.AccessList {
 	}}
 }
 
-// WeightMessage reconstructs, byte-exactly, the unsigned L1ValidatorWeight
-// warp message the manager contract emitted for (validationID, nonce, weight):
-// AddressedCall from the manager address, sourced from the C-chain. Because
-// the reconstruction is deterministic we never scrape receipts or logs, which
-// is what makes every reconcile step re-runnable.
-func WeightMessage(
-	networkID uint32,
-	cChainID ids.ID,
-	manager common.Address,
-	validationID ids.ID,
-	nonce uint64,
-	weight uint64,
-) (*avalancheWarp.UnsignedMessage, error) {
-	payload, err := warpmessage.NewL1ValidatorWeight(validationID, nonce, weight)
-	if err != nil {
-		return nil, err
-	}
-	return addressedCallMessage(networkID, cChainID, manager.Bytes(), payload.Bytes())
-}
-
-// WeightAckMessage reconstructs the P-chain-sourced L1ValidatorWeight message
-// that acknowledges the weight is live on the P-chain (consumed by
-// completeValidatorWeightUpdate). P-chain validators sign it against their
-// current state, so nonce/weight must match what the P-chain holds.
-func WeightAckMessage(networkID uint32, validationID ids.ID, nonce uint64, weight uint64) (*avalancheWarp.UnsignedMessage, error) {
-	payload, err := warpmessage.NewL1ValidatorWeight(validationID, nonce, weight)
-	if err != nil {
-		return nil, err
-	}
-	return addressedCallMessage(networkID, constants.PlatformChainID, nil, payload.Bytes())
-}
-
 // ConversionMessage reconstructs the P-chain-sourced SubnetToL1Conversion
 // message for initializeValidatorSet. Aggregate it with the raw subnetID bytes
 // as justification (that is how the P-chain looks the conversion up).

@@ -287,19 +287,6 @@ func (c *Client) InitiateWeightUpdates(ctx context.Context, steps []WeightStep) 
 	return nil
 }
 
-// CompleteWeightUpdate delivers the P-chain-signed weight ack (predicate at
-// index 0), syncing the contract's receivedNonce. Pure bookkeeping for us,
-// but it keeps contract state equal to P-chain state, which the reconcile
-// loop's observations rely on.
-func (c *Client) CompleteWeightUpdate(ctx context.Context, signedAck []byte) error {
-	data, err := c.abi.Pack("completeValidatorWeightUpdate", uint32(0))
-	if err != nil {
-		return fmt.Errorf("pack completeValidatorWeightUpdate: %w", err)
-	}
-	_, err = c.transact(ctx, &c.Manager, data, predicateAccessList(signedAck), warpTxGas)
-	return err
-}
-
 // Validator mirrors the contract's Validator struct (getValidator return).
 type Validator struct {
 	Status         uint8

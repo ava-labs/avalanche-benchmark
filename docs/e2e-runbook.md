@@ -222,21 +222,24 @@ then the reconcile against Fuji, e.g.
 ```
   b1: spare -> validator
 [3/3] weights: reconciling via ValidatorManager 0x... (subnet ...)
+  weights: this command only initiates on the contract; P-chain delivery and the contract ack are the warp-courier daemon's job (a stall here means check the courier)
   weights: firing 2 initiates in one burst:
     b1 -> 801800
     b1 -> 100000
-  weights: b1 deliver weight 100000 (nonce 4) to the P-chain
-  weights: b1 complete (ack nonce 4, weight 100000)
   weights: converged (contract == P-chain == desired)
 ```
 
-Fuji's signature coverage for a fresh warp message can take minutes to reach
-quorum; the command retries on an escalating schedule (up to ~36 min) and
-prints each attempt. The chain stays healthy on its current weights while it
-waits. If it does time out, re-running the same `./fleet weight` command
-resumes; every step is idempotent. Weight lines that read
-`weights match ... nonce ... lags` or a mention of Glacier caching are the
-known Fuji-side transients; see
+The command fires initiates and then POLLS: the standalone warp-courier
+daemon (running on the control box) watches the contract, delivers the
+emitted warp message to the P-chain and acks it back. Signature coverage for
+a fresh warp message can take minutes to reach quorum; the poll retries on an
+escalating schedule (up to ~36 min) and prints each attempt while the courier
+retries delivery on its own. The chain stays healthy on its current weights
+while it waits. If it does time out, re-running the same `./fleet weight`
+command resumes; every step is idempotent. A persistent
+`waiting on the warp courier to deliver/ack` line means the courier daemon is
+down or stuck: check its logs on the control box. Background on the delivery
+mechanics: see
 [failover-recovery-simulation.md](failover-recovery-simulation.md).
 
 What to watch during scenario 03:

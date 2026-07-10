@@ -38,10 +38,10 @@ everything it needs is recomputable.
 ## The weight engine (`cmd/reconcile/weights.go`)
 
 Desired weights live in the local intents JSON (written by `./fleet weight`).
-Current state is read fresh from the contract and the Fuji P-chain on every
+Current state is read fresh from the contract and the P-chain on every
 step, so every action derives from observation, never memory: any crash or
 timeout is recovered by re-running the same `./fleet weight` command.
-`converge` runs four phases:
+`converge` is initiate-and-poll:
 
 1. **Contract ratchet.** For each slot where contract weight differs from
    desired, fire `initiateValidatorWeightUpdate` txs. The contract's churn
@@ -50,61 +50,28 @@ timeout is recovered by re-running the same `./fleet weight` command.
    `planSeesaw` simulates the whole ratchet locally and fires it as one burst
    of consecutive-nonce txs (a full DC seesaw is ~10 steps in one burst).
    Raises are planned before lowers, so the total never dips mid-move.
-2. **Deliver to the P-chain.** Each initiate emits an `L1ValidatorWeight`
-   warp message from the C-chain. The engine reconstructs the FINAL
-   (highest-nonce) message byte-exactly, gets it BLS-aggregate-signed by the
-   Fuji primary network, and issues one `SetL1ValidatorWeightTx`. P-chain
-   nonce skipping (ACP-77) collapses the ratchet intermediates: only the last
-   message needs delivering. Raises are delivered before lowers.
-3. **Ack back to the contract.** The P-chain-sourced ack message (its current
-   nonce and weight) is aggregated and fed to
-   `completeValidatorWeightUpdate`, so the contract's `receivedNonce` catches
-   up to `sentNonce`. Pure bookkeeping; consensus weight already moved in
-   step 2.
-4. **Verify.** Re-read everything and demand desired == contract == P-chain
-   and receivedNonce == sentNonce.
+2. **Verify (poll).** Re-read everything and demand desired == contract ==
+   P-chain and receivedNonce == sentNonce, retrying on an escalating
+   schedule (1s, 5s, 10s, 15s, 30s, 1m, then 2m flat; 24 attempts, ~36 min).
 
-Delivery is keyed on nonces, not weights: `minNonce <= sentNonce` means
-undelivered even when the weights already match (an abandoned
-demote-then-repromote seesaw leaves weights equal with the contract nonce
-ahead, and the ack can never be signed until that nonce lands). A
-weight-equal delivery is legal and exists exactly to advance `minNonce`.
+Delivering the emitted `L1ValidatorWeight` warp message to the P-chain
+(`SetL1ValidatorWeightTx`) and acking it back to the contract
+(`completeValidatorWeightUpdate`) is NOT this engine's job anymore: the
+standalone warp-courier daemon (github.com/containerman17/warp-courier,
+running on the control box) watches the ValidatorManager on the C-chain and
+does both, with strict per-validator ordering, its own signature aggregation
+and its own retries. The kit's poll finishing is the end-to-end proof the
+courier delivered; a poll that stalls with
+`waiting on the warp courier to deliver/ack` means the courier is down or
+stuck, so check its logs on the control box. The courier pays P-chain and
+C-chain fees from its OWN wallet, never the fleet wallet (two senders on one
+account race on nonces).
 
-## Signature aggregation
-
-The P-chain accepts a `SetL1ValidatorWeightTx` only with a BLS aggregate
-signature covering 67% of Fuji primary-network stake. Aggregation
-(`internal/valmgr/warp.go`) uses our private signature-aggregator
-(avaplatform/signature-aggregator on fly.io, scale-to-zero) as primary and
-Glacier's public aggregator as fallback. Each backend gets 3 tries with 3s
-pauses: the private one usually errors once on a cold start and succeeds on
-the immediate retry, and falling back to Glacier on that first error would
-land on Glacier's cache (below).
-
-Before issuing, `precheckQuorum` runs the P-chain's exact warp verification
-(signer weight AND the full BLS aggregate) against the current
-proposed-height Fuji validator set. A rejected precheck costs nothing: the
-message stays undelivered and the next attempt re-checks.
-
-## Failure modes hit live (2026-07-07/08) and their mitigations
-
-- **Fuji coverage lag.** Fuji validators only sign a C-chain-originated warp
-  message after syncing the block that emitted it. Right after an initiate,
-  coverage sits below the 67% quorum (measured ~52%) and climbs over minutes.
-  Mitigation: the converge loop retries on an escalating schedule (1s, 5s,
-  10s, 15s, 30s, 1m, then 2m flat; 24 attempts, ~36 min) and the chain stays
-  healthy on its current weights the whole time, since weight only moves when
-  delivery lands.
-- **Glacier's per-message cache.** Glacier returns a cached aggregate for a
-  given unsigned message (identical bytes hours apart; no cache buster), and
-  does not error on under-quorum. The signer bitset indexes the canonical
-  validator set at aggregation time, so as the Fuji set drifts the cached
-  bitset maps to different validators (seen: the same signature summing 40.6%
-  then 67.7% of stake). Mitigation: the private aggregator (fresh aggregation
-  per request) is primary, and the full-Verify precheck catches a stale
-  cached aggregate that a weight-only check would pass.
-- **Nonce lag.** Weights match but the P-chain nonce trails the contract,
-  wedging acks. Mitigation: delivery keyed on nonces as described above.
+Signature coverage lag is still real (primary-network validators only sign a
+C-chain-originated warp message after syncing the block that emitted it, so
+coverage climbs past the 67% quorum over minutes); the courier owns retrying
+through it, and the chain stays healthy on its current weights the whole
+time, since weight only moves when delivery lands.
 
 ## Halt and recovery theory
 
