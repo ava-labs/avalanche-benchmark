@@ -24,6 +24,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -219,7 +221,7 @@ func main() {
 		} else {
 			mustSaveIntents(cfg, intents)
 			if lowered && !raised {
-				fmt.Println("hint: raise replacement validators before lowering, if you have not already")
+				fmt.Println("hint: raise replacement validators first if you have not already")
 			}
 		}
 		reconcileWeights(cfg, intents)
@@ -631,11 +633,50 @@ func destroy(cfg *config) {
 	fmt.Println("\nFleet destroyed. network.env kept; redeploy with ./fleet fresh.")
 }
 
+// inFlightLine parses `ps -eo pid,etimes,args` output and returns one
+// "in flight: ./fleet <args> (<elapsed>)" line for any OTHER benchmark-fleet
+// command executing on this box, or "" if none. Read-only invocations
+// (status, endpoints, exporter) and this process are excluded: the line
+// exists so someone watching `watch ./fleet status` knows which
+// state-changing phase is producing the transitions they see.
+func inFlightLine(psOut string, selfPID int) string {
+	var found []string
+	for _, l := range strings.Split(psOut, "\n") {
+		f := strings.Fields(l)
+		if len(f) < 4 { // pid, etimes, binary, subcommand
+			continue
+		}
+		pid, err := strconv.Atoi(f[0])
+		if err != nil || pid == selfPID {
+			continue
+		}
+		if filepath.Base(f[2]) != "benchmark-fleet" {
+			continue
+		}
+		switch f[3] {
+		case "status", "endpoints", "exporter":
+			continue
+		}
+		secs, _ := strconv.Atoi(f[1])
+		found = append(found, fmt.Sprintf("./fleet %s (%s)",
+			strings.Join(f[3:], " "), time.Duration(secs)*time.Second))
+	}
+	if len(found) == 0 {
+		return ""
+	}
+	return "in flight: " + strings.Join(found, "; ")
+}
+
 // status runs ONLY the read-only report against the current intents - no
 // provisioning, stop/start, or weight changes.
 func status(cfg *config) {
 	intents := mustLoadIntents(cfg)
 	fmt.Println("== benchmark-fleet status ==")
+	if out, err := exec.Command("ps", "-eo", "pid,etimes,args").Output(); err == nil {
+		if l := inFlightLine(string(out), os.Getpid()); l != "" {
+			fmt.Println(l)
+		}
+	}
 	results := cfg.checkHealth(intents)
 	// One batch of contract reads (C-chain only), shared by both reports.
 	vals, valsErr := fetchContractValidators(cfg, intents)

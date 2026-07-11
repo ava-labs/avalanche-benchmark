@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -193,6 +194,53 @@ func TestContractWeights(t *testing.T) {
 	got := contractWeights(map[int]valmgr.Validator{2: {Weight: 42}})
 	if len(got) != 1 || got[2] != 42 {
 		t.Errorf("contractWeights = %v", got)
+	}
+}
+
+// TestWaitPrinterTick pins the display gate: a status line prints on text
+// change, else as a 30s heartbeat; the courier escalation appears only after
+// 2m without change, only for stallable (waiting) states, at most every 2m.
+func TestWaitPrinterTick(t *testing.T) {
+	w := &waitPrinter{heartbeat: 30 * time.Second, stallAfter: 2 * time.Minute}
+	t0 := time.Unix(1000, 0)
+
+	if got := w.tick("waiting, a1 nonces 246/248", t0, true); len(got) != 1 {
+		t.Fatalf("first tick = %v, want the line", got)
+	}
+	if got := w.tick("waiting, a1 nonces 246/248", t0.Add(10*time.Second), true); len(got) != 0 {
+		t.Fatalf("unchanged within heartbeat = %v, want silence", got)
+	}
+	if got := w.tick("waiting, a1 nonces 246/248", t0.Add(35*time.Second), true); len(got) != 1 {
+		t.Fatalf("heartbeat = %v, want one line", got)
+	}
+	if got := w.tick("waiting, a1 nonces 247/248", t0.Add(40*time.Second), true); len(got) != 1 {
+		t.Fatalf("changed text = %v, want immediate line", got)
+	}
+	// 2m after the last change: heartbeat + escalation.
+	got := w.tick("waiting, a1 nonces 247/248", t0.Add(40*time.Second+2*time.Minute), true)
+	if len(got) != 2 || !strings.Contains(got[1], "warp-courier") {
+		t.Fatalf("stall = %v, want heartbeat + courier escalation", got)
+	}
+	// 30s later: heartbeat only, escalation not repeated inside 2m.
+	got = w.tick("waiting, a1 nonces 247/248", t0.Add(40*time.Second+2*time.Minute+30*time.Second), true)
+	if len(got) != 1 || strings.Contains(got[0], "warp-courier") {
+		t.Fatalf("post-stall heartbeat = %v, want plain heartbeat", got)
+	}
+	// A non-stallable (hard error) state never escalates to the courier.
+	w2 := &waitPrinter{heartbeat: 30 * time.Second, stallAfter: 2 * time.Minute}
+	w2.tick("dial: connection refused", t0, false)
+	got = w2.tick("dial: connection refused", t0.Add(5*time.Minute), false)
+	if len(got) != 1 || strings.Contains(got[0], "warp-courier") {
+		t.Fatalf("hard-error stall = %v, want heartbeat without courier line", got)
+	}
+}
+
+func TestShortAddr(t *testing.T) {
+	if got := shortAddr("0xF41Ab187161a4hex40hexhexhexhex34hex25495"); got != "0xF41A..5495" {
+		t.Errorf("shortAddr = %q", got)
+	}
+	if got := shortAddr("0xABCD"); got != "0xABCD" {
+		t.Errorf("short input mangled: %q", got)
 	}
 }
 

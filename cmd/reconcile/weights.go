@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -71,6 +72,63 @@ func delayForAttempt(attempt int) time.Duration {
 		i = len(weightRetrySchedule) - 1
 	}
 	return weightRetrySchedule[i]
+}
+
+// waitPrinter gates the between-attempts status output, display only (the
+// retry schedule is untouched): a status line prints when its text changes,
+// otherwise as a heartbeat at most every heartbeat interval; after stallAfter
+// with no text change it adds a single escalation line naming the
+// warp-courier service (the one place the courier appears in normal output),
+// repeated at most every stallAfter.
+type waitPrinter struct {
+	heartbeat  time.Duration
+	stallAfter time.Duration
+	last       string
+	lastPrint  time.Time
+	lastChange time.Time
+	lastStall  time.Time
+}
+
+// tick decides what to print for the current status text. stallable marks
+// waiting-on-delivery states, the only ones that escalate to the courier
+// line; any text change (including hard errors) always prints immediately.
+func (w *waitPrinter) tick(msg string, now time.Time, stallable bool) []string {
+	if msg != w.last {
+		w.last = msg
+		w.lastChange = now
+		w.lastPrint = now
+		w.lastStall = time.Time{}
+		return []string{msg}
+	}
+	var out []string
+	if now.Sub(w.lastPrint) >= w.heartbeat {
+		w.lastPrint = now
+		out = append(out, msg)
+	}
+	if stallable && now.Sub(w.lastChange) >= w.stallAfter &&
+		(w.lastStall.IsZero() || now.Sub(w.lastStall) >= w.stallAfter) {
+		w.lastStall = now
+		out = append(out, fmt.Sprintf("no delivery progress for %s, check the warp-courier service",
+			now.Sub(w.lastChange).Truncate(time.Minute)))
+	}
+	return out
+}
+
+// notConvergedError is the expected waiting state (initiates landed, ack not
+// observed yet), not a failure: status is the short changed-state line the
+// waitPrinter shows, Error() keeps the full per-slot detail for the final
+// timeout message.
+type notConvergedError struct{ status, detail string }
+
+func (e *notConvergedError) Error() string { return e.detail }
+
+// shortAddr abbreviates a 0x-hex address for the one-line banner; the full
+// address is in network.env and `status` output.
+func shortAddr(hex string) string {
+	if len(hex) <= 12 {
+		return hex
+	}
+	return hex[:6] + ".." + hex[len(hex)-4:]
 }
 
 // nextWeight returns the furthest weight toward desired reachable in ONE
@@ -204,15 +262,21 @@ func reconcileWeights(cfg *config, intents []MachineIntent) {
 	// repeats visibly in the attempt lines instead; Ctrl-C it.
 	var e *weightEngine
 	var lastErr error
+	w := &waitPrinter{heartbeat: 30 * time.Second, stallAfter: 2 * time.Minute}
 	for attempt := 1; attempt <= weightConvergeAttempts; attempt++ {
 		if attempt > 1 {
-			delay := delayForAttempt(attempt)
-			fmt.Printf("  weights: attempt %d/%d in %s (last: %v)\n",
-				attempt, weightConvergeAttempts, delay, lastErr)
+			msg, stallable := lastErr.Error(), false
+			var nc *notConvergedError
+			if errors.As(lastErr, &nc) {
+				msg, stallable = nc.status, true
+			}
+			for _, l := range w.tick(msg, time.Now(), stallable) {
+				fmt.Printf("  weights: %s\n", l)
+			}
 			select {
 			case <-ctx.Done():
-				fatalf("weights: %v (re-run the `fleet weight` command to resume; every step is idempotent; if the initiates landed, check the warp-courier daemon)", ctx.Err())
-			case <-time.After(delay):
+				fatalf("weights: %v (last: %v; re-run the `fleet weight` command to resume; every step is idempotent; if the initiates landed, check the warp-courier daemon)", ctx.Err(), lastErr)
+			case <-time.After(delayForAttempt(attempt)):
 			}
 		}
 		if e == nil {
@@ -222,11 +286,10 @@ func reconcileWeights(cfg *config, intents []MachineIntent) {
 				e = nil
 				continue
 			}
-			fmt.Printf("[3/3] weights: reconciling ValidatorManager %s via PoAManager %s (subnet %s)\n", e.cli.Manager.Hex(), e.cli.InitiateVia.Hex(), e.subnetID)
-			fmt.Println("  weights: this command only initiates on the contract; P-chain delivery and the contract ack are the warp-courier daemon's job (a stall here means check the courier)")
+			fmt.Printf("[3/3] weights: reconciling via ValidatorManager %s\n", shortAddr(e.cli.Manager.Hex()))
 		}
 		if lastErr = e.converge(ctx); lastErr == nil {
-			fmt.Println("  weights: converged (contract weight == desired, sentNonce == receivedNonce)")
+			fmt.Println("  weights: converged")
 			return
 		}
 	}
@@ -272,9 +335,6 @@ func (e *weightEngine) convergeContract(ctx context.Context) error {
 		// node RPCs (checkHealth); this flow still never touches the P-chain.
 		health := e.cfg.checkHealth(e.intents)
 		targets, deferred := gateRaises(e.targets, current, health, e.cfg.topo)
-		for _, d := range deferred {
-			fmt.Printf("  weights: %s\n", d)
-		}
 		steps := planSeesaw(targets, current, total)
 		if len(steps) == 0 {
 			if len(deferred) > 0 {
@@ -315,9 +375,12 @@ func gateRaises(targets []stakingTarget, current map[ids.ID]uint64, health []hea
 		h := health[tg.slot]
 		if raiseGated(current[tg.validationID], tg.desired, h.state) {
 			out[i].desired = current[tg.validationID]
+			// No block number here: the deferral text stays stable while the
+			// node catches up, so the change-gated printer shows it once per
+			// state change instead of every probe.
 			deferred = append(deferred, fmt.Sprintf(
-				"%s is %s (block %d): behind/unreachable, raise %d -> %d deferred until it is near tip",
-				t.MachineName(tg.slot), h.state, h.block, current[tg.validationID], tg.desired))
+				"%s is %s: raise %d -> %d deferred until it is near tip",
+				t.MachineName(tg.slot), h.state, current[tg.validationID], tg.desired))
 		}
 	}
 	return out, deferred
@@ -373,26 +436,33 @@ func slotConverged(v valmgr.Validator, desired uint64) bool {
 }
 
 // verifyConverged re-reads the contract and demands slotConverged for every
-// slot. "not converged" while the weight already matches desired means the
-// courier has not caught up yet (or is down).
+// slot. A pending slot while the weight already matches desired means the
+// warp courier has not delivered/acked yet; that is returned as a
+// notConvergedError so the waitPrinter shows a short waiting line and only
+// the final timeout error carries the full detail.
 func (e *weightEngine) verifyConverged(ctx context.Context) error {
-	var bad []string
+	var short, detail []string
 	for _, t := range e.targets {
 		v, err := e.cli.GetValidator(ctx, t.validationID)
 		if err != nil {
 			return err
 		}
 		if !slotConverged(v, t.desired) {
-			line := fmt.Sprintf("%s desired=%d contract=%d nonces=%d/%d",
-				e.slotName(t), t.desired, v.Weight, v.ReceivedNonce, v.SentNonce)
-			if v.Weight == t.desired {
-				line += " (initiates landed; waiting on the warp courier to deliver/ack)"
+			detail = append(detail, fmt.Sprintf("%s desired=%d contract=%d nonces=%d/%d",
+				e.slotName(t), t.desired, v.Weight, v.ReceivedNonce, v.SentNonce))
+			s := fmt.Sprintf("%s nonces %d/%d", e.slotName(t), v.ReceivedNonce, v.SentNonce)
+			if v.Weight != t.desired {
+				s = fmt.Sprintf("%s contract %d of %d, nonces %d/%d",
+					e.slotName(t), v.Weight, t.desired, v.ReceivedNonce, v.SentNonce)
 			}
-			bad = append(bad, line)
+			short = append(short, s)
 		}
 	}
-	if len(bad) > 0 {
-		return fmt.Errorf("not converged: %s", strings.Join(bad, "; "))
+	if len(detail) > 0 {
+		return &notConvergedError{
+			status: "waiting for delivery, " + strings.Join(short, ", "),
+			detail: "not converged: " + strings.Join(detail, "; "),
+		}
 	}
 	return nil
 }
