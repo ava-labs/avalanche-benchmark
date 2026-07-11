@@ -41,7 +41,7 @@ if [ ! -x "$BOMBARD" ]; then
     exit 1
 fi
 
-# Bombard the PINNED dedicated archive RPC nodes (role=rpc: m5+m6 on site A, plus
+# Bombard the PINNED dedicated RPC nodes (role=rpc: m5+m6 on site A, plus
 # b5+b6 in two-site mode - zero-weight non-validators that track
 # the subnet and serve RPC). The failover engine never promotes them to validators,
 # so this clean ingress path survives failover events - unlike the hot spare m4

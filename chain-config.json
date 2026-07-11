@@ -1,4 +1,5 @@
 {
+    "log-level": "warn",
     "min-delay-target": 25,
     "push-gossip-frequency": "20ms",
     "max-outbound-active-requests": 64,

@@ -133,3 +133,25 @@ func TestStartScriptFujiFlags(t *testing.T) {
 		t.Errorf("RPC start script must bootstrap from the public Fuji peer")
 	}
 }
+
+// The stdout-capture cap and memory guard land verbatim in every rendered
+// script (incident guards from 2026-07-10/11: disk-full from avalanchego.out
+// tx spam, box-wedging OOM from a lagging plugin). The %-escapes in the Go
+// template are the usual suspects, so pin the exact rendered shell.
+func TestStartScriptGuards(t *testing.T) {
+	c := fujiTestConfig(t)
+	script := c.startScript(0)
+	for _, want := range []string{
+		`pkill -f "outwatch=data/validator;" || true`,
+		`stat -c%s "$outwatch/logs/avalanchego.out"`,
+		`-gt 2147483648`,
+		`truncate -s 0 "$outwatch/logs/avalanchego.out"`,
+		`export GOMEMLIMIT=$(awk '/MemTotal/{printf "%dB", $2*1024*3/4}' /proc/meminfo)`,
+		`echo 500 > /proc/self/oom_score_adj || true`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("start script missing %q", want)
+		}
+	}
+	t.Logf("rendered start script for a1:\n%s", script)
+}

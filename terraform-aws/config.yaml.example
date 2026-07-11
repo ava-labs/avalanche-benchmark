@@ -5,7 +5,7 @@ owner: "you@avalabs.org"  # required by org SCP (Owner tag on instances)
 
 # Per-DC machine counts. Terraform provisions N boxes per region; roles
 # (validator/spare/RPC) are assigned later in the reconcile/.env layer.
-# The validated topology is 6 per site (3 validators + 1 spare + 2 archive RPC).
+# The validated topology is 6 per site (3 validators + 1 spare + 2 RPC).
 # Set site_b_count: 0 for a single-DC run - no us-west-2 EC2 spend (the us-west-2
 # security group + key pair are free and remain; outputs collapse to empty).
 site_a_count: 6

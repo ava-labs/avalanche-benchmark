@@ -284,6 +284,14 @@ with the same identity. The related fork-wedge case (`CATCHING UP` with a
 height that never moves: the node self-finalized a sibling block) is
 detected and rebuilt by `up` automatically.
 
+Every node starts with two self-defense guards baked into its launch script:
+the stdout capture (`data/validator/logs/avalanchego.out`) is truncated if it
+ever exceeds 2 GiB (subnet-evm runs at `log-level: warn`, so the capture stays
+small; WARN/ERROR still land in the rotated chain logs), and the process tree
+runs with `GOMEMLIMIT` at 75% of the box's RAM plus a raised `oom_score_adj`,
+so a runaway node is GC-throttled and, at worst, killed by the kernel instead
+of wedging the whole machine.
+
 ## Block cadence
 
 All nodes propose 25ms blocks (the hot ~40 blk/s profile), uniform across

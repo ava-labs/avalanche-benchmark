@@ -108,7 +108,6 @@ pack: clean-tools deps build monitoring-deps
 		monitoring/dashboards/ \
 		node-config.json \
 		chain-config.json \
-		chain-config-rpc.json \
 		subnet-config.json \
 		genesis.json \
 		.env.example \
@@ -137,7 +136,6 @@ release: clean-tools deps build monitoring-deps
 		monitoring/dashboards/ \
 		node-config.json \
 		chain-config.json \
-		chain-config-rpc.json \
 		subnet-config.json \
 		genesis.json \
 		.env.example \

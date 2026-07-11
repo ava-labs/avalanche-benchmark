@@ -42,7 +42,7 @@ const (
 	// accepted frontier is an UNFILLABLE GAP: the node queues it but cannot mine it
 	// until it catches up, pinning throughput at 0. This bit is what keeps a graceful
 	// restore from stalling bombard: when the validator majority (and thus the active
-	// RPC set) flips to the recovering site, its archive RPCs are still catching up -
+	// RPC set) flips to the recovering site, its RPCs are still catching up -
 	// so we keep issuing to the at-tip site we are restoring FROM until the recovering
 	// RPCs are genuinely at tip, not merely "in rotation". Well above normal under-load
 	// lag, well below a restore catch-up backlog, so it neither flaps nor sends into a gap.

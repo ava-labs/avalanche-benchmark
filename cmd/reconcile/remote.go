@@ -474,6 +474,30 @@ mkdir -p "%[7]s/configs/chains/%[2]s" "%[7]s/configs/subnets" "%[7]s/db" "%[7]s/
 cp %[8]s "%[7]s/configs/chains/%[2]s/config.json"
 cp subnet-config.json "%[7]s/configs/subnets/%[3]s.json"
 
+# Belt and braces for the stdout capture: coreth once INFO-logged every
+# bombarded tx into avalanchego.out (~5.7 GB/h per RPC node, disk full in
+# ~15h, avalanchego FATALs at 3%% free). chain-config log-level=warn kills
+# the spam at the source; this watchdog caps the file at 2 GiB regardless
+# (the file is open O_APPEND, so truncate reclaims space with no restart).
+# The pkill keeps restarts from stacking watchdogs; the trailing ';' in the
+# pattern anchors it so co-located suffixed dirs don't cross-match.
+pkill -f "outwatch=%[7]s;" || true
+setsid bash -c 'outwatch=%[7]s; while sleep 60; do
+    [ "$(stat -c%%s "$outwatch/logs/avalanchego.out" 2>/dev/null || echo 0)" -gt 2147483648 ] &&
+        truncate -s 0 "$outwatch/logs/avalanchego.out"
+done' >/dev/null 2>&1 < /dev/null &
+
+# Memory guard: a lagging node's subnet-evm plugin pins undecided processing
+# blocks without bound (seen: 49.9 GB RSS on a 61 GiB box; the kernel OOM then
+# wedged the whole machine). GOMEMLIMIT is inherited by the plugin child and
+# makes the Go runtime GC hard at 75%% of the box's RAM instead of growing
+# forever. Nodes are raw setsid processes (no systemd unit), so there is no
+# MemoryMax hard stop; instead the raised oom_score_adj (also inherited) makes
+# the kernel kill the node tree first, not sshd, if it still exceeds physical
+# RAM. NOTE: co-located instances each get 75%%, acceptable on test-only boxes.
+export GOMEMLIMIT=$(awk '/MemTotal/{printf "%%dB", $2*1024*3/4}' /proc/meminfo)
+echo 500 > /proc/self/oom_score_adj || true
+
 setsid ./bin/avalanchego \
     --http-port=%[9]d \
     --staking-port=%[10]d \
@@ -599,39 +623,18 @@ func (c *config) provisioned(host string) (bool, error) {
 	return out == "OK", err
 }
 
-// isRPCNode reports whether machine i is a pinned dedicated-RPC node: the RPC slots of each
-// site (m5/m6, and b5/b6 in two-site mode). RPC nodes run chain-config-rpc.json, kept SEPARATE
-// from the validator/spare chain-config.json so RPC-only settings can be tuned independently.
-// Both files now carry the SAME sync rules (state-sync + pruning), so an RPC self-heals via
-// state-sync and seeds from the same pruned snapshot as every other role. (Previously the RPC
-// config was an archive profile: pruning + state-sync disabled: which held full history but
-// had no self-heal path.) Index-based, holds in single- and two-site mode. Safe for i<0.
-func (c *config) isRPCNode(i int) bool {
-	if i < 0 {
-		return false
-	}
-	return c.topo.IsRPCSlot(i)
-}
-
-// deployChainConfig writes pool slot i's ROLE-appropriate chain-config to its instance config
-// file (which the start script copies into place): chain-config-rpc.json for the pinned RPC
-// nodes, chain-config.json for validators and the spare. The two files are kept SEPARATE so RPC
-// settings can be tuned independently, but they now carry the SAME sync rules (state-sync +
-// pruning): so every role shares one snapshot shape and self-heals via state-sync if it falls
-// more than state-sync-min-blocks behind. (Previously the RPC file was an archive profile with
-// pruning + state-sync disabled for full history; RPCs no longer serve arbitrary-height eth_
-// queries, but they now recover by a plain resync instead of an archive->archive clone.) For a
-// normal node the file is chain-config.json (startScript unchanged); a co-located instance gets
-// chain-config-N.json so housemates with different roles don't clobber each other. Every node
-// gets its file verbatim: both sites run the same uniform min-delay-target (25ms). Re-applied on
-// restore so a node's pruning/state-sync mode is reset to match its DB.
+// deployChainConfig writes chain-config.json to pool slot i's instance config file (which the
+// start script copies into place). ONE config for every role: all nodes run pruned +
+// state-sync-enabled, so every role shares one snapshot shape and self-heals via state-sync if
+// it falls more than state-sync-min-blocks behind. min-delay-target is inert on non-building
+// RPC nodes, so a role split buys nothing. (History: RPCs once ran a separate
+// chain-config-rpc.json, originally an archival profile with no self-heal path; unified
+// 2026-07-11.) For a normal node the staged file is chain-config.json; a co-located instance
+// gets chain-config-N.json so housemates don't clobber each other. Re-applied on restore so a
+// node's pruning/state-sync mode is reset to match its DB.
 func (c *config) deployChainConfig(i int) {
 	in := c.instances[i]
-	src := "chain-config.json"
-	if c.isRPCNode(i) {
-		src = "chain-config-rpc.json"
-	}
-	c.scp(c.repoDir+"/"+src, in.host, c.remoteDir+"/"+in.chainCfg, false)
+	c.scp(c.repoDir+"/chain-config.json", in.host, c.remoteDir+"/"+in.chainCfg, false)
 }
 
 // upload pushes all artifacts a box needs. Pass 0 of reconcile. The binary, plugin,
