@@ -1,6 +1,9 @@
 #!/bin/bash
 # SCENARIO 00: healthy baseline, also the recovery step after any scenario.
 set -e
+# set -e aborts on the first failed fleet command; the trap makes that abort
+# LOUD so a wrapping loop racing to the next scenario cannot hide it.
+trap 'printf "\033[1;31m==== ❌ RESET FAILED (exit %s): fleet left unhealthy, scenario aborted ====\033[0m\n" "$?" >&2' ERR
 cd "$(dirname "$0")/.." || exit 1
 
 echo

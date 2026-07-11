@@ -640,5 +640,5 @@ func status(cfg *config) {
 	// One batch of contract reads (C-chain only), shared by both reports.
 	vals, valsErr := fetchContractValidators(cfg, intents)
 	reportHealth(cfg, intents, results, contractWeights(vals))
-	weightsReport(cfg, intents, vals, valsErr)
+	weightsReport(cfg, intents, vals, valsErr, results)
 }

@@ -190,18 +190,19 @@ func reconcileWeights(cfg *config, intents []MachineIntent) {
 	ctx, cancel := context.WithTimeout(context.Background(), weightConvergeTimeout)
 	defer cancel()
 
-	e, err := newWeightEngine(ctx, cfg, intents)
-	if err != nil {
-		fatalf("weights: %v", err)
-	}
-	fmt.Printf("[3/3] weights: reconciling ValidatorManager %s via PoAManager %s (subnet %s)\n", e.cli.Manager.Hex(), e.cli.InitiateVia.Hex(), e.subnetID)
-	fmt.Println("  weights: this command only initiates on the contract; P-chain delivery and the contract ack are the warp-courier daemon's job (a stall here means check the courier)")
-
 	// The whole sequence is retried: each pass re-observes everything, so a
 	// transient failure just repeats the remaining work. Once the contract
 	// matches desired, every further attempt is a pure poll waiting for the
 	// courier to deliver to the P-chain and ack back. Re-run the
 	// `fleet weight` command to resume past the timeout.
+	//
+	// Engine creation is INSIDE the retry loop: its first RPC (eth_chainId in
+	// valmgr.Dial) crashed the whole command on a transient 429 from a
+	// rate-limited public C-chain endpoint (Cloudflare 1015 on
+	// api.avax.network, 2026-07-11), aborting every scenario in the torture
+	// loop within a second of starting. A config error (bad key, bad subnet)
+	// repeats visibly in the attempt lines instead; Ctrl-C it.
+	var e *weightEngine
 	var lastErr error
 	for attempt := 1; attempt <= weightConvergeAttempts; attempt++ {
 		if attempt > 1 {
@@ -213,6 +214,16 @@ func reconcileWeights(cfg *config, intents []MachineIntent) {
 				fatalf("weights: %v (re-run the `fleet weight` command to resume; every step is idempotent; if the initiates landed, check the warp-courier daemon)", ctx.Err())
 			case <-time.After(delay):
 			}
+		}
+		if e == nil {
+			var err error
+			if e, err = newWeightEngine(ctx, cfg, intents); err != nil {
+				lastErr = err
+				e = nil
+				continue
+			}
+			fmt.Printf("[3/3] weights: reconciling ValidatorManager %s via PoAManager %s (subnet %s)\n", e.cli.Manager.Hex(), e.cli.InitiateVia.Hex(), e.subnetID)
+			fmt.Println("  weights: this command only initiates on the contract; P-chain delivery and the contract ack are the warp-courier daemon's job (a stall here means check the courier)")
 		}
 		if lastErr = e.converge(ctx); lastErr == nil {
 			fmt.Println("  weights: converged (contract weight == desired, sentNonce == receivedNonce)")
@@ -443,7 +454,14 @@ func contractWeights(vals map[int]valmgr.Validator) map[int]uint64 {
 // judged purely from contract state: every slot must pass slotConverged
 // (weight == desired, sentNonce == receivedNonce). Best-effort: a fetch error
 // is reported as a note rather than failing the health snapshot.
-func weightsReport(cfg *config, intents []MachineIntent, vals map[int]valmgr.Validator, fetchErr error) {
+//
+// health is the same snapshot reportHealth just printed: a slot whose raise
+// the raise-gate is deferring (desired > contract while the node is not
+// SERVING) says so explicitly, so an operator watching a PENDING table sees
+// WHY nothing moves instead of suspecting the courier (2026-07-11: 36 min of
+// unexplained PENDING while `weight` was correctly deferring raises for down
+// nodes).
+func weightsReport(cfg *config, intents []MachineIntent, vals map[int]valmgr.Validator, fetchErr error, health []healthResult) {
 	if fetchErr != nil {
 		fmt.Printf("weights: %v\n", fetchErr)
 		return
@@ -455,6 +473,9 @@ func weightsReport(cfg *config, intents []MachineIntent, vals map[int]valmgr.Val
 		mark := ""
 		if !slotConverged(v, intents[s].Weight) {
 			mark = "  <- PENDING"
+			if raiseGated(v.Weight, intents[s].Weight, health[s].state) {
+				mark = fmt.Sprintf("  <- raise deferred: node is %s, fires once it is near tip", health[s].state)
+			}
 			converged = false
 		}
 		lines = append(lines, fmt.Sprintf("  %-3s desired=%-10d contract=%-10d nonces=%d/%d%s",
