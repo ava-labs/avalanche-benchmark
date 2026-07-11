@@ -667,11 +667,27 @@ func inFlightLine(psOut string, selfPID int) string {
 	return "in flight: " + strings.Join(found, "; ")
 }
 
+// stateAgeLine is the status provenance line: how long ago the intents file
+// (fleet-state.json) was written. Past 24h it shouts and names the full
+// path, the tell for `watch`ing a stale kit copy (2026-07-11: a watch pane
+// ran an old snapshot dir with a 2-day-old state file, showing fossil
+// desired weights).
+func stateAgeLine(path string, age time.Duration) string {
+	age = age.Truncate(time.Second)
+	if age > 24*time.Hour {
+		return fmt.Sprintf("state: %s updated %s ago (STALE, is this the right directory?)", path, age)
+	}
+	return fmt.Sprintf("state: %s updated %s ago", filepath.Base(path), age)
+}
+
 // status runs ONLY the read-only report against the current intents - no
 // provisioning, stop/start, or weight changes.
 func status(cfg *config) {
 	intents := mustLoadIntents(cfg)
 	fmt.Println("== benchmark-fleet status ==")
+	if fi, err := os.Stat(cfg.stateFile); err == nil {
+		fmt.Println(stateAgeLine(cfg.stateFile, time.Since(fi.ModTime())))
+	}
 	if out, err := exec.Command("ps", "-eo", "pid,etimes,args").Output(); err == nil {
 		if l := inFlightLine(string(out), os.Getpid()); l != "" {
 			fmt.Println(l)
