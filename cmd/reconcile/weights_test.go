@@ -31,6 +31,72 @@ func TestNextWeight(t *testing.T) {
 	}
 }
 
+// TestRaiseGated pins the raise-gate decision: a raise fires only for a node
+// SERVING at the fleet tip; behind (CATCHING UP), still syncing
+// (BOOTSTRAPPING), and unreachable (DOWN, also the cordoned zero value) all
+// defer it. Lowers and no-ops are NEVER gated, whatever the node's state:
+// getting weight off a sick node is the failover direction.
+func TestRaiseGated(t *testing.T) {
+	states := []nodeHealth{healthServing, healthCatchingUp, healthBootstrapping, healthDown}
+	for _, st := range states {
+		if got := raiseGated(1, 100, st); got != (st != healthServing) {
+			t.Errorf("raise under %s: gated=%v", st, got)
+		}
+		if raiseGated(100, 1, st) {
+			t.Errorf("lower under %s must never be gated", st)
+		}
+		if raiseGated(100, 100, st) {
+			t.Errorf("no-op under %s must never be gated", st)
+		}
+	}
+}
+
+// TestGateRaises: gated raises are neutralized (desired = current, so
+// planSeesaw plans nothing for them) with a deferral line each; healthy raises
+// and all lowers pass through untouched.
+func TestGateRaises(t *testing.T) {
+	topo := twoSiteTopo()
+	mkTarget := func(slot int, desired uint64) stakingTarget {
+		return stakingTarget{slot: slot, validationID: ids.ID{byte(slot + 1)}, desired: desired}
+	}
+	targets := []stakingTarget{
+		mkTarget(0, 100), // raise, node at tip -> allowed
+		mkTarget(1, 100), // raise, node behind -> gated
+		mkTarget(2, 100), // raise, node unreachable -> gated
+		mkTarget(3, 1),   // lower, node down -> never gated
+	}
+	current := map[ids.ID]uint64{
+		targets[0].validationID: 1,
+		targets[1].validationID: 1,
+		targets[2].validationID: 1,
+		targets[3].validationID: 100,
+	}
+	health := make([]healthResult, topo.Size())
+	health[0] = healthResult{state: healthServing, block: 5000}
+	health[1] = healthResult{state: healthCatchingUp, block: 400}
+	health[2] = healthResult{state: healthDown}
+	health[3] = healthResult{state: healthDown}
+
+	out, deferred := gateRaises(targets, current, health, topo)
+	if len(deferred) != 2 {
+		t.Fatalf("deferred = %v, want 2 lines", deferred)
+	}
+	if out[0].desired != 100 {
+		t.Errorf("healthy raise was gated: %+v", out[0])
+	}
+	if out[1].desired != 1 || out[2].desired != 1 {
+		t.Errorf("behind/unreachable raises not neutralized: %+v %+v", out[1], out[2])
+	}
+	if out[3].desired != 1 {
+		t.Errorf("lower on a down node was gated: %+v", out[3])
+	}
+	// The original targets must be untouched: the gate is re-derived from
+	// fresh health on every convergence pass.
+	if targets[1].desired != 100 {
+		t.Errorf("gateRaises mutated its input: %+v", targets[1])
+	}
+}
+
 // TestPlanSeesaw replays the planned burst against a simulated churn tracker
 // (period 0: every op re-seeds the budget from the running total) through a
 // full DC failover: every step must fit the per-op cap, raises must all

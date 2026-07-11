@@ -106,6 +106,7 @@ type weightEngine struct {
 	subnetID ids.ID
 	cli      *valmgr.Client
 	targets  []stakingTarget
+	intents  []MachineIntent // for the raise-gate's fleet health probe (node RPCs only)
 }
 
 // The whole seesaw runs off the network.env-configured per-chain RPC, never
@@ -147,6 +148,7 @@ func newWeightEngine(ctx context.Context, cfg *config, intents []MachineIntent) 
 		cfg:      cfg,
 		subnetID: subnetID,
 		cli:      cli,
+		intents:  intents,
 	}
 	e.targets, err = stakingTargets(cfg, subnetID, intents)
 	return e, err
@@ -249,8 +251,24 @@ func (e *weightEngine) convergeContract(ctx context.Context) error {
 			current[t.validationID] = v.Weight
 			names[t.validationID] = e.slotName(t)
 		}
-		steps := planSeesaw(e.targets, current, total)
+		// Raise-gate: never initiate a weight RAISE for a node that is not
+		// serving at the fleet tip. A behind or unreachable node given more
+		// stake wins proposer slots on stale heights and can self-finalize a
+		// sibling block (the documented fork wedge); the raise stays deferred,
+		// re-checked on every retry, and fires as soon as the node is near tip.
+		// Lowers are NEVER gated: taking weight off a sick node is the failover
+		// direction and must always work. Health is probed over the fleet's own
+		// node RPCs (checkHealth); this flow still never touches the P-chain.
+		health := e.cfg.checkHealth(e.intents)
+		targets, deferred := gateRaises(e.targets, current, health, e.cfg.topo)
+		for _, d := range deferred {
+			fmt.Printf("  weights: %s\n", d)
+		}
+		steps := planSeesaw(targets, current, total)
 		if len(steps) == 0 {
+			if len(deferred) > 0 {
+				return fmt.Errorf("raise(s) deferred: %s", strings.Join(deferred, "; "))
+			}
 			return nil // contract fully converged
 		}
 		fmt.Printf("  weights: firing %d initiates in one burst:\n", len(steps))
@@ -262,6 +280,36 @@ func (e *weightEngine) convergeContract(ctx context.Context) error {
 		}
 	}
 	return fmt.Errorf("contract weights did not converge within %d rounds", weightRounds)
+}
+
+// raiseGated is THE raise-gate decision, pure for testing: a transition to a
+// HIGHER weight is deferred unless the node is SERVING (which after
+// markCatchingUp means at the fleet tip, within catchUpThreshold). CATCHING UP,
+// BOOTSTRAPPING, and DOWN (including unreachable/cordoned) all gate the raise.
+// Lower-or-equal transitions are never gated: shedding weight off a sick node
+// is the failover direction.
+func raiseGated(current, desired uint64, state nodeHealth) bool {
+	return desired > current && state != healthServing
+}
+
+// gateRaises returns a copy of targets with every gated raise neutralized
+// (desired set to the observed current weight, so planSeesaw plans nothing for
+// it this round) plus one human line per deferral. The gated raise is retried
+// on the next convergence pass with fresh health.
+func gateRaises(targets []stakingTarget, current map[ids.ID]uint64, health []healthResult, t Topology) ([]stakingTarget, []string) {
+	out := make([]stakingTarget, len(targets))
+	var deferred []string
+	for i, tg := range targets {
+		out[i] = tg
+		h := health[tg.slot]
+		if raiseGated(current[tg.validationID], tg.desired, h.state) {
+			out[i].desired = current[tg.validationID]
+			deferred = append(deferred, fmt.Sprintf(
+				"%s is %s (block %d): behind/unreachable, raise %d -> %d deferred until it is near tip",
+				t.MachineName(tg.slot), h.state, h.block, current[tg.validationID], tg.desired))
+		}
+	}
+	return out, deferred
 }
 
 // planSeesaw simulates the contract's churn tracker (period 0: every op

@@ -104,3 +104,13 @@ command too, but across commands only you enforce it. Lower-first passes the
 fleet through a low-total-weight window where the churn cap also gets
 tighter (20% of a smaller total), making the recovery seesaw slower exactly
 when you are most exposed.
+
+**Raises are gated on node health.** Before initiating a raise the engine
+probes the target node's own RPC: if the node is unreachable or more than
+the catch-up threshold behind the fleet tip, the raise is deferred (with a
+clear line) and retried on every convergence pass, firing as soon as the
+node is near tip. This prevents the documented fork wedge where a
+catching-up node with freshly raised stake wins a proposer slot on a stale
+height and self-finalizes a sibling block. Lowers are never gated: taking
+weight off a sick node must always work. The gate uses only the fleet's own
+node RPCs; the weight flow still never touches the P-chain.
