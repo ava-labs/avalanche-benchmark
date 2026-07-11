@@ -42,13 +42,17 @@ func usage() {
   up   <m...>       rebuild the given machines from genesis, start them and wait
                     until they are SERVING at the fleet tip (wipes their L1 chain
                     data; on-chain weight untouched); machines already serving at
-                    tip are skipped, machines merely catching up are waited on
+                    tip are skipped, machines merely catching up are waited on;
+                    a catching-up machine whose height is frozen (fork wedge) is
+                    rebuilt automatically (chainData wipe + state re-sync)
   down <m...>       simulate hardware failure: hard-kill the given machines
                     (data left on disk; on-chain weight untouched)
   weight <tier> <m...>
                     set on-chain weight to ONE tier: validator|spare|dead (100000|1000|1)
                     raise replacements first, then lower the old ones:
                     e.g. weight validator 7 8 9   then   weight dead 1 2 3 4
+                    a RAISE is deferred while its node is behind the fleet tip or
+                    unreachable (fork-wedge prevention); lowers always go through
   status            read-only report: stake tier and reachability per datacenter
   fresh             WIPE every machine and redeploy the whole fleet from genesis
                     (site A active; destroys all chain data)
@@ -143,14 +147,36 @@ func main() {
 			// Recovery: rebuild each target from genesis, start it, then block
 			// until every waited-on machine answers RPC as SERVING at the
 			// fleet tip (within catchUpThreshold of the fleet max height).
+			// A requested machine whose host is ssh-unreachable cannot be
+			// rebuilt: it is dropped from the wait (it would never serve) and
+			// the command exits non-zero naming it AFTER the reachable
+			// machines have been brought up.
+			var lost []string
 			if len(ms) > 0 {
 				fresh := map[int]bool{}
 				for _, m := range ms {
 					fresh[m-1] = true
 				}
-				reconcile(cfg, intents, fresh, false)
+				unreachable := map[int]bool{}
+				for _, m := range reconcile(cfg, intents, fresh, false) {
+					unreachable[m] = true
+				}
+				var kept []int
+				for _, m := range wait {
+					if unreachable[m] {
+						lost = append(lost, topo.MachineName(m-1))
+						continue
+					}
+					kept = append(kept, m)
+				}
+				wait = kept
 			}
-			waitServing(cfg, intents, wait)
+			if len(wait) > 0 {
+				waitServing(cfg, intents, wait)
+			}
+			if len(lost) > 0 {
+				fatalf("up: host unreachable, not rebuilt: %s", strings.Join(lost, ", "))
+			}
 		}
 
 	case "weight":
@@ -332,11 +358,18 @@ func printIntents(topo Topology, intents []MachineIntent) {
 // forceUpload re-ships binaries to every box regardless of what's already there
 // (whole-fleet fresh); otherwise a box is uploaded only if it is missing
 // artifacts. Passes: ensure-provisioned, stop-swap, start.
-func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forceUpload bool) {
+//
+// An ssh-unreachable host is NOT fatal (whole-fleet fresh excepted, where a
+// failed upload still aborts): it is warned about, observed as down, and gets
+// no actions, so one dead box never blocks reconciling the rest. The returned
+// list names the machines (1-based) that were skipped as unreachable; callers
+// that specifically targeted one of them fail loudly on it themselves.
+func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forceUpload bool) []int {
 	topo := cfg.topo
 	hosts := cfg.nodeIPs
 
 	fmt.Println("[0/3] ensure provisioned...")
+	deadHosts := map[string]bool{}
 	if forceUpload {
 		// Whole-fleet fresh: kill+wipe every target BEFORE any upload, so a
 		// re-upload never hits ETXTBSY against a still-running co-located plugin.
@@ -362,6 +395,7 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 		wg.Wait()
 	} else {
 		checked := map[string]bool{}
+		var mu sync.Mutex
 		var wg sync.WaitGroup
 		for i, host := range hosts {
 			if intents[i].Cordoned || checked[host] {
@@ -371,7 +405,15 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 			wg.Add(1)
 			go func(i int, host string) {
 				defer wg.Done()
-				if !cfg.provisioned(host) {
+				ok, err := cfg.provisioned(host)
+				if err != nil {
+					fmt.Printf("  %s (%s): WARNING host unreachable over ssh (%v), treating as down\n", topo.MachineName(i), host, err)
+					mu.Lock()
+					deadHosts[host] = true
+					mu.Unlock()
+					return
+				}
+				if !ok {
 					fmt.Printf("  %s (%s): missing artifacts, uploading\n", topo.MachineName(i), host)
 					cfg.upload(host)
 				} else if freshSet[i] {
@@ -382,17 +424,31 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 		wg.Wait()
 		for i := range hosts {
 			if freshSet[i] {
+				if deadHosts[hosts[i]] {
+					fmt.Printf("  %s (%s): unreachable, cannot rebuild\n", topo.MachineName(i), hosts[i])
+					continue
+				}
 				fmt.Printf("  %s (%s): rebuild from genesis\n", topo.MachineName(i), hosts[i])
 				cfg.freshClean(i)
 			}
 		}
 	}
 
-	// Observe reality, then plan.
+	// Observe reality, then plan. A host the sweep already found dead is not
+	// re-probed (each attempt costs a 10s connect timeout); it observes as
+	// down + unreachable directly.
 	fmt.Println("observe...")
 	obs := make([]Observed, len(hosts))
 	for i := range hosts {
-		obs[i] = cfg.observe(i)
+		if deadHosts[hosts[i]] {
+			obs[i] = Observed{Unreachable: true}
+		} else {
+			obs[i] = cfg.observe(i)
+		}
+		if obs[i].Unreachable {
+			fmt.Printf("  %s (%s): WARNING unreachable, recorded as down, no actions planned\n", topo.MachineName(i), hosts[i])
+			continue
+		}
 		if forceUpload || freshSet[i] {
 			fmt.Printf("  %s: alive=%v key=%d\n", topo.MachineName(i), obs[i].Alive, obs[i].ActualKey)
 		}
@@ -423,6 +479,14 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 	}
 
 	fmt.Println("\nProcesses reconciled. Check node state with:  ./fleet status")
+
+	var unreachable []int
+	for i := range obs {
+		if obs[i].Unreachable {
+			unreachable = append(unreachable, i+1)
+		}
+	}
+	return unreachable
 }
 
 // waitServing blocks until every listed machine answers its L1 RPC as SERVING
@@ -432,6 +496,14 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 // own height and it passes trivially (no deadlock bringing up a lone node).
 // Prints a line when a machine's state changes, plus a progress line every poll
 // while it is catching up; exits non-zero with the stragglers named on timeout.
+//
+// Fork-wedge detection: a CATCHING UP machine whose height stays FROZEN across
+// wedgeFrozenPolls consecutive polls has self-finalized a sibling block (the
+// documented sibling-race wedge) and will never reach the tip; waiting is
+// useless. Instead of timing out it is rebuilt in place (rebuildWedged: stop,
+// wipe ONLY the L1 chainData, keep P-chain db + staking keys, restart) and the
+// wait continues through its state re-sync. At most one rebuild per machine
+// per invocation: a second freeze falls through to the timeout.
 func waitServing(cfg *config, intents []MachineIntent, ms []int) {
 	const (
 		poll    = 5 * time.Second
@@ -440,6 +512,9 @@ func waitServing(cfg *config, intents []MachineIntent, ms []int) {
 	deadline := time.Now().Add(timeout)
 	last := map[int]nodeHealth{} // zero value healthDown: the just-rebuilt state
 	serving := map[int]bool{}
+	lastBlock := map[int]uint64{}
+	frozenN := map[int]int{}
+	rebuilt := map[int]bool{}
 	fmt.Printf("waiting for %d machine(s) to reach SERVING at fleet tip (timeout %s)...\n", len(ms), timeout)
 	for {
 		results := cfg.checkHealth(intents)
@@ -456,6 +531,19 @@ func waitServing(cfg *config, intents []MachineIntent, ms []int) {
 				fmt.Printf("  %s: %s\n", cfg.topo.MachineName(m-1), r.state)
 			}
 			last[m] = r.state
+			var wedged bool
+			frozenN[m], wedged = wedgeFrozen(r.state, r.block, lastBlock[m], frozenN[m])
+			lastBlock[m] = r.block
+			if wedged && !rebuilt[m] {
+				name := cfg.topo.MachineName(m - 1)
+				fmt.Printf("  %s: height FROZEN at %d (%d behind fleet max %d) across %d polls: fork wedge, rebuilding\n",
+					name, r.block, fleetMax-r.block, fleetMax, wedgeFrozenPolls+1)
+				fmt.Printf("  %s: stop + wipe L1 chainData (P-chain db and staking keys kept)\n", name)
+				cfg.rebuildWedged(m - 1)
+				fmt.Printf("  %s: restarted, waiting for state sync to the live branch\n", name)
+				rebuilt[m] = true
+				frozenN[m] = 0
+			}
 			if r.state == healthServing {
 				serving[m] = true
 			}

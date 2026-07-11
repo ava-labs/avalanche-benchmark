@@ -76,6 +76,39 @@ func TestMarkCatchingUp(t *testing.T) {
 	}
 }
 
+// TestWedgeFrozen walks the fork-wedge detector through a poll sequence: it
+// fires only after wedgeFrozenPolls consecutive unchanged CATCHING UP heights,
+// and any movement or state change resets the count. A SERVING or DOWN node
+// can never trip it, however static its height reading.
+func TestWedgeFrozen(t *testing.T) {
+	steps := []struct {
+		name       string
+		state      nodeHealth
+		block      uint64
+		prevBlock  uint64
+		prevFrozen int
+		wantFrozen int
+		wantWedged bool
+	}{
+		{"first sighting, no history", healthCatchingUp, 277840, 0, 0, 0, false},
+		{"frozen once", healthCatchingUp, 277840, 277840, 0, 1, false},
+		{"frozen twice: WEDGED", healthCatchingUp, 277840, 277840, 1, 2, true},
+		{"movement resets", healthCatchingUp, 277900, 277840, 1, 0, false},
+		{"healthy sync never freezes", healthCatchingUp, 300000, 277900, 0, 0, false},
+		{"serving node is never wedged even if static", healthServing, 500, 500, 5, 0, false},
+		{"bootstrapping resets (rebuild in progress)", healthBootstrapping, 0, 0, 2, 0, false},
+		{"down resets", healthDown, 0, 0, 2, 0, false},
+		{"wedged at height 0 still fires after the window", healthCatchingUp, 0, 0, 1, 2, true},
+	}
+	for _, s := range steps {
+		frozen, wedged := wedgeFrozen(s.state, s.block, s.prevBlock, s.prevFrozen)
+		if frozen != s.wantFrozen || wedged != s.wantWedged {
+			t.Errorf("%s: wedgeFrozen(%v,%d,%d,%d) = (%d,%v), want (%d,%v)",
+				s.name, s.state, s.block, s.prevBlock, s.prevFrozen, frozen, wedged, s.wantFrozen, s.wantWedged)
+		}
+	}
+}
+
 func TestNeededOnlineToRejoin(t *testing.T) {
 	// 3 equal validators: ceil(75%) = 3 (all must be online to clear the latch).
 	if got := neededOnlineToRejoin(3); got != 3 {

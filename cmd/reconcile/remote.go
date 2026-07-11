@@ -198,15 +198,23 @@ func (c *config) scpArgs(extra ...string) []string {
 }
 
 // ssh runs a remote command and returns trimmed stdout. SSH failures are fatal:
-// "the simulated up/down went wrong": no best-effort skipping.
+// "the simulated up/down went wrong": no best-effort skipping. Flows that must
+// survive a dead host (observe, the provision sweep) use sshTry instead.
 func (c *config) ssh(host, remoteCmd string) string {
-	cmd := exec.Command("ssh", c.sshArgs(host, remoteCmd)...)
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
+	out, err := c.sshTry(host, remoteCmd)
 	if err != nil {
 		fatalf("ssh %s failed: %v\n  cmd: %s", host, err, remoteCmd)
 	}
-	return strings.TrimSpace(string(out))
+	return out
+}
+
+// sshTry is ssh without the fatalf: an unreachable host is an error the caller
+// handles (recorded as down/not-alive) instead of aborting the whole reconcile.
+func (c *config) sshTry(host, remoteCmd string) (string, error) {
+	cmd := exec.Command("ssh", c.sshArgs(host, remoteCmd)...)
+	cmd.Stderr = os.Stderr
+	out, err := cmd.Output()
+	return strings.TrimSpace(string(out)), err
 }
 
 // sshStdin runs a remote command, piping the given script to its stdin.
@@ -256,15 +264,20 @@ func (c *config) rsyncUpload(localPath, host, remotePath string) {
 // one round trip. On a normal (one-process) box liveness is the exact-name `pgrep -x
 // avalanchego` it always was; on a co-located box it matches THIS instance by its
 // unique HTTP port so a housemate process isn't mistaken for this one.
+// An ssh-unreachable host is NOT fatal: it observes as dead + Unreachable, so
+// one hard-down box never blocks reconciling the rest of the fleet.
 func (c *config) observe(i int) Observed {
 	in := c.instances[i]
 	live := "pgrep -x avalanchego >/dev/null"
 	if in.shared {
 		live = fmt.Sprintf("pgrep -f -- '%s' >/dev/null", in.procPat)
 	}
-	out := c.ssh(in.host, fmt.Sprintf(
+	out, err := c.sshTry(in.host, fmt.Sprintf(
 		"%s && echo A || echo D; cat %s/%s/key_index 2>/dev/null || echo 0",
 		live, c.remoteDir, in.activeDir))
+	if err != nil {
+		return Observed{Unreachable: true}
+	}
 	lines := strings.Split(out, "\n")
 	ob := Observed{}
 	if len(lines) > 0 {
@@ -524,6 +537,21 @@ func (c *config) freshClean(i int) {
 		c.remoteDir, in.dataDir, in.activeDir, c.remoteDir, c.remoteDir, c.remoteDir))
 }
 
+// rebuildWedged is the fork-wedge repair (see waitServing's detector): the node
+// self-finalized a sibling block and its height is frozen forever, so waiting is
+// useless. Exactly the live repair recipe: kill it, wipe ONLY the L1 EVM state
+// (data dir chainData; NEVER the shared db/ holding the P-chain, NEVER
+// staking/active), restart. The node rolls the L1 back to genesis and
+// state-syncs onto the live branch; identity and P-chain are untouched, so no
+// key swap or re-provisioning is needed. Fatal on ssh failure: this targets one
+// specific host and must fail loudly if that host is unreachable.
+func (c *config) rebuildWedged(i int) {
+	in := c.instances[i]
+	c.killNode(i)
+	c.ssh(in.host, fmt.Sprintf("cd %s && rm -rf %s/chainData", c.remoteDir, in.dataDir))
+	c.start(i)
+}
+
 // wipeL1Data stops the node and deletes its entire data/validator directory so it
 // rejoins with no local chain state and is forced to state-sync the L1 fresh onto
 // the live branch. Used by `restore` for the recovering site only.
@@ -553,7 +581,9 @@ func (c *config) wipeL1Data(i int) {
 // every committed key set the topology can assign to it, AND the role chain-config for
 // every instance it hosts (so adding a co-located 2nd instance to a previously
 // single-process box re-triggers an upload for that box's new chain-config-N.json).
-func (c *config) provisioned(host string) bool {
+// An ssh-unreachable host returns the error instead of aborting: the sweep
+// records it as a dead host and reconciles the rest.
+func (c *config) provisioned(host string) (bool, error) {
 	var checks strings.Builder
 	for _, k := range c.topo.AllKeys() {
 		fmt.Fprintf(&checks, "test -d staking/l1/%d && ", k)
@@ -561,12 +591,12 @@ func (c *config) provisioned(host string) bool {
 	for _, i := range c.instancesOnHost(host) {
 		fmt.Fprintf(&checks, "test -f %s && ", c.instances[i].chainCfg)
 	}
-	out := c.ssh(host, fmt.Sprintf(
+	out, err := c.sshTry(host, fmt.Sprintf(
 		"cd %s 2>/dev/null && test -f bin/avalanchego && test -f plugins/%s && "+
 			"test -f node-config.json && test -f subnet-config.json && "+
 			"%secho OK || echo MISSING",
 		c.remoteDir, c.subnetEVMID, checks.String()))
-	return out == "OK"
+	return out == "OK", err
 }
 
 // isRPCNode reports whether machine i is a pinned dedicated-RPC node: the RPC slots of each

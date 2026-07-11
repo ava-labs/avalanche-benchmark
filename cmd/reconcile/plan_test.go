@@ -87,6 +87,25 @@ func TestPlanCordonStopsOnlyThatMachine(t *testing.T) {
 	}
 }
 
+// TestPlanSkipsUnreachable: an ssh-unreachable host gets NO actions (nothing
+// can execute there), while every other machine is still planned normally, so
+// one dead box never blocks the fleet's stop/swap/start passes.
+func TestPlanSkipsUnreachable(t *testing.T) {
+	topo := twoSiteTopo()
+	intents := seedIntents(topo)
+	obs := make([]Observed, len(intents)) // all dead: everyone would be started
+	obs[0].Unreachable = true
+	acts := Plan(topo, intents, obs)
+	if a := acts[0]; a.Stop || a.Start || a.SwapKey != 0 {
+		t.Errorf("unreachable slot got action %+v, want none", a)
+	}
+	for i := 1; i < len(acts); i++ {
+		if !acts[i].Start || acts[i].SwapKey != topo.KeyOf(i) {
+			t.Errorf("slot %d: dead host elsewhere changed its plan: %+v", i, acts[i])
+		}
+	}
+}
+
 func TestPlanHealsWrongKey(t *testing.T) {
 	topo := twoSiteTopo()
 	intents := seedIntents(topo)

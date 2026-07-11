@@ -195,7 +195,12 @@ Operating the fleet is two independent axes, both via `./fleet`:
 - **hardware**: `up` / `down` start or hard-kill avalanchego on a machine.
   `down` is a real crash (SIGKILL); `up` rebuilds the machine clean,
   state-syncs it from the live network and blocks until it is SERVING at the
-  fleet tip. Neither touches stake.
+  fleet tip. Neither touches stake. While waiting, `up` watches for a
+  fork-wedged node (a catching-up node whose height stays frozen across
+  consecutive polls: it self-finalized a sibling block and will never reach
+  tip); instead of timing out it rebuilds the node in place (wipe its L1
+  chainData only, keep the P-chain db and staking keys, restart, state
+  re-sync).
 - **stake**: `weight <tier> <machines...>` moves the listed machines'
   on-chain consensus weight to one tier (`validator`=100000,
   `spare`=1000, `dead`=1) through the ValidatorManager contract on the
@@ -205,7 +210,17 @@ Operating the fleet is two independent axes, both via `./fleet`:
   slot shows weight == desired and sentNonce == receivedNonce (the ack
   proving the P-chain applied it); the kit's weight/status flow never talks
   to the P-chain itself, not even reads. One tier per invocation; it never
-  starts or stops a process, and no keys move.
+  starts or stops a process, and no keys move. A **raise** is deferred while
+  its node is behind the fleet tip or unreachable (a behind node with more
+  stake wins proposer slots on stale heights and can self-finalize a fork);
+  the command keeps retrying and the raise fires as soon as the node is near
+  tip. Lowers are never deferred: shedding weight off a sick node is the
+  failover direction and always goes through.
+
+A hard-down box (ssh-unreachable, not just process-dead) never blocks
+operating the rest of the fleet: reconciliation records it as down with a
+warning and proceeds; only commands that target that box specifically fail
+(non-zero, naming it, after the reachable targets are handled).
 
 ```bash
 watch -n5 ./fleet status                   # live per-DC stake tier + node state
@@ -265,7 +280,9 @@ One more recovery: a validator hard-killed under heavy load can come back
 with a diverged local chain (its VM dies repeatedly, `status` shows it
 `BOOTSTRAPPING` forever while others are `SERVING`). `./fleet up <m>` fixes
 it: the rebuild wipes its chain data and it re-syncs from the live network
-with the same identity.
+with the same identity. The related fork-wedge case (`CATCHING UP` with a
+height that never moves: the node self-finalized a sibling block) is
+detected and rebuilt by `up` automatically.
 
 ## Block cadence
 

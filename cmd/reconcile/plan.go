@@ -101,8 +101,9 @@ func totalWeight(intents []MachineIntent) uint64 {
 
 // Observed is reconcile's fresh read of one machine's reality.
 type Observed struct {
-	Alive     bool // pgrep avalanchego (instance-scoped when co-located)
-	ActualKey int  // staking/active/key_index, 0 if missing/unknown
+	Alive       bool // pgrep avalanchego (instance-scoped when co-located)
+	ActualKey   int  // staking/active/key_index, 0 if missing/unknown
+	Unreachable bool // ssh to the host failed: nothing can be observed or executed there
 }
 
 // Action is what reconcile will do to one machine. Execution order across all
@@ -122,6 +123,14 @@ func Plan(t Topology, intents []MachineIntent, obs []Observed) []Action {
 	for i := range intents {
 		in := intents[i]
 		ob := obs[i]
+
+		// An unreachable host can't run any action; plan nothing for it (it was
+		// recorded as down with a warning) so one dead box never aborts the
+		// stop/swap/start passes for the rest of the fleet.
+		if ob.Unreachable {
+			acts[i] = Action{Machine: i + 1}
+			continue
+		}
 
 		needSwap := ob.ActualKey != t.KeyOf(i)
 		// Stop a live machine that must end down (cordoned) or has the wrong

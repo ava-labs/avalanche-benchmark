@@ -92,6 +92,30 @@ func classifyHealth(connErr bool, status int, body string) (nodeHealth, uint64) 
 	return healthBootstrapping, 0
 }
 
+// wedgeFrozenPolls: consecutive unchanged-height polls (5s apart, so ~10s of
+// zero movement) before a CATCHING UP node is declared fork-wedged. A healthy
+// syncing node executes hundreds of blocks per poll at 25-80ms block times; a
+// node that self-finalized a sibling block (the documented sibling-race fork
+// wedge) serves the same frozen height forever. Two frozen intervals instead
+// of one is cheap insurance against a momentary execution stall; a false
+// positive only costs a chainData wipe + state re-sync (minutes) on a node
+// that was behind anyway.
+const wedgeFrozenPolls = 2
+
+// wedgeFrozen is the fork-wedge detector decision, pure for testing. Fed one
+// poll of a waited-on machine, it returns the updated consecutive-frozen count
+// and whether the detector fires. It only ever fires for a CATCHING UP node
+// (which by markCatchingUp already means behind the fleet max by more than
+// catchUpThreshold) whose reported height matched the previous poll
+// wedgeFrozenPolls times in a row; any height movement or state change resets it.
+func wedgeFrozen(state nodeHealth, block, prevBlock uint64, prevFrozen int) (frozen int, wedged bool) {
+	if state != healthCatchingUp || block != prevBlock {
+		return 0, false
+	}
+	frozen = prevFrozen + 1
+	return frozen, frozen >= wedgeFrozenPolls
+}
+
 // neededOnlineToRejoin is the number of validators that must be connected for a
 // (re)starting validator to clear avalanchego's bootstrap startup latch:
 // ceil(75% of the validator set) - see chains/manager.go NewStartup(...,(3*W+3)/4)
