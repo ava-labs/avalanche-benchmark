@@ -4,7 +4,7 @@
 // of the created chain), then AVALANCHE_NETWORK (bootstrap-time: the setup
 // scripts' --mainnet flag exports it before network.env exists), then fuji.
 // Individual values keep their pre-existing env overrides (PCHAIN_API,
-// CCHAIN_RPC, PCHAIN_RPC, AGGREGATOR_URL, GLACIER_URL, FUJI_UPSTREAM_IPS/IDS).
+// CCHAIN_RPC, AGGREGATOR_URL, GLACIER_URL, FUJI_UPSTREAM_IPS/IDS).
 package netcfg
 
 import (
@@ -23,13 +23,15 @@ type Config struct {
 	HRP       string // bech32 HRP for P-chain address formatting
 	// API is the public API base (info + platform.* + C-chain). The kit's own
 	// follow-only RPC tier never serves platform.*, so P-chain txs go here.
+	// Only create-l1 and fuji-wallet use it: the recurring
+	// weight/status/reconcile runtime never touches the P-chain, it reads and
+	// writes the ValidatorManager on the C-chain exclusively.
 	// Env override: PCHAIN_API.
 	API string
-	// CChainRPC / PChainRPC are the publicnode per-chain RPCs the fleet-side
-	// tools use (the official API aggressively rate-limits the fleet's egress
-	// IP). Env overrides: CCHAIN_RPC / PCHAIN_RPC.
+	// CChainRPC is the publicnode C-chain RPC the fleet-side tools use (the
+	// official API aggressively rate-limits the fleet's egress IP).
+	// Env override: CCHAIN_RPC.
 	CChainRPC string
-	PChainRPC string
 	// CChainID is the network's C-chain blockchain ID (the ValidatorManager's
 	// chain and warp source chain), hardcoded because publicnode does not
 	// serve /ext/info. Mainnet value verified against api.avax.network
@@ -60,7 +62,6 @@ var fuji = Config{
 	HRP:              constants.FujiHRP,
 	API:              "https://api.avax-test.network",
 	CChainRPC:        "https://avalanche-fuji-c-chain-rpc.publicnode.com",
-	PChainRPC:        "https://avalanche-fuji-p-chain-rpc.publicnode.com/ext/bc/P",
 	CChainID:         "yH8D7ThNJkxmtkuv2jgBa4P1Rn3Qpr4pPr7QYNfcdoS6k6HWp",
 	AggregatorURL:    "https://avax-signature-aggregator-fuji.fly.dev/aggregate-signatures",
 	GlacierURL:       "https://glacier-api.avax.network/v1/signatureAggregator/fuji/aggregateSignatures",
@@ -75,7 +76,6 @@ var mainnet = Config{
 	HRP:              constants.MainnetHRP,
 	API:              "https://api.avax.network",
 	CChainRPC:        "https://avalanche-c-chain-rpc.publicnode.com",
-	PChainRPC:        "https://avalanche-p-chain-rpc.publicnode.com/ext/bc/P",
 	CChainID:         "2q9e4r6Mu3U68nU1fYjgbR6JvwrRx36CohpAX5UQxse55x1Q5",
 	AggregatorURL:    "https://avax-signature-aggregator-mainnet.fly.dev/aggregate-signatures",
 	GlacierURL:       "https://glacier-api.avax.network/v1/signatureAggregator/mainnet/aggregateSignatures",
@@ -105,7 +105,6 @@ func Resolve(getenv func(string) string) (Config, error) {
 	}{
 		{"PCHAIN_API", &c.API},
 		{"CCHAIN_RPC", &c.CChainRPC},
-		{"PCHAIN_RPC", &c.PChainRPC},
 		{"AGGREGATOR_URL", &c.AggregatorURL},
 		{"GLACIER_URL", &c.GlacierURL},
 		{"FUJI_UPSTREAM_IPS", &c.UpstreamIPs},

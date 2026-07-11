@@ -226,7 +226,7 @@ then the reconcile against Fuji, e.g.
   weights: firing 2 initiates in one burst:
     b1 -> 801800
     b1 -> 100000
-  weights: converged (contract == P-chain == desired)
+  weights: converged (contract weight == desired, sentNonce == receivedNonce)
 ```
 
 The command fires initiates and then POLLS: the standalone warp-courier

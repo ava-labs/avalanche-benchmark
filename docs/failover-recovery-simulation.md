@@ -38,7 +38,8 @@ everything it needs is recomputable.
 ## The weight engine (`cmd/reconcile/weights.go`)
 
 Desired weights live in the local intents JSON (written by `./fleet weight`).
-Current state is read fresh from the contract and the P-chain on every
+Current state is read fresh from the ValidatorManager contract (C-chain
+only: the weight flow never touches the P-chain, not even reads) on every
 step, so every action derives from observation, never memory: any crash or
 timeout is recovered by re-running the same `./fleet weight` command.
 `converge` is initiate-and-poll:
@@ -50,8 +51,10 @@ timeout is recovered by re-running the same `./fleet weight` command.
    `planSeesaw` simulates the whole ratchet locally and fires it as one burst
    of consecutive-nonce txs (a full DC seesaw is ~10 steps in one burst).
    Raises are planned before lowers, so the total never dips mid-move.
-2. **Verify (poll).** Re-read everything and demand desired == contract ==
-   P-chain and receivedNonce == sentNonce, retrying on an escalating
+2. **Verify (poll).** Re-read the contract and demand, for every slot,
+   weight == desired and sentNonce == receivedNonce (the receivedNonce only
+   advances on the courier-delivered ack, so nonce equality is the proof the
+   P-chain applied the update), retrying on an escalating
    schedule (1s, 5s, 10s, 15s, 30s, 1m, then 2m flat; 24 attempts, ~36 min).
 
 Delivering the emitted `L1ValidatorWeight` warp message to the P-chain

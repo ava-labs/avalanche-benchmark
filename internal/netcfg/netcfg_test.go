@@ -26,7 +26,6 @@ func TestFujiDefaultsUnchanged(t *testing.T) {
 			HRP:              constants.FujiHRP,
 			API:              "https://api.avax-test.network",
 			CChainRPC:        "https://avalanche-fuji-c-chain-rpc.publicnode.com",
-			PChainRPC:        "https://avalanche-fuji-p-chain-rpc.publicnode.com/ext/bc/P",
 			CChainID:         "yH8D7ThNJkxmtkuv2jgBa4P1Rn3Qpr4pPr7QYNfcdoS6k6HWp",
 			AggregatorURL:    "https://avax-signature-aggregator-fuji.fly.dev/aggregate-signatures",
 			GlacierURL:       "https://glacier-api.avax.network/v1/signatureAggregator/fuji/aggregateSignatures",
@@ -76,7 +75,6 @@ func TestEnvOverrides(t *testing.T) {
 		"AVALANCHE_NETWORK": "mainnet",
 		"PCHAIN_API":        "http://api.example",
 		"CCHAIN_RPC":        "http://c.example",
-		"PCHAIN_RPC":        "http://p.example",
 		"AGGREGATOR_URL":    "http://agg.example",
 		"GLACIER_URL":       "http://glacier.example",
 		"FUJI_UPSTREAM_IPS": "1.2.3.4:9651",
@@ -86,7 +84,7 @@ func TestEnvOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.API != "http://api.example" || c.CChainRPC != "http://c.example" ||
-		c.PChainRPC != "http://p.example" || c.AggregatorURL != "http://agg.example" ||
+		c.AggregatorURL != "http://agg.example" ||
 		c.GlacierURL != "http://glacier.example" || c.UpstreamIPs != "1.2.3.4:9651" ||
 		c.UpstreamIDs != "NodeID-x" {
 		t.Errorf("overrides not applied: %+v", c)

@@ -76,9 +76,9 @@ func weightRole(w uint64) string {
 	}
 }
 
-// stakeCell renders the status stake column: the ACTUAL on-chain tier first,
+// stakeCell renders the status stake column: the ACTUAL contract tier first,
 // with a pending marker when the desired tier differs (a weight change still
-// in flight on the P-chain). haveActual=false means the P-chain was
+// in flight). haveActual=false means the ValidatorManager contract was
 // unreadable: fall back to the desired tier. RPC slots (weight 0) are never
 // registered, so they have no on-chain weight to show.
 func stakeCell(desired, actual uint64, haveActual bool) string {

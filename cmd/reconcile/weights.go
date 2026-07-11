@@ -8,8 +8,6 @@ import (
 	"time"
 
 	"github.com/ava-labs/avalanchego/ids"
-	"github.com/ava-labs/avalanchego/utils/rpc"
-	"github.com/ava-labs/avalanchego/vms/platformvm"
 	ethcommon "github.com/ava-labs/libevm/common"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/fujikey"
@@ -19,20 +17,24 @@ import (
 
 // On-chain weight reconciliation, initiate-and-forget. The desired state is
 // the intents' weights; the current state is read fresh from the
-// ValidatorManager contract (C-chain) and the P-chain on every step, so any
-// crash or transient failure is recovered by simply re-running: every action
-// is derived from observation, never from memory.
+// ValidatorManager contract (C-chain) on every step, so any crash or
+// transient failure is recovered by simply re-running: every action is
+// derived from observation, never from memory.
+//
+// This flow NEVER talks to the P-chain, not even reads: everything it needs
+// is visible on the contract. Delivering the emitted warp message to the
+// P-chain (SetL1ValidatorWeightTx) and acking back to the contract
+// (completeValidatorWeightUpdate) is the external warp-courier daemon's job,
+// and the ack it writes (receivedNonce) is the proof the P-chain applied the
+// update.
 //
 // This loop only INITIATES: where contract.weight != desired it fires
 // initiateValidatorWeightUpdate txs (ratcheted in steps of <=20% of the live
 // total: the churn cap with churnPeriodSeconds=0; the churn math is
 // deterministic, so the WHOLE ratchet is simulated locally and fired as one
-// burst of consecutive-nonce txs). Delivering the emitted warp message to the
-// P-chain (SetL1ValidatorWeightTx) and acking back to the contract
-// (completeValidatorWeightUpdate) is the external warp-courier daemon's job;
-// this loop just polls until contract == P-chain == desired and
-// receivedNonce == sentNonce. A convergence stall therefore points at the
-// courier, not at this command.
+// burst of consecutive-nonce txs). It then polls the contract until, for
+// every slot, weight == desired and sentNonce == receivedNonce. A convergence
+// stall therefore points at the courier, not at this command.
 //
 // Raises are ordered before lowers in the burst, so the fleet never passes
 // through a low-total-weight window: liveness is preserved mid-seesaw.
@@ -103,11 +105,10 @@ type weightEngine struct {
 	cfg      *config
 	subnetID ids.ID
 	cli      *valmgr.Client
-	pClient  *platformvm.Client
 	targets  []stakingTarget
 }
 
-// The whole seesaw runs off the network.env-configured per-chain RPCs, never
+// The whole seesaw runs off the network.env-configured per-chain RPC, never
 // touching rate-limited default endpoints unless configured to.
 
 // cchainRPCURL is where every ValidatorManager eth_call and initiate tx goes.
@@ -115,15 +116,8 @@ func cchainRPCURL() string {
 	return netcfg.Get().CChainRPC
 }
 
-// pchainReadClient returns the platformvm client used for reads. publicnode
-// serves the P-chain API at /ext/bc/P but NOT at /ext/P (the only path
-// platformvm.NewClient builds), so construct it on the exact URL.
-func pchainReadClient() *platformvm.Client {
-	return &platformvm.Client{Requester: rpc.NewEndpointRequester(netcfg.Get().PChainRPC)}
-}
-
-// newWeightEngine wires the C-chain client, P-chain client and the
-// slot -> validationID mapping.
+// newWeightEngine wires the C-chain client and the slot -> validationID
+// mapping.
 func newWeightEngine(ctx context.Context, cfg *config, intents []MachineIntent) (*weightEngine, error) {
 	managerHex := os.Getenv("MANAGER_ADDRESS")
 	if managerHex == "" {
@@ -153,7 +147,6 @@ func newWeightEngine(ctx context.Context, cfg *config, intents []MachineIntent) 
 		cfg:      cfg,
 		subnetID: subnetID,
 		cli:      cli,
-		pClient:  pchainReadClient(),
 	}
 	e.targets, err = stakingTargets(cfg, subnetID, intents)
 	return e, err
@@ -220,7 +213,7 @@ func reconcileWeights(cfg *config, intents []MachineIntent) {
 			}
 		}
 		if lastErr = e.converge(ctx); lastErr == nil {
-			fmt.Println("  weights: converged (contract == P-chain == desired)")
+			fmt.Println("  weights: converged (contract weight == desired, sentNonce == receivedNonce)")
 			return
 		}
 	}
@@ -310,10 +303,18 @@ func planSeesaw(targets []stakingTarget, observed map[ids.ID]uint64, total uint6
 	return steps
 }
 
-// verifyConverged re-reads everything and demands desired == contract ==
-// P-chain, receivedNonce == sentNonce. The P-chain weight and the contract's
-// receivedNonce only move when the warp-courier daemon delivers and acks, so
-// "not converged" here while the contract already matches desired means the
+// slotConverged is THE convergence predicate, per slot, from contract state
+// alone: the weight matches desired AND every emitted weight update has been
+// acked back (sentNonce == receivedNonce). The receivedNonce only advances
+// when the warp courier delivers the update to the P-chain and posts the
+// P-chain-signed ack, so nonce equality IS the proof the P-chain applied it;
+// no P-chain read is needed (or made) anywhere in this flow.
+func slotConverged(v valmgr.Validator, desired uint64) bool {
+	return v.Weight == desired && v.SentNonce == v.ReceivedNonce
+}
+
+// verifyConverged re-reads the contract and demands slotConverged for every
+// slot. "not converged" while the weight already matches desired means the
 // courier has not caught up yet (or is down).
 func (e *weightEngine) verifyConverged(ctx context.Context) error {
 	var bad []string
@@ -322,13 +323,9 @@ func (e *weightEngine) verifyConverged(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		pv, _, err := e.pClient.GetL1Validator(ctx, t.validationID)
-		if err != nil {
-			return err
-		}
-		if v.Weight != t.desired || pv.Weight != t.desired || v.ReceivedNonce != v.SentNonce {
-			line := fmt.Sprintf("%s desired=%d contract=%d pchain=%d nonces=%d/%d",
-				e.slotName(t), t.desired, v.Weight, pv.Weight, v.ReceivedNonce, v.SentNonce)
+		if !slotConverged(v, t.desired) {
+			line := fmt.Sprintf("%s desired=%d contract=%d nonces=%d/%d",
+				e.slotName(t), t.desired, v.Weight, v.ReceivedNonce, v.SentNonce)
 			if v.Weight == t.desired {
 				line += " (initiates landed; waiting on the warp courier to deliver/ack)"
 			}
@@ -345,13 +342,15 @@ func (e *weightEngine) slotName(t stakingTarget) string {
 	return e.cfg.topo.MachineName(t.slot)
 }
 
-// fetchActualWeights reads every staking slot's CURRENT P-chain weight in one
-// pass (slot index -> weight). This is the single batch of P-chain reads a
-// status invocation makes: reportHealth and weightsReport both consume the
-// result. Any failure (RPC flaky, MANAGER_ADDRESS unset) returns a nil map
-// and the reason; callers degrade to desired-weight display, never crash.
-func fetchActualWeights(cfg *config, intents []MachineIntent) (map[int]uint64, error) {
-	if os.Getenv("MANAGER_ADDRESS") == "" {
+// fetchContractValidators reads every staking slot's CURRENT ValidatorManager
+// state in one pass (slot index -> contract Validator). This is the single
+// batch of on-chain reads a status invocation makes, all C-chain eth_calls,
+// zero P-chain: reportHealth and weightsReport both consume the result. Any
+// failure (RPC flaky, MANAGER_ADDRESS unset) returns a nil map and the
+// reason; callers degrade to desired-weight display, never crash.
+func fetchContractValidators(cfg *config, intents []MachineIntent) (map[int]valmgr.Validator, error) {
+	managerHex := os.Getenv("MANAGER_ADDRESS")
+	if managerHex == "" {
 		return nil, fmt.Errorf("MANAGER_ADDRESS not set (immutable pre-manager deploy)")
 	}
 	subnetID, err := ids.FromString(cfg.subnetID)
@@ -364,23 +363,39 @@ func fetchActualWeights(cfg *config, intents []MachineIntent) (map[int]uint64, e
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	pClient := pchainReadClient()
-	actual := make(map[int]uint64, len(targets))
+	cli, err := valmgr.DialReader(ctx, cchainRPCURL(), ethcommon.HexToAddress(managerHex))
+	if err != nil {
+		return nil, err
+	}
+	actual := make(map[int]valmgr.Validator, len(targets))
 	for _, t := range targets {
-		pv, _, err := pClient.GetL1Validator(ctx, t.validationID)
+		v, err := cli.GetValidator(ctx, t.validationID)
 		if err != nil {
-			return nil, fmt.Errorf("platform.getL1Validator(%s): %w", cfg.topo.MachineName(t.slot), err)
+			return nil, fmt.Errorf("getValidator(%s): %w", cfg.topo.MachineName(t.slot), err)
 		}
-		actual[t.slot] = pv.Weight
+		actual[t.slot] = v
 	}
 	return actual, nil
 }
 
-// weightsReport prints the desired vs on-chain (P-chain) weight per staking
-// slot for `status`, from the weights fetchActualWeights already read.
-// Best-effort: a fetch error is reported as a note rather than failing the
-// health snapshot.
-func weightsReport(cfg *config, intents []MachineIntent, actual map[int]uint64, fetchErr error) {
+// contractWeights projects the fetched contract state down to the
+// slot -> weight map the stake-tier display consumes. nil in, nil out.
+func contractWeights(vals map[int]valmgr.Validator) map[int]uint64 {
+	if vals == nil {
+		return nil
+	}
+	w := make(map[int]uint64, len(vals))
+	for s, v := range vals {
+		w[s] = v.Weight
+	}
+	return w
+}
+
+// weightsReport prints one "weights: converged|pending" line for `status`,
+// judged purely from contract state: every slot must pass slotConverged
+// (weight == desired, sentNonce == receivedNonce). Best-effort: a fetch error
+// is reported as a note rather than failing the health snapshot.
+func weightsReport(cfg *config, intents []MachineIntent, vals map[int]valmgr.Validator, fetchErr error) {
 	if fetchErr != nil {
 		fmt.Printf("weights: %v\n", fetchErr)
 		return
@@ -388,19 +403,20 @@ func weightsReport(cfg *config, intents []MachineIntent, actual map[int]uint64, 
 	converged := true
 	var lines []string
 	for _, s := range cfg.topo.StakingSlots() {
+		v := vals[s]
 		mark := ""
-		if actual[s] != intents[s].Weight {
+		if !slotConverged(v, intents[s].Weight) {
 			mark = "  <- PENDING"
 			converged = false
 		}
-		lines = append(lines, fmt.Sprintf("  %-3s desired=%-10d pchain=%-10d%s",
-			cfg.topo.MachineName(s), intents[s].Weight, actual[s], mark))
+		lines = append(lines, fmt.Sprintf("  %-3s desired=%-10d contract=%-10d nonces=%d/%d%s",
+			cfg.topo.MachineName(s), intents[s].Weight, v.Weight, v.ReceivedNonce, v.SentNonce, mark))
 	}
 	if converged {
-		fmt.Println("weights: converged (P-chain == desired)")
+		fmt.Println("weights: converged (contract weight == desired, sentNonce == receivedNonce)")
 		return
 	}
-	fmt.Println("weights: PENDING - initiates are fired by `./fleet weight`; P-chain delivery is the warp-courier daemon's job (check it if this persists)")
+	fmt.Println("weights: PENDING - initiates are fired by `./fleet weight`; P-chain delivery and the contract ack are the warp-courier daemon's job (check it if this persists)")
 	for _, l := range lines {
 		fmt.Println(l)
 	}

@@ -94,6 +94,42 @@ func TestPlanSeesaw(t *testing.T) {
 	t.Logf("seesaw planned in %d initiates", len(steps))
 }
 
+// TestSlotConverged pins THE convergence predicate: contract state only,
+// converged iff weight == desired AND sentNonce == receivedNonce (the
+// receivedNonce is the courier-delivered ack proving the P-chain applied the
+// update; no P-chain read exists anywhere in the weight flow).
+func TestSlotConverged(t *testing.T) {
+	tests := []struct {
+		name    string
+		v       valmgr.Validator
+		desired uint64
+		want    bool
+	}{
+		{"converged", valmgr.Validator{Weight: 100, SentNonce: 7, ReceivedNonce: 7}, 100, true},
+		{"weight pending", valmgr.Validator{Weight: 50, SentNonce: 7, ReceivedNonce: 7}, 100, false},
+		{"ack pending: weight matches but courier has not acked", valmgr.Validator{Weight: 100, SentNonce: 7, ReceivedNonce: 6}, 100, false},
+		{"both pending", valmgr.Validator{Weight: 50, SentNonce: 7, ReceivedNonce: 6}, 100, false},
+		{"fresh slot, no updates ever", valmgr.Validator{Weight: 100}, 100, true},
+	}
+	for _, tt := range tests {
+		if got := slotConverged(tt.v, tt.desired); got != tt.want {
+			t.Errorf("%s: slotConverged(%+v, %d) = %v, want %v", tt.name, tt.v, tt.desired, got, tt.want)
+		}
+	}
+}
+
+// TestContractWeights: the projection keeps nil (contract unreadable) intact
+// so reportHealth falls back to desired weights, and maps slot -> weight.
+func TestContractWeights(t *testing.T) {
+	if contractWeights(nil) != nil {
+		t.Error("contractWeights(nil) != nil")
+	}
+	got := contractWeights(map[int]valmgr.Validator{2: {Weight: 42}})
+	if len(got) != 1 || got[2] != 42 {
+		t.Errorf("contractWeights = %v", got)
+	}
+}
+
 // TestDelayForAttempt pins the escalating retry schedule: fast early (cold
 // aggregator resolves in seconds), settling at 2m for slow Fuji coverage.
 func TestDelayForAttempt(t *testing.T) {

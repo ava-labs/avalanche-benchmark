@@ -511,8 +511,8 @@ func status(cfg *config) {
 	intents := mustLoadIntents(cfg)
 	fmt.Println("== benchmark-fleet status ==")
 	results := cfg.checkHealth(intents)
-	// One batch of P-chain reads, shared by both reports.
-	actual, actualErr := fetchActualWeights(cfg, intents)
-	reportHealth(cfg, intents, results, actual)
-	weightsReport(cfg, intents, actual, actualErr)
+	// One batch of contract reads (C-chain only), shared by both reports.
+	vals, valsErr := fetchContractValidators(cfg, intents)
+	reportHealth(cfg, intents, results, contractWeights(vals))
+	weightsReport(cfg, intents, vals, valsErr)
 }

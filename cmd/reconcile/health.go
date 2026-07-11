@@ -223,10 +223,11 @@ func (c *config) checkHealth(intents []MachineIntent) []healthResult {
 // then an honest summary and hints for the two non-obvious failure modes
 // (lost quorum, and the 75% rejoin latch that keeps a single brought-up
 // validator from recovering a stalled chain). "Validator" in the summary
-// means a slot whose ACTUAL P-chain weight is the validator tier (>=1% of
+// means a slot whose ACTUAL contract weight is the validator tier (>=1% of
 // total); the parenthetical "intended up" still counts by desired weight.
-// actual is fetchActualWeights' slot -> P-chain weight map; nil means the
-// P-chain was unreadable and everything falls back to desired weights.
+// actual is the slot -> ValidatorManager contract weight map (C-chain reads
+// only, via fetchContractValidators); nil means the contract was unreadable
+// and everything falls back to desired weights.
 func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, actual map[int]uint64) {
 	t := cfg.topo
 	total := totalWeight(intents)
@@ -273,7 +274,7 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, 
 			}
 			field := fmt.Sprintf("%s (%s)", t.MachineName(i), cfg.nodeIPs[i])
 			// "active" (a consensus-relevant validator) is judged by the
-			// ACTUAL P-chain weight when readable, desired otherwise.
+			// ACTUAL contract weight when readable, desired otherwise.
 			active := isActiveWeight(in.Weight, total)
 			if w, have := actual[i]; have {
 				active = isActiveWeight(w, actualTotal)
@@ -322,7 +323,7 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, 
 	}
 
 	if actual == nil {
-		fmt.Println("(P-chain unreadable, showing desired weights)")
+		fmt.Println("(ValidatorManager contract unreadable, showing desired weights)")
 	}
 	fmt.Printf("validators serving: %d/%d (intended up: %d/%d)\n",
 		servingValidators, activeSlots, intendedValidators, activeSlots)

@@ -135,6 +135,21 @@ func Dial(ctx context.Context, rpcURL string, key *secp256k1.PrivateKey, manager
 	}, nil
 }
 
+// DialReader connects a read-only client: view calls only, no key, no
+// transactor. Used by the status/exporter paths, which must never need the
+// wallet key (or any chain but the C-chain).
+func DialReader(ctx context.Context, rpcURL string, manager common.Address) (*Client, error) {
+	eth, err := ethclient.DialContext(ctx, rpcURL)
+	if err != nil {
+		return nil, fmt.Errorf("dial %s: %w", rpcURL, err)
+	}
+	parsed, err := abi.JSON(strings.NewReader(abiJSON))
+	if err != nil {
+		return nil, fmt.Errorf("parse embedded ABI: %w", err)
+	}
+	return &Client{eth: eth, abi: parsed, Manager: manager}, nil
+}
+
 func (c *Client) Sender() common.Address { return c.sender }
 
 // Balance returns the sender's C-chain balance in wei.

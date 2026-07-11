@@ -201,8 +201,11 @@ Operating the fleet is two independent axes, both via `./fleet`:
   `spare`=1000, `dead`=1) through the ValidatorManager contract on the
   C-chain. The command only initiates on the contract; the standalone
   warp-courier daemon delivers the emitted warp message to the P-chain and
-  acks it back to the contract, and the command polls until both agree. One
-  tier per invocation; it never starts or stops a process, and no keys move.
+  acks it back to the contract. The command polls the contract until every
+  slot shows weight == desired and sentNonce == receivedNonce (the ack
+  proving the P-chain applied it); the kit's weight/status flow never talks
+  to the P-chain itself, not even reads. One tier per invocation; it never
+  starts or stops a process, and no keys move.
 
 ```bash
 watch -n5 ./fleet status                   # live per-DC stake tier + node state

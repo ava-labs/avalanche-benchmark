@@ -4,11 +4,15 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ava-labs/avalanchego/ids"
+	ethcommon "github.com/ava-labs/libevm/common"
+
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/valmgr"
 )
 
 // runExporter serves the fleet's stake weights as Prometheus gauges on addr,
@@ -17,18 +21,24 @@ import (
 //
 //	fleet_desired_weight  intent, read from the state file on every scrape
 //	                      (it changes whenever `fleet weight` runs)
-//	fleet_actual_weight   P-chain weight per validationID, refreshed every 30s
-//	                      in the background so a scrape never blocks on Fuji
+//	fleet_actual_weight   ValidatorManager contract weight per validationID
+//	                      (C-chain eth_call, never the P-chain), refreshed
+//	                      every 30s in the background so a scrape never blocks
 func runExporter(cfg *config, addr string) {
 	subnetID, err := ids.FromString(cfg.subnetID)
 	if err != nil {
 		fatalf("exporter: parse SUBNET_ID: %v", err)
 	}
 
+	managerHex := os.Getenv("MANAGER_ADDRESS")
+
 	var mu sync.Mutex
-	actual := map[int]uint64{} // slot -> last known P-chain weight
+	actual := map[int]uint64{} // slot -> last known contract weight
 
 	refresh := func() {
+		if managerHex == "" {
+			return // pre-manager deploy: no on-chain weights to export
+		}
 		intents, err := loadIntents(cfg.stateFile, cfg.topo)
 		if err != nil {
 			return
@@ -39,14 +49,17 @@ func runExporter(cfg *config, addr string) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		p := pchainReadClient()
+		cli, err := valmgr.DialReader(ctx, cchainRPCURL(), ethcommon.HexToAddress(managerHex))
+		if err != nil {
+			return // transient RPC hiccup: keep the last known values
+		}
 		for _, t := range targets {
-			pv, _, err := p.GetL1Validator(ctx, t.validationID)
+			v, err := cli.GetValidator(ctx, t.validationID)
 			if err != nil {
-				continue // transient Fuji hiccup: keep the last known value
+				continue // transient RPC hiccup: keep the last known value
 			}
 			mu.Lock()
-			actual[t.slot] = pv.Weight
+			actual[t.slot] = v.Weight
 			mu.Unlock()
 		}
 	}
