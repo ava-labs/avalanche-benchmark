@@ -42,9 +42,11 @@ func usage() {
   up   <m...>       rebuild the given machines from genesis, start them and wait
                     until they are SERVING at the fleet tip (wipes their L1 chain
                     data; on-chain weight untouched); machines already serving at
-                    tip are skipped, machines merely catching up are waited on;
-                    a catching-up machine whose height is frozen (fork wedge) is
-                    rebuilt automatically (chainData wipe + state re-sync)
+                    tip are skipped, machines catching up or bootstrapping are
+                    waited on while they make progress; a machine that stalls
+                    (frozen height = fork wedge, or no bootstrap movement) is
+                    rebuilt automatically (chainData + bootstrap-backlog wipe,
+                    state re-sync)
   down <m...>       simulate hardware failure: hard-kill the given machines
                     (data left on disk; on-chain weight untouched)
   weight <tier> <m...>
@@ -99,11 +101,14 @@ func main() {
 		if !down {
 			// Idempotence: a machine that was NOT cordoned and whose node
 			// already answers RPC AT THE FLEET TIP is healthy - leave it
-			// alone instead of wiping and rebuilding it. A CATCHING UP node
-			// (answering RPC but behind tip) is also left running - a wipe
-			// would only restart its sync - but `up` still blocks until it
-			// reaches the tip. Cordoned, unreachable, or bootstrapping-stuck
-			// machines get the full rebuild.
+			// alone instead of wiping and rebuilding it. A CATCHING UP or
+			// BOOTSTRAPPING node is also left running - it is making its way
+			// to the tip and a wipe would only destroy that progress (the
+			// 2026-07-11 wipe-loop: `up` freshCleaned nodes mid-bootstrap) -
+			// but `up` still blocks until it serves; waitServing rebuilds it
+			// there only if it genuinely stalls (no bootstrap-metric or
+			// height movement for its stall budget). Cordoned or unreachable
+			// (DOWN) machines get the full rebuild.
 			results := cfg.checkHealth(prev)
 			requested := len(ms)
 			var rebuild []int
@@ -112,7 +117,7 @@ func main() {
 					switch results[m-1].state {
 					case healthServing:
 						continue
-					case healthCatchingUp:
+					case healthCatchingUp, healthBootstrapping:
 						wait = append(wait, m)
 						continue
 					}
@@ -490,83 +495,116 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 }
 
 // waitServing blocks until every listed machine answers its L1 RPC as SERVING
-// AND is within catchUpThreshold of the fleet max height, polling every 5s with
-// a 10 minute deadline. Each poll probes the WHOLE fleet (checkHealth) so the
-// fleet max is fresh; if no other node responds, the fleet max is the machine's
-// own height and it passes trivially (no deadlock bringing up a lone node).
-// Prints a line when a machine's state changes, plus a progress line every poll
-// while it is catching up; exits non-zero with the stragglers named on timeout.
+// AND is within catchUpThreshold of the fleet max height, polling every 5s.
+// Each poll probes the WHOLE fleet (checkHealth) so the fleet max is fresh; if
+// no other node responds, the fleet max is the machine's own height and it
+// passes trivially (no deadlock bringing up a lone node). Prints a line when a
+// machine's state changes, plus a progress line every poll while it is
+// catching up or bootstrapping.
 //
-// Fork-wedge detection: a CATCHING UP machine whose height stays FROZEN across
-// wedgeFrozenPolls consecutive polls has self-finalized a sibling block (the
-// documented sibling-race wedge) and will never reach the tip; waiting is
-// useless. Instead of timing out it is rebuilt in place (rebuildWedged: stop,
-// wipe ONLY the L1 chainData, keep P-chain db + staking keys, restart) and the
-// wait continues through its state re-sync. At most one rebuild per machine
-// per invocation: a second freeze falls through to the timeout.
+// There is deliberately NO flat overall deadline: the clock is per machine and
+// runs on NO PROGRESS (madeProgress: state changes, height movement, bootstrap
+// bs_fetched/bs_accepted metric movement), so a node legitimately fetching or
+// executing a long bootstrap backlog is waited on as long as it keeps moving.
+// The old flat 10-minute timeout fatalfed mid-recovery and, combined with a
+// rerunning scenario wrapper, wipe-looped bootstrapping nodes forever
+// (2026-07-11 incident).
+//
+// A machine with no progress for its stall budget (stallBudget: generous for
+// BOOTSTRAPPING to absorb the silent Bootstrapper.Clear window) is rebuilt in
+// place (rebuildWedged: stop, wipe ONLY the L1 chainData + bootstrap backlog,
+// keep P-chain db + staking keys, restart) and the wait continues through its
+// state re-sync. The proven fast path stays: a CATCHING UP machine whose
+// height FREEZES across wedgeFrozenPolls polls (sibling-race fork wedge) is
+// rebuilt immediately, no budget wait. At most one rebuild per machine per
+// invocation; when every remaining machine has exhausted budget + rebuild, the
+// command exits non-zero naming them. Since `up` no longer wipes catching-up
+// or bootstrapping machines, exiting and re-running is always safe.
 func waitServing(cfg *config, intents []MachineIntent, ms []int) {
-	const (
-		poll    = 5 * time.Second
-		timeout = 10 * time.Minute
-	)
-	deadline := time.Now().Add(timeout)
-	last := map[int]nodeHealth{} // zero value healthDown: the just-rebuilt state
+	const poll = 5 * time.Second
+	type track struct {
+		state    nodeHealth // zero value healthDown: the just-(re)built state
+		block    uint64
+		bs       uint64 // bootstrap counter (bs_fetched+bs_accepted), valid iff bsOK
+		bsOK     bool
+		progress time.Time // last time this machine showed forward motion
+		frozenN  int       // consecutive frozen-height polls (fork-wedge detector)
+		rebuilt  bool
+	}
+	tr := map[int]*track{}
+	for _, m := range ms {
+		tr[m] = &track{progress: time.Now()}
+	}
 	serving := map[int]bool{}
-	lastBlock := map[int]uint64{}
-	frozenN := map[int]int{}
-	rebuilt := map[int]bool{}
-	fmt.Printf("waiting for %d machine(s) to reach SERVING at fleet tip (timeout %s)...\n", len(ms), timeout)
+	fmt.Printf("waiting for %d machine(s) to reach SERVING at fleet tip (rebuild after %s without progress while bootstrapping, %s otherwise)...\n",
+		len(ms), bootstrapStallBudget, defaultStallBudget)
 	for {
 		results := cfg.checkHealth(intents)
 		fleetMax := fleetMaxBlock(results)
+		var stuck []string
 		for _, m := range ms {
 			if serving[m] {
 				continue
 			}
+			t := tr[m]
 			r := results[m-1]
+			name := cfg.topo.MachineName(m - 1)
+			var bs uint64
+			var bsOK bool
+			if r.state == healthBootstrapping {
+				bs, bsOK = cfg.bootstrapCounter(m - 1)
+			}
 			switch {
 			case r.state == healthCatchingUp:
-				fmt.Printf("  %s catching up: %d/%d\n", cfg.topo.MachineName(m-1), r.block, fleetMax)
-			case r.state != last[m]:
-				fmt.Printf("  %s: %s\n", cfg.topo.MachineName(m-1), r.state)
+				fmt.Printf("  %s catching up: %d/%d\n", name, r.block, fleetMax)
+			case r.state == healthBootstrapping && bsOK:
+				fmt.Printf("  %s bootstrapping: %d blocks fetched+accepted\n", name, bs)
+			case r.state != t.state:
+				fmt.Printf("  %s: %s\n", name, r.state)
 			}
-			last[m] = r.state
+			if madeProgress(t.state, r.state, t.block, r.block, t.bs, bs, t.bsOK, bsOK) {
+				t.progress = time.Now()
+			}
 			var wedged bool
-			frozenN[m], wedged = wedgeFrozen(r.state, r.block, lastBlock[m], frozenN[m])
-			lastBlock[m] = r.block
-			if wedged && !rebuilt[m] {
-				name := cfg.topo.MachineName(m - 1)
-				fmt.Printf("  %s: height FROZEN at %d (%d behind fleet max %d) across %d polls: fork wedge, rebuilding\n",
-					name, r.block, fleetMax-r.block, fleetMax, wedgeFrozenPolls+1)
-				fmt.Printf("  %s: stop + wipe L1 chainData (P-chain db and staking keys kept)\n", name)
-				cfg.rebuildWedged(m - 1)
-				fmt.Printf("  %s: restarted, waiting for state sync to the live branch\n", name)
-				rebuilt[m] = true
-				frozenN[m] = 0
+			t.frozenN, wedged = wedgeFrozen(r.state, r.block, t.block, t.frozenN)
+			stalledFor := time.Since(t.progress)
+			stalled := stalledFor > stallBudget(r.state)
+			t.state, t.block = r.state, r.block
+			if bsOK {
+				t.bs, t.bsOK = bs, true
 			}
 			if r.state == healthServing {
 				serving[m] = true
+				continue
+			}
+			if (wedged || stalled) && !t.rebuilt {
+				if wedged {
+					fmt.Printf("  %s: height FROZEN at %d (%d behind fleet max %d) across %d polls: fork wedge, rebuilding\n",
+						name, r.block, fleetMax-r.block, fleetMax, wedgeFrozenPolls+1)
+				} else {
+					fmt.Printf("  %s: NO progress for %s while %s: genuinely stuck, rebuilding\n",
+						name, stalledFor.Round(time.Second), r.state)
+				}
+				fmt.Printf("  %s: stop + wipe L1 chainData and bootstrap backlog (P-chain db and staking keys kept)\n", name)
+				cfg.rebuildWedged(m - 1)
+				fmt.Printf("  %s: restarted, waiting for state sync to the live branch\n", name)
+				// Full tracker reset: the restarted process reports fresh
+				// (lower) heights and zeroed bs counters, which must not be
+				// compared against pre-rebuild values.
+				*t = track{progress: time.Now(), rebuilt: true}
+				continue
+			}
+			if stalled { // budget exhausted after the one allowed rebuild
+				stuck = append(stuck, fmt.Sprintf("%s (%s, no progress for %s after a rebuild)",
+					name, r.state, stalledFor.Round(time.Second)))
 			}
 		}
 		if len(serving) == len(ms) {
 			return
 		}
-		if time.Now().After(deadline) {
-			var stuck []string
-			for _, m := range ms {
-				if serving[m] {
-					continue
-				}
-				s := cfg.topo.MachineName(m - 1)
-				if r := results[m-1]; r.state == healthCatchingUp {
-					s += fmt.Sprintf(" (still behind by %d blocks: %d/%d)", fleetMax-r.block, r.block, fleetMax)
-				} else {
-					s += fmt.Sprintf(" (%s)", results[m-1].state)
-				}
-				stuck = append(stuck, s)
-			}
-			fatalf("up: timed out after %s; not at fleet tip: %s; check logs or re-run `./fleet up`",
-				timeout, strings.Join(stuck, ", "))
+		if len(stuck) == len(ms)-len(serving) {
+			fatalf("up: gave up; every remaining machine is stuck: %s; check logs or re-run `./fleet up` (it will not wipe their progress)",
+				strings.Join(stuck, ", "))
 		}
 		time.Sleep(poll)
 	}

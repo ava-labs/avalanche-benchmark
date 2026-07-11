@@ -559,20 +559,43 @@ func (c *config) freshClean(i int) {
 		"cd %s 2>/dev/null && rm -rf %s/chainData %s || true; "+
 			"mkdir -p %s/bin %s/plugins %s/staking/l1",
 		c.remoteDir, in.dataDir, in.activeDir, c.remoteDir, c.remoteDir, c.remoteDir))
+	c.clearBootstrapBacklog(i)
 }
 
-// rebuildWedged is the fork-wedge repair (see waitServing's detector): the node
-// self-finalized a sibling block and its height is frozen forever, so waiting is
-// useless. Exactly the live repair recipe: kill it, wipe ONLY the L1 EVM state
+// clearBootstrapBacklog drops the L1 chain's fetched-but-not-executed bootstrap
+// blocks from the node's shared db/ (bin/bsclear: one pebble DeleteRange over
+// the chain's interval_bs prefix; the P-chain and every other chain live under
+// disjoint sha256 prefixes and are untouched, staking keys are not in the db).
+// Bootstrap blocks survive a chainData wipe - they live in db/, not chainData/ -
+// which used to resurrect half a bootstrap after a rebuild AND force a
+// multi-minute UNLOGGED Bootstrapper.Clear grind before "starting state sync"
+// could appear (the 2026-07-11 silent-stall window). MUST run while the node
+// is down (both callers kill it first). A box without the tool or without a db
+// yet (first provision) skips with a note.
+func (c *config) clearBootstrapBacklog(i int) {
+	in := c.instances[i]
+	dbDir := fmt.Sprintf("%s/db/%s/pebble", in.dataDir, netcfg.Get().Name)
+	c.ssh(in.host, fmt.Sprintf(
+		"cd %s 2>/dev/null || exit 0; if [ -x bin/bsclear ] && [ -d %s ]; then ./bin/bsclear %s %s; else echo 'bsclear: skipped (no tool or no db yet)'; fi",
+		c.remoteDir, dbDir, dbDir, c.chainID))
+}
+
+// rebuildWedged is waitServing's in-place repair for a node that will never
+// reach the tip on its own: a fork wedge (self-finalized sibling block, height
+// frozen forever) or a genuinely stalled bootstrap (no progress for its stall
+// budget). Exactly the live repair recipe: kill it, wipe ONLY the L1 EVM state
 // (data dir chainData; NEVER the shared db/ holding the P-chain, NEVER
-// staking/active), restart. The node rolls the L1 back to genesis and
-// state-syncs onto the live branch; identity and P-chain are untouched, so no
-// key swap or re-provisioning is needed. Fatal on ssh failure: this targets one
-// specific host and must fail loudly if that host is unreachable.
+// staking/active) plus the chain's bootstrap backlog inside db/ (so the
+// restart state-syncs clean instead of silently grinding Bootstrapper.Clear),
+// restart. The node rolls the L1 back to genesis and state-syncs onto the live
+// branch; identity and P-chain are untouched, so no key swap or
+// re-provisioning is needed. Fatal on ssh failure: this targets one specific
+// host and must fail loudly if that host is unreachable.
 func (c *config) rebuildWedged(i int) {
 	in := c.instances[i]
 	c.killNode(i)
 	c.ssh(in.host, fmt.Sprintf("cd %s && rm -rf %s/chainData", c.remoteDir, in.dataDir))
+	c.clearBootstrapBacklog(i)
 	c.start(i)
 }
 
@@ -616,7 +639,7 @@ func (c *config) provisioned(host string) (bool, error) {
 		fmt.Fprintf(&checks, "test -f %s && ", c.instances[i].chainCfg)
 	}
 	out, err := c.sshTry(host, fmt.Sprintf(
-		"cd %s 2>/dev/null && test -f bin/avalanchego && test -f plugins/%s && "+
+		"cd %s 2>/dev/null && test -f bin/avalanchego && test -f bin/bsclear && test -f plugins/%s && "+
 			"test -f node-config.json && test -f subnet-config.json && "+
 			"%secho OK || echo MISSING",
 		c.remoteDir, c.subnetEVMID, checks.String()))
@@ -644,6 +667,7 @@ func (c *config) deployChainConfig(i int) {
 func (c *config) upload(host string) {
 	c.ssh(host, fmt.Sprintf("mkdir -p %s/bin %s/plugins %s/staking/l1", c.remoteDir, c.remoteDir, c.remoteDir))
 	c.rsyncUpload(c.repoDir+"/bin/avalanchego", host, c.remoteDir+"/bin/")
+	c.rsyncUpload(c.repoDir+"/bin/bsclear", host, c.remoteDir+"/bin/")
 	c.rsyncUpload(c.repoDir+"/bin/"+c.subnetEVMID, host, c.remoteDir+"/plugins/")
 	c.scp(c.repoDir+"/node-config.json", host, c.remoteDir+"/", false)
 	c.scp(c.repoDir+"/subnet-config.json", host, c.remoteDir+"/", false)

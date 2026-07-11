@@ -109,6 +109,79 @@ func TestWedgeFrozen(t *testing.T) {
 	}
 }
 
+// TestParseBootstrapCounter feeds real /ext/metrics lines (captured live on a1
+// 2026-07-11). The P-chain filter is the load-bearing case: its bs counters
+// (chain="P") advance forever under --p-chain-follow-only and must never read
+// as L1 progress.
+func TestParseBootstrapCounter(t *testing.T) {
+	const chainID = "e3JzNuuG3CXifcWh1Sik55LbFTyCxMqkQUR4ohvZCDpNGzunB"
+	body := `# HELP avalanche_snowman_bs_accepted Number of blocks accepted during bootstrapping
+# TYPE avalanche_snowman_bs_accepted counter
+avalanche_snowman_bs_accepted{chain="P"} 3504
+avalanche_snowman_bs_accepted{chain="` + chainID + `"} 9734
+# HELP avalanche_snowman_bs_fetched Number of blocks fetched during bootstrapping
+# TYPE avalanche_snowman_bs_fetched counter
+avalanche_snowman_bs_fetched{chain="P"} 3504
+avalanche_snowman_bs_fetched{chain="` + chainID + `"} 9734
+`
+	if got, ok := parseBootstrapCounter(body, chainID); !ok || got != 19468 {
+		t.Errorf("parseBootstrapCounter = (%d,%v), want (19468,true)", got, ok)
+	}
+	// Prometheus renders big counters in scientific notation.
+	sci := `avalanche_snowman_bs_fetched{chain="` + chainID + `"} 4.157273e+06` + "\n"
+	if got, ok := parseBootstrapCounter(sci, chainID); !ok || got != 4157273 {
+		t.Errorf("scientific notation: got (%d,%v), want (4157273,true)", got, ok)
+	}
+	// Chain's counters absent (engine not started yet, or wrong chain) -> not ok.
+	if _, ok := parseBootstrapCounter(`avalanche_snowman_bs_fetched{chain="P"} 3504`+"\n", chainID); ok {
+		t.Errorf("expected ok=false when only the P-chain reports")
+	}
+	if _, ok := parseBootstrapCounter("", chainID); ok {
+		t.Errorf("expected ok=false on empty body")
+	}
+}
+
+// TestMadeProgress covers the wipe-loop fix's decision core: what counts as
+// forward motion for a waited-on machine between two polls.
+func TestMadeProgress(t *testing.T) {
+	tests := []struct {
+		name             string
+		prevState, state nodeHealth
+		prevBlock, block uint64
+		prevBS, bs       uint64
+		prevBSOK, bsOK   bool
+		want             bool
+	}{
+		{"state change is progress", healthDown, healthBootstrapping, 0, 0, 0, 0, false, false, true},
+		{"bootstrap counters advancing is progress", healthBootstrapping, healthBootstrapping, 0, 0, 4150000, 4150900, true, true, true},
+		{"bootstrap counters frozen is NOT progress", healthBootstrapping, healthBootstrapping, 0, 0, 4150000, 4150000, true, true, false},
+		{"silent Clear window (bs present but zero, unchanging) is NOT progress", healthBootstrapping, healthBootstrapping, 0, 0, 0, 0, true, true, false},
+		{"first bs reading (engine came up) is progress", healthBootstrapping, healthBootstrapping, 0, 0, 0, 0, false, true, true},
+		{"metrics unreadable both polls is NOT progress", healthBootstrapping, healthBootstrapping, 0, 0, 0, 0, false, false, false},
+		{"height movement is progress", healthCatchingUp, healthCatchingUp, 100, 400, 0, 0, false, false, true},
+		{"frozen height is NOT progress", healthCatchingUp, healthCatchingUp, 400, 400, 0, 0, false, false, false},
+		{"post-restart lower bs alone is NOT progress", healthBootstrapping, healthBootstrapping, 0, 0, 4150000, 12, true, true, false},
+	}
+	for _, tt := range tests {
+		if got := madeProgress(tt.prevState, tt.state, tt.prevBlock, tt.block, tt.prevBS, tt.bs, tt.prevBSOK, tt.bsOK); got != tt.want {
+			t.Errorf("%s: madeProgress = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestStallBudget(t *testing.T) {
+	// BOOTSTRAPPING gets the generous window (silent Bootstrapper.Clear + state
+	// sync); everything else keeps the old 10 minutes.
+	if stallBudget(healthBootstrapping) != bootstrapStallBudget {
+		t.Errorf("bootstrapping budget = %v", stallBudget(healthBootstrapping))
+	}
+	for _, s := range []nodeHealth{healthDown, healthCatchingUp, healthServing} {
+		if stallBudget(s) != defaultStallBudget {
+			t.Errorf("budget(%v) = %v, want %v", s, stallBudget(s), defaultStallBudget)
+		}
+	}
+}
+
 func TestNeededOnlineToRejoin(t *testing.T) {
 	// 3 equal validators: ceil(75%) = 3 (all must be online to clear the latch).
 	if got := neededOnlineToRejoin(3); got != 3 {

@@ -2,7 +2,7 @@
 # The Go tool binaries are phony too: their file rules have no source
 # prerequisites, so without this a stale bin/ silently ships into `pack`
 # (bit us 2026-07-06). go's build cache keeps the rebuild near-instant.
-.PHONY: bin/create-l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet
+.PHONY: bin/create-l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet bin/bsclear
 
 .DEFAULT_GOAL := all
 
@@ -26,7 +26,7 @@ all: deps build
 	@echo "All ready."
 
 # Build Go tools
-build: bin/create-l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet
+build: bin/create-l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet bin/bsclear
 
 bin/create-l1:
 	@mkdir -p bin
@@ -48,6 +48,13 @@ bin/fuji-wallet:
 	@mkdir -p bin
 	go build -o bin/fuji-wallet ./cmd/fuji-wallet
 
+# bsclear runs ON the nodes (linux-amd64, uploaded by benchmark-fleet next to
+# bin/avalanchego): drops the L1 chain's bootstrap-block backlog from db/
+# during a rebuild. See cmd/bsclear.
+bin/bsclear:
+	@mkdir -p bin
+	GOOS=linux GOARCH=amd64 go build -o bin/bsclear ./cmd/bsclear
+
 # Download/build dependencies
 deps: bin/avalanchego
 	@echo "Dependencies ready."
@@ -59,7 +66,7 @@ clean:
 # monitoring downloads). pack runs this first so a pack can never ship a stale
 # tool even if the .PHONY list above drifts.
 clean-tools:
-	rm -f bin/create-l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet
+	rm -f bin/create-l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet bin/bsclear
 
 # Build avalanchego + subnet-evm from the published pinned ref (run on Linux)
 bin/avalanchego bin/$(SUBNET_EVM_ID):
@@ -125,6 +132,7 @@ release: clean-tools deps build monitoring-deps
 		bin/avalanchego \
 		bin/$(SUBNET_EVM_ID) \
 		bin/benchmark-fleet \
+		bin/bsclear \
 		bin/bombard \
 		bin/prometheus \
 		bin/grafana.tar.gz \

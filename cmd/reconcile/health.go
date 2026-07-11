@@ -116,6 +116,97 @@ func wedgeFrozen(state nodeHealth, block, prevBlock uint64, prevFrozen int) (fro
 	return frozen, frozen >= wedgeFrozenPolls
 }
 
+// Stall budgets: how long a waited-on machine may show NO progress before
+// waitServing intervenes (rebuild once, then give up). Progress - not wall
+// time - drives the clock, so a node legitimately fetching/executing a long
+// bootstrap backlog is waited on indefinitely instead of being wiped every 10
+// minutes (the 2026-07-11 wipe-loop incident: the recovery step was the
+// disease). The BOOTSTRAPPING budget is the generous one: it must cover the
+// silent Bootstrapper.Clear window (an unlogged AtomicClear of a leftover
+// bootstrap backlog in db/ before "starting state sync" appears - zero bs
+// metric movement for many minutes, measured ~21 min for a 869k-block backlog)
+// plus a full state sync (~5 min).
+const (
+	bootstrapStallBudget = 25 * time.Minute
+	defaultStallBudget   = 10 * time.Minute
+)
+
+// stallBudget is the no-progress allowance for a machine in the given state.
+func stallBudget(state nodeHealth) time.Duration {
+	if state == healthBootstrapping {
+		return bootstrapStallBudget
+	}
+	return defaultStallBudget
+}
+
+// madeProgress reports forward motion between two consecutive polls of a
+// waited-on machine: any state change (down->bootstrapping, bootstrapping->
+// catching up, ...), block-height movement, or movement of the chain's
+// bootstrap counters (bs, the summed bs_fetched+bs_accepted metrics, valid
+// only when bsOK). The first successful bs read (prevBSOK false) counts as
+// progress: the chain's engine registering its metrics IS forward motion.
+// Pure (unit-tested). NOTE: a crash-looping node flaps states and therefore
+// always "progresses"; that pathology stays visible in the printed poll lines
+// and is left to the operator rather than guessed at here.
+func madeProgress(prevState, state nodeHealth, prevBlock, block, prevBS, bs uint64, prevBSOK, bsOK bool) bool {
+	if state != prevState {
+		return true
+	}
+	if block > prevBlock {
+		return true
+	}
+	return bsOK && (!prevBSOK || bs > prevBS)
+}
+
+// bootstrapCounter reads the L1 chain's bootstrap progress counter from the
+// node's /ext/metrics: bs_fetched + bs_accepted summed. Fetched advances while
+// blocks download, accepted while the executor replays them, so either phase
+// of a legitimate bootstrap moves the counter. ok=false when the endpoint or
+// the chain's counters are unavailable (node down, engine not started yet).
+func (c *config) bootstrapCounter(i int) (uint64, bool) {
+	in := c.instances[i]
+	client := &http.Client{Timeout: 4 * time.Second}
+	resp, err := client.Get(fmt.Sprintf("http://%s:%d/ext/metrics", in.host, in.httpPort))
+	if err != nil {
+		return 0, false
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	return parseBootstrapCounter(string(b), c.chainID)
+}
+
+// parseBootstrapCounter sums avalanche_snowman_bs_fetched + bs_accepted for
+// THE L1 chain from a Prometheus /ext/metrics body. Filtering on the chain
+// label is load-bearing: the fleet's P-chain runs --p-chain-follow-only and
+// its bs counters (chain="P") advance forever, which must never read as L1
+// progress. Values are parsed as floats (Prometheus renders large counters in
+// scientific notation). Pure (unit-tested).
+func parseBootstrapCounter(body, chainID string) (uint64, bool) {
+	label := `chain="` + chainID + `"`
+	var sum float64
+	found := false
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, "avalanche_snowman_bs_fetched{") &&
+			!strings.HasPrefix(line, "avalanche_snowman_bs_accepted{") {
+			continue
+		}
+		if !strings.Contains(line, label) {
+			continue
+		}
+		sp := strings.LastIndexByte(line, ' ')
+		if sp < 0 {
+			continue
+		}
+		v, err := strconv.ParseFloat(line[sp+1:], 64)
+		if err != nil {
+			continue
+		}
+		sum += v
+		found = true
+	}
+	return uint64(sum), found
+}
+
 // neededOnlineToRejoin is the number of validators that must be connected for a
 // (re)starting validator to clear avalanchego's bootstrap startup latch:
 // ceil(75% of the validator set) - see chains/manager.go NewStartup(...,(3*W+3)/4)
