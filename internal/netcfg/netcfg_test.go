@@ -25,7 +25,7 @@ func TestFujiDefaultsUnchanged(t *testing.T) {
 			NetworkID:        constants.FujiID,
 			HRP:              constants.FujiHRP,
 			API:              "https://api.avax-test.network",
-			CChainRPC:        "https://avalanche-fuji-c-chain-rpc.publicnode.com",
+			CChainRPC:        "https://api.avax-test.network/ext/bc/C/rpc",
 			CChainID:         "yH8D7ThNJkxmtkuv2jgBa4P1Rn3Qpr4pPr7QYNfcdoS6k6HWp",
 			AggregatorURL:    "https://avax-signature-aggregator-fuji.fly.dev/aggregate-signatures",
 			GlacierURL:       "https://glacier-api.avax.network/v1/signatureAggregator/fuji/aggregateSignatures",

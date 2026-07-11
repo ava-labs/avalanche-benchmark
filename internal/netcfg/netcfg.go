@@ -28,8 +28,11 @@ type Config struct {
 	// writes the ValidatorManager on the C-chain exclusively.
 	// Env override: PCHAIN_API.
 	API string
-	// CChainRPC is the publicnode C-chain RPC the fleet-side tools use (the
-	// official API aggressively rate-limits the fleet's egress IP).
+	// CChainRPC is the C-chain RPC the fleet-side tools use. Default is the
+	// official API: publicnode's load balancer has non-shared mempools that
+	// can strand sent txs (proven 2026-07-11). The official API rate-limits
+	// aggressive callers (429s) and its backends can serve stale reads, so
+	// override per deployment if needed.
 	// Env override: CCHAIN_RPC.
 	CChainRPC string
 	// CChainID is the network's C-chain blockchain ID (the ValidatorManager's
@@ -61,7 +64,7 @@ var fuji = Config{
 	NetworkID:        constants.FujiID,
 	HRP:              constants.FujiHRP,
 	API:              "https://api.avax-test.network",
-	CChainRPC:        "https://avalanche-fuji-c-chain-rpc.publicnode.com",
+	CChainRPC:        "https://api.avax-test.network/ext/bc/C/rpc",
 	CChainID:         "yH8D7ThNJkxmtkuv2jgBa4P1Rn3Qpr4pPr7QYNfcdoS6k6HWp",
 	AggregatorURL:    "https://avax-signature-aggregator-fuji.fly.dev/aggregate-signatures",
 	GlacierURL:       "https://glacier-api.avax.network/v1/signatureAggregator/fuji/aggregateSignatures",
@@ -75,7 +78,7 @@ var mainnet = Config{
 	NetworkID:        constants.MainnetID,
 	HRP:              constants.MainnetHRP,
 	API:              "https://api.avax.network",
-	CChainRPC:        "https://avalanche-c-chain-rpc.publicnode.com",
+	CChainRPC:        "https://api.avax.network/ext/bc/C/rpc",
 	CChainID:         "2q9e4r6Mu3U68nU1fYjgbR6JvwrRx36CohpAX5UQxse55x1Q5",
 	AggregatorURL:    "https://avax-signature-aggregator-mainnet.fly.dev/aggregate-signatures",
 	GlacierURL:       "https://glacier-api.avax.network/v1/signatureAggregator/mainnet/aggregateSignatures",
