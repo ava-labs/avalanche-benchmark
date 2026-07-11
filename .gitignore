@@ -23,6 +23,14 @@
 /*-linux
 /*-linux-amd64
 
+# warp-courier: prebuilt binary dropped in by the release process, plus any
+# local runtime files. Only the .example config and the .service template are
+# tracked; a real courier config points at a key file and is never committed.
+/courier/warp-courier
+/courier/config.json
+/courier/*.key
+/courier/state.json*
+
 # Deployment packages
 /remote-benchmark.tar.gz
 /avalanche-l1-kit.zip

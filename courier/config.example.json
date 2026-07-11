@@ -1,0 +1,17 @@
+{
+  "network": "mainnet",
+  "c_chain_rpc": "https://api.avax.network/ext/bc/C/rpc",
+  "p_chain_api": "https://api.avax.network",
+  "managers": [
+    "0xYOUR_VALIDATOR_MANAGER_ADDRESS"
+  ],
+  "complete_via": {
+    "0xYOUR_VALIDATOR_MANAGER_ADDRESS": "0xYOUR_POA_MANAGER_ADDRESS"
+  },
+  "key_file": "/absolute/path/to/courier.key",
+  "state_file": "/absolute/path/to/state.json",
+  "rewind_blocks": 80000,
+  "min_c_balance_navax": 10000000,
+  "min_p_balance_navax": 10000000,
+  "healthz_addr": "127.0.0.1:8347"
+}

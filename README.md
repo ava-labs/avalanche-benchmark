@@ -170,6 +170,55 @@ Metrics** (per-box CPU, memory, disk, throttle pressure).
 `run/02_monitoring.sh` is re-runnable and discovers the fleet
 from your `.env` topology automatically.
 
+### The warp courier (required for weight moves)
+
+Every stake change is two legs: the kit initiates it on the ValidatorManager
+contract (C-chain), and the **warp-courier daemon** delivers the emitted
+validator-weight warp message to the P-chain and acks it back to the
+contract. The kit never talks to the P-chain itself, so without a running
+courier every `./fleet weight` command initiates and then polls forever
+(`waiting on the warp courier to deliver/ack`). The courier ships prebuilt in
+`courier/warp-courier` (linux-amd64) and runs on the control host.
+
+It needs one funded wallet of its own (never the fleet wallet: two senders on
+one account race on nonces). Each delivery costs on the order of 0.0001 AVAX
+in P-chain and C-chain fees, so a small balance lasts a long time. Set it up
+once:
+
+```bash
+cp courier/config.example.json courier-config.json
+# Edit: RPC URLs, your ValidatorManager address (MANAGER_ADDRESS in network.env),
+# complete_via if a PoAManager owns it, key/state file paths, balance floors.
+courier/warp-courier -config courier-config.json     # foreground test run
+```
+
+For unattended operation install the systemd template
+(`courier/warp-courier.service`, fill in the paths first):
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp courier/warp-courier.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now warp-courier
+```
+
+Operational properties worth knowing:
+
+- **Fail-fast balance preflight**: at startup the courier checks the fee
+  wallet's C- and P-chain balances against `min_c_balance_navax` /
+  `min_p_balance_navax` (default 0.01 AVAX each) and exits non-zero naming
+  the short side. With `Restart=always` an underfunded courier is a visible
+  crash loop, never a silently wedged delivery queue.
+- **Crash and data-loss recovery**: all delivery decisions are recomputed
+  from observed chain state, so replaying blocks is idempotent. A corrupt
+  state file is moved aside and treated as missing; a missing state file
+  does not start at the tip but rewinds `rewind_blocks` (default 80000,
+  about a day of C-chain blocks) and rescans, so losing the state file can
+  delay reconciliation but never drops a weight update.
+- **Strict ordering**: messages are delivered one at a time in emission
+  order, stale-nonce deliveries are skipped, and weight-0 (removal) messages
+  are never debounced away.
+
 ## 3. Benchmark and failover
 
 Start the load (leave it running through everything below):

@@ -1,0 +1,21 @@
+# warp-courier systemd unit template. Fill in the paths, then:
+#   mkdir -p ~/.config/systemd/user
+#   cp courier/warp-courier.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now warp-courier
+# Restart=always is load-bearing: the startup balance preflight exits non-zero
+# when the fee wallet is short, so an underfunded courier shows up as a
+# crash loop instead of a silently wedged delivery queue.
+[Unit]
+Description=warp-courier (ValidatorManager warp delivery daemon)
+
+[Service]
+ExecStart=/PATH/TO/KIT/courier/warp-courier -config /PATH/TO/courier-config.json
+WorkingDirectory=/PATH/TO/KIT/courier
+Restart=always
+RestartSec=5
+StandardOutput=append:/PATH/TO/courier.log
+StandardError=append:/PATH/TO/courier.log
+
+[Install]
+WantedBy=default.target

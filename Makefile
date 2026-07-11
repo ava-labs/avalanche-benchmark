@@ -101,11 +101,17 @@ bin/grafana.tar.gz:
 	echo "Downloading grafana from $$URL..."; \
 	curl -L -o bin/grafana.tar.gz "$$URL"
 
-# Create offline package for deployment to the control machine
+# Create offline package for deployment to the control machine.
+# courier/warp-courier is a prebuilt linux-amd64 binary of the warp-courier
+# daemon (required by the weight flow: the kit only initiates on the
+# ValidatorManager, the courier delivers to the P-chain and acks back). It is
+# dropped into courier/ by the release process, not built here.
 pack: clean-tools deps build monitoring-deps
+	test -x courier/warp-courier || { echo "courier/warp-courier missing: drop in the prebuilt linux-amd64 courier binary first"; exit 1; }
 	rm -f remote-benchmark.tar.gz
 	tar --exclude=bin/grafana-dist -czvf remote-benchmark.tar.gz \
 		bin/ \
+		courier/ \
 		_common.sh \
 		fleet \
 		setup/ \
@@ -128,8 +134,10 @@ pack: clean-tools deps build monitoring-deps
 # per customer and untar over the unpacked kit root.
 release: clean-tools deps build monitoring-deps
 	rm -f avalanche-l1-kit.zip
+	test -x courier/warp-courier || { echo "courier/warp-courier missing: drop in the prebuilt linux-amd64 courier binary first"; exit 1; }
 	zip -r avalanche-l1-kit.zip \
 		bin/avalanchego \
+		courier/ \
 		bin/$(SUBNET_EVM_ID) \
 		bin/benchmark-fleet \
 		bin/bsclear \
