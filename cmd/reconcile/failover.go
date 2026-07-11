@@ -6,4 +6,3 @@ func siteName(site int) string {
 	}
 	return "a"
 }
-
