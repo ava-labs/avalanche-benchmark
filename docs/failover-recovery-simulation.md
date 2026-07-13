@@ -60,8 +60,8 @@ timeout is recovered by re-running the same `./fleet weight` command.
 Delivering the emitted `L1ValidatorWeight` warp message to the P-chain
 (`SetL1ValidatorWeightTx`) and acking it back to the contract
 (`completeValidatorWeightUpdate`) is NOT this engine's job anymore: the
-standalone warp-courier daemon (shipped in `courier/`, running on the
-control box) watches the ValidatorManager on the C-chain and
+standalone warp-courier daemon (github.com/containerman17/warp-courier,
+running on the control box) watches the ValidatorManager on the C-chain and
 does both, with strict per-validator ordering, its own signature aggregation
 and its own retries. The kit's poll finishing is the end-to-end proof the
 courier delivered; a poll that stalls with
