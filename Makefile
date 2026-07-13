@@ -68,14 +68,20 @@ clean:
 clean-tools:
 	rm -f bin/create-l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet bin/bsclear
 
-# Build avalanchego + subnet-evm from the published pinned ref (run on Linux)
+# Build avalanchego + subnet-evm from the published pinned ref (run on Linux).
+# GOTOOLCHAIN: avalanchego's own go.mod has no toolchain pin, so without this
+# it builds with whatever go is on the box (shipped a go1.26.4 binary from a
+# go1.26.5 tree on 2026-07-13). Reuse this repo's go.mod pin as the single
+# source of truth; go fetches the toolchain automatically if it's not local.
+GO_TOOLCHAIN=$(shell sed -n 's/^toolchain //p' go.mod)
+
 bin/avalanchego bin/$(SUBNET_EVM_ID):
 	@mkdir -p bin
 	rm -rf $(AVALANCHEGO_BUILD_DIR)
 	git clone --depth 1 --branch $(AVALANCHEGO_REF) $(AVALANCHEGO_REPO) $(AVALANCHEGO_BUILD_DIR)
 	cd $(AVALANCHEGO_BUILD_DIR) && test "$$(git rev-parse HEAD)" = "$(AVALANCHEGO_COMMIT)"
-	cd $(AVALANCHEGO_BUILD_DIR) && ./scripts/build.sh
-	cd $(AVALANCHEGO_BUILD_DIR) && ./graft/subnet-evm/scripts/build.sh || true
+	cd $(AVALANCHEGO_BUILD_DIR) && GOTOOLCHAIN=$(GO_TOOLCHAIN) ./scripts/build.sh
+	cd $(AVALANCHEGO_BUILD_DIR) && GOTOOLCHAIN=$(GO_TOOLCHAIN) ./graft/subnet-evm/scripts/build.sh || true
 	cp $(AVALANCHEGO_BUILD_DIR)/build/avalanchego bin/avalanchego
 	cp $(AVALANCHEGO_BUILD_DIR)/build/subnet-evm bin/$(SUBNET_EVM_ID)
 
@@ -101,8 +107,19 @@ bin/grafana.tar.gz:
 	echo "Downloading grafana from $$URL..."; \
 	curl -L -o bin/grafana.tar.gz "$$URL"
 
+# Manifest of exactly what ships in bin/: the avalanchego --version line plus
+# the toolchain embedded in every Go binary. Phony and rebuilt by pack/release
+# so it can never go stale (a go1.26.4 avalanchego shipped on 2026-07-13 and
+# was only caught by an operator running --version by hand).
+.PHONY: bin/VERSIONS
+bin/VERSIONS: deps build
+	./bin/avalanchego --version > bin/VERSIONS
+	go version bin/avalanchego bin/$(SUBNET_EVM_ID) bin/benchmark-fleet bin/bombard bin/bsclear >> bin/VERSIONS
+	echo "kit commit $$(git rev-parse HEAD)" >> bin/VERSIONS
+	cat bin/VERSIONS
+
 # Create offline package for deployment to the control machine
-pack: clean-tools deps build monitoring-deps
+pack: clean-tools deps build monitoring-deps bin/VERSIONS
 	rm -f remote-benchmark.tar.gz
 	tar --exclude=bin/grafana-dist -czvf remote-benchmark.tar.gz \
 		bin/ \
@@ -126,9 +143,10 @@ pack: clean-tools deps build monitoring-deps
 # vendor-side) and minus the setup-only tool binaries. Secrets (staking/,
 # network.env, fuji-wallet.key) are never in any archive; they ship separately
 # per customer and untar over the unpacked kit root.
-release: clean-tools deps build monitoring-deps
+release: clean-tools deps build monitoring-deps bin/VERSIONS
 	rm -f avalanche-l1-kit.zip
 	zip -r avalanche-l1-kit.zip \
+		bin/VERSIONS \
 		bin/avalanchego \
 		bin/$(SUBNET_EVM_ID) \
 		bin/benchmark-fleet \
