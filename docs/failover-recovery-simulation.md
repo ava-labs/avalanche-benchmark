@@ -60,13 +60,15 @@ timeout is recovered by re-running the same `./fleet weight` command.
 Delivering the emitted `L1ValidatorWeight` warp message to the P-chain
 (`SetL1ValidatorWeightTx`) and acking it back to the contract
 (`completeValidatorWeightUpdate`) is NOT this engine's job anymore: the
-standalone warp-courier daemon (github.com/containerman17/warp-courier,
-running on the control box) watches the ValidatorManager on the C-chain and
+standalone warp-courier daemon (github.com/containerman17/warp-courier, a
+separately operated production service, not part of this kit) watches the
+ValidatorManager on the C-chain and
 does both, with strict per-validator ordering, its own signature aggregation
 and its own retries. The kit's poll finishing is the end-to-end proof the
 courier delivered; a poll that stalls with
 `waiting on the warp courier to deliver/ack` means the courier is down or
-stuck, so check its logs on the control box. The courier pays P-chain and
+stuck, so check its `/healthz` endpoint (default `:8347`) on whatever host
+operates it. The courier pays P-chain and
 C-chain fees from its OWN wallet, never the fleet wallet (two senders on one
 account race on nonces).
 

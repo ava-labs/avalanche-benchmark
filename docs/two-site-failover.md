@@ -81,6 +81,14 @@ Fuji P-chain db) and state-syncs it onto the live branch, so a returning
 site can never resurrect a stale frontier: there is nothing on disk to
 resurrect. Raise before lower applies across sites exactly as within one.
 
+One catch-up failure mode `fleet up` cannot see: under sustained load a
+rejoining node can replay blocks slower than the chain produces them
+(measured ~31 blk/s catch-up against ~37 blk/s at head at 4000 TPS), so its
+gap to tip GROWS while every health check stays green. `fleet up` only
+detects a frozen gap, not a growing one. Watch the rejoining node's height
+against tip; if the gap is widening, pause the load generator for about 3
+minutes until the node reaches tip, then resume the load.
+
 Note scenario 03 promotes `7 8 9` (three machines) while the failback
 restores `1 2 3 4` (four): the B-side spare `b4` stays at spare weight during the DR
 posture, mirroring a production stance of running the minimum on the backup

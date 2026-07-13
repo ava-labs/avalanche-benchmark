@@ -230,16 +230,18 @@ then the reconcile against Fuji, e.g.
 ```
 
 The command fires initiates and then POLLS: the standalone warp-courier
-daemon (running on the control box) watches the contract, delivers the
-emitted warp message to the P-chain and acks it back. Signature coverage for
+daemon (a separately operated production service, not part of this kit and
+not on the control box) watches the contract, delivers the emitted warp
+message to the P-chain and acks it back. Signature coverage for
 a fresh warp message can take minutes to reach quorum; the poll retries on an
 escalating schedule (up to ~36 min) and prints each attempt while the courier
 retries delivery on its own. The chain stays healthy on its current weights
 while it waits. If it does time out, re-running the same `./fleet weight`
 command resumes; every step is idempotent. A persistent
 `waiting on the warp courier to deliver/ack` line means the courier daemon is
-down or stuck: check its logs on the control box. Background on the delivery
-mechanics: see
+down or stuck: check its `/healthz` endpoint (default port `:8347`; it shows
+the cursor, chain head, in-flight message and fee-wallet balances) on
+whatever host operates it. Background on the delivery mechanics: see
 [failover-recovery-simulation.md](failover-recovery-simulation.md).
 
 What to watch during scenario 03:

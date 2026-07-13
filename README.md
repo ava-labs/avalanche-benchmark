@@ -86,6 +86,12 @@ install; no Go toolchain, no chain creation:
 4. `./fleet status` now drives the existing fleet; `./run/01_deploy.sh` and
    everything after work as below.
 
+**Restarting an existing fleet (preserved chain data):** use `./fleet up`
+(or `./scenarios/00_healthy.sh`), never `./run/01_deploy.sh`. Deploy wipes
+every node's `data/` and starts from genesis; on mainnet that costs ~6h of
+P-chain resync before the fleet serves again. `fleet up` restarts nodes on
+the data they already have.
+
 Creating a NEW chain instead is section 1: `00_gen_secrets` -> `01_fund_wallet`
 -> `02_create_chain` -> `03_backup_secrets`, then deploy.
 
