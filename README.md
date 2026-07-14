@@ -1,68 +1,36 @@
-# Avalanche L1 Failover Benchmark
+# Avalanche L1 Failover Kit
 
-Tooling to run an Avalanche L1 across two data centers and test site failover
-under transaction load (~4000 tx/s with the default profile). All validators
-of both sites are registered on the L1 once, at chain creation. A failover is
-a change of consensus weight between them: the chain is created with its
-validator manager recorded on the L1's OWN chain (address 0x..01, no contract
-exists there), we hold every validator's BLS key, so the `bin/l1` tool signs
-each weight change locally with all of them and submits the
-SetL1ValidatorWeightTx straight to the P-chain. No ValidatorManager contract,
-no courier, no signature aggregator; the only external dependency is one
-P-chain RPC. Keys never move between machines, so a failover cannot fork the
-chain.
+Tooling to run an Avalanche L1 across two data centers and drill site
+failover under transaction load (~4000 tx/s with the default profile).
+Everything runs from one control host: deploy the fleet, generate load,
+watch it in Grafana, kill machines or a whole site, move consensus weight,
+recover.
 
-The fleet inventory is one file, `nodes.ini`: a name, host, and role
-(validator or rpc) per node. The shipped shape runs 4 validators + 2 fixed
-RPC nodes per data center; a "hot spare" is nothing special, just a
-validator held at weight 1. One shared control host handles orchestration, load
-generation, and monitoring. The control host runs no L1 node, so it keeps
-working when a site is lost.
+## Architecture
 
-The L1 anchors on a public Avalanche P-chain, Fuji (testnet) or mainnet, and
-needs it only as a read feed. Validators have zero internet connectivity by
-design; the RPC tier follows the P-chain through ONE pinned upstream peer,
-the only outbound connection in the whole fleet. In production the operator
-runs that upstream themselves: a follow-only avalanchego node is a tiny
-footprint (1 CPU, 2 GB RAM, ~60 GB disk), one is enough, four for redundancy.
+- All validators, both sites, are registered on the L1 once, at chain
+  creation, each at an initial weight of 1000. A failover never registers or
+  removes anything: it only moves on-chain consensus weight between them.
+- The chain's validator manager is recorded on the L1's OWN chain (address
+  `0x0000000000000000000000000000000000000001`; no contract exists there).
+  The kit holds every validator's BLS key, so `bin/l1` signs each weight
+  change locally with all of them, aggregates, and submits the
+  `SetL1ValidatorWeightTx` straight to the P-chain. No ValidatorManager
+  contract, no courier, no signature aggregator, no C-chain anywhere.
+- The only external dependency of the tooling is one P-chain RPC (the public
+  Avalanche API by default). Keys never move between machines, so a failover
+  cannot fork the chain.
+- The L1 anchors on a public Avalanche P-chain (Fuji or mainnet) as a read
+  feed. Validators have zero internet connectivity by design; only the RPC
+  nodes make ONE outbound TCP connection each, to a pinned public peer,
+  and the validators follow the P-chain through them.
+- The control host runs no L1 node, so orchestration, load generation and
+  monitoring survive the loss of either site.
 
-Everything below runs from the kit root on the control host, in order:
+## Inventory: nodes.ini
 
-1. **[Create your chain](#1-create-your-chain-one-time)**: generate secrets,
-   fund the wallet, create the L1 on Fuji or mainnet. One-time. **Skip this
-   step if you received a secrets bundle**: untar it over the kit root and go
-   to step 2 (see [Install from a release](#install-from-a-release)).
-2. **[Deploy and monitor](#2-deploy-and-monitor)**: start all nodes, bring up
-   Grafana.
-3. **[Benchmark and failover](#3-benchmark-and-failover)**: run the load
-   generator, kill a machine, kill a data center, recover.
-
-The full walkthrough with expected output at each step is in
-[docs/e2e-runbook.md](docs/e2e-runbook.md).
-
-## Prerequisites
-
-- A control host plus the fleet machines (12 for the default two-site shape,
-  fewer with co-location, see below), all reachable over SSH with one key.
-- Ports on the fleet machines: **22** (SSH) and **9650-9651** (L1 RPC /
-  staking; the first node on a host, +2 per extra co-hosted node - open
-  9650-9750 to never think about it again). The RPC
-  machines additionally need ONE outbound TCP to the pinned
-  upstream peer (default `18.192.93.241:9651` on Fuji,
-  `54.232.137.108:9651` on mainnet).
-- The kit is prebuilt and airgap-ready, no Go toolchain needed:
-  `sudo rpm -i avalanche-benchmark-*.rpm` (installs to
-  `/opt/avalanche-benchmark`), or extract `remote-benchmark.tar.gz` anywhere.
-  To build from source: `make`.
-
-Configure once:
-
-```bash
-cp .env.example .env      # SSH user/key and the non-topology settings
-$EDITOR nodes.ini         # the fleet inventory: one line per node
-```
-
-`nodes.ini` is the single source of truth for the fleet:
+The fleet inventory is one file, `nodes.ini`, the single source of truth for
+node names, hosts and roles. One node per line:
 
 ```
 # <name> host=<ip> role=validator|rpc [dc=<tag>]
@@ -71,188 +39,164 @@ rpc_a1 host=10.0.0.5  role=rpc        dc=A
 b1     host=10.1.0.1  role=validator  dc=B
 ```
 
-The node NAME is the primary key everywhere: `./fleet up a1`, the staking key
-dir `staking/l1/a1`, the manifest line in `staking/node-ids.env`, and the
-node's data root `data/a1` on its box. `role=validator` nodes are registered
-as L1 validators at chain creation; `role=rpc` nodes track the chain and
-serve the load-generator ingress, are never registered, and never carry a BLS
-signer key. `dc=` is a display-only tag: `fleet status` groups by it and
-fleet verbs accept `dc=A` selectors, nothing else depends on it. Weights are
-not inventory: `l1 create` registers every validator at a constant initial
-weight of 1000 and the real distribution is applied via `l1 apply`
-(`scenarios/00_healthy.sh`); the on-chain weight is the only truth.
+- The node NAME is the primary key everywhere: fleet verbs (`./fleet up a1`),
+  the staking key dir (`staking/l1/a1`), the manifest line in
+  `staking/node-ids.env`, and the node's data root `data/a1` on its box.
+- `role=validator` nodes are registered as L1 validators at chain creation
+  (a "hot spare" is nothing special, just a validator held at low weight).
+  `role=rpc` nodes track the chain and serve the load-generator ingress; they
+  are never registered and never carry a BLS signer key (they run an
+  ephemeral in-memory signer).
+- `dc=` is a display-only tag: `fleet status` groups by it and fleet verbs
+  accept `dc=A` selectors. Nothing functional depends on it.
+- Weights are NOT inventory. `l1 create` registers every validator at 1000;
+  the real distribution is applied afterwards with `l1 apply`
+  (`scenarios/00_healthy.sh`). The on-chain weight is the only truth.
 
 Ports are positional per host: the k-th node on a host serves HTTP on
-9650+2k and staking on 9651+2k, so one node per box (the production shape)
-is uniformly 9650/9651. Put several nodes on one host to fit the topology
-onto fewer test boxes (each gets its own ports and `data/<name>` root);
-reordering nodes that share a host shifts the later nodes' ports, so
-redeploy that host's nodes after such an edit. Run `./fleet endpoints` to
-preview the resolved layout (name, dc, role, host, port) before deploying.
+9650+2k and staking p2p on 9651+2k, so the one-node-per-box production shape
+is uniformly 9650/9651. Co-host several nodes to fit the topology onto fewer
+test boxes (each gets its own ports and `data/<name>` root); reordering
+nodes that share a host shifts the later nodes' ports, so redeploy that
+host's nodes after such an edit. `./fleet endpoints` prints the resolved
+layout (name, dc, role, host, port).
 
-Optional in `.env`: `API_TOKEN`, a rate-limit-bypass token sent as a query
-param on every P-chain/info request to the public API (see `.env.example`).
-It is a secret: it lives only in the gitignored `.env`, never in the repo.
+The shipped shape is 4 validators + 2 RPC nodes per data center plus one
+control host.
 
-## Install from a release
+## Requirements
 
-To operate a deployment whose chain already exists (you have the secrets
-bundle from `setup/03_backup_secrets.sh`), the GitHub release is the whole
-install; no Go toolchain, no chain creation:
+- Linux amd64 hosts, all reachable from the control host over SSH with one
+  key.
+- Open ports on the fleet boxes: 22 (SSH) and 9650-9651 (+2 per extra
+  co-hosted node; open 9650-9750 to never think about it again).
+- The RPC machines additionally need ONE outbound TCP to the pinned upstream
+  peer (default `18.192.93.241:9651` on Fuji, `54.232.137.108:9651` on
+  mainnet; override with `FUJI_UPSTREAM_IPS`/`FUJI_UPSTREAM_IDS` in `.env`).
+- No Go toolchain needed on the control host: the kit ships prebuilt
+  binaries. To build from source: `make`.
 
-1. Download `remote-benchmark.tar.gz` from the
-   [latest release](https://github.com/ava-labs/avalanche-benchmark/releases/latest)
-   and extract it into an empty directory (it unpacks flat).
-2. Untar the secrets bundle over the kit root: it restores `staking/` and
-   `network.env` (the chain identity, including which network it lives on).
-3. Copy in your `.env` (or `cp .env.example .env` and fill in SSH settings)
-   and your `nodes.ini` (the release ships the reference fleet's inventory;
-   edit the `host=` values to your boxes).
-4. `./fleet status` now drives the existing fleet; `./run/01_deploy.sh` and
-   everything after work as below.
-
-**Restarting an existing fleet (preserved chain data):** use `./fleet up`
-(or `./scenarios/00_healthy.sh`), never `./run/01_deploy.sh`. Deploy wipes
-every node's `data/` and starts from genesis; on mainnet that costs ~6h of
-P-chain resync before the fleet serves again. `fleet up` restarts nodes on
-the data they already have.
-
-Creating a NEW chain instead is section 1: `00_gen_secrets` -> `01_fund_wallet`
--> `02_create_chain` -> `03_backup_secrets`, then deploy.
-
-## 1. Create your chain (one-time)
-
-> Received a secrets bundle (`staking/`, `network.env`, wallet key) from your
-> vendor? Untar it over the kit root and **skip to step 2**. Your chain
-> already exists, and nothing in step 2 or 3 ever re-creates or re-pays for
-> it.
-
-Three scripts, run in order after `.env` and `nodes.ini` are configured (key
-generation follows the inventory: one identity per node, BLS signer keys for
-validators only):
+Configure once, in the kit root:
 
 ```bash
-./setup/00_gen_secrets.sh    # staking identities + fund/fee wallet
-./setup/01_fund_wallet.sh    # prints the addresses, you hit the Fuji faucet, it does the rest
-./setup/02_create_chain.sh   # creates the L1 (add --mainnet to both for mainnet). SPENDS AVAX. Once per chain.
+cp .env.example .env      # SSH user + key path, optional API_TOKEN
+$EDITOR nodes.ini         # the fleet inventory: one line per node
+```
+
+## Quick start: operate an existing chain
+
+You received two artifacts: the release zip (`avalanche-l1-kit.zip`, the
+generic kit, no secrets) and the secrets bundle (a tar.gz produced by
+`setup/03_backup_secrets.sh`, containing `staking/` and `network.env`, the
+chain's identity and keys). The chain already exists on the P-chain; nothing
+below re-creates or re-pays for it.
+
+1. Unzip the kit into an empty directory.
+2. Untar the secrets bundle over the kit root:
+   `tar -xzf secrets-*.tar.gz -C <kit root>`. This restores `staking/` and
+   `network.env` (which records the network, Fuji or mainnet, and the
+   subnet/chain/manager IDs).
+3. `cp .env.example .env` and set `SSH_USER` / `SSH_KEY_PATH` (and
+   `API_TOKEN` if you have one). Edit `nodes.ini` so `host=` points at your
+   boxes.
+4. `./fleet status` now reads the fleet. If the nodes are already running,
+   you are done.
+5. To (re)start stopped nodes: `./fleet up <names...>`. To provision a brand
+   new set of boxes, or to restart the whole L1 from block 0:
+   `./run/01_deploy.sh`.
+6. `./run/02_monitoring.sh` brings up Prometheus + Grafana on the control
+   host.
+
+First boot of freshly provisioned boxes syncs the anchor P-chain from
+scratch (RPC tier first, then validators through them; minutes on Fuji,
+hours on mainnet). That cost is paid once per box: every later rebuild,
+redeploy or drill preserves the synced P-chain db.
+
+## Creating a new chain (one-time, vendor side)
+
+Skip this entirely if you received a secrets bundle. Chain creation lives in
+`setup/` (shipped in `remote-benchmark.tar.gz` and the repo, not in the
+operator zip). Run in order, after `.env` and `nodes.ini` are configured:
+
+```bash
+./setup/00_gen_secrets.sh    # one staking identity per nodes.ini node (BLS keys for validators only) + the fund/fee wallet
+./setup/01_fund_wallet.sh    # prints the P-chain address, polls until you fund it (Fuji faucet, or your own AVAX with --mainnet)
+./setup/02_create_chain.sh   # subnet + chain + ConvertSubnetToL1Tx. SPENDS AVAX. Once per chain. --mainnet for mainnet.
 ./setup/03_backup_secrets.sh # bundle staking/ + network.env into a tar.gz, store it off-machine
 ```
 
-The backup tarball is also the secrets bundle you hand to an operator:
-untarring it over a fresh kit root is the whole restore.
-
-`02` writes the chain's identity (including `NETWORK=fuji|mainnet`) to
-`network.env`; everything after this point only reads it. The generated
-`staking/` and wallet key are secrets: gitignored, never in any archive, a
-leaked staking key means validator impersonation. Re-running `00` generates a
-new identity set and orphans the old chain; only do that to start over with a
-new chain.
+`02` persists the chain identity (including `NETWORK=fuji|mainnet`) to
+`network.env`; every later command reads it. Re-running `02` never creates a
+second chain: it resumes/verifies the recorded one. The backup tarball from
+`03` is also the secrets bundle you hand to an operator.
 
 The chain is disposable by design: each validator's continuous-fee deposit
 (0.1 AVAX on Fuji, ~5-6 days; 0.15 AVAX on mainnet, ~3 days at the 512
-nAVAX/s fee floor) drains in days, after which validators deactivate and the
-L1 halts. Extend a run with `bin/fuji-wallet topup [days]`: it tops every
-validator up to at least that many days of runway (default 3), skipping any
-already at or above the target, funded from the same wallet.
+nAVAX/s floor) drains in days, after which validators deactivate and the L1
+halts. `bin/l1 status` shows per-validator runway and warns under 7 days;
+`bin/fuji-wallet topup [days]` tops every validator up to at least that many
+days (default 3), funded from the same wallet.
 
-### Mainnet
-
-Pass `--mainnet` to `01` and `02` to anchor the L1 on Avalanche mainnet
-instead of Fuji; `02` records the choice in `network.env` and every later
-command follows it. There is no faucet: `01` prints the P-chain address and
-you fund it with your own AVAX (0.15 AVAX per registered validator plus
-~0.1 AVAX in fee budget). The RPC machines' single outbound
-TCP goes to the pinned public mainnet peer (default `54.232.137.108:9651`);
-update the firewall egress rule accordingly.
-
-## 2. Deploy and monitor
+## Load
 
 ```bash
-./run/01_deploy.sh        # wipe + deploy every node, start the chain from genesis
-./run/02_monitoring.sh    # Prometheus + Grafana on the control host
-./fleet status     # expect all nodes SERVING, "validators serving: 4/4"
+./run/03_bombard.sh              # 4000 tx/s fixed profile; -tps N overrides
 ```
 
-`run/01_deploy.sh` is **destructive by design**: it wipes node data and restarts the
-chain from genesis (block 0). Re-run it any time you want a clean chain, or
-after editing `chain-config.json`; the on-chain registration persists, so
-re-deploys never re-spend AVAX. First boot of a fresh fleet syncs the anchor
-P-chain (RPC tier first, ~minutes, then validators sync through them). Progress is visible in
-`watch -n5 ./fleet status`. A fresh chain sits at block 0 until load arrives
-(Avalanche produces blocks on demand).
+Ingress is every `role=rpc` node; zero rpc nodes in `nodes.ini` is a hard
+error, bombard never falls back to validators. bombard broadcasts each tx to
+all of them, health-checks every endpoint, drops one from rotation when it
+falls behind and re-adds it when it catches up, and resubmits anything in
+flight, so ingress rides through dead nodes and dead sites untouched. It is
+single-account: the script refuses to start a second instance (duplicate
+nonces would mine nothing). Other knobs (inflight cap 2000, 5s resubmit) are
+constants at the top of the script.
 
-`./fleet status` is single-shot; wrap it in `watch -n5` for a live view. Node
-states: `SERVING` (at the fleet tip), `CATCHING UP (behind N)` (answering RPC
-but N blocks behind tip), `BOOTSTRAPPING`, `DOWN`.
+## Operating the fleet
 
-Grafana is on the control host at `:3000`, Prometheus at `:9090` (anonymous
-admin). If those ports aren't open to you, tunnel:
+Two independent axes: hardware via `./fleet`, stake via `bin/l1`.
 
-```bash
-ssh -i <key> -L3000:localhost:3000 <user>@<control-host>   # open http://localhost:3000
-```
+Hardware (`./fleet`, nodes addressed by name or `dc=<tag>`):
 
-Four dashboards are provisioned: **Failover Overview** (per-server serving
-state and stake tier timelines, successful polls %, chain TPS, plus a
-"Load generator (bombard)" row with bombard's end-to-end tx latency p50/p95,
-mined TPS, and resubmits), **Failover
-Details** (per-node finalized height, the A-to-B finalized gap, mempools),
-**Benchmark** (per-node TPS, consensus, verification), and **Machine
-Metrics** (per-box CPU, memory, disk, throttle pressure).
-`run/02_monitoring.sh` is re-runnable and discovers the fleet
-from `nodes.ini` automatically.
+| verb | effect |
+|---|---|
+| `up <node...>` | rebuild + start nodes and block until SERVING at the fleet tip. Already-serving nodes are skipped; catching-up/bootstrapping nodes are waited on; a stalled node (frozen height = fork wedge, or no bootstrap progress) is rebuilt in place automatically. |
+| `down <node...>` | simulate hardware failure: hard SIGKILL, data left on disk |
+| `status` | read-only: per-DC stake tier + node state (wrap in `watch -n5`) |
+| `endpoints` | one line per node: name, dc, role, host, HTTP port |
+| `fresh` | WIPE every node's L1 data and redeploy the whole fleet from genesis (what `run/01_deploy.sh` runs; P-chain db and on-chain weights untouched) |
+| `destroy` | kill everything and remove the deploy dirs; keeps `network.env` (the chain identity costs AVAX to recreate) |
+| `exporter` | serve the `fleet_actual_weight` Prometheus gauge on :9091 (started by monitoring) |
 
-## 3. Benchmark and failover
+Neither `up` nor `down` ever touches on-chain weight: reviving a box must
+never depend on anchor-network quorum. A hard-down box (ssh-unreachable)
+never blocks operating the rest of the fleet: it is recorded as down with a
+warning and only commands that target it specifically fail.
 
-Start the load (leave it running through everything below):
+Stake (`bin/l1`):
 
-```bash
-./run/03_bombard.sh
-```
+| verb | effect |
+|---|---|
+| `apply --weights a1=100000,b1=1,...` | declarative targets, all raises applied before any lower, one tx at a time, each verified on-chain |
+| `set-weight --node <name> --weight <w>` | one validator (accepts a name, NodeID or validationID) |
+| `status` | the registered set with weights, balances and a fee-runway warning |
+| `create` | the one-time chain creation (driven by `setup/02_create_chain.sh`) |
 
-One fixed profile: **4000 tx/s** (override with `-tps N`), 2000 in-flight cap, 5s resubmit.
-Ingress is **every role=rpc node** (`rpc_a1` `rpc_a2` `rpc_b1` `rpc_b2` in the
-shipped inventory); zero rpc nodes in `nodes.ini` is a hard error, bombard
-never falls back to validators. bombard broadcasts each tx to ALL of them, health-checks every
-endpoint continuously, drops one from rotation when it falls behind and
-re-adds it when it catches up, and resubmits anything in flight, so ingress
-survives dead nodes, dead sites, and recovering nodes without you touching it.
-The RPC nodes are never promoted to validators, which is what keeps that
-ingress path alive through a failover. To change the profile, edit the
-constants at the top of `run/03_bombard.sh`. bombard is single-account, so
-the script refuses to start a second instance (two would issue duplicate
-nonces and mine nothing).
+The tiers used by the scenarios: active validator 100000, spare 1000, dead 1.
+Weight txs are signed locally and go straight to the P-chain, so they land
+even while the L1 itself is halted. On a "signature is invalid" or
+set-mismatch rejection just re-run the command: every run refetches the
+registered set and re-signs fresh.
 
-Operating the fleet is two independent axes, hardware via `./fleet` and
-stake via `bin/l1`:
+Two rules of thumb:
 
-- **hardware**: `up` / `down` start or hard-kill avalanchego on a node,
-  addressed by name (`a1`, `rpc_b2`) or dc selector (`dc=A`).
-  `down` is a real crash (SIGKILL); `up` rebuilds the node clean,
-  state-syncs it from the live network and blocks until it is SERVING at the
-  fleet tip. Neither touches stake. While waiting, `up` watches for a
-  fork-wedged node (a catching-up node whose height stays frozen across
-  consecutive polls: it self-finalized a sibling block and will never reach
-  tip); instead of timing out it rebuilds the node in place (wipe its L1
-  chainData only, keep the P-chain db and staking keys, restart, state
-  re-sync).
-- **stake**: `bin/l1 apply --weights a1=100000,b1=1,...` (or
-  `bin/l1 set-weight --node <name> --weight <w>` for one validator) moves
-  on-chain consensus weight between the tiers (validator=100000, spare=1000,
-  dead=1). The tool holds every validator's BLS signer key, so it signs each
-  weight message locally with all of them, submits the
-  SetL1ValidatorWeightTx to the P-chain itself and verifies the new weight
-  on-chain before the next tx. `apply` orders every raise before any lower,
-  so the fleet never passes through a low-weight window mid-seesaw. It never
-  starts or stops a process, and no keys move. NOTE: unlike the old
-  contract flow there is no raise-gate; do not raise a node that is behind
-  the fleet tip (a behind node with more stake wins proposer slots on stale
-  heights and can self-finalize a fork) - check `./fleet status` first.
+- **Raise before you lower.** A single `l1 apply` does this ordering for
+  you, so the fleet never passes through a low-weight window mid-seesaw.
+- **Do not raise a node that is behind the fleet tip** (check
+  `./fleet status` first): a behind node with more stake wins proposer slots
+  on stale heights and can self-finalize a fork. There is no built-in gate.
 
-A hard-down box (ssh-unreachable, not just process-dead) never blocks
-operating the rest of the fleet: reconciliation records it as down with a
-warning and proceeds; only commands that target that box specifically fail
-(non-zero, naming it, after the reachable targets are handled).
+A typical failover, by hand:
 
 ```bash
 watch -n5 ./fleet status                   # live per-DC stake tier + node state
@@ -261,76 +205,160 @@ watch -n5 ./fleet status                   # live per-DC stake tier + node state
 ./fleet up a1                              # rebuild a1, it re-syncs and rejoins
 ```
 
-**Raise the replacement validators before lowering the old ones.** A single
-`bin/l1 apply` does this for you: it always applies raises first, then
-lowers. Weights only move when you ask: a dead box keeps blocking quorum
-until you drain it (weight 1).
+### Drills (scenarios/)
 
-The worked drills live in `scenarios/`. `00_healthy.sh` is the canonical
-reset (every node up, a1-a4 validating, site B validators at spare weight);
-every other scenario invokes it first, so they can be run from any starting
-point.
+`00_healthy.sh` is the canonical reset (every node up, a1-a4 at full weight,
+site B at spare weight); every other scenario invokes it first, so each can
+run from any starting point. Recovery from anything is `00_healthy.sh`.
 
 ```bash
 ./scenarios/00_healthy.sh                  # ground state only
-./scenarios/01_validator_down.sh           # one validator dies, 3 of 4 remain
-./scenarios/02_validator_down_replace.sh   # site B machine steps in, back to 4
-./scenarios/03_datacenter_failure.sh       # site A dies, site B takes over
-./scenarios/04_validator_maintenance.sh    # planned maintenance: drain a1, then power it off
-./scenarios/05_2x2.sh                      # 2x2 split: consensus spread across both DCs
-./scenarios/06_all_validators.sh           # all eight validators at full weight, four per DC
-./scenarios/07_two_validators_down.sh      # two validators die at once: chain halts, P-chain weight ops revive it
+./scenarios/01_validator_down.sh           # one validator dies, chain rides on 3 of 4
+./scenarios/02_validator_down_replace.sh   # a1 dies, b1 takes over, back to 4 active
+./scenarios/03_datacenter_failure.sh       # site A goes dark, site B takes consensus
+./scenarios/04_validator_maintenance.sh    # planned maintenance: drain a1's stake, then power it off
+./scenarios/05_2x2.sh                      # 2x2 split: two full-weight validators per DC
+./scenarios/06_all_validators.sh           # all eight validators at full weight
+./scenarios/07_two_validators_down.sh      # two die at once: chain halts, P-chain weight ops revive it
 ```
 
-Recovery from any scenario is `./scenarios/00_healthy.sh`; failing back
-after 03 is just running it.
+Scenario 04 waits 35s between draining and powering off: the P-chain accepts
+the weight change instantly, but proposer selection reads a 30s-lagged
+P-chain height (`RecentlyAcceptedWindowTTL`), so the drained node keeps
+winning proposer slots at its old weight until the window passes.
 
 ### What to expect when validators drop
 
-With 4 active validators (thresholds scale with your configured count):
+With 4 active validators at equal weight:
 
 | Action | Result |
 |--------|--------|
 | 1 of 4 down, replacement promoted | back to 4 active, full speed |
-| 1 of 4 down, no replacement | keeps full quorum on 3/4, consensus rides through |
-| 2 of 4 down | quorum lost, chain **HALTS** (expected, recoverable) |
-| bring back one validator into a halted chain | still halted, see below |
+| 1 of 4 down, no replacement | consensus rides through on 3 of 4 |
+| 2 of 4 down | connected stake 50% is under the 56.7% polling gate: chain HALTS (expected, recoverable) |
+| bring back one validator into a halted chain | still halted, see the 75% latch below |
 | bring back the rest | chain resumes within seconds |
 
-Row 4 is the non-obvious one: a **(re)starting validator can't bootstrap until ~75%
-of validator stake is online** (3 of 4, with 4 equal validators). Normal
-failover never hits this because the other three are still running; but
-recovering a fully halted chain needs enough validators up to clear the
-latch, and nothing happens until they connect, at which point they clear it
-together. `./fleet status` shows a node stuck on the latch as
-`BOOTSTRAPPING`. The other way out of a halt, without restarting anything, is
-draining the dead machines (`bin/l1 apply --weights a1=1,a2=1`): the weight
-txs go straight to the P-chain, so they land even while the L1 is halted
-(scenario 07).
+A (re)starting validator will not begin bootstrapping the L1 until ~75% of
+validator stake is online, so recovering a fully halted chain needs enough
+validators up to clear the latch together (`./fleet status` shows them stuck
+`BOOTSTRAPPING` until then). The other way out of a halt, without restarting
+anything, is draining the dead machines' weight
+(`bin/l1 apply --weights a1=1,a2=1`): the txs land on the P-chain while the
+L1 is halted, the survivors' connected share rises above the gate, and the
+chain resumes (scenario 07).
 
-One more recovery: a validator hard-killed under heavy load can come back
-with a diverged local chain (its VM dies repeatedly, `status` shows it
-`BOOTSTRAPPING` forever while others are `SERVING`). `./fleet up <name>` fixes
-it: the rebuild wipes its chain data and it re-syncs from the live network
-with the same identity. The related fork-wedge case (`CATCHING UP` with a
-height that never moves: the node self-finalized a sibling block) is
-detected and rebuilt by `up` automatically.
+A validator hard-killed under load can come back wedged (diverged local
+chain, stuck `BOOTSTRAPPING`, or `CATCHING UP` at a frozen height after
+self-finalizing a sibling block). `./fleet up <name>` detects both and
+rebuilds the node in place: wipe only its L1 chain data and bootstrap
+backlog, keep the P-chain db and staking identity, restart, state re-sync.
 
-Every node starts with two self-defense guards baked into its launch script:
-the stdout capture (`data/<name>/logs/avalanchego.out`) is truncated if it
-ever exceeds 2 GiB (subnet-evm runs at `log-level: warn`, so the capture stays
-small; WARN/ERROR still land in the rotated chain logs), and the process tree
-runs with `GOMEMLIMIT` at 75% of the box's RAM plus a raised `oom_score_adj`,
-so a runaway node is GC-throttled and, at worst, killed by the kernel instead
-of wedging the whole machine.
+## Monitoring
+
+```bash
+./run/02_monitoring.sh    # Prometheus :9090 + Grafana :3000 on the control host, anonymous admin
+```
+
+Re-runnable; it regenerates the scrape targets from `nodes.ini`, so run it
+again after any inventory edit. If the ports aren't open to you, tunnel:
+
+```bash
+ssh -i <key> -L3000:localhost:3000 <user>@<control-host>   # open http://localhost:3000
+```
+
+Four dashboards are provisioned: **Failover Overview** (per-node serving
+state and stake-tier timelines, successful polls %, chain TPS, plus
+bombard's end-to-end latency p50/p95, mined TPS and resubmits), **Failover
+Details** (per-node finalized height, the A-to-B finalized gap, mempools),
+**Benchmark** (per-node TPS, consensus, verification) and **Machine
+Metrics** (per-box CPU, memory, disk, throttle pressure).
+
+## Reference
+
+### Binaries
+
+All prebuilt in `bin/`, all run from the kit root:
+
+- `benchmark-fleet` (via the `./fleet` wrapper): hardware orchestration.
+- `l1`: chain creation and on-chain weight moves (self-signed warp).
+- `bombard` (via `run/03_bombard.sh`): the load generator.
+- `fuji-wallet`: `gen` / `fund` / `topup [days]` for the fund/fee wallet.
+- `genstaking`: generates missing staking identities from `nodes.ini`
+  (invoked by `setup/00_gen_secrets.sh`; not in the operator zip).
+- `bsclear`: drops a node's L1 bootstrap backlog from its db; runs on the
+  boxes, invoked automatically by fleet rebuilds.
+
+### Configuration files
+
+- `.env` (gitignored): `SSH_USER`, `SSH_KEY_PATH`, optional `API_TOKEN`,
+  optional overrides `PCHAIN_API`, `FUJI_UPSTREAM_IPS`/`FUJI_UPSTREAM_IDS`.
+- `nodes.ini`: the fleet inventory (see above).
+- `network.env` (gitignored, written once by `l1 create`): `NETWORK`,
+  `SUBNET_ID`, `CHAIN_ID`, `MANAGER_ADDRESS`. The chain's identity; kept
+  even by `fleet destroy`.
+- `chain-config.json`: subnet-evm config. `min-delay-target: 25` sets the
+  25ms block cadence; throughput is gas-bound, not block-rate-bound (see
+  [docs/throughput-tuning-and-benchmarks.md](docs/throughput-tuning-and-benchmarks.md)).
+  Re-run `./run/01_deploy.sh` after editing.
+- `subnet-config.json`: consensus parameters (below).
+- `node-config.json`, `genesis.json`: avalanchego and L1 genesis config.
+
+### Env vars
+
+- `PCHAIN_API`: the one external RPC everything P-chain goes through
+  (`bin/l1`, `fuji-wallet`, the fleet's read-only weight reads). Default:
+  `https://api.avax-test.network` on Fuji, `https://api.avax.network` on
+  mainnet. The kit's own RPC tier is follow-only and never serves
+  `platform.*`.
+- `API_TOKEN`: optional rate-limit-bypass token for the public API; when
+  set, every P-chain/info request carries it as a `token=<value>` query
+  param. Runtime-only, lives in the gitignored `.env`, never committed and
+  never in any archive.
+
+### Secrets
+
+Never commit, never put in a kit archive: `staking/` (per-node TLS
+identities, validator BLS keys, `fuji-wallet.key`), `network.env`, `.env`.
+A leaked staking key means validator impersonation; losing `staking/` +
+`network.env` means losing control of the chain. The only sanctioned copy is
+the `setup/03_backup_secrets.sh` tarball, stored off-machine.
+`staking/node-ids.env` (the name-to-NodeID manifest) is the one non-secret
+in there.
+
+### Consensus parameters
+
+`subnet-config.json` ships k=30, alphaPreference=16, alphaConfidence=17,
+beta=12. Avalanche samples by stake over weight units, not by validator
+count, so these values work unchanged for ANY number of validators >= 1
+(one validator occupies all 30 sample slots and its single vote counts with
+multiplicity; oversampling is deduped on the wire). The two thresholds that
+shape the drill results:
+
+- Polling gate: a node drops all consensus queries while its connected stake
+  share is below alphaConfidence/k = 56.7% (a node counts itself). This is
+  the safe halt in scenario 07, and why 1-of-3 down keeps running (66.7%)
+  while 1-of-2 down halts (50%).
+- Bootstrap latch: a (re)starting node needs >= 75% of validator stake
+  connected before it starts bootstrapping the L1 chain.
+
+### On the boxes
+
+Each node lives under `~/avalanche-benchmark` on its box: `bin/`, `plugins/`
+and one `data/<name>` root per hosted node (db, chainData, logs, active
+staking identity). Nodes are raw processes with two baked-in guards: the
+stdout capture (`data/<name>/logs/avalanchego.out`) is truncated if it
+exceeds 2 GiB, and the process tree runs with `GOMEMLIMIT` at 75% of RAM
+plus a raised `oom_score_adj`, so a runaway node is GC-throttled and, at
+worst, killed by the kernel instead of wedging the machine.
 
 ## Migrating from numbered key dirs
 
 Deployments created before the `nodes.ini` inventory keyed staking
 identities by NUMBER (`staking/l1/1..12`, `L1_<n>_NODE_ID` manifest lines)
-and every box used `data/validator` as its data root. The tools refuse those
-layouts with a pointer here. Migration on the control host is a rename
-(identities never change, nothing touches the chain):
+and used `data/validator` as every box's data root. The tools refuse those
+layouts with a pointer here. Identities never change and nothing touches the
+chain; the migration is renames:
 
 | numbered dir | node name | | numbered dir | node name |
 |---|---|---|---|---|
@@ -341,30 +369,22 @@ layouts with a pointer here. Migration on the control host is a rename
 | `staking/l1/5` | `staking/l1/b1` | | `staking/l1/11` | `staking/l1/rpc_b1` |
 | `staking/l1/6` | `staking/l1/b2` | | `staking/l1/12` | `staking/l1/rpc_b2` |
 
-Then rewrite `staking/node-ids.env` as `<name>=<NodeID>` lines (same
-NodeIDs), delete `signer.key` from the rpc dirs (rpc identities never carry
-one), and drop the six `*_IPS` topology vars from `.env` in favor of
-`nodes.ini`. On the fleet boxes nothing is renamed by hand: the next
-`fleet up`/`fresh` of a node performs a one-time
-`mv data/validator data/<name>` (same-filesystem rename; the synced P-chain
-db is preserved, never copied, never deleted).
-
-## Block cadence
-
-All nodes propose 25ms blocks (the hot ~40 blk/s profile), uniform across
-both sites. Tune `min-delay-target` in `chain-config.json` and re-run
-`./run/01_deploy.sh`. Throughput is gas-bound, not block-rate-bound: see
-[docs/throughput-tuning-and-benchmarks.md](docs/throughput-tuning-and-benchmarks.md).
+On the control host: rename the dirs per the table, rewrite
+`staking/node-ids.env` as `<name>=<NodeID>` lines (same NodeIDs), delete
+`signer.key` from the rpc dirs (rpc identities never carry one), and drop
+the retired `*_IPS` topology vars from `.env` in favor of `nodes.ini`. On
+each fleet box: `mv data/validator data/<name>` (a same-filesystem rename;
+the synced P-chain db is preserved, never copied, never deleted).
 
 ## Further reading
 
 - [docs/e2e-runbook.md](docs/e2e-runbook.md): the full end-to-end drill with
-  expected output, install to failback.
-- [docs/two-site-failover.md](docs/two-site-failover.md): the two-site design,
-  block cadence, and what is simulated vs production.
+  expected output at each step, install to failback.
+- [docs/two-site-failover.md](docs/two-site-failover.md): the two-site
+  design, block cadence, and what is simulated vs production.
 - [docs/failover-recovery-simulation.md](docs/failover-recovery-simulation.md):
   the failover model: weight seesaw, warp message path, halt/recovery theory.
 - [docs/throughput-tuning-and-benchmarks.md](docs/throughput-tuning-and-benchmarks.md):
-  the 2026-06-03 throughput study behind the 4000 tx/s profile (historical).
+  the throughput study behind the 4000 tx/s profile (historical).
 - [FUJI_PLAN.md](FUJI_PLAN.md): the original design plan for anchoring on
   Fuji's public P-chain (historical).
