@@ -7,9 +7,9 @@ cd "$(dirname "$0")/.." || exit 1
 ./scenarios/00_healthy.sh
 
 echo
-printf '\033[1m==== 💥 SCENARIO: killing machine 1, machine 7 takes over ====\033[0m\n'
+printf '\033[1m==== 💥 SCENARIO: killing a1, b1 takes over ====\033[0m\n'
 echo
-./fleet down 1
+./fleet down a1
 ./bin/l1 apply --weights b1=100000,a1=1
 
 echo

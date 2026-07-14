@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.." || exit 1
 echo
 printf '\033[1m==== 🔄 RESET: everyone up, a1-a4 validators, site B spare ====\033[0m\n'
 echo
-./fleet up 1 2 3 4 5 6 7 8 9 10 11 12
+./fleet up a1 a2 a3 a4 rpc_a1 rpc_a2 b1 b2 b3 b4 rpc_b1 rpc_b2
 ./bin/l1 apply --weights a1=100000,a2=100000,a3=100000,a4=100000,b1=1000,b2=1000,b3=1000,b4=1000
 
 echo

@@ -5,11 +5,9 @@
 # throwing away any current chain state. Losing the chain data is the design,
 # not a recovery path. It never touches Fuji's P-chain, so re-deploys never
 # re-spend on chain creation (the subnet/chain/validator registration from 02
-# persists on Fuji). It then force-re-uploads binary/plugin/configs/keys,
-# reseeds the intentions to the default mapping (validator keys 1..NVal on
-# site A's validator slots, pinned home identities everywhere else), and starts
-# all nodes (validators + hot spare + pinned dedicated-RPC trackers). After
-# this, drive the fleet with ./fleet {up,down,mark,status}.
+# persists on Fuji). It then force-re-uploads binary/plugin/configs/keys
+# (each node's permanent staking/l1/<name> identity) and starts every node in
+# nodes.ini. After this, drive the fleet with ./fleet {up,down,status}.
 #
 # First boot on a fresh fleet: the RPC tier full-replays Fuji's P-chain
 # (~minutes) and the validators idle until their RPC beacons finish, then sync
@@ -41,10 +39,9 @@ echo ""
 echo "On-chain weights were not touched (they persist on the P-chain). To reset"
 echo "them to the healthy baseline: ./scenarios/00_healthy.sh, or bin/l1 apply."
 echo ""
-# Same role=rpc extraction as run/03_bombard.sh: co-location-aware ports, both sites.
+# Same role=rpc extraction as run/03_bombard.sh: per-node ports from nodes.ini.
 # bombard fans every tx across ALL of these and rides through a site failover.
-echo "Bombard ingress (all pinned RPC nodes, never promoted to validators):"
-export NODE_IPS BACKUP_SITE_NODE_IPS
+echo "Bombard ingress (all role=rpc nodes, never promoted to validators):"
 "$SCRIPT_DIR/bin/benchmark-fleet" endpoints | awk -F'\t' -v c="$CHAIN_ID" \
     '$3=="rpc"{printf "  http://%s:%s/ext/bc/%s/rpc\n", $4, $5, c}'
 echo ""

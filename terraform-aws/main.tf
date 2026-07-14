@@ -44,8 +44,8 @@ locals {
   region  = try(local.config.region, "us-west-2")
 
   # Per-role machine counts: the SGs are role-shaped, so terraform must know
-  # which box is which. Keep these in lockstep with VALIDATOR_IPS/SPARE_IPS/
-  # RPC_IPS in .env (03_deploy assigns roles by list order).
+  # which box is which. Keep these in lockstep with the host= values in
+  # nodes.ini (which assigns each box its node name and role).
   validator_count = try(local.config.validator_count, 3)
   spare_count     = try(local.config.spare_count, 1)
   rpc_count       = try(local.config.rpc_count, 2)
@@ -60,7 +60,10 @@ locals {
   public_key    = file(pathexpand(local.config.public_key_path))
   operator_ip   = "${chomp(data.http.my_ip.response_body)}/32"
 
-  # L1 node ports (cmd/reconcile/instance.go: http 9652, staking 9653; no
+  # L1 node ports (nodes.ini positional assignment, internal/topo: the first
+  # node on a host serves http 9652, staking 9653; a co-hosted 2nd node lands
+  # on 9654/9655, which these SGs do NOT open - co-hosting on this terraform
+  # needs extra ingress rules; no
   # co-location on this layout so no +10 strides).
   http_port    = 9652
   staking_port = 9653
@@ -287,16 +290,16 @@ output "control_private_ip" {
 }
 
 output "validator_ips" {
-  description = "VALIDATOR_IPS (private)"
+  description = "validator hosts for nodes.ini (private)"
   value       = join(",", [for i in range(local.validator_count) : aws_instance.node["v${i + 1}"].private_ip])
 }
 
 output "spare_ips" {
-  description = "SPARE_IPS (private)"
+  description = "spare-validator hosts for nodes.ini (private)"
   value       = join(",", [for i in range(local.spare_count) : aws_instance.node["s${i + 1}"].private_ip])
 }
 
 output "rpc_ips" {
-  description = "RPC_IPS (private)"
+  description = "rpc hosts for nodes.ini (private)"
   value       = join(",", [for i in range(local.rpc_count) : aws_instance.node["r${i + 1}"].private_ip])
 }

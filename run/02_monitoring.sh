@@ -5,11 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/_common.sh"
 
 # Prometheus + Grafana, run LOCALLY on this control host - NOT on a benchmark
-# node. Failover monitoring has to outlive any single site: node 1 (a1) is a
-# validator that goes DOWN during a site-A failover, so hosting the monitor
-# there would blind you exactly when the failover happens. The control host is
-# the one machine that stays up across both site outages and already reaches
-# every node's :9652 (bombard does). It scrapes all 12 nodes' /ext/metrics and
+# node. Failover monitoring has to outlive any single site: a1 is a validator
+# that goes DOWN during a site-A failover, so hosting the monitor there would
+# blind you exactly when the failover happens. The control host is the one
+# machine that stays up across both site outages and already reaches every
+# node's HTTP port (bombard does). It scrapes every node's /ext/metrics and
 # keeps recording the survivors as a site drops out.
 #
 #   bin/prometheus            fetched by `make monitoring-deps` (linux-amd64)
@@ -51,11 +51,10 @@ fi
 echo "  OK."
 
 # ------------------------------------------------------------------------------
-# [2/5] Generate prometheus.yml - scrape every node in both sites. Each target
-# gets a friendly `instance` (so dashboards read "validator-1", "rpc-1" instead
-# of an IP:port), plus site / machine / role labels for grouping. Names are the
-# HOME role: after a failover a "backup-N" node is the one now validating - which
-# is exactly the story the dashboards show.
+# [2/5] Generate prometheus.yml - scrape every node in nodes.ini. Each target
+# gets a friendly `instance` (the node name, so dashboards read "a1", "rpc_b2"
+# instead of an IP:port), plus site (the dc tag) / machine / role labels for
+# grouping.
 # ------------------------------------------------------------------------------
 echo "[2/5] Generating prometheus.yml..."
 mkdir -p "$MON_DIR"
@@ -69,13 +68,12 @@ emit_target() {  # host port site machine instance role
     printf "          role: %s\n" "$6"
 }
 
-# Targets AND labels come ENTIRELY from `reconcile endpoints` (the single source
-# of truth), so monitoring tracks whatever topology is configured - any
-# validator/spare/RPC counts, any co-location - with correct per-node labels.
-# No hardcoded slot count or role names. Each endpoint line is:
-#   name <TAB> site <TAB> role <TAB> host <TAB> port
-# where name is the machine id (a1../b1.. for stake slots, rpc_a*/rpc_b* for RPCs) and role is v1..vN / spare / rpc.
-export NODE_IPS BACKUP_SITE_NODE_IPS
+# Targets AND labels come ENTIRELY from `fleet endpoints` (the single source
+# of truth), so monitoring tracks whatever inventory nodes.ini defines - any
+# node counts, any co-hosting - with correct per-node labels. Each endpoint
+# line is:
+#   name <TAB> dc <TAB> role <TAB> host <TAB> port
+# where role is validator|rpc and dc is "-" for untagged nodes.
 {
     echo "global:"
     echo "  scrape_interval: 5s"
@@ -85,26 +83,17 @@ export NODE_IPS BACKUP_SITE_NODE_IPS
     echo "  - job_name: 'avalanche-l1'"
     echo "    metrics_path: /ext/metrics"
     echo "    static_configs:"
-    while IFS=$'\t' read -r name site role host port; do
+    while IFS=$'\t' read -r name dc role host port; do
         [ -n "$host" ] || continue
-        # Map the slot role to the dashboard's role vocabulary. Site-A validator
-        # slots are live validators; the SAME slots on the backup site are
-        # zero-weight syncing trackers in steady state.
-        drole="$role"
-        case "$role" in
-        v*) [ "$site" = a ] && drole=validator || drole=tracker ;;
-        spare) [ "$site" = a ] && drole=spare || drole=tracker ;;
-        rpc) drole=rpc ;;
-        esac
-        emit_target "$host" "$port" "$site" "$name" "$name" "$drole"
+        emit_target "$host" "$port" "$dc" "$name" "$name" "$role"
     done < <("$SCRIPT_DIR/bin/benchmark-fleet" endpoints)
     # Control-host exporters: the fleet weight exporter (started below) and
     # bombard's /metrics (only up while a load run is active; a down target is
     # expected and the Load generator row on Failover Overview just stays blank).
     echo "  - job_name: 'fleet'"
     echo "    scrape_timeout: 4s"
-    # The exporter emits its own instance labels (a1..b4, matching the node
-    # scrape vocabulary); without honor_labels Prometheus would rename them to
+    # The exporter emits its own instance labels (the nodes.ini names, matching
+    # the node scrape vocabulary); without honor_labels Prometheus would rename them to
     # exported_instance and stamp localhost:9091 as instance.
     echo "    honor_labels: true"
     echo "    static_configs:"

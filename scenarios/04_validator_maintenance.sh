@@ -12,7 +12,7 @@ echo
 ./bin/l1 set-weight --node a1 --weight 1
 echo "waiting 35s: P-chain weight is accepted instantly, but proposer selection reads a 30s-lagged P-chain height (RecentlyAcceptedWindowTTL), so a1 keeps winning proposer slots at its old weight until then; powering it off now would stall those slots"
 sleep 35
-./fleet down 1
+./fleet down a1
 
 echo
 printf '\033[1m==== 📊 STATUS ====\033[0m\n'

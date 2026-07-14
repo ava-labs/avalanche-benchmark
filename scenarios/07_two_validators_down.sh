@@ -7,9 +7,9 @@ cd "$(dirname "$0")/.." || exit 1
 ./scenarios/00_healthy.sh
 
 echo
-printf '\033[1m==== 💥 SCENARIO: killing machines 1 and 2, half the stake gone ====\033[0m\n'
+printf '\033[1m==== 💥 SCENARIO: killing a1 and a2, half the stake gone ====\033[0m\n'
 echo
-./fleet down 1 2
+./fleet down a1 a2
 echo "Chain is now HALTED BY DESIGN: 50% connected stake is below the query gate, block production has stopped."
 
 echo

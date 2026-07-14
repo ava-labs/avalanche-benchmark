@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.." || exit 1
 echo
 printf '\033[1m==== 💥 SCENARIO: killing all of site A ====\033[0m\n'
 echo
-./fleet down 1 2 3 4 5 6
+./fleet down dc=A
 
 echo
 printf '\033[1m==== ⚖️ WEIGHTS: site B takes consensus ====\033[0m\n'

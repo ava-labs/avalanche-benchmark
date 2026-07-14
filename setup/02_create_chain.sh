@@ -53,10 +53,6 @@ if [ -f "$NETWORK_ENV" ] && grep -q '^SUBNET_ID=' "$NETWORK_ENV"; then
     FORCE="--force"
 fi
 
-# Pre-flight: every generated staking identity the configured topology references
-# must exist (created by ./setup/00_gen_secrets.sh, never committed).
-ensure_staking_keys
-
 # ------------------------------------------------------------------------------
 # Create L1 (subnet + chain + convert)
 # ------------------------------------------------------------------------------

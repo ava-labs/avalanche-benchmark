@@ -41,27 +41,25 @@ if [ ! -x "$BOMBARD" ]; then
     exit 1
 fi
 
-# Bombard the PINNED dedicated RPC nodes (role=rpc: m5+m6 on site A, plus
-# b5+b6 in two-site mode - zero-weight non-validators that track
-# the subnet and serve RPC). The failover engine never promotes them to validators,
-# so this clean ingress path survives failover events - unlike the hot spare m4
-# (key 9), which becomes a validator whenever one of m1-m3 goes down. Ingress on the
-# consensus-critical validators (m1-m3) wedges/throttles consensus; routing all load
+# Bombard the role=rpc nodes from nodes.ini: zero-weight non-validators that
+# track the subnet and serve RPC. They are never promoted to validators, so
+# this clean ingress path survives failover events. Ingress on the
+# consensus-critical validators wedges/throttles consensus; routing all load
 # through the dedicated non-validating RPC nodes keeps the validators healthy and
-# holds ~4000 TPS glass-smooth (2026-06-04 submission-target comparison). Listing all
-# four pinned RPCs lets bombard (failover-native: fans sends, watches each endpoint,
+# holds ~4000 TPS glass-smooth (2026-06-04 submission-target comparison). Listing
+# every rpc node lets bombard (failover-native: fans sends, watches each endpoint,
 # resubmits in-flight txs) ride through a full site failover. See wiki:
 # why_bombard_the_non_validating_rpc_tracker_not_the_validator_and_it_must_be_sybil_on.
 #
-# Endpoints come from `reconcile endpoints` (the single source of truth for the
-# co-location-aware ports), so a co-located RPC slot is targeted on its ACTUAL port
-# rather than a hardcoded :9652 (which would hit a validator on a shared box).
+# Endpoints come from `fleet endpoints` (the single source of truth for the
+# per-node ports), so a co-hosted rpc node is targeted on its ACTUAL port
+# rather than a hardcoded :9652 (which would hit a housemate on a shared box).
 RECONCILE_BIN="$SCRIPT_DIR/bin/benchmark-fleet"
-export NODE_IPS BACKUP_SITE_NODE_IPS
 mapfile -t RPC_URLS < <("$RECONCILE_BIN" endpoints | awk -F'\t' -v c="$CHAIN_ID" \
     '$3=="rpc"{printf "http://%s:%s/ext/bc/%s/rpc\n", $4, $5, c}')
 if [ "${#RPC_URLS[@]}" -eq 0 ]; then
-    echo "ERROR: 'reconcile endpoints' returned no RPC nodes - check NODE_IPS/bin/benchmark-fleet." >&2
+    echo "ERROR: no role=rpc nodes in nodes.ini - bombard needs the dedicated RPC ingress" >&2
+    echo "       and never falls back to validators." >&2
     exit 1
 fi
 RPC_LIST="$(IFS=,; echo "${RPC_URLS[*]}")"
@@ -93,7 +91,7 @@ echo "Chain ID: $CHAIN_ID"
 echo "Target:   $TARGET_RPS rps  (inflight cap $INFLIGHT, +$(echo "$OVERSHOOT*100" | bc)% overshoot)"
 echo "Resubmit: $RESUBMIT_INTERVAL"
 echo ""
-echo "Ingress: pinned dedicated RPC node(s) - never promoted to validators:"
+echo "Ingress: role=rpc node(s) - never promoted to validators:"
 for u in "${RPC_URLS[@]}"; do echo "  $u"; done
 echo ""
 
