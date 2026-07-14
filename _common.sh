@@ -142,10 +142,10 @@ _count() {
 }
 
 # staking_max_key computes the highest committed key index the configured
-# topology references. ONE permanent identity per pool slot: keys
-# 6 .. 6+Size-1 (mirrors internal/topo KeyOf; identities never move between
-# machines anymore). Used by 00_gen_secrets.sh (generator) and
-# ensure_staking_keys (pre-flight).
+# topology references. ONE permanent identity per pool slot: keys 1..Size
+# (staking slots wear 1..N, RPC slots the rest; mirrors internal/topo KeyOf;
+# identities never move between machines). Used by 00_gen_secrets.sh
+# (generator) and ensure_staking_keys (pre-flight).
 staking_max_key() {
     local nval nspare nrpc sp size
     nval=$(_count "$VALIDATOR_IPS"); nspare=$(_count "$SPARE_IPS"); nrpc=$(_count "$RPC_IPS")
@@ -156,7 +156,7 @@ staking_max_key() {
 }
 
 # ensure_staking_keys verifies every GENERATED staking identity the configured
-# topology will reference (staking/l1/6 .. staking_max_key) actually exists.
+# topology will reference (staking/l1/1 .. staking_max_key) actually exists.
 # Keys are generated per deploy by ./setup/00_gen_secrets.sh and are NEVER committed
 # (their NodeIDs get bound as validationIDs on Fuji's public P-chain; a leaked
 # staking key = validator impersonation). Pre-flight check, not a generator.

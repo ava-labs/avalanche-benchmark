@@ -38,6 +38,9 @@ echo ""
 "$SCRIPT_DIR/fleet" fresh
 
 echo ""
+echo "On-chain weights were not touched (they persist on the P-chain). To reset"
+echo "them to the healthy baseline: ./scenarios/00_healthy.sh, or bin/l1 apply."
+echo ""
 # Same role=rpc extraction as run/03_bombard.sh: co-location-aware ports, both sites.
 # bombard fans every tx across ALL of these and rides through a site failover.
 echo "Bombard ingress (all pinned RPC nodes, never promoted to validators):"

@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.." || exit 1
 echo
 printf '\033[1m==== ⚖️ WEIGHTS: all eight stake slots to validator ====\033[0m\n'
 echo
-./fleet weight validator 1 2 3 4 7 8 9 10
+./bin/l1 apply --weights a1=100000,a2=100000,a3=100000,a4=100000,b1=100000,b2=100000,b3=100000,b4=100000
 
 echo
 printf '\033[1m==== 📊 STATUS ====\033[0m\n'

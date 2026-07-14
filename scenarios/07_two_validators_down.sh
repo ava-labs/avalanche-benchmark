@@ -15,8 +15,8 @@ echo "Chain is now HALTED BY DESIGN: 50% connected stake is below the query gate
 echo
 printf '\033[1m==== 🚑 RECOVERY: drain the dead validators through the P-chain ====\033[0m\n'
 echo
-./fleet weight dead 1 2
-echo "Weight changes ride the primary-network warp pipeline, so they land even while the L1 is halted; the chain resumes once the P-chain txs are accepted."
+./bin/l1 apply --weights a1=1,a2=1
+echo "Weight txs are self-signed with the local BLS keys and submitted straight to the P-chain, so they land even while the L1 is halted; the chain resumes once the txs are accepted."
 
 echo
 printf '\033[1m==== 📊 STATUS ====\033[0m\n'

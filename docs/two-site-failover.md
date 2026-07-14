@@ -57,8 +57,8 @@ of the reset preamble, the failover is three commands:
 
 ```bash
 ./fleet down 1 2 3 4 5 6        # site A is gone (simulated: SIGKILL)
-./fleet weight validator 7 8 9  # raise site B first
-./fleet weight dead 1 2 3 4     # then retire site A's stake
+./bin/l1 apply --weights b1=100000,b2=100000,b3=100000,b4=100000,a1=1,a2=1,a3=1,a4=1
+                                # raise site B first, then retire site A's stake
 ```
 
 Expect a pause of up to ~5 minutes between the weight flip and site B's
@@ -72,8 +72,7 @@ and the failback is:
 
 ```bash
 ./fleet up 1 2 3 4 5 6          # rebuild site A, blocks until SERVING
-./fleet weight validator 1 2 3 4
-./fleet weight spare 7 8 9 10
+./bin/l1 apply --weights a1=100000,a2=100000,a3=100000,a4=100000,b1=1000,b2=1000,b3=1000,b4=1000
 ```
 
 `up` rebuilds each machine clean (wipes its L1 chain data, keeps the synced
@@ -110,12 +109,12 @@ Simulated faithfully:
 
 Not simulated:
 
-- the anchor chain failing: the P-chain and the ValidatorManager's C-chain
-  are Fuji's public networks and stay up throughout (the production
-  equivalent is "the control plane survives the DC loss");
+- the anchor chain failing: the P-chain is a public network and stays up
+  throughout (the production equivalent is "the control plane survives the
+  DC loss");
 - DNS/VIP cutover mechanics in front of the RPCs;
 - a concurrent split with both sites producing: impossible here by
-  construction, one weight set exists and the churn-capped seesaw moves it.
+  construction, one weight set exists and the seesaw moves it.
 
 ## Historical: the key-swap era (pre 2026-06)
 

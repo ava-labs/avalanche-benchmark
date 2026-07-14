@@ -2,18 +2,31 @@
 
 How a failover works on this fleet, and why the chain cannot fork through one.
 Vocabulary and commands are the README's; this doc covers the mechanics
-underneath `./fleet weight`.
+underneath `bin/l1 apply`.
 
 ## Register once, move weight forever
 
 Every stake slot of BOTH sites (validators and spares, `a1..a4` and `b1..b4`
 in the default shape) is registered as an L1 validator exactly once, in the
-`ConvertSubnetToL1Tx` at chain creation (`setup/02_create_chain.sh`). RPC
-slots are never registered. After conversion the validator set never changes
-membership; a failover only changes each slot's consensus weight through the
-ValidatorManager contract on Fuji's C-chain.
+`ConvertSubnetToL1Tx` at chain creation (`setup/02_create_chain.sh`, which
+runs `bin/l1 create`). RPC slots are never registered. After conversion the
+validator set never changes membership; a failover only changes each slot's
+consensus weight.
 
-Weight tiers (one per `./fleet weight` invocation):
+The model in a few sentences: the conversion records the L1's validator
+manager as living on the L1's OWN chain, at address
+`0x0000000000000000000000000000000000000001`. No contract exists there and
+none is needed; the P-chain only ever compares that (chainID, address) pair
+against the source of each weight-change warp message, and then verifies the
+message's BLS aggregate signature against the L1's OWN validator set. We hold
+every validator's BLS signer key (`staking/l1/N/signer.key`), so `bin/l1`
+signs each weight message with all of them locally (100% of stake, always
+past the 67% quorum), aggregates, and submits the `SetL1ValidatorWeightTx`
+straight to the P-chain. There is no ValidatorManager contract, no courier
+daemon, no signature aggregator service, and no C-chain anywhere in the loop;
+the only external dependency is one P-chain RPC.
+
+Weight tiers:
 
 | Tier | Weight | Meaning |
 |------|--------|---------|
@@ -21,76 +34,52 @@ Weight tiers (one per `./fleet weight` invocation):
 | `spare` | 1000 | registered, synced, negligible vote |
 | `dead` | 1 | retired (weight 0 would deregister; we never remove) |
 
-Ground state after deploy: site A slots at `validator`, site B slots at
-`spare` (`slotWeight` in `cmd/create-l1/main.go`, re-seeded by
-`seedWeight` in `cmd/reconcile/plan.go`).
+Ground state after chain creation: site A slots at `validator`, site B slots
+at `spare` (`planValidators` in `cmd/l1/create.go`; reset any time with
+`scenarios/00_healthy.sh`).
 
 Because staking keys never move between machines, no two live nodes can ever
 share an identity, so double-signing is structurally impossible. (The old
 key-swap design that moved identities between boxes produced forks and was
 deleted; see `internal/topo/topo.go` for the one-permanent-key-per-slot rule.)
 
-Each slot's validationID is deterministic: `sha256(subnetID ||
-uint32BE(conversion index))`, with the conversion order fixed by
-`topo.StakingSlots()`. That is why the engine never scrapes receipts or logs:
-everything it needs is recomputable.
+## The weight flow (`cmd/l1`)
 
-## The weight engine (`cmd/reconcile/weights.go`)
+`bin/l1 apply --weights a1=100000,...,b1=1,...` is declarative: it reads the
+registered set fresh from the P-chain, drops the no-ops, and applies the
+remaining changes one `SetL1ValidatorWeightTx` at a time, ALL RAISES FIRST,
+then lowers, verifying each new weight on-chain before planning the next tx.
+Every tx is built from a fresh read (current `minNonce`, current set) and
+signed fresh, so any crash or rejection is recovered by re-running the same
+command: already-applied steps read back as converged and are skipped.
+`bin/l1 set-weight --node <name> --weight <w>` is the single-validator form.
 
-Desired weights live in the local intents JSON (written by `./fleet weight`).
-Current state is read fresh from the ValidatorManager contract (C-chain
-only: the weight flow never touches the P-chain, not even reads) on every
-step, so every action derives from observation, never memory: any crash or
-timeout is recovered by re-running the same `./fleet weight` command.
-`converge` is initiate-and-poll:
+Two P-chain realities the tool absorbs:
 
-1. **Contract ratchet.** For each slot where contract weight differs from
-   desired, fire `initiateValidatorWeightUpdate` txs. The contract's churn
-   tracker (period 0) caps each op at 20% of the running total weight, so a
-   big move is a seesaw of small steps. The churn math is deterministic, so
-   `planSeesaw` simulates the whole ratchet locally and fires it as one burst
-   of consecutive-nonce txs (a full DC seesaw is ~10 steps in one burst).
-   Raises are planned before lowers, so the total never dips mid-move.
-2. **Verify (poll).** Re-read the contract and demand, for every slot,
-   weight == desired and sentNonce == receivedNonce (the receivedNonce only
-   advances on the courier-delivered ack, so nonce equality is the proof the
-   P-chain applied the update), retrying on an escalating
-   schedule (1s, 5s, 10s, 15s, 30s, 1m, then 2m flat; 24 attempts, ~36 min).
+- Warp signatures verify at the proposer's P-chain height, which can lag the
+  tip. A "signature is invalid" or set-mismatch rejection is transient;
+  `apply` retries each step with a freshly fetched set, and a manual re-run
+  is always safe.
+- The public API is load-balanced and individual backends can serve stale
+  state (right after conversion one read transiently returned an empty set).
+  Set reads retry until they look sane, and `apply` re-reads between txs.
 
-Delivering the emitted `L1ValidatorWeight` warp message to the P-chain
-(`SetL1ValidatorWeightTx`) and acking it back to the contract
-(`completeValidatorWeightUpdate`) is NOT this engine's job anymore: the
-standalone warp-courier daemon (github.com/containerman17/warp-courier, a
-separately operated production service, not part of this kit) watches the
-ValidatorManager on the C-chain and
-does both, with strict per-validator ordering, its own signature aggregation
-and its own retries. The kit's poll finishing is the end-to-end proof the
-courier delivered; a poll that stalls with
-`waiting on the warp courier to deliver/ack` means the courier is down or
-stuck, so check its `/healthz` endpoint (default `:8347`) on whatever host
-operates it. The courier pays P-chain and
-C-chain fees from its OWN wallet, never the fleet wallet (two senders on one
-account race on nonces).
-
-Signature coverage lag is still real (primary-network validators only sign a
-C-chain-originated warp message after syncing the block that emitted it, so
-coverage climbs past the 67% quorum over minutes); the courier owns retrying
-through it, and the chain stays healthy on its current weights the whole
-time, since weight only moves when delivery lands.
+There is no churn cap: the 20% per-op limit was ValidatorManager contract
+policy, and the P-chain imposes none, so a full DC seesaw is exactly one tx
+per validator (raises first).
 
 ## Halt and recovery theory
 
 Weights only move when you ask: a dead box keeps its weight, and its silent
-vote counts against quorum until you `weight dead` it. With 4 equal
-validators:
+vote counts against quorum until you drain it. With 4 equal validators:
 
 - 1 down: quorum holds (3 of 4), consensus rides through.
 - 2 down: quorum lost, the chain HALTS. Expected and recoverable; nothing is
   lost, the chain simply stops finalizing.
 - Recovery is either bringing the machines back (`./fleet up`) or seesawing
-  weight to live machines (`weight validator <live spares>` first, then
-  `weight dead <dead boxes>`). The seesaw works while halted: the
-  ValidatorManager lives on Fuji's C-chain, not on the halted L1.
+  weight to live machines (`bin/l1 apply --weights b1=100000,...,a1=1,...`).
+  The seesaw works while halted: the weight txs are P-chain txs verified
+  against the registered set, not against the (halted) L1.
 
 One latch complicates halted-chain recovery: a (re)starting validator cannot
 finish bootstrapping until ~75% of validator stake is connected
@@ -100,19 +89,21 @@ because the surviving validators are still running. Recovering a fully
 halted chain means bringing enough validators up together; they clear the
 latch as a group, then finalize within seconds.
 
-**Raise before lower, always.** `weight validator <new>` first,
-`weight dead <old>` second. The engine orders raises first within one
-command too, but across commands only you enforce it. Lower-first passes the
-fleet through a low-total-weight window where the churn cap also gets
-tighter (20% of a smaller total), making the recovery seesaw slower exactly
-when you are most exposed.
+**Raise before lower, always.** A single `apply` enforces this internally
+(raises first); if you script individual `set-weight` calls, raise the
+replacements first yourself. Lower-first passes the fleet through a
+low-total-weight window exactly when you are most exposed.
 
-**Raises are gated on node health.** Before initiating a raise the engine
-probes the target node's own RPC: if the node is unreachable or more than
-the catch-up threshold behind the fleet tip, the raise is deferred (with a
-clear line) and retried on every convergence pass, firing as soon as the
-node is near tip. This prevents the documented fork wedge where a
-catching-up node with freshly raised stake wins a proposer slot on a stale
-height and self-finalizes a sibling block. Lowers are never gated: taking
-weight off a sick node must always work. The gate uses only the fleet's own
-node RPCs; the weight flow still never touches the P-chain.
+**Check node health before raising.** The old contract engine gated raises on
+the target node's sync state; `bin/l1` deliberately does not probe nodes (it
+talks only to the P-chain), so that check is yours now: do not raise a node
+that `./fleet status` shows behind the fleet tip or unreachable. A
+catching-up node with freshly raised stake can win a proposer slot on a stale
+height and self-finalize a sibling block (the documented fork wedge). Lowers
+are always safe: taking weight off a sick node is the failover direction.
+
+**Balances matter.** A validator whose continuous-fee balance drains goes
+INACTIVE: its weight still counts in the total but it cannot sign, which
+dilutes the quorum our local signatures must clear. `bin/l1 status` warns
+when any validator is under 7 days of runway; top up with
+`bin/fuji-wallet topup [days]`.

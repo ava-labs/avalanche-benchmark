@@ -17,8 +17,11 @@ node, so it keeps coordinating and recording when a site goes dark.
 | Site B (backup) | 6 | machines 7-12: `b1..b4` stake slots at spare weight, `rpc_b1`/`rpc_b2` pinned RPCs |
 
 All 8 stake slots are registered on Fuji's P-chain once, at chain creation.
-Failover moves consensus weight between them via the ValidatorManager
-contract on Fuji's C-chain; keys never move, so no drill can fork the chain.
+Failover moves consensus weight between them via `bin/l1`: every weight
+change is a warp message signed locally with all of our validators' BLS keys
+and submitted straight to the P-chain (the manager is recorded on the L1's
+own chain; no contract, courier or aggregator exists). Keys never move, so no
+drill can fork the chain.
 Put the sites in different regions so the cross-site latency is real.
 
 ## Prerequisites
@@ -87,16 +90,13 @@ One tab-separated line per node: name, site, role, host, HTTP port.
 ```
 
 `00` generates one permanent staking identity per pool slot plus the Fuji
-wallet, all into gitignored `staking/`. `01` prints two faucet targets and
-polls until both are funded at https://core.app/tools/testnet-faucet/
-(2 AVAX per request, pick the chain per request):
+wallet, all into gitignored `staking/`. `01` prints the P-chain faucet target
+and polls until it is funded at https://core.app/tools/testnet-faucet/
+(2 AVAX per request): 0.1 AVAX per registered validator (a multi-day
+continuous-fee deposit) plus fees. Everything (chain creation, deposits,
+weight txs) pays from the P-chain; there is no C-chain gas to fund.
 
-- **P-chain address**: 0.1 AVAX per registered validator (a multi-day
-  continuous-fee deposit) plus fees.
-- **C-chain address**: gas for the ValidatorManager deploy and every weight
-  move.
-
-The script exits on its own once both balances clear.
+The script exits on its own once the balance clears.
 
 ## Step 2: create the L1 on Fuji (one time, SPENDS AVAX)
 
@@ -104,17 +104,17 @@ The script exits on its own once both balances clear.
 ./setup/02_create_chain.sh
 ```
 
-Creates the subnet and chain on Fuji's public P-chain, deploys the
-ValidatorManager to the Fuji C-chain, and registers all 8 stake slots in one
-conversion (site A at validator weight, site B at spare weight). Expected
-tail:
+Creates the subnet and chain on Fuji's public P-chain and registers all 8
+stake slots in one conversion (site A at validator weight, site B at spare
+weight), with the validator manager recorded on the L1's own chain at
+`0x..01` so `bin/l1` can self-sign every later weight change. Expected tail:
 
 ```
 === L1 Created ===
 
 Subnet ID: <...>
 Chain ID:  <...>
-Manager:   0x<...> (ValidatorManager on the Fuji C-chain)
+Manager:   0x0000000000000000000000000000000000000001 (on the L1's own chain; weights move via bin/l1)
 
 Saved to: .../network.env
 ```
@@ -151,7 +151,7 @@ recoveries via `./fleet up` do block until the machine is SERVING.)
 Starts Prometheus (`:9090`) and Grafana (`:3000`, anonymous admin) on the
 control host. Prometheus scrapes three jobs: `avalanche-l1` (every node's
 `/ext/metrics` on its per-slot port), `fleet` (the weight exporter on
-`:9091`, gauges `fleet_desired_weight` / `fleet_actual_weight`), and
+`:9091`, gauge `fleet_actual_weight`, read back from the P-chain), and
 `bombard` (`:9092`). Four dashboards are provisioned:
 
 - **Failover Overview**: per-server serving state and stake tier timelines,
@@ -178,11 +178,11 @@ ssh -i <key> -L3000:localhost:3000 -L9090:localhost:9090 <user>@<control-host>
 Expect every node `SERVING` and the summary line:
 
 ```
-validators serving: 4/4 (intended up: 4/4)
+validators serving: 4/4
 ```
 
 The table shows one row per machine (its number is the CLI handle for
-`down`/`up`/`weight`), grouped by DC, with its stake tier (`validator`,
+`down`/`up`), grouped by DC, with its ON-CHAIN stake tier (`validator`,
 `spare`, `dead`, `rpc`) and reachability (`SERVING block=N`,
 `BOOTSTRAPPING`, `DOWN`, or `off (down by intent)`). A fresh chain sits at
 `block=0` until load arrives; that is healthy, Avalanche produces blocks on
@@ -216,32 +216,26 @@ scenario runs from any starting point. Recovery from anything is
 Failing back after 03 is just running `./scenarios/00_healthy.sh`: site A
 rebuilds, re-syncs, and consensus moves home.
 
-What a weight move looks like: each `./fleet weight` prints the tier changes,
-then the reconcile against Fuji, e.g.
+What a weight move looks like: `bin/l1 apply` lists the planned changes
+(raises first), then submits and verifies one P-chain tx per change, e.g.
 
 ```
-  b1: spare -> validator
-[3/3] weights: reconciling via ValidatorManager 0x... (subnet ...)
-  weights: this command only initiates on the contract; P-chain delivery and the contract ack are the warp-courier daemon's job (a stall here means check the courier)
-  weights: firing 2 initiates in one burst:
-    b1 -> 801800
-    b1 -> 100000
-  weights: converged (contract weight == desired, sentNonce == receivedNonce)
+applying 2 weight change(s), raises first:
+  b1: 1000 -> 100000
+  a1: 100000 -> 1
+NodeID-... (weight 1000 -> 100000), nonce 3: submitting SetL1ValidatorWeightTx...
+accepted: <txid>
+NodeID-... (weight 100000 -> 1), nonce 5: submitting SetL1ValidatorWeightTx...
+accepted: <txid>
+applied: all targets verified on-chain
 ```
 
-The command fires initiates and then POLLS: the standalone warp-courier
-daemon (a separately operated production service, not part of this kit and
-not on the control box) watches the contract, delivers the emitted warp
-message to the P-chain and acks it back. Signature coverage for
-a fresh warp message can take minutes to reach quorum; the poll retries on an
-escalating schedule (up to ~36 min) and prints each attempt while the courier
-retries delivery on its own. The chain stays healthy on its current weights
-while it waits. If it does time out, re-running the same `./fleet weight`
-command resumes; every step is idempotent. A persistent
-`waiting on the warp courier to deliver/ack` line means the courier daemon is
-down or stuck: check its `/healthz` endpoint (default port `:8347`; it shows
-the cursor, chain head, in-flight message and fee-wallet balances) on
-whatever host operates it. Background on the delivery mechanics: see
+Each tx is signed locally with every validator BLS key the kit holds and
+verified against the P-chain before the next one is planned, so the whole
+move completes in seconds. A transient "signature is invalid" rejection
+(stale proposer height, stale load-balanced read) is retried automatically;
+if a run still dies, re-running the same `apply` resumes, already-applied
+steps are skipped. Background on the model: see
 [failover-recovery-simulation.md](failover-recovery-simulation.md).
 
 What to watch during scenario 03:

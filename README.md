@@ -3,10 +3,14 @@
 Tooling to run an Avalanche L1 across two data centers and test site failover
 under transaction load (~4000 tx/s with the default profile). All validators
 of both sites are registered on the L1 once, at chain creation. A failover is
-a change of consensus weight between them, issued through a ValidatorManager
-contract on the anchor network's C-chain; a standalone warp-courier daemon
-delivers the emitted warp messages to the P-chain and acks them back. Keys
-never move between machines, so a failover cannot fork the chain.
+a change of consensus weight between them: the chain is created with its
+validator manager recorded on the L1's OWN chain (address 0x..01, no contract
+exists there), we hold every validator's BLS key, so the `bin/l1` tool signs
+each weight change locally with all of them and submits the
+SetL1ValidatorWeightTx straight to the P-chain. No ValidatorManager contract,
+no courier, no signature aggregator; the only external dependency is one
+P-chain RPC. Keys never move between machines, so a failover cannot fork the
+chain.
 
 Each site runs 3 validators + 1 hot spare + 2 fixed RPC nodes (counts
 configurable in `.env`); on the primary site all 4 stake slots (validators and
@@ -133,9 +137,9 @@ already at or above the target, funded from the same wallet.
 
 Pass `--mainnet` to `01` and `02` to anchor the L1 on Avalanche mainnet
 instead of Fuji; `02` records the choice in `network.env` and every later
-command follows it. There is no faucet: `01` prints the P- and C-chain
-addresses and you fund them with your own AVAX (0.15 AVAX per registered
-validator plus ~0.25 AVAX in fee budget). The RPC machines' single outbound
+command follows it. There is no faucet: `01` prints the P-chain address and
+you fund it with your own AVAX (0.15 AVAX per registered validator plus
+~0.1 AVAX in fee budget). The RPC machines' single outbound
 TCP goes to the pinned public mainnet peer (default `54.232.137.108:9651`);
 update the firewall egress rule accordingly.
 
@@ -196,7 +200,8 @@ constants at the top of `run/03_bombard.sh`. bombard is single-account, so
 the script refuses to start a second instance (two would issue duplicate
 nonces and mine nothing).
 
-Operating the fleet is two independent axes, both via `./fleet`:
+Operating the fleet is two independent axes, hardware via `./fleet` and
+stake via `bin/l1`:
 
 - **hardware**: `up` / `down` start or hard-kill avalanchego on a machine.
   `down` is a real crash (SIGKILL); `up` rebuilds the machine clean,
@@ -207,21 +212,18 @@ Operating the fleet is two independent axes, both via `./fleet`:
   tip); instead of timing out it rebuilds the node in place (wipe its L1
   chainData only, keep the P-chain db and staking keys, restart, state
   re-sync).
-- **stake**: `weight <tier> <machines...>` moves the listed machines'
-  on-chain consensus weight to one tier (`validator`=100000,
-  `spare`=1000, `dead`=1) through the ValidatorManager contract on the
-  C-chain. The command only initiates on the contract; the standalone
-  warp-courier daemon delivers the emitted warp message to the P-chain and
-  acks it back to the contract. The command polls the contract until every
-  slot shows weight == desired and sentNonce == receivedNonce (the ack
-  proving the P-chain applied it); the kit's weight/status flow never talks
-  to the P-chain itself, not even reads. One tier per invocation; it never
-  starts or stops a process, and no keys move. A **raise** is deferred while
-  its node is behind the fleet tip or unreachable (a behind node with more
-  stake wins proposer slots on stale heights and can self-finalize a fork);
-  the command keeps retrying and the raise fires as soon as the node is near
-  tip. Lowers are never deferred: shedding weight off a sick node is the
-  failover direction and always goes through.
+- **stake**: `bin/l1 apply --weights a1=100000,b1=1,...` (or
+  `bin/l1 set-weight --node <name> --weight <w>` for one validator) moves
+  on-chain consensus weight between the tiers (validator=100000, spare=1000,
+  dead=1). The tool holds every validator's BLS signer key, so it signs each
+  weight message locally with all of them, submits the
+  SetL1ValidatorWeightTx to the P-chain itself and verifies the new weight
+  on-chain before the next tx. `apply` orders every raise before any lower,
+  so the fleet never passes through a low-weight window mid-seesaw. It never
+  starts or stops a process, and no keys move. NOTE: unlike the old
+  contract flow there is no raise-gate; do not raise a node that is behind
+  the fleet tip (a behind node with more stake wins proposer slots on stale
+  heights and can self-finalize a fork) - check `./fleet status` first.
 
 A hard-down box (ssh-unreachable, not just process-dead) never blocks
 operating the rest of the fleet: reconciliation records it as down with a
@@ -231,15 +233,14 @@ warning and proceeds; only commands that target that box specifically fail
 ```bash
 watch -n5 ./fleet status                   # live per-DC stake tier + node state
 ./fleet down 1                             # crash machine 1
-./fleet weight validator 7                 # promote a spare first...
-./fleet weight dead 1                      # ...then retire the dead box
+./bin/l1 apply --weights b1=100000,a1=1    # promote a spare, retire the dead box
 ./fleet up 1                               # rebuild machine 1, it re-syncs and rejoins
 ```
 
-**Raise the replacement validators before lowering the old ones.** Run the
-`weight validator ...` command first and the lowering command second, so
-the fleet never passes through a low-weight window. Weights only move when
-you ask: a dead box keeps blocking quorum until you `weight dead` it.
+**Raise the replacement validators before lowering the old ones.** A single
+`bin/l1 apply` does this for you: it always applies raises first, then
+lowers. Weights only move when you ask: a dead box keeps blocking quorum
+until you drain it (weight 1).
 
 The worked drills live in `scenarios/`. `00_healthy.sh` is the canonical
 reset (all machines up, machines 1-4 validating, site B stake slots spare);
@@ -279,8 +280,9 @@ recovering a fully halted chain needs enough validators up to clear the
 latch, and nothing happens until they connect, at which point they clear it
 together. `./fleet status` shows a node stuck on the latch as
 `BOOTSTRAPPING`. The other way out of a halt, without restarting anything, is
-`./fleet weight dead` on the dead machines: the weight change rides the
-primary network, so it lands even while the L1 is halted (scenario 07).
+draining the dead machines (`bin/l1 apply --weights a1=1,a2=1`): the weight
+txs go straight to the P-chain, so they land even while the L1 is halted
+(scenario 07).
 
 One more recovery: a validator hard-killed under heavy load can come back
 with a diverged local chain (its VM dies repeatedly, `status` shows it

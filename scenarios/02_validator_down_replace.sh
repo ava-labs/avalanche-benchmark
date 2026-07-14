@@ -10,8 +10,7 @@ echo
 printf '\033[1m==== 💥 SCENARIO: killing machine 1, machine 7 takes over ====\033[0m\n'
 echo
 ./fleet down 1
-./fleet weight validator 7
-./fleet weight dead 1
+./bin/l1 apply --weights b1=100000,a1=1
 
 echo
 printf '\033[1m==== 📊 STATUS ====\033[0m\n'

@@ -174,8 +174,8 @@ GF_AUTH_DISABLE_LOGIN_FORM="true" \
     >"$DATA_DIR/grafana.log" 2>&1 &
 echo $! > "$DATA_DIR/grafana.pid"
 
-# Fleet weight exporter: fleet_desired_weight / fleet_actual_weight on :9091,
-# scraped by the 'fleet' job for the stake panels.
+# Fleet weight exporter: fleet_actual_weight (read back from the P-chain) on
+# :9091, scraped by the 'fleet' job for the stake panels.
 nohup "$SCRIPT_DIR/bin/benchmark-fleet" exporter \
     >"$DATA_DIR/fleet-exporter.log" 2>&1 &
 echo $! > "$DATA_DIR/fleet-exporter.pid"
