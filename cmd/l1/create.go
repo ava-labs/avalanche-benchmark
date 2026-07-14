@@ -39,19 +39,22 @@ type createOpts struct {
 	force       bool
 }
 
+// initialWeight is the constant conversion weight every validator is
+// registered at. Weights are not inventory: the real distribution is applied
+// right after creation via `l1 apply` (scenarios/00_healthy.sh), and from then
+// on the on-chain weight is the sole truth.
+const initialWeight = 1000
+
 // planned is one validator to register: node name (the staking/l1/<name> key
-// dir), conversion weight, and the identity material once ensured on disk.
+// dir) and the identity material once ensured on disk.
 type planned struct {
 	name   string
-	weight uint64
 	nodeID ids.NodeID
 	pop    *signer.ProofOfPossession
 }
 
 // planValidators plans one registration per role=validator node in the
-// inventory, at the node's weight= tag (default 1). The tag is consumed ONLY
-// here: after creation the on-chain weight is the sole truth and set-weight /
-// apply / status never consult it again.
+// inventory, all at initialWeight.
 func planValidators(nodes []topo.Node) []planned {
 	vals := topo.Validators(nodes)
 	if len(vals) == 0 {
@@ -59,7 +62,7 @@ func planValidators(nodes []topo.Node) []planned {
 	}
 	out := make([]planned, len(vals))
 	for i, n := range vals {
-		out[i] = planned{name: n.Name, weight: n.Weight}
+		out[i] = planned{name: n.Name}
 	}
 	return out
 }
@@ -149,9 +152,9 @@ func create(ctx context.Context, opts createOpts) {
 
 	fmt.Printf("=== l1 create on %s (SPENDS AVAX; resumable via %s) ===\n", net.Name, envPath)
 	fmt.Printf("  P-chain API: %s\n", net.API)
-	fmt.Printf("  Validators: %d, %s AVAX continuous-fee balance each\n", len(plans), avaxString(balance))
+	fmt.Printf("  Validators: %d, %s AVAX continuous-fee balance each, all at initial weight %d\n", len(plans), avaxString(balance), initialWeight)
 	for _, p := range plans {
-		fmt.Printf("    %-6s key=staking/l1/%-6s weight=%-8d %s\n", p.name, p.name, p.weight, p.nodeID)
+		fmt.Printf("    %-6s key=staking/l1/%-6s %s\n", p.name, p.name, p.nodeID)
 	}
 
 	walletKey, err := fujikey.Load(filepath.Join(stakingDir, "fuji-wallet.key"))
@@ -228,7 +231,7 @@ func create(ctx context.Context, opts createOpts) {
 		for i, p := range plans {
 			txValidators[i] = &txs.ConvertSubnetToL1Validator{
 				NodeID:                p.nodeID.Bytes(),
-				Weight:                p.weight,
+				Weight:                initialWeight,
 				Balance:               balance,
 				Signer:                *p.pop,
 				RemainingBalanceOwner: owner,
@@ -250,10 +253,10 @@ func create(ctx context.Context, opts createOpts) {
 	fmt.Println("=== L1 created ===")
 	fmt.Printf("Subnet ID: %s\nChain ID:  %s\nManager:   %s (the L1's own chain; weights move via `l1 set-weight` / `l1 apply`)\n",
 		prog.subnet, prog.chain, prog.manager)
-	fmt.Println("Registered validators (conversion order = validationID index):")
+	fmt.Printf("Registered validators (all at weight %d; conversion order = validationID index):\n", initialWeight)
 	for i, p := range plans {
-		fmt.Printf("  [%d] %-6s weight=%-8d %s  validationID=%s\n",
-			i, p.name, p.weight, p.nodeID, prog.subnet.Append(uint32(i)))
+		fmt.Printf("  [%d] %-6s %s  validationID=%s\n",
+			i, p.name, p.nodeID, prog.subnet.Append(uint32(i)))
 	}
 	fmt.Printf("Saved to %s. Next: ./setup/03_backup_secrets.sh, then ./run/01_deploy.sh\n", envPath)
 }

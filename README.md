@@ -65,10 +65,10 @@ $EDITOR nodes.ini         # the fleet inventory: one line per node
 `nodes.ini` is the single source of truth for the fleet:
 
 ```
-# <name> host=<ip> role=validator|rpc [dc=<tag>] [weight=<w>]
-a1     host=10.0.0.1  role=validator  dc=A  weight=100000
+# <name> host=<ip> role=validator|rpc [dc=<tag>]
+a1     host=10.0.0.1  role=validator  dc=A
 rpc_a1 host=10.0.0.5  role=rpc        dc=A
-b1     host=10.1.0.1  role=validator  dc=B  weight=1000
+b1     host=10.1.0.1  role=validator  dc=B
 ```
 
 The node NAME is the primary key everywhere: `./fleet up a1`, the staking key
@@ -77,9 +77,10 @@ node's data root `data/a1` on its box. `role=validator` nodes are registered
 as L1 validators at chain creation; `role=rpc` nodes track the chain and
 serve the load-generator ingress, are never registered, and never carry a BLS
 signer key. `dc=` is a display-only tag: `fleet status` groups by it and
-fleet verbs accept `dc=A` selectors, nothing else depends on it. `weight=`
-is the conversion weight, read exactly once, by `l1 create` (default 1);
-after creation the on-chain weight is the only truth.
+fleet verbs accept `dc=A` selectors, nothing else depends on it. Weights are
+not inventory: `l1 create` registers every validator at a constant initial
+weight of 1000 and the real distribution is applied via `l1 apply`
+(`scenarios/00_healthy.sh`); the on-chain weight is the only truth.
 
 Ports are positional per host: the k-th node on a host serves HTTP on
 9650+2k and staking on 9651+2k, so one node per box (the production shape)

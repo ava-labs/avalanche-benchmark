@@ -14,10 +14,10 @@ or `role=rpc`, tagged with a display-only `dc=` per data center. The shipped
 inventory is 4 validators + 2 RPCs per DC, 12 machines:
 
 - **DC A (primary)**: `a1..a4` and `rpc_a1 rpc_a2`. All four validators
-  start at validator weight (their `weight=` tags), so the ground state is
-  4 active validators. A "hot spare" is not a role, just a validator held
-  at weight 1.
-- **DC B (backup)**: `b1..b4` and `rpc_b1 rpc_b2`. Validators start at
+  run at validator weight (raised by `scenarios/00_healthy.sh` right after
+  creation), so the ground state is 4 active validators. A "hot spare" is
+  not a role, just a validator held at weight 1.
+- **DC B (backup)**: `b1..b4` and `rpc_b1 rpc_b2`. Validators sit at
   spare weight (1000): registered on the P-chain at conversion, fully
   synced trackers, negligible vote. Put DC B in a different region so
   cross-site sync latency is real; co-hosting both DCs on the same boxes

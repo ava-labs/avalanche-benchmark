@@ -7,18 +7,19 @@
 //
 // Format: Ansible-host-line syntax, no sections. One node per line:
 //
-//	<name> host=<ip> role=validator|rpc [dc=<tag>] [weight=<w>]
+//	<name> host=<ip> role=validator|rpc [dc=<tag>]
 //
 // Comments (#) and blank lines are allowed. Rules:
 //   - name: the primary key everywhere; letters, digits, '_', '-', '.' only.
 //   - host= required. role= required: validator (a registered L1 validator;
-//     a "spare" is just a validator at weight 1) or rpc (tracks the chain and
-//     serves ingress; never registered, never wears a BLS signer key).
+//     a "spare" is just a validator at low on-chain weight) or rpc (tracks the
+//     chain and serves ingress; never registered, never wears a BLS signer key).
 //   - dc= optional, display-only grouping tag (`fleet status` groups by it,
 //     fleet verbs accept `dc=<tag>` selectors). Nothing functional depends on it.
-//   - weight= optional, role=validator only: the CONVERSION weight `l1 create`
-//     registers the node with (default 1). Read only by create; after creation
-//     the on-chain weight is the sole truth and this tag is never consulted.
+//
+// Weights are NOT inventory: `l1 create` registers every validator at a
+// constant initial weight and the real distribution is applied afterwards via
+// `l1 apply` (scenarios/00_healthy.sh); the on-chain weight is the sole truth.
 //
 // Ports are positional per host: the k-th node on a host (file order) serves
 // HTTP on 9650+2k and staking p2p on 9651+2k, so a one-node-per-host fleet is
@@ -30,7 +31,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 )
 
@@ -49,12 +49,11 @@ const (
 
 // Node is one line of nodes.ini.
 type Node struct {
-	Name   string
-	Host   string
-	Role   string // RoleValidator or RoleRPC
-	Port   int    // HTTP/RPC port, assigned positionally per host
-	DC     string // display-only grouping tag
-	Weight uint64 // conversion weight, read ONLY by `l1 create` (default 1)
+	Name string
+	Host string
+	Role string // RoleValidator or RoleRPC
+	Port int    // HTTP/RPC port, assigned positionally per host
+	DC   string // display-only grouping tag
 }
 
 func (n Node) IsValidator() bool { return n.Role == RoleValidator }
@@ -100,7 +99,7 @@ func LoadNear() ([]Node, error) {
 
 // Parse parses nodes.ini content: comments and blank lines skipped, first
 // field the node name, the rest key=value pairs. Duplicate names, unknown
-// keys, bad roles and a weight on a non-validator are all errors.
+// keys and bad roles are all errors.
 func Parse(data string) ([]Node, error) {
 	var nodes []Node
 	lineOf := map[string]int{} // node name -> 1-based line, for dup reporting
@@ -115,7 +114,7 @@ func Parse(data string) ([]Node, error) {
 		if len(fields) == 0 {
 			continue
 		}
-		n := Node{Name: fields[0], Weight: 1}
+		n := Node{Name: fields[0]}
 		errf := func(format string, args ...any) error {
 			return fmt.Errorf("line %d (%s): "+format, append([]any{lineNo + 1, n.Name}, args...)...)
 		}
@@ -127,7 +126,6 @@ func Parse(data string) ([]Node, error) {
 		}
 		lineOf[n.Name] = lineNo + 1
 
-		weightSet := false
 		for _, f := range fields[1:] {
 			k, v, ok := strings.Cut(f, "=")
 			if !ok || v == "" {
@@ -140,15 +138,8 @@ func Parse(data string) ([]Node, error) {
 				n.Role = v
 			case "dc":
 				n.DC = v
-			case "weight":
-				w, err := strconv.ParseUint(v, 10, 64)
-				if err != nil || w == 0 {
-					return nil, errf("bad weight %q (want a positive integer)", v)
-				}
-				n.Weight = w
-				weightSet = true
 			default:
-				return nil, errf("unknown key %q (want host, role, dc or weight)", k)
+				return nil, errf("unknown key %q (want host, role or dc; weights are on-chain only, move them with l1 apply)", k)
 			}
 		}
 		if n.Host == "" {
@@ -159,10 +150,7 @@ func Parse(data string) ([]Node, error) {
 		case "":
 			return nil, errf("role= is required (validator or rpc)")
 		default:
-			return nil, errf("bad role %q (want validator or rpc; a spare is just a validator at weight 1)", n.Role)
-		}
-		if weightSet && n.Role != RoleValidator {
-			return nil, errf("weight= is only valid on role=validator (rpc nodes are never registered)")
+			return nil, errf("bad role %q (want validator or rpc; a spare is just a validator at low weight)", n.Role)
 		}
 		n.Port = baseHTTPPort + portStride*perHost[n.Host]
 		perHost[n.Host]++

@@ -58,24 +58,25 @@ then edit `nodes.ini`, the fleet inventory (the kit ships the reference
 fleet's; point the `host=` values at your boxes):
 
 ```ini
-# <name> host=<ip> role=validator|rpc [dc=<tag>] [weight=<w>]
-a1     host=A1  role=validator  dc=A  weight=100000
-a2     host=A2  role=validator  dc=A  weight=100000
-a3     host=A3  role=validator  dc=A  weight=100000
-a4     host=A4  role=validator  dc=A  weight=100000
+# <name> host=<ip> role=validator|rpc [dc=<tag>]
+a1     host=A1  role=validator  dc=A
+a2     host=A2  role=validator  dc=A
+a3     host=A3  role=validator  dc=A
+a4     host=A4  role=validator  dc=A
 rpc_a1 host=A5  role=rpc        dc=A
 rpc_a2 host=A6  role=rpc        dc=A
-b1     host=B1  role=validator  dc=B  weight=1000
-b2     host=B2  role=validator  dc=B  weight=1000
-b3     host=B3  role=validator  dc=B  weight=1000
-b4     host=B4  role=validator  dc=B  weight=1000
+b1     host=B1  role=validator  dc=B
+b2     host=B2  role=validator  dc=B
+b3     host=B3  role=validator  dc=B
+b4     host=B4  role=validator  dc=B
 rpc_b1 host=B5  role=rpc        dc=B
 rpc_b2 host=B6  role=rpc        dc=B
 ```
 
-The node name is the handle everywhere (`./fleet down a1`); `weight=` is the
-conversion weight, read only by chain creation; `dc=` is a display/selector
-tag. Ports are positional per host (one node per box = 9650/9651). Preview
+The node name is the handle everywhere (`./fleet down a1`); `dc=` is a
+display/selector tag. Weights are not inventory: chain creation registers
+every validator at a constant initial weight of 1000 and the real
+distribution comes from `bin/l1 apply` (`scenarios/00_healthy.sh`). Ports are positional per host (one node per box = 9650/9651). Preview
 the resolved layout before touching anything:
 
 ```bash
@@ -111,8 +112,9 @@ The script exits on its own once the balance clears.
 ```
 
 Creates the subnet and chain on Fuji's public P-chain and registers every
-role=validator node in one conversion, each at its nodes.ini `weight=`
-(the shipped inventory: DC A at validator weight, DC B at spare weight),
+role=validator node in one conversion, all at a constant initial weight of
+1000 (the ground-state distribution, DC A at validator weight and DC B at
+spare, lands when `scenarios/00_healthy.sh` runs `bin/l1 apply`),
 with the validator manager recorded on the L1's own chain at
 `0x..01` so `bin/l1` can self-sign every later weight change. Expected tail:
 

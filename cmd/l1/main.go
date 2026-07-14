@@ -16,8 +16,9 @@
 //	l1 create     [--balance avax] [--force]
 //	              generate missing identities for the inventory's
 //	              role=validator nodes, create subnet + chain, convert to an
-//	              L1 with exactly those nodes registered at their nodes.ini
-//	              weight= (default 1; read only here); writes network.env
+//	              L1 with exactly those nodes registered, all at a constant
+//	              initial weight of 1000 (the real distribution comes from
+//	              `l1 apply` right after); writes network.env
 //	              (the ONLY registration point, run once per chain)
 //	l1 set-weight --node <name|nodeID|validationID> --weight <w>
 //	              set one validator's weight (0 removes; we never remove)

@@ -22,7 +22,7 @@ fi
 source "$ENV_FILE"
 
 # The fleet inventory: nodes.ini in the repo root (one line per node:
-# `<name> host=<ip> role=validator|rpc [dc=<tag>] [weight=<w>]`). The Go
+# `<name> host=<ip> role=validator|rpc [dc=<tag>]`). The Go
 # tools parse it themselves (internal/topo); shell scripts get per-node rows
 # from `./fleet endpoints` (name, dc, role, host, port).
 if [ ! -f "$SCRIPT_DIR/nodes.ini" ]; then

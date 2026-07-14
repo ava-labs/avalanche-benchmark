@@ -9,7 +9,8 @@ underneath `bin/l1 apply`.
 Every `role=validator` node in `nodes.ini` (`a1..a4` and `b1..b4` in the
 shipped inventory) is registered as an L1 validator exactly once, in the
 `ConvertSubnetToL1Tx` at chain creation (`setup/02_create_chain.sh`, which
-runs `bin/l1 create`), at its `weight=` tag. role=rpc nodes are never
+runs `bin/l1 create`), at a constant initial weight of 1000; the real weight
+distribution is applied right after via `bin/l1 apply`. role=rpc nodes are never
 registered. After conversion the validator set never changes membership; a
 failover only changes each validator's consensus weight.
 
@@ -34,9 +35,9 @@ Weight tiers:
 | `spare` | 1000 | registered, synced, negligible vote |
 | `dead` | 1 | retired (weight 0 would deregister; we never remove) |
 
-Ground state after chain creation: DC A validators at `validator`, DC B at
-`spare` (the `weight=` tags in `nodes.ini`, consumed once by `l1 create`;
-reset any time with `scenarios/00_healthy.sh`).
+Ground state: DC A validators at `validator`, DC B at `spare`, applied by
+`scenarios/00_healthy.sh` (`l1 apply`) right after chain creation and any
+time a reset is needed.
 
 Because staking keys never move between machines, no two live nodes can ever
 share an identity, so double-signing is structurally impossible. (The old

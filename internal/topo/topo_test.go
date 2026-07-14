@@ -8,9 +8,9 @@ import (
 func TestParseBasics(t *testing.T) {
 	nodes, err := Parse(`
 # the fleet
-a1     host=54.183.72.215   role=validator  dc=A  weight=100000
+a1     host=54.183.72.215   role=validator  dc=A
 rpc_a1 host=18.144.224.191  role=rpc        dc=A  # trailing comment
-b1     host=44.251.223.141  role=validator        weight=1000
+b1     host=44.251.223.141  role=validator
 x9     host=44.251.223.141  role=validator
 `)
 	if err != nil {
@@ -21,17 +21,14 @@ x9     host=44.251.223.141  role=validator
 	}
 	a1 := nodes[0]
 	if a1.Name != "a1" || a1.Host != "54.183.72.215" || a1.Role != RoleValidator ||
-		a1.DC != "A" || a1.Weight != 100000 || !a1.IsValidator() {
+		a1.DC != "A" || !a1.IsValidator() {
 		t.Errorf("a1 = %+v", a1)
 	}
-	if rpc := nodes[1]; rpc.Role != RoleRPC || rpc.IsValidator() || rpc.Weight != 1 || rpc.DC != "A" {
+	if rpc := nodes[1]; rpc.Role != RoleRPC || rpc.IsValidator() || rpc.DC != "A" {
 		t.Errorf("rpc_a1 = %+v", rpc)
 	}
-	if b1 := nodes[2]; b1.DC != "" || b1.Weight != 1000 {
+	if b1 := nodes[2]; b1.DC != "" {
 		t.Errorf("b1 = %+v (dc must default empty)", b1)
-	}
-	if x9 := nodes[3]; x9.Weight != 1 {
-		t.Errorf("x9 weight = %d, want default 1", x9.Weight)
 	}
 	if got := Validators(nodes); len(got) != 3 || got[2].Name != "x9" {
 		t.Errorf("Validators = %v", got)
@@ -61,12 +58,11 @@ x10 host=10.0.0.1 role=rpc
 func TestParseErrors(t *testing.T) {
 	cases := map[string]string{
 		"a1 host=1.2.3.4 role=validator\na1 host=1.2.3.5 role=rpc": "duplicate node name",
-		"a1 role=validator":                          "host= is required",
-		"a1 host=1.2.3.4":                            "role= is required",
-		"a1 host=1.2.3.4 role=spare":                 "bad role",
-		"r1 host=1.2.3.4 role=rpc weight=5":          "only valid on role=validator",
-		"a1 host=1.2.3.4 role=validator weight=zero": "bad weight",
-		"a1 host=1.2.3.4 role=validator weight=0":    "bad weight",
+		"a1 role=validator":          "host= is required",
+		"a1 host=1.2.3.4":            "role= is required",
+		"a1 host=1.2.3.4 role=spare": "bad role",
+		// weight= was an inventory key once; it is gone, weights live on-chain.
+		"a1 host=1.2.3.4 role=validator weight=1000": "unknown key",
 		"a1 host=1.2.3.4 role=validator color=red":   "unknown key",
 		"a1 host=1.2.3.4 role=validator port=9660":   "unknown key",
 		"a1 host":                   "bad field",
