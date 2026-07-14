@@ -2,7 +2,7 @@
 # The Go tool binaries are phony too: their file rules have no source
 # prerequisites, so without this a stale bin/ silently ships into `pack`
 # (bit us 2026-07-06). go's build cache keeps the rebuild near-instant.
-.PHONY: bin/create-l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet bin/bsclear
+.PHONY: bin/l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet bin/bsclear
 
 .DEFAULT_GOAL := all
 
@@ -26,11 +26,11 @@ all: deps build
 	@echo "All ready."
 
 # Build Go tools
-build: bin/create-l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet bin/bsclear
+build: bin/l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet bin/bsclear
 
-bin/create-l1:
+bin/l1:
 	@mkdir -p bin
-	go build -o bin/create-l1 ./cmd/create-l1
+	go build -o bin/l1 ./cmd/l1
 
 bin/bombard:
 	@mkdir -p bin
@@ -66,7 +66,7 @@ clean:
 # monitoring downloads). pack runs this first so a pack can never ship a stale
 # tool even if the .PHONY list above drifts.
 clean-tools:
-	rm -f bin/create-l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet bin/bsclear
+	rm -f bin/l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet bin/bsclear
 
 # Build avalanchego + subnet-evm from the published pinned ref (run on Linux).
 # GOTOOLCHAIN: avalanchego's own go.mod has no toolchain pin, so without this
@@ -114,7 +114,7 @@ bin/grafana.tar.gz:
 .PHONY: bin/VERSIONS
 bin/VERSIONS: deps build
 	./bin/avalanchego --version > bin/VERSIONS
-	go version bin/avalanchego bin/$(SUBNET_EVM_ID) bin/benchmark-fleet bin/bombard bin/bsclear >> bin/VERSIONS
+	go version bin/avalanchego bin/$(SUBNET_EVM_ID) bin/benchmark-fleet bin/l1 bin/bombard bin/bsclear >> bin/VERSIONS
 	echo "kit commit $$(git rev-parse HEAD)" >> bin/VERSIONS
 	cat bin/VERSIONS
 
@@ -140,9 +140,11 @@ pack: clean-tools deps build monitoring-deps bin/VERSIONS
 
 # Client release zip for GitHub releases: the generic kit for operators whose
 # chain already exists. Same payload as pack MINUS setup/ (chain creation is
-# vendor-side) and minus the setup-only tool binaries. Secrets (staking/,
-# network.env, fuji-wallet.key) are never in any archive; they ship separately
-# per customer and untar over the unpacked kit root.
+# vendor-side) and minus the setup-only genstaking. bin/l1 (weight moves,
+# status) and bin/fuji-wallet (balance top-ups) ship: they are the runtime
+# validator-manager tools. Secrets (staking/, network.env, fuji-wallet.key)
+# are never in any archive; they ship separately per customer and untar over
+# the unpacked kit root.
 release: clean-tools deps build monitoring-deps bin/VERSIONS
 	rm -f avalanche-l1-kit.zip
 	zip -r avalanche-l1-kit.zip \
@@ -150,6 +152,8 @@ release: clean-tools deps build monitoring-deps bin/VERSIONS
 		bin/avalanchego \
 		bin/$(SUBNET_EVM_ID) \
 		bin/benchmark-fleet \
+		bin/l1 \
+		bin/fuji-wallet \
 		bin/bsclear \
 		bin/bombard \
 		bin/prometheus \

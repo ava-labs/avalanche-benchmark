@@ -2,22 +2,21 @@
 // (staker.crt / staker.key / signer.key) under staking/l1/<index>/ for the
 // given key indices and prints the matching node-ids.env manifest lines.
 // The identities are GITIGNORED and never committed: their NodeIDs get bound
-// as validationIDs on Fuji's public P-chain, so a leaked staking key equals
-// validator impersonation. Invoked by ./setup/00_gen_secrets.sh (as bin/genstaking).
+// as validationIDs on a public P-chain, so a leaked staking key equals
+// validator impersonation. Invoked by ./setup/00_gen_secrets.sh (as
+// bin/genstaking); `l1 create` generates any missing VALIDATOR identities on
+// its own through the same internal/vset code path, this tool also covers the
+// RPC tier's identities.
 //
 // Usage: genstaking <firstIndex> <lastIndex>
 package main
 
 import (
-	"encoding/pem"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 
-	"github.com/ava-labs/avalanchego/ids"
-	"github.com/ava-labs/avalanchego/staking"
-	"github.com/ava-labs/avalanchego/utils/crypto/bls/signer/localsigner"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/vset"
 )
 
 func fatalf(format string, args ...any) {
@@ -34,43 +33,11 @@ func main() {
 	if err1 != nil || err2 != nil || lo < 1 || hi < lo {
 		fatalf("bad index range %q..%q", os.Args[1], os.Args[2])
 	}
-
 	for idx := lo; idx <= hi; idx++ {
-		dir := filepath.Join("staking", "l1", strconv.Itoa(idx))
-		if _, err := os.Stat(dir); err == nil {
-			fatalf("%s already exists: refusing to overwrite an identity that may be registered on Fuji", dir)
-		}
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			fatalf("mkdir %s: %v", dir, err)
-		}
-
-		certPEM, keyPEM, err := staking.NewCertAndKeyBytes()
+		id, err := vset.GenerateIdentity("staking", idx)
 		if err != nil {
-			fatalf("generate TLS identity %d: %v", idx, err)
+			fatalf("%v", err)
 		}
-		if err := os.WriteFile(filepath.Join(dir, "staker.crt"), certPEM, 0o644); err != nil {
-			fatalf("write staker.crt: %v", err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "staker.key"), keyPEM, 0o600); err != nil {
-			fatalf("write staker.key: %v", err)
-		}
-
-		signer, err := localsigner.New()
-		if err != nil {
-			fatalf("generate BLS key %d: %v", idx, err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, "signer.key"), signer.ToBytes(), 0o600); err != nil {
-			fatalf("write signer.key: %v", err)
-		}
-
-		block, _ := pem.Decode(certPEM)
-		if block == nil {
-			fatalf("identity %d: cert is not PEM", idx)
-		}
-		cert, err := staking.ParseCertificate(block.Bytes)
-		if err != nil {
-			fatalf("identity %d: parse cert: %v", idx, err)
-		}
-		fmt.Printf("L1_%d_NODE_ID=%s\n", idx, ids.NodeIDFromCert(cert))
+		fmt.Printf("L1_%d_NODE_ID=%s\n", idx, id)
 	}
 }

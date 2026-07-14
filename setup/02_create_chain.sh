@@ -1,17 +1,20 @@
 #!/bin/bash
-# CREATE the chain on Fuji: subnet + chain + ConvertSubnetToL1Tx, issued against
-# the PUBLIC Fuji API (our own RPC tier is follow-only, so its platform.* API is
-# gated forever). This SPENDS AVAX (fees + 0.1 AVAX continuous-fee balance per
-# validator) and registers the generated NodeIDs on a public chain, so run it
-# ONCE per chain. Re-deploys of the fleet go through ./run/01_deploy.sh, which
-# never re-creates (and never re-spends).
+# CREATE the chain: subnet + chain + ConvertSubnetToL1Tx via `bin/l1 create`,
+# issued against the PUBLIC API (our own RPC tier is follow-only, so its
+# platform.* API is gated forever). The conversion records the validator
+# manager on the L1's OWN chain (address 0x..01): we hold every validator's
+# BLS key, so all later weight changes are self-signed locally by `bin/l1`
+# with no contract, courier or aggregator. This SPENDS AVAX (fees + the
+# per-validator continuous-fee balance) and registers the generated NodeIDs
+# on a public chain, so run it ONCE per chain. Re-deploys of the fleet go
+# through ./run/01_deploy.sh, which never re-creates (and never re-spends).
 set -e
 
 # Error handler to show what went wrong
 trap 'echo "ERROR: Script failed at line $LINENO. Command: $BASH_COMMAND"' ERR
 
 # --mainnet creates the L1 anchored on Avalanche mainnet (REAL AVAX). The
-# choice is persisted as NETWORK in network.env by create-l1; on resume that
+# choice is persisted as NETWORK in network.env by l1 create; on resume that
 # record wins and a conflicting flag is rejected below.
 REQUESTED_NETWORK=""
 for arg in "$@"; do
@@ -33,19 +36,21 @@ if [ -n "$REQUESTED_NETWORK" ] && [ "$REQUESTED_NETWORK" != "$AVALANCHE_NETWORK"
 fi
 
 # ------------------------------------------------------------------------------
-# Resume semantics: create-l1 persists every step's result to network.env as it
-# completes and SKIPS anything already present, so re-running here never creates
-# a second chain or double-spends - it resumes/verifies the recorded one
-# (including finishing a failed initializeValidatorSet). To force a genuinely
-# NEW L1, delete network.env first (the old chain becomes unreachable).
+# Resume semantics: l1 create persists every step's result to network.env as it
+# completes and SKIPS anything already present. It refuses to run over an
+# existing SUBNET_ID unless forced, so the resume flag is passed explicitly
+# here: re-running this script never creates a second chain or double-spends,
+# it resumes/verifies the recorded one. To force a genuinely NEW L1, delete
+# network.env first (the old chain becomes unreachable).
 # ------------------------------------------------------------------------------
-if [ -f "$NETWORK_ENV" ]; then
+FORCE=""
+if [ -f "$NETWORK_ENV" ] && grep -q '^SUBNET_ID=' "$NETWORK_ENV"; then
     source "$NETWORK_ENV"
     echo "network.env exists - resuming/verifying the recorded L1 (no new creation):"
     echo "  Subnet ID: ${SUBNET_ID:-<pending>}"
     echo "  Chain ID:  ${CHAIN_ID:-<pending>}"
-    echo "  Manager:   ${MANAGER_ADDRESS:-<pending>}"
     echo ""
+    FORCE="--force"
 fi
 
 # Pre-flight: every generated staking identity the configured topology references
@@ -53,12 +58,12 @@ fi
 ensure_staking_keys
 
 # ------------------------------------------------------------------------------
-# Create L1 (subnet + chain + convert) on Fuji
+# Create L1 (subnet + chain + convert)
 # ------------------------------------------------------------------------------
 echo "=== Creating L1 on $AVALANCHE_NETWORK ==="
 echo ""
 
-"$SCRIPT_DIR/bin/create-l1" -output "$NETWORK_ENV"
+"$SCRIPT_DIR/bin/l1" create $FORCE
 
 # Load and display results
 source "$NETWORK_ENV"
@@ -68,7 +73,7 @@ echo "=== L1 Created ==="
 echo ""
 echo "Subnet ID: $SUBNET_ID"
 echo "Chain ID:  $CHAIN_ID"
-echo "Manager:   $MANAGER_ADDRESS (ValidatorManager on the Fuji C-chain)"
+echo "Manager:   $MANAGER_ADDRESS (on the L1's own chain; weights move via bin/l1)"
 echo ""
 echo "Saved to: $NETWORK_ENV"
 echo ""
