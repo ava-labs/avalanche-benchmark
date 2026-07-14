@@ -82,96 +82,79 @@ func main() {
 		rejectArgs(os.Args[2:])
 		status(cfg)
 
-	case "up", "down":
+	case "down":
 		cfg.warnColocation()
 		ms := parseMachines(os.Args[2:], topo)
-		prev := mustLoadIntents(cfg)
-		down := cmd == "down"
-		var wait []int
-		if !down {
-			// Idempotence: a machine that was NOT cordoned and whose node
-			// already answers RPC AT THE FLEET TIP is healthy - leave it
-			// alone instead of wiping and rebuilding it. A CATCHING UP or
-			// BOOTSTRAPPING node is also left running - it is making its way
-			// to the tip and a wipe would only destroy that progress (the
-			// 2026-07-11 wipe-loop: `up` freshCleaned nodes mid-bootstrap) -
-			// but `up` still blocks until it serves; waitServing rebuilds it
-			// there only if it genuinely stalls (no bootstrap-metric or
-			// height movement for its stall budget). Cordoned or unreachable
-			// (DOWN) machines get the full rebuild.
-			results := cfg.checkHealth(prev)
-			requested := len(ms)
-			var rebuild []int
-			for _, m := range ms {
-				if !prev[m-1].Cordoned {
-					switch results[m-1].state {
-					case healthServing:
-						continue
-					case healthCatchingUp, healthBootstrapping:
-						wait = append(wait, m)
-						continue
-					}
-				}
+		// Simulated hardware failure: hard SIGKILL, no wipe - the box "dies"
+		// with its data intact. Weight is untouched (killing must never
+		// depend on anchor-network quorum); flip stake with bin/l1.
+		for _, m := range ms {
+			fmt.Printf("== down %s (%s): SIGKILL (simulated failure) ==\n", topo.MachineName(m-1), cfg.nodeIPs[m-1])
+			cfg.killNode(m - 1)
+		}
+
+	case "up":
+		cfg.warnColocation()
+		ms := parseMachines(os.Args[2:], topo)
+		// Treatment is keyed on OBSERVED health alone, per requested machine:
+		// a node already answering RPC AT THE FLEET TIP is healthy - leave it
+		// alone instead of wiping and rebuilding it. A CATCHING UP or
+		// BOOTSTRAPPING node is also left running - it is making its way
+		// to the tip and a wipe would only destroy that progress (the
+		// 2026-07-11 wipe-loop: `up` freshCleaned nodes mid-bootstrap) -
+		// but `up` still blocks until it serves; waitServing rebuilds it
+		// there only if it genuinely stalls (no bootstrap-metric or
+		// height movement for its stall budget). DOWN machines (process dead,
+		// e.g. after `fleet down`, or host unreachable) get the full rebuild.
+		results := cfg.checkHealth()
+		var rebuild, wait []int
+		for _, m := range ms {
+			switch results[m-1].state {
+			case healthServing:
+				continue
+			case healthCatchingUp, healthBootstrapping:
+				wait = append(wait, m)
+			default: // healthDown
 				rebuild = append(rebuild, m)
 				wait = append(wait, m)
 			}
-			ms = rebuild
-			if len(wait) == 0 {
-				fmt.Printf("all %d machines already up\n", requested)
-				return
-			}
 		}
-		intents := prev
-		for _, m := range ms {
-			next, err := setCordon(intents, m, down)
-			if err != nil {
-				fatalf("%v", err)
-			}
-			intents = next
+		if len(wait) == 0 {
+			fmt.Printf("all %d machines already up\n", len(ms))
+			return
 		}
-		mustSaveIntents(cfg, intents)
-		if down {
-			// Simulated hardware failure: hard SIGKILL, no wipe - the box "dies"
-			// with its data intact. Weight is untouched (killing must never
-			// depend on Fuji quorum); flip stake with `weight`.
-			for _, m := range ms {
-				fmt.Printf("== down %s (%s): SIGKILL (simulated failure) ==\n", topo.MachineName(m-1), cfg.nodeIPs[m-1])
-				cfg.killNode(m - 1)
+		// Recovery: rebuild each dead target from genesis, start it, then block
+		// until every waited-on machine answers RPC as SERVING at the
+		// fleet tip (within catchUpThreshold of the fleet max height).
+		// A requested machine whose host is ssh-unreachable cannot be
+		// rebuilt: it is dropped from the wait (it would never serve) and
+		// the command exits non-zero naming it AFTER the reachable
+		// machines have been brought up.
+		var lost []string
+		if len(rebuild) > 0 {
+			targets := map[int]bool{}
+			for _, m := range rebuild {
+				targets[m-1] = true
 			}
-		} else {
-			// Recovery: rebuild each target from genesis, start it, then block
-			// until every waited-on machine answers RPC as SERVING at the
-			// fleet tip (within catchUpThreshold of the fleet max height).
-			// A requested machine whose host is ssh-unreachable cannot be
-			// rebuilt: it is dropped from the wait (it would never serve) and
-			// the command exits non-zero naming it AFTER the reachable
-			// machines have been brought up.
-			var lost []string
-			if len(ms) > 0 {
-				fresh := map[int]bool{}
-				for _, m := range ms {
-					fresh[m-1] = true
+			unreachable := map[int]bool{}
+			for _, m := range reconcile(cfg, targets, false) {
+				unreachable[m] = true
+			}
+			var kept []int
+			for _, m := range wait {
+				if unreachable[m] {
+					lost = append(lost, topo.MachineName(m-1))
+					continue
 				}
-				unreachable := map[int]bool{}
-				for _, m := range reconcile(cfg, intents, fresh, false) {
-					unreachable[m] = true
-				}
-				var kept []int
-				for _, m := range wait {
-					if unreachable[m] {
-						lost = append(lost, topo.MachineName(m-1))
-						continue
-					}
-					kept = append(kept, m)
-				}
-				wait = kept
+				kept = append(kept, m)
 			}
-			if len(wait) > 0 {
-				waitServing(cfg, intents, wait)
-			}
-			if len(lost) > 0 {
-				fatalf("up: host unreachable, not rebuilt: %s", strings.Join(lost, ", "))
-			}
+			wait = kept
+		}
+		if len(wait) > 0 {
+			waitServing(cfg, wait)
+		}
+		if len(lost) > 0 {
+			fatalf("up: host unreachable, not rebuilt: %s", strings.Join(lost, ", "))
 		}
 
 	case "exporter":
@@ -185,32 +168,16 @@ func main() {
 	case "fresh":
 		rejectArgs(os.Args[2:])
 		cfg.warnColocation()
-		intents := seedIntents(topo)
-		mustSaveIntents(cfg, intents)
 		fmt.Println("== benchmark-fleet fresh: full redeploy from genesis ==")
 		fmt.Println("(on-chain weights untouched; move them with bin/l1 apply / scenarios/00_healthy.sh)")
 		all := map[int]bool{}
-		for i := range intents {
+		for i := 0; i < topo.Size(); i++ {
 			all[i] = true
 		}
-		reconcile(cfg, intents, all, true)
+		reconcile(cfg, all, true)
 
 	default:
 		usage()
-	}
-}
-
-func mustLoadIntents(cfg *config) []MachineIntent {
-	intents, err := loadIntents(cfg.stateFile, cfg.topo)
-	if err != nil {
-		fatalf("%v", err)
-	}
-	return intents
-}
-
-func mustSaveIntents(cfg *config, intents []MachineIntent) {
-	if err := saveIntents(cfg.stateFile, intents); err != nil {
-		fatalf("%v", err)
 	}
 }
 
@@ -258,18 +225,19 @@ func printEndpoints(topo Topology, insts []instance) {
 	}
 }
 
-// reconcile converges process reality to intents. freshSet names instances to
-// rebuild from genesis first (kill + wipe L1 chainData, keep the P-chain).
-// forceUpload re-ships binaries to every box regardless of what's already there
-// (whole-fleet fresh); otherwise a box is uploaded only if it is missing
-// artifacts. Passes: ensure-provisioned, stop-swap, start.
+// reconcile rebuilds the target machines from genesis: ensure the box is
+// provisioned, kill + wipe the L1 chainData (keep the P-chain db and staking
+// identity), install the slot's permanent key, start. It touches ONLY the
+// targets. forceUpload re-ships binaries to every box regardless of what's
+// already there (whole-fleet fresh); otherwise a target box is uploaded only
+// if it is missing artifacts.
 //
 // An ssh-unreachable host is NOT fatal (whole-fleet fresh excepted, where a
-// failed upload still aborts): it is warned about, observed as down, and gets
-// no actions, so one dead box never blocks reconciling the rest. The returned
-// list names the machines (1-based) that were skipped as unreachable; callers
-// that specifically targeted one of them fail loudly on it themselves.
-func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forceUpload bool) []int {
+// failed upload still aborts): it is warned about and gets no actions, so one
+// dead box never blocks reconciling the rest. The returned list names the
+// machines (1-based) that were skipped as unreachable; callers that
+// specifically targeted one of them fail loudly on it themselves.
+func reconcile(cfg *config, targets map[int]bool, forceUpload bool) []int {
 	topo := cfg.topo
 	hosts := cfg.nodeIPs
 
@@ -279,7 +247,7 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 		// Whole-fleet fresh: kill+wipe every target BEFORE any upload, so a
 		// re-upload never hits ETXTBSY against a still-running co-located plugin.
 		for i := range hosts {
-			if freshSet[i] {
+			if targets[i] {
 				fmt.Printf("  %s (%s): fresh clean\n", topo.MachineName(i), hosts[i])
 				cfg.freshClean(i)
 			}
@@ -303,7 +271,7 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 		var mu sync.Mutex
 		var wg sync.WaitGroup
 		for i, host := range hosts {
-			if intents[i].Cordoned || checked[host] {
+			if !targets[i] || checked[host] {
 				continue
 			}
 			checked[host] = true
@@ -321,14 +289,14 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 				if !ok {
 					fmt.Printf("  %s (%s): missing artifacts, uploading\n", topo.MachineName(i), host)
 					cfg.upload(host)
-				} else if freshSet[i] {
+				} else {
 					fmt.Printf("  %s (%s): provisioned\n", topo.MachineName(i), host)
 				}
 			}(i, host)
 		}
 		wg.Wait()
 		for i := range hosts {
-			if freshSet[i] {
+			if targets[i] {
 				if deadHosts[hosts[i]] {
 					fmt.Printf("  %s (%s): unreachable, cannot rebuild\n", topo.MachineName(i), hosts[i])
 					continue
@@ -339,55 +307,34 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 		}
 	}
 
-	// Observe reality, then plan. A host the sweep already found dead is not
-	// re-probed (each attempt costs a 10s connect timeout); it observes as
-	// down + unreachable directly.
-	fmt.Println("observe...")
-	obs := make([]Observed, len(hosts))
+	// freshClean left every reachable target dead with an empty staking/active,
+	// so what remains is fixed: install the slot's permanent key, then start.
+	// Every swap lands before any start (you never write a key under a live
+	// process); swaps only ever install a slot's PERMANENT key - identities
+	// never migrate.
+	fmt.Println("[1/3] install keys...")
 	for i := range hosts {
-		if deadHosts[hosts[i]] {
-			obs[i] = Observed{Unreachable: true}
-		} else {
-			obs[i] = cfg.observe(i)
-		}
-		if obs[i].Unreachable {
-			fmt.Printf("  %s (%s): WARNING unreachable, recorded as down, no actions planned\n", topo.MachineName(i), hosts[i])
+		if !targets[i] || deadHosts[hosts[i]] {
 			continue
 		}
-		if forceUpload || freshSet[i] {
-			fmt.Printf("  %s: alive=%v key=%d\n", topo.MachineName(i), obs[i].Alive, obs[i].ActualKey)
-		}
-	}
-	actions := Plan(topo, intents, obs)
-
-	// Pass 1 - stop-swap (every stop+swap before any start). Swaps only ever
-	// install a slot's permanent key (first provision / healing).
-	fmt.Println("[1/3] stop-swap...")
-	for _, a := range actions {
-		if a.Stop {
-			fmt.Printf("  %s: stop\n", topo.MachineName(a.Machine-1))
-			cfg.stop(a.Machine - 1)
-		}
-		if a.SwapKey != 0 {
-			fmt.Printf("  %s: install permanent key %d\n", topo.MachineName(a.Machine-1), a.SwapKey)
-			cfg.swap(a.Machine-1, a.SwapKey)
-		}
+		fmt.Printf("  %s: install permanent key %d\n", topo.MachineName(i), topo.KeyOf(i))
+		cfg.swap(i, topo.KeyOf(i))
 	}
 
-	// Pass 2 - start.
 	fmt.Println("[2/3] start...")
-	for _, a := range actions {
-		if a.Start {
-			fmt.Printf("  %s: start\n", topo.MachineName(a.Machine-1))
-			cfg.start(a.Machine - 1)
+	for i := range hosts {
+		if !targets[i] || deadHosts[hosts[i]] {
+			continue
 		}
+		fmt.Printf("  %s: start\n", topo.MachineName(i))
+		cfg.start(i)
 	}
 
 	fmt.Println("\nProcesses reconciled. Check node state with:  ./fleet status")
 
 	var unreachable []int
-	for i := range obs {
-		if obs[i].Unreachable {
+	for i := range hosts {
+		if targets[i] && deadHosts[hosts[i]] {
 			unreachable = append(unreachable, i+1)
 		}
 	}
@@ -420,7 +367,7 @@ func reconcile(cfg *config, intents []MachineIntent, freshSet map[int]bool, forc
 // invocation; when every remaining machine has exhausted budget + rebuild, the
 // command exits non-zero naming them. Since `up` no longer wipes catching-up
 // or bootstrapping machines, exiting and re-running is always safe.
-func waitServing(cfg *config, intents []MachineIntent, ms []int) {
+func waitServing(cfg *config, ms []int) {
 	const poll = 5 * time.Second
 	type track struct {
 		state    nodeHealth // zero value healthDown: the just-(re)built state
@@ -439,7 +386,7 @@ func waitServing(cfg *config, intents []MachineIntent, ms []int) {
 	fmt.Printf("waiting for %d machine(s) to reach SERVING at fleet tip (rebuild after %s without progress while bootstrapping, %s otherwise)...\n",
 		len(ms), bootstrapStallBudget, defaultStallBudget)
 	for {
-		results := cfg.checkHealth(intents)
+		results := cfg.checkHealth()
 		fleetMax := fleetMaxBlock(results)
 		var stuck []string
 		for _, m := range ms {
@@ -511,7 +458,7 @@ func waitServing(cfg *config, intents []MachineIntent, ms []int) {
 }
 
 // destroy tears the fleet down: kill avalanchego + plugin children and remove
-// the whole deploy dir on every box, then drop the local process-state file.
+// the whole deploy dir on every box.
 // network.env is deliberately KEPT: it records the chain identity (subnet,
 // chain, manager, registered validators), which persists on Fuji and costs
 // AVAX to recreate. Deleting it is a manual decision, never a side effect.
@@ -524,9 +471,6 @@ func destroy(cfg *config) {
 		done[host] = true
 		fmt.Printf("== destroy %s (%s): kill all + rm %s ==\n", cfg.topo.MachineName(i), host, cfg.remoteDir)
 		cfg.ssh(host, "pkill -KILL -x avalanchego || true; pkill -KILL -f '"+pluginPat+"' || true; rm -rf "+cfg.remoteDir)
-	}
-	if err := os.Remove(cfg.stateFile); err != nil && !os.IsNotExist(err) {
-		fatalf("remove %s: %v", cfg.stateFile, err)
 	}
 	fmt.Println("\nFleet destroyed. network.env kept; redeploy with ./fleet fresh.")
 }
@@ -565,37 +509,20 @@ func inFlightLine(psOut string, selfPID int) string {
 	return "in flight: " + strings.Join(found, "; ")
 }
 
-// stateAgeLine is the status provenance line: how long ago the intents file
-// (fleet-state.json) was written. Past 24h it shouts and names the full
-// path, the tell for `watch`ing a stale kit copy (2026-07-11: a watch pane
-// ran an old snapshot dir with a 2-day-old state file, showing fossil
-// desired weights).
-func stateAgeLine(path string, age time.Duration) string {
-	age = age.Truncate(time.Second)
-	if age > 24*time.Hour {
-		return fmt.Sprintf("state: %s updated %s ago (STALE, is this the right directory?)", path, age)
-	}
-	return fmt.Sprintf("state: %s updated %s ago", filepath.Base(path), age)
-}
-
-// status runs ONLY the read-only report against the current intents - no
-// provisioning, stop/start, or weight changes.
+// status runs ONLY the read-only report of observed facts - no provisioning,
+// stop/start, or weight changes.
 func status(cfg *config) {
-	intents := mustLoadIntents(cfg)
 	fmt.Println("== benchmark-fleet status ==")
-	if fi, err := os.Stat(cfg.stateFile); err == nil {
-		fmt.Println(stateAgeLine(cfg.stateFile, time.Since(fi.ModTime())))
-	}
 	if out, err := exec.Command("ps", "-eo", "pid,etimes,args").Output(); err == nil {
 		if l := inFlightLine(string(out), os.Getpid()); l != "" {
 			fmt.Println(l)
 		}
 	}
-	results := cfg.checkHealth(intents)
+	results := cfg.checkHealth()
 	// One batch of P-chain reads (read-only; weights MOVE via bin/l1).
 	weights, weightsErr := fetchWeights(cfg)
 	if weightsErr != nil {
 		fmt.Printf("weights: %v (showing reachability only)\n", weightsErr)
 	}
-	reportHealth(cfg, intents, results, weights)
+	reportHealth(cfg, results, weights)
 }

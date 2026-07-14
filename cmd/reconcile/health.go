@@ -306,18 +306,15 @@ func parseConsensusHealth(body []byte, chainID string) (percentConnected float64
 	return chk.Message.Networking.PercentConnected, lp, chk.Message.Engine.Consensus.LastAcceptedHeight, true
 }
 
-// checkHealth probes every uncordoned machine's RPC once, in parallel, and returns
-// a point-in-time snapshot. Read-only and non-blocking: it never stops/swaps/starts
-// anything and never waits - run status.sh again (or `watch` it) to see changes.
-// Cordoned machines are skipped (they are meant to be down).
-func (c *config) checkHealth(intents []MachineIntent) []healthResult {
+// checkHealth probes every machine's RPC once, in parallel, and returns
+// a point-in-time snapshot of observed facts. Read-only and non-blocking: it
+// never stops/swaps/starts anything and never waits - run `./fleet status`
+// again (or `watch` it) to see changes.
+func (c *config) checkHealth() []healthResult {
 	client := &http.Client{Timeout: 4 * time.Second}
-	results := make([]healthResult, len(intents))
+	results := make([]healthResult, len(c.instances))
 	var wg sync.WaitGroup
-	for i, in := range intents {
-		if in.Cordoned {
-			continue
-		}
+	for i := range c.instances {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -334,7 +331,7 @@ func (c *config) checkHealth(intents []MachineIntent) []healthResult {
 // reportHealth prints each node grouped by datacenter with two columns - its
 // ACTUAL on-chain STAKE tier (validator/spare/dead/rpc, read from the
 // P-chain; weights MOVE via bin/l1) and its physical REACHABILITY
-// (SERVING/BOOTSTRAPPING/DOWN, or off when intentionally down) - then an
+// (SERVING/CATCHING UP/BOOTSTRAPPING/DOWN, all observed facts) - then an
 // honest summary and hints for the two non-obvious failure modes (lost
 // quorum, and the 75% rejoin latch that keeps a single brought-up validator
 // from recovering a stalled chain). "Validator" in the summary means a slot
@@ -342,7 +339,7 @@ func (c *config) checkHealth(intents []MachineIntent) []healthResult {
 // staking slot -> P-chain weight map (fetchWeights); nil means the P-chain
 // was unreadable, so the stake column degrades to "?" and the quorum math
 // (which needs the weights) is skipped.
-func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, actual map[int]uint64) {
+func reportHealth(cfg *config, results []healthResult, actual map[int]uint64) {
 	t := cfg.topo
 	var total uint64
 	for _, w := range actual {
@@ -350,17 +347,17 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, 
 	}
 
 	// The leading number is the machine's CLI handle: `fleet down 7` etc.
-	numW := len(strconv.Itoa(len(intents)))
+	numW := len(strconv.Itoa(len(results)))
 	nameW := len("node")
-	for i := range intents {
+	for i := range results {
 		if f := fmt.Sprintf("%s (%s)", t.MachineName(i), cfg.nodeIPs[i]); len(f) > nameW {
 			nameW = len(f)
 		}
 	}
 
-	stakes := make([]string, len(intents))
+	stakes := make([]string, len(results))
 	stakeW := len("stake")
-	for i := range intents {
+	for i := range results {
 		w, have := actual[i]
 		stakes[i] = stakeCell(w, have, t.IsStakingSlot(i))
 		if len(stakes[i]) > stakeW {
@@ -374,12 +371,12 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, 
 	}
 
 	servingValidators, activeSlots := 0, 0
-	bootstrappingValidator, downUncordoned := false, false
+	bootstrappingValidator, downNode := false, false
 
 	for _, site := range sites {
 		fmt.Printf("DC %s\n", strings.ToUpper(siteName(site)))
 		fmt.Printf("  %-*s  %-*s  %-*s  %s\n", numW, "#", nameW, "node", stakeW, "stake", "reachable")
-		for i, in := range intents {
+		for i := range results {
 			if t.Site(i) != site {
 				continue
 			}
@@ -392,24 +389,19 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, 
 				activeSlots++
 			}
 			var reach string
-			switch {
-			case in.Cordoned:
-				reach = "off (down by intent)"
-			case results[i].state == healthServing:
+			switch results[i].state {
+			case healthServing:
 				reach = fmt.Sprintf("SERVING block=%d", results[i].block)
-			case results[i].state == healthCatchingUp:
+			case healthCatchingUp:
 				reach = fmt.Sprintf("CATCHING UP (behind %d) block=%d",
 					fleetMaxBlock(results)-results[i].block, results[i].block)
-			case results[i].state == healthBootstrapping:
+			case healthBootstrapping:
 				reach = "BOOTSTRAPPING (catching up)"
 			default:
 				reach = "DOWN (not responding!)"
 			}
 			fmt.Printf("  %-*d  %-*s  %-*s  %s\n", numW, i+1, nameW, field, stakeW, stakes[i], reach)
 
-			if in.Cordoned {
-				continue
-			}
 			if active {
 				switch results[i].state {
 				case healthServing:
@@ -420,10 +412,10 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, 
 				case healthBootstrapping:
 					bootstrappingValidator = true
 				default:
-					downUncordoned = true
+					downNode = true
 				}
 			} else if results[i].state == healthDown {
-				downUncordoned = true
+				downNode = true
 			}
 		}
 	}
@@ -441,7 +433,7 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, 
 			fmt.Println("      startup latch. Bring up the remaining validator machine(s) so they recover together.")
 		}
 	}
-	if downUncordoned {
-		fmt.Println("NOTE: an uncordoned node is not responding - check its logs, or `up` it to rebuild.")
+	if downNode {
+		fmt.Println("NOTE: a node is not responding - check its logs, or `up` it to rebuild.")
 	}
 }

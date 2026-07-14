@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-// fujiTestConfig builds a two-site 3v/1s/2r config with a seeded intentions
-// file. Permanent key scheme: KeyOf(i) = 1+i, so site A slots wear keys 1..6 (RPCs
-// 5,6) and site B slots wear 7..12 (RPCs 11,12).
+// fujiTestConfig builds a two-site 3v/1s/2r config. Permanent key scheme:
+// KeyOf(i) = 1+i, so site A slots wear keys 1..6 (RPCs 5,6) and site B slots
+// wear 7..12 (RPCs 11,12).
 func fujiTestConfig(t *testing.T) *config {
 	t.Helper()
 	topo := Topology{TwoSite: true, NVal: 3, NSpare: 1, NRPC: 2}
@@ -22,10 +22,6 @@ func fujiTestConfig(t *testing.T) *config {
 	for _, k := range topo.AllKeys() {
 		nodeIDs[k] = "NodeID-key" + strconv.Itoa(k)
 	}
-	stateFile := filepath.Join(t.TempDir(), "intentions.json")
-	if err := saveIntents(stateFile, seedIntents(topo)); err != nil {
-		t.Fatalf("saveIntents: %v", err)
-	}
 	return &config{
 		topo:        topo,
 		nodeIPs:     pool,
@@ -36,7 +32,6 @@ func fujiTestConfig(t *testing.T) *config {
 		upstreamIPs: "18.192.93.241:9651",
 		upstreamIDs: "NodeID-2m38qc95mhHXtrhjyGbe7r2NhniqHHJRB",
 		nodeIDByKey: nodeIDs,
-		stateFile:   stateFile,
 	}
 }
 

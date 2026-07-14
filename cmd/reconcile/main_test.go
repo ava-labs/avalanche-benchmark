@@ -1,9 +1,7 @@
 package main
 
 import (
-	"strings"
 	"testing"
-	"time"
 )
 
 // TestInFlightLine pins the status "in flight" detector: only OTHER
@@ -25,17 +23,5 @@ func TestInFlightLine(t *testing.T) {
 	}
 	if got := inFlightLine("  PID ELAPSED COMMAND\n  402  1 ./bin/benchmark-fleet status\n", 402); got != "" {
 		t.Errorf("self/read-only should yield no line, got %q", got)
-	}
-}
-
-// TestStateAgeLine pins the provenance line: fresh shows basename + age,
-// >24h shouts STALE with the full path.
-func TestStateAgeLine(t *testing.T) {
-	if got := stateAgeLine("/home/u/kit/fleet-state.json", 27*time.Second); got != "state: fleet-state.json updated 27s ago" {
-		t.Errorf("fresh = %q", got)
-	}
-	got := stateAgeLine("/home/u/kit/fleet-state.json", 49*time.Hour)
-	if !strings.Contains(got, "STALE") || !strings.Contains(got, "/home/u/kit/fleet-state.json") {
-		t.Errorf("stale = %q, want STALE with full path", got)
 	}
 }

@@ -184,7 +184,7 @@ validators serving: 4/4
 The table shows one row per machine (its number is the CLI handle for
 `down`/`up`), grouped by DC, with its ON-CHAIN stake tier (`validator`,
 `spare`, `dead`, `rpc`) and reachability (`SERVING block=N`,
-`BOOTSTRAPPING`, `DOWN`, or `off (down by intent)`). A fresh chain sits at
+`BOOTSTRAPPING`, or `DOWN`). A fresh chain sits at
 `block=0` until load arrives; that is healthy, Avalanche produces blocks on
 demand. `watch -n5 ./fleet status` refreshes continuously.
 
@@ -243,7 +243,7 @@ What to watch during scenario 03:
 - **Failover Overview**: site A serving states drop, stake tier timelines
   seesaw, TPS dips and recovers at site B's cadence (~10 blk/s; TPS is
   unaffected, blocks are just bigger).
-- **`./fleet status`**: machines 1-6 `off (down by intent)`, `b1`-`b3` at
+- **`./fleet status`**: machines 1-6 `DOWN`, `b1`-`b3` at
   tier `validator`, summary `validators serving: 3/3`.
 - **bombard** (terminal 1): sends fail over to `rpc_b1`/`rpc_b2`, in-flight
   txs resubmit, throughput recovers.

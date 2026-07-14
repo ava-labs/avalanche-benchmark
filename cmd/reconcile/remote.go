@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -32,7 +31,6 @@ type config struct {
 	upstreamIPs string         // public Fuji peer(s) the RPC tier's P-chain follows (ip:port csv)
 	upstreamIDs string         // their NodeIDs (TLS-pinned; a hijacked IP cannot impersonate)
 	nodeIDByKey map[int]string // committed key index -> NodeID, from staking/node-ids.env
-	stateFile   string
 }
 
 func mustEnv(key string) string {
@@ -71,7 +69,6 @@ func loadEnvFiles() {
 	// default; netcfg resolves NETWORK from the network.env loaded above.
 	setDefault("FUJI_UPSTREAM_IPS", netcfg.Get().UpstreamIPs)
 	setDefault("FUJI_UPSTREAM_IDS", netcfg.Get().UpstreamIDs)
-	setDefault("FAILOVER_STATE_FILE", filepath.Join(repo, "fleet-state.json"))
 }
 
 func setDefault(key, val string) {
@@ -119,7 +116,6 @@ func loadConfig() *config {
 		subnetEVMID: mustEnv("SUBNET_EVM_ID"),
 		upstreamIPs: mustEnv("FUJI_UPSTREAM_IPS"),
 		upstreamIDs: mustEnv("FUJI_UPSTREAM_IDS"),
-		stateFile:   mustEnv("FAILOVER_STATE_FILE"),
 	}
 	c.nodeIDByKey = loadNodeIDs(c.repoDir + "/staking/node-ids.env")
 	return c
@@ -260,35 +256,6 @@ func (c *config) rsyncUpload(localPath, host, remotePath string) {
 	}
 }
 
-// observe reads liveness (pgrep) and the active key marker (cat) for pool slot i in
-// one round trip. On a normal (one-process) box liveness is the exact-name `pgrep -x
-// avalanchego` it always was; on a co-located box it matches THIS instance by its
-// unique HTTP port so a housemate process isn't mistaken for this one.
-// An ssh-unreachable host is NOT fatal: it observes as dead + Unreachable, so
-// one hard-down box never blocks reconciling the rest of the fleet.
-func (c *config) observe(i int) Observed {
-	in := c.instances[i]
-	live := "pgrep -x avalanchego >/dev/null"
-	if in.shared {
-		live = fmt.Sprintf("pgrep -f -- '%s' >/dev/null", in.procPat)
-	}
-	out, err := c.sshTry(in.host, fmt.Sprintf(
-		"%s && echo A || echo D; cat %s/%s/key_index 2>/dev/null || echo 0",
-		live, c.remoteDir, in.activeDir))
-	if err != nil {
-		return Observed{Unreachable: true}
-	}
-	lines := strings.Split(out, "\n")
-	ob := Observed{}
-	if len(lines) > 0 {
-		ob.Alive = strings.TrimSpace(lines[0]) == "A"
-	}
-	if len(lines) > 1 {
-		ob.ActualKey, _ = strconv.Atoi(strings.TrimSpace(lines[1]))
-	}
-	return ob
-}
-
 // pluginPat matches the subnet-evm plugin processes by their on-disk path. The
 // "[p]lugins" bracket makes the pattern not match the pkill/pgrep command's own
 // shell (whose argv literally contains "[p]lugins", which the regex "plugins"
@@ -335,52 +302,6 @@ func (c *config) killCmds(in instance) (kill, alive string) {
 		in.procPat)
 	alive = fmt.Sprintf("pgrep -f -- '%s' >/dev/null && echo A || echo D", in.procPat)
 	return kill, alive
-}
-
-// stop ends the node for a PLANNED operation (key swap, `down`): gracefully, so its
-// EVM state snapshot is flushed cleanly. See gracefulStop.
-func (c *config) stop(i int) {
-	c.gracefulStop(i)
-}
-
-// gracefulStopPolls bounds how long gracefulStop waits for a clean SIGTERM exit before
-// falling back to SIGKILL. avalanchego flushes pebbledb + its EVM state snapshot on
-// SIGTERM; under heavy load that can take a while, so the window is generous. The
-// fallback guarantees the stop still completes.
-const gracefulStopPolls = 120 // * 500ms = 60s
-
-// gracefulStop stops the node CLEANLY: SIGTERM so avalanchego flushes its EVM state
-// snapshot and reaps its own plugin child, then waits for a clean exit; falls back to
-// the hard SIGKILL reap (killNode) only if it doesn't exit within the grace window.
-// Used for every PLANNED stop (key swaps via stop(), snapshot sources, `down`). A
-// SIGKILL there leaves a "missing or corrupted snapshot" that the node regenerates and
-// (under load, after a reorg) can wedge on restart (observed: non-validators AND a
-// validator frozen post-failover/restore, recoverable only by a full `clean`). Graceful
-// shutdown also reaps the plugin child, avoiding the SIGKILL orphan/ETXTBSY problem.
-// site-failover keeps the hard killNode on purpose: it simulates a real outage.
-func (c *config) gracefulStop(i int) {
-	in := c.instances[i]
-	c.ssh(in.host, c.termCmd(in)) // SIGTERM: flush state + reap plugin
-	_, alive := c.killCmds(in)
-	for k := 0; k < gracefulStopPolls; k++ {
-		if c.ssh(in.host, alive) == "D" {
-			return
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	fmt.Printf("  %s: graceful stop didn't exit in %ds: SIGKILL fallback\n", c.topo.MachineName(i), gracefulStopPolls/2)
-	c.killNode(i)
-}
-
-// termCmd returns the SIGTERM command for an instance (host-wide for a single-process
-// box, PID-scoped by http-port for a co-located one). SIGTERM triggers avalanchego's
-// graceful shutdown, which flushes state and reaps its own plugin child, so we signal
-// only the parent.
-func (c *config) termCmd(in instance) string {
-	if !in.shared {
-		return "pkill -TERM -x avalanchego || true"
-	}
-	return fmt.Sprintf("for pid in $(pgrep -f -- '%s'); do kill -TERM \"$pid\" 2>/dev/null || true; done", in.procPat)
 }
 
 // swap wipes staking/active and copies the committed key set for the given index

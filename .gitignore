@@ -67,5 +67,3 @@ nohup.out
 .DS_Store
 .linux-build/
 
-# benchmark-fleet operator state (per-deploy, never committed)
-fleet-state.json
