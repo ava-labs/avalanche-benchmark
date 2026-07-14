@@ -286,7 +286,7 @@ chain for free.
 
 ## Reading the results as DR metrics
 
-- **RTO**: from issuing the scenario to `validators serving: 3/3` on site B
+- **RTO**: from issuing the scenario to `validators serving: 4/4` on site B
   with height advancing. Watch it on Failover Overview.
 - **RPO**: zero by construction. Site B was at tip when the weight arrived
   and the chain is one branch; nothing finalized is lost. The measurable

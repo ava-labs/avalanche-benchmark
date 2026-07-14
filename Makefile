@@ -29,7 +29,10 @@ GRAFANA_BASE_URL=https://dl.grafana.com/oss/release
 all: deps build
 	@echo "All ready."
 
-# Build Go tools
+# Build Go tools. -trimpath everywhere (and GOFLAGS=-trimpath for the
+# avalanchego build below): without it every binary embeds the builder's
+# absolute source paths (/home/<user>/...), and these binaries ship to
+# external clients.
 build: bin/l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet bin/bsclear
 
 bin/l1:
