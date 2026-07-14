@@ -372,6 +372,14 @@ func (c *config) startScript(i int) string {
 	in := c.instances[i]
 	beaconIPs, beaconIDs := c.pchainBeacons(i)
 	seedIPs, seedIDs := c.siblingSeeds(i)
+	// Validators load their committed BLS key; rpc identities never have one,
+	// not even on disk (avalanchego FATALs on a missing signer-key file, it
+	// does NOT auto-generate), so they run an in-memory ephemeral signer that
+	// is never registered anywhere.
+	signerFlag := "--staking-signer-key-file=" + in.activeDir + "/signer.key"
+	if c.nodes[i].Role == topo.RoleRPC {
+		signerFlag = "--staking-ephemeral-signer-enabled=true"
+	}
 	return fmt.Sprintf(`#!/bin/bash
 set -e
 cd %[1]s
@@ -419,7 +427,7 @@ setsid ./bin/avalanchego \
     --network-allow-private-ips=true \
     --staking-tls-cert-file=%[10]s/staker.crt \
     --staking-tls-key-file=%[10]s/staker.key \
-    --staking-signer-key-file=%[10]s/signer.key \
+    %[14]s \
     --plugin-dir=$(pwd)/plugins \
     --config-file=node-config.json \
     --chain-config-dir=%[7]s/configs/chains \
@@ -432,7 +440,7 @@ setsid ./bin/avalanchego \
     >%[7]s/logs/avalanchego.out 2>&1 < /dev/null &
 `, c.remoteDir, c.chainID, c.subnetID, in.host, beaconIPs, beaconIDs,
 		in.dataDir, in.httpPort, in.stakingPort, in.activeDir,
-		seedIPs, seedIDs, netcfg.Get().Name)
+		seedIPs, seedIDs, netcfg.Get().Name, signerFlag)
 }
 
 func (c *config) start(i int) {

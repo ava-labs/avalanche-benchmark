@@ -100,6 +100,7 @@ func TestStartScriptFlags(t *testing.T) {
 		"--data-dir=data/a1",
 		"--db-dir=data/a1/db",
 		"--staking-tls-cert-file=data/a1/staking/active/staker.crt",
+		"--staking-signer-key-file=data/a1/staking/active/signer.key",
 		"--bootstrap-ips=10.0.0.5:9651,10.0.0.6:9651,10.1.0.5:9651,10.1.0.6:9651",
 		"--state-sync-ips=",
 		"--track-subnets=\"SUBNET\"",
@@ -120,6 +121,11 @@ func TestStartScriptFlags(t *testing.T) {
 	}
 	if !strings.Contains(script, "--data-dir=data/rpc_a1") {
 		t.Errorf("rpc start script must use its own data root")
+	}
+	// rpc identities have no BLS key anywhere: ephemeral in-memory signer.
+	if !strings.Contains(script, "--staking-ephemeral-signer-enabled=true") ||
+		strings.Contains(script, "--staking-signer-key-file") {
+		t.Errorf("rpc start script must use the ephemeral signer, never a signer-key file")
 	}
 }
 
