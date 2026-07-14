@@ -6,6 +6,10 @@
 
 .DEFAULT_GOAL := all
 
+# Client-shipped binaries must not embed this machine's source paths.
+# Exported so the avalanchego/subnet-evm build scripts inherit it too.
+export GOFLAGS := -trimpath
+
 # Release version for the RPM (RPM versions cannot contain '-'; use a dotted date).
 RELEASE_VERSION ?= $(shell date +%Y.%m.%d)
 
@@ -30,30 +34,30 @@ build: bin/l1 bin/bombard bin/benchmark-fleet bin/genstaking bin/fuji-wallet bin
 
 bin/l1:
 	@mkdir -p bin
-	go build -o bin/l1 ./cmd/l1
+	go build -trimpath -o bin/l1 ./cmd/l1
 
 bin/bombard:
 	@mkdir -p bin
-	go build -o bin/bombard ./cmd/bombard
+	go build -trimpath -o bin/bombard ./cmd/bombard
 
 bin/benchmark-fleet:
 	@mkdir -p bin
-	go build -o bin/benchmark-fleet ./cmd/reconcile
+	go build -trimpath -o bin/benchmark-fleet ./cmd/reconcile
 
 bin/genstaking:
 	@mkdir -p bin
-	go build -o bin/genstaking ./cmd/genstaking
+	go build -trimpath -o bin/genstaking ./cmd/genstaking
 
 bin/fuji-wallet:
 	@mkdir -p bin
-	go build -o bin/fuji-wallet ./cmd/fuji-wallet
+	go build -trimpath -o bin/fuji-wallet ./cmd/fuji-wallet
 
 # bsclear runs ON the nodes (linux-amd64, uploaded by benchmark-fleet next to
 # bin/avalanchego): drops the L1 chain's bootstrap-block backlog from db/
 # during a rebuild. See cmd/bsclear.
 bin/bsclear:
 	@mkdir -p bin
-	GOOS=linux GOARCH=amd64 go build -o bin/bsclear ./cmd/bsclear
+	GOOS=linux GOARCH=amd64 go build -trimpath -o bin/bsclear ./cmd/bsclear
 
 # Download/build dependencies
 deps: bin/avalanchego
@@ -80,8 +84,8 @@ bin/avalanchego bin/$(SUBNET_EVM_ID):
 	rm -rf $(AVALANCHEGO_BUILD_DIR)
 	git clone --depth 1 --branch $(AVALANCHEGO_REF) $(AVALANCHEGO_REPO) $(AVALANCHEGO_BUILD_DIR)
 	cd $(AVALANCHEGO_BUILD_DIR) && test "$$(git rev-parse HEAD)" = "$(AVALANCHEGO_COMMIT)"
-	cd $(AVALANCHEGO_BUILD_DIR) && GOTOOLCHAIN=$(GO_TOOLCHAIN) ./scripts/build.sh
-	cd $(AVALANCHEGO_BUILD_DIR) && GOTOOLCHAIN=$(GO_TOOLCHAIN) ./graft/subnet-evm/scripts/build.sh || true
+	cd $(AVALANCHEGO_BUILD_DIR) && GOTOOLCHAIN=$(GO_TOOLCHAIN) GOFLAGS=-trimpath ./scripts/build.sh
+	cd $(AVALANCHEGO_BUILD_DIR) && GOTOOLCHAIN=$(GO_TOOLCHAIN) GOFLAGS=-trimpath ./graft/subnet-evm/scripts/build.sh || true
 	cp $(AVALANCHEGO_BUILD_DIR)/build/avalanchego bin/avalanchego
 	cp $(AVALANCHEGO_BUILD_DIR)/build/subnet-evm bin/$(SUBNET_EVM_ID)
 
