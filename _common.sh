@@ -92,7 +92,7 @@ FUJI_WALLET_KEY="$STAKING_DIR/fuji-wallet.key"
 # NodeID is enforced by the TLS handshake, so a hijacked IP cannot impersonate
 # it). RUNBOOK: these hardcoded IPs rotate between releases: on every
 # AVALANCHEGO_COMMIT bump, re-check bootstrappers.json and update these
-# defaults (and internal/netcfg), the SG egress rule, and any .env override
+# defaults (and internal/netcfg), the RPC firewall egress rule, and any .env override
 # TOGETHER. A stale IP fails closed (P-chain feed freezes; the L1 keeps
 # mining). The FUJI_UPSTREAM_* names are kept on both networks for .env
 # compatibility.
