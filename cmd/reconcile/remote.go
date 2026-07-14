@@ -46,9 +46,9 @@ func mustEnv(key string) string {
 // same defaults the old _common.sh shell loader supplied, so `benchmark-fleet`
 // runs directly with no wrapper. Values already in the real environment win
 // (godotenv never overrides), so an ad-hoc `FOO=bar benchmark-fleet ...` still
-// overrides a file. The inventory (nodes.ini), SSH_USER and the chain IDs have
-// no defaults - they must come from the files (topo.Load / mustEnv report a
-// clear error if absent).
+// overrides a file. The inventory (nodes.ini), SSH_USER, SSH_KEY_PATH and the
+// chain IDs have no defaults - they must come from the files (topo.Load /
+// mustEnv report a clear error if absent).
 func loadEnvFiles() {
 	repo := os.Getenv("REPO_DIR")
 	if repo == "" {
@@ -62,7 +62,6 @@ func loadEnvFiles() {
 	_ = godotenv.Load(filepath.Join(repo, "network.env"))
 
 	setDefault("REMOTE_DIR", "~/avalanche-benchmark")
-	setDefault("SSH_KEY_PATH", "/home/ubuntu/.ssh/ilya-solohin-failover-bench-2026-05-04")
 	setDefault("SUBNET_EVM_ID", "srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy")
 	// Public peer the RPC tier follows (kept in sync with _common.sh; rotates
 	// on an AVALANCHEGO_COMMIT bump - see bootstrappers.json). Per-network

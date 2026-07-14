@@ -1,0 +1,47 @@
+# nodes.ini - the fleet inventory, single source of truth for node names,
+# hosts and roles. Copy this file to nodes.ini and replace every host= value
+# with your own machines' addresses:
+#
+#   cp nodes.ini.example nodes.ini
+#
+# One node per line:
+#
+#   <name> host=<ip> role=validator|rpc [dc=<tag>]
+#
+# - name is the PRIMARY KEY everywhere: fleet verbs (./fleet up a1), the
+#   staking key dir (staking/l1/<name>), the node-ids.env manifest and the
+#   node's data root on its box (data/<name>). If you received a secrets
+#   bundle, the names below MUST match the staking/l1/<name> dirs in it;
+#   only the host= values are yours to change.
+# - host: the address the control host ssh'es to AND the node's --public-ip
+#   that its peers dial. Validators are internal-only by design, so use their
+#   DC-internal addresses.
+# - role: validator (registered L1 validator; a "spare" is just a validator
+#   at low on-chain weight) or rpc (tracks the chain, serves ingress, never
+#   registered, never wears a BLS signer key).
+# - dc is a display-only tag: `fleet status` groups by it and fleet verbs
+#   accept dc=<tag> selectors. Nothing functional depends on it.
+# - Weights are NOT inventory: `l1 create` registers every validator at a
+#   constant initial weight of 1000; the real distribution (site A active,
+#   site B standby) is applied via `l1 apply` / scenarios/00_healthy.sh and
+#   the on-chain weight is the sole truth.
+# - Ports are positional per host: the k-th node on a host serves HTTP on
+#   9650+2k and staking p2p on 9651+2k (one node per host = 9650/9651).
+#   Reordering nodes that share a host shifts the later nodes' ports:
+#   redeploy that host's nodes after such an edit.
+
+# --- DC A ----------------------------------------------------------------
+a1     host=10.0.0.11  role=validator  dc=A
+a2     host=10.0.0.12  role=validator  dc=A
+a3     host=10.0.0.13  role=validator  dc=A
+a4     host=10.0.0.14  role=validator  dc=A
+rpc_a1 host=10.0.0.15  role=rpc        dc=A
+rpc_a2 host=10.0.0.16  role=rpc        dc=A
+
+# --- DC B ----------------------------------------------------------------
+b1     host=10.1.0.11  role=validator  dc=B
+b2     host=10.1.0.12  role=validator  dc=B
+b3     host=10.1.0.13  role=validator  dc=B
+b4     host=10.1.0.14  role=validator  dc=B
+rpc_b1 host=10.1.0.15  role=rpc        dc=B
+rpc_b2 host=10.1.0.16  role=rpc        dc=B

@@ -76,7 +76,7 @@ func Validators(nodes []Node) []Node {
 func Load(path string) ([]Node, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read fleet inventory: %w (nodes.ini lists every node: `<name> host=<ip> role=validator|rpc ...`; see the shipped nodes.ini)", err)
+		return nil, fmt.Errorf("read fleet inventory: %w (nodes.ini lists every node: `<name> host=<ip> role=validator|rpc ...`; cp nodes.ini.example nodes.ini and edit)", err)
 	}
 	nodes, err := Parse(string(data))
 	if err != nil {

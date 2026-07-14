@@ -8,7 +8,6 @@
 ENV_FILE="$SCRIPT_DIR/.env"
 NETWORK_ENV="$SCRIPT_DIR/network.env"
 REMOTE_DIR="~/avalanche-benchmark"
-SSH_KEY_PATH_DEFAULT="/home/ubuntu/.ssh/ilya-solohin-failover-bench-2026-05-04"
 
 # Load .env
 if [ ! -f "$ENV_FILE" ]; then
@@ -27,7 +26,7 @@ source "$ENV_FILE"
 # from `./fleet endpoints` (name, dc, role, host, port).
 if [ ! -f "$SCRIPT_DIR/nodes.ini" ]; then
     echo "ERROR: nodes.ini not found (the fleet inventory)."
-    echo "       Create it in the repo root; see the shipped nodes.ini for the format."
+    echo "       cp nodes.ini.example nodes.ini and set host= to your machines."
     exit 1
 fi
 
@@ -47,7 +46,10 @@ export AVALANCHE_NETWORK
 # for a localhost run (REMOTE_DIR=repo would scp binaries onto themselves).
 export REMOTE_DIR
 
-SSH_KEY_PATH="${SSH_KEY_PATH:-$SSH_KEY_PATH_DEFAULT}"
+if [ -z "$SSH_KEY_PATH" ]; then
+    echo "ERROR: SSH_KEY_PATH not set in .env"
+    exit 1
+fi
 SSH_OPTS=(
     -i "$SSH_KEY_PATH"
     -o IdentitiesOnly=yes

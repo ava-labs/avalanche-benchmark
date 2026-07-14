@@ -135,7 +135,7 @@ pack: clean-tools deps build monitoring-deps bin/VERSIONS
 		subnet-config.json \
 		genesis.json \
 		.env.example \
-		nodes.ini \
+		nodes.ini.example \
 		README.md \
 		docs/
 
@@ -170,7 +170,7 @@ release: clean-tools deps build monitoring-deps bin/VERSIONS
 		subnet-config.json \
 		genesis.json \
 		.env.example \
-		nodes.ini \
+		nodes.ini.example \
 		README.md \
 		docs/
 
