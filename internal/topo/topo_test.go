@@ -8,10 +8,10 @@ import (
 func TestParseBasics(t *testing.T) {
 	nodes, err := Parse(`
 # the fleet
-a1     host=54.183.72.215   role=validator  dc=A
-rpc_a1 host=18.144.224.191  role=rpc        dc=A  # trailing comment
-b1     host=44.251.223.141  role=validator
-x9     host=44.251.223.141  role=validator
+a1     host=198.51.100.11   role=validator  dc=A
+rpc_a1 host=198.51.100.12  role=rpc        dc=A  # trailing comment
+b1     host=198.51.100.13  role=validator
+x9     host=198.51.100.13  role=validator
 `)
 	if err != nil {
 		t.Fatal(err)
@@ -20,7 +20,7 @@ x9     host=44.251.223.141  role=validator
 		t.Fatalf("got %d nodes, want 4", len(nodes))
 	}
 	a1 := nodes[0]
-	if a1.Name != "a1" || a1.Host != "54.183.72.215" || a1.Role != RoleValidator ||
+	if a1.Name != "a1" || a1.Host != "198.51.100.11" || a1.Role != RoleValidator ||
 		a1.DC != "A" || !a1.IsValidator() {
 		t.Errorf("a1 = %+v", a1)
 	}
