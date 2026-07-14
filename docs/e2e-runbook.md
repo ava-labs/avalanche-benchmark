@@ -87,8 +87,10 @@ One tab-separated line per node: name, dc, role, host, HTTP port.
 
 ## Step 1: secrets and funding (one time)
 
-> Received a secrets bundle (`staking/`, `network.env`, wallet key)? Untar it
-> over the kit root and skip to step 3. Your chain already exists on Fuji.
+> Rebuilding a control host from a `setup/03_backup_secrets.sh` backup
+> (`staking/` + `network.env`)? Untar it over the kit root and skip to step 3;
+> your chain already exists. A first-time run starts here with just the single
+> wallet key at `staking/fuji-wallet.key` (or let `00` generate one).
 
 ```bash
 ./setup/00_gen_secrets.sh

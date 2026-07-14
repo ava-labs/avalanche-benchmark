@@ -85,57 +85,67 @@ cp .env.example .env             # then set SSH_USER + SSH_KEY_PATH (and API_TOK
 cp nodes.ini.example nodes.ini   # then set every host= to your machines' IPs
 ```
 
-## Quick start: operate an existing chain
+## Quick start: from a single key
 
-You received two artifacts: the release zip (`avalanche-l1-kit.zip`, the
-generic kit, no secrets) and the secrets bundle (a tar.gz produced by
-`setup/03_backup_secrets.sh`, containing `staking/` and `network.env`, the
-chain's identity and keys). The chain already exists on the P-chain; nothing
-below re-creates or re-pays for it.
+You need two things: the release zip (`avalanche-l1-kit.zip`) and ONE secret,
+a funded Avalanche wallet key. That key is the only secret in the entire
+workflow. Everything else, every node's TLS staking key and BLS signer key,
+the chain identity in `network.env`, is GENERATED on first run. Nothing is
+pre-created off-machine.
 
 1. Unzip the kit into an empty directory.
-2. Untar the secrets bundle over the kit root:
-   `tar -xzf secrets-*.tar.gz -C <kit root>`. This restores `staking/` and
-   `network.env` (which records the network, Fuji or mainnet, and the
-   subnet/chain/manager IDs).
-3. `cp .env.example .env` and set `SSH_USER` / `SSH_KEY_PATH` (and
+2. `cp .env.example .env` and set `SSH_USER` / `SSH_KEY_PATH` (and
    `API_TOKEN` if you have one).
-4. `cp nodes.ini.example nodes.ini` and set every `host=` to your boxes'
-   IPs. Keep the node NAMES exactly as they are: they must match the
-   `staking/l1/<name>` key dirs from the secrets bundle.
-5. `./fleet status` now reads the fleet. If the nodes are already running,
-   you are done.
-6. To (re)start stopped nodes: `./fleet up <names...>`. To provision a brand
-   new set of boxes, or to restart the whole L1 from block 0:
-   `./run/01_deploy.sh`.
-7. `./run/02_monitoring.sh` brings up Prometheus + Grafana on the control
+3. `cp nodes.ini.example nodes.ini` and set every `host=` to your boxes'
+   IPs. The node NAMES can stay as they are; only the hosts are yours.
+4. Drop your wallet key in place, the one secret:
+
+   ```bash
+   mkdir -p staking
+   cp /path/to/your-wallet.key staking/fuji-wallet.key   # raw hex secp256k1 key, one line
+   ```
+
+   No key of your own? Skip this: step 5's `00` generates a fresh wallet for
+   you to fund at the faucet.
+5. Generate identities, fund, create the L1, deploy:
+
+   ```bash
+   ./setup/00_gen_secrets.sh    # one staking identity per nodes.ini node (BLS keys for validators only); keeps your wallet key, or generates one
+   ./setup/01_fund_wallet.sh    # prints the P-chain address, polls until you fund it (Fuji faucet, or your own AVAX with --mainnet)
+   ./setup/02_create_chain.sh   # subnet + chain + ConvertSubnetToL1Tx; writes network.env. SPENDS AVAX. Once per chain. --mainnet for mainnet.
+   ./run/01_deploy.sh           # wipe + start the whole fleet from genesis (no AVAX spent)
+   ```
+
+6. `./run/02_monitoring.sh` brings up Prometheus + Grafana on the control
    host.
-8. Start load (`./run/03_bombard.sh`, see Load below), reset to the healthy
+7. Start load (`./run/03_bombard.sh`, see Load below), reset to the healthy
    baseline (`./scenarios/00_healthy.sh`), then run the drills
    (`scenarios/01..07`) while watching `./fleet status` and Grafana.
+
+`02` persists the chain identity (including `NETWORK=fuji|mainnet`) to
+`network.env`; every later command reads it. Re-running `02` never creates a
+second chain: it resumes/verifies the recorded one. `setup/03_backup_secrets.sh`
+bundles the generated `staking/` + `network.env` into a tar.gz: keep it
+off-machine so a control-host rebuild does not lose control of the chain (the
+subnet/chain cost AVAX to recreate). To rebuild a control host, unpack the
+kit, untar that backup over the kit root, and resume at `./fleet status` or
+`./run/01_deploy.sh`, no re-creation, no re-spend.
 
 First boot of freshly provisioned boxes syncs the anchor P-chain from
 scratch (RPC tier first, then validators through them; minutes on Fuji,
 hours on mainnet). That cost is paid once per box: every later rebuild,
 redeploy or drill preserves the synced P-chain db.
 
-## Creating a new chain (one-time, vendor side)
+### The single key: what it must do
 
-Skip this entirely if you received a secrets bundle. Chain creation lives in
-`setup/` (shipped in `remote-benchmark.tar.gz` and the repo, not in the
-operator zip). Run in order, after `.env` and `nodes.ini` are configured:
-
-```bash
-./setup/00_gen_secrets.sh    # one staking identity per nodes.ini node (BLS keys for validators only) + the fund/fee wallet
-./setup/01_fund_wallet.sh    # prints the P-chain address, polls until you fund it (Fuji faucet, or your own AVAX with --mainnet)
-./setup/02_create_chain.sh   # subnet + chain + ConvertSubnetToL1Tx. SPENDS AVAX. Once per chain. --mainnet for mainnet.
-./setup/03_backup_secrets.sh # bundle staking/ + network.env into a tar.gz, store it off-machine
-```
-
-`02` persists the chain identity (including `NETWORK=fuji|mainnet`) to
-`network.env`; every later command reads it. Re-running `02` never creates a
-second chain: it resumes/verifies the recorded one. The backup tarball from
-`03` is also the secrets bundle you hand to an operator.
+One secp256k1 key, delivered as raw hex at `staking/fuji-wallet.key`. It must
+hold AVAX on the anchor network's **P-chain** (Fuji via the faucet, or real
+AVAX on mainnet); `01` prints the exact amount (0.1 AVAX per registered
+validator continuous-fee deposit on Fuji, plus fees) and polls until it
+clears. Everything pays from the P-chain: chain creation, the per-validator
+deposits, and every weight tx. There is no separate C-chain or gas account to
+fund, the L1's own genesis prefunds this same key, so the load generator
+(`run/03_bombard.sh`) drives the benchmark from it too.
 
 The chain is disposable by design: each validator's continuous-fee deposit
 (0.1 AVAX on Fuji, ~5-6 days; 0.15 AVAX on mainnet, ~3 days at the 512
@@ -292,7 +302,7 @@ All prebuilt in `bin/`, all run from the kit root:
 - `bombard` (via `run/03_bombard.sh`): the load generator.
 - `fuji-wallet`: `gen` / `fund` / `topup [days]` for the fund/fee wallet.
 - `genstaking`: generates missing staking identities from `nodes.ini`
-  (invoked by `setup/00_gen_secrets.sh`; not in the operator zip).
+  (invoked by `setup/00_gen_secrets.sh`).
 - `bsclear`: drops a node's L1 bootstrap backlog from its db; runs on the
   boxes, invoked automatically by fleet rebuilds.
 
@@ -329,8 +339,11 @@ All prebuilt in `bin/`, all run from the kit root:
 Never commit, never put in a kit archive: `staking/` (per-node TLS
 identities, validator BLS keys, `fuji-wallet.key`), `network.env`, `.env`.
 A leaked staking key means validator impersonation; losing `staking/` +
-`network.env` means losing control of the chain. The only sanctioned copy is
-the `setup/03_backup_secrets.sh` tarball, stored off-machine.
+`network.env` means losing control of the chain. The one secret that comes
+from outside is the wallet key you drop at `staking/fuji-wallet.key`; every
+other file in `staking/` and `network.env` is generated on first run. The
+only sanctioned copy of the generated set is the `setup/03_backup_secrets.sh`
+tarball, stored off-machine (your own backup, not a handover bundle).
 `staking/node-ids.env` (the name-to-NodeID manifest) is the one non-secret
 in there.
 

@@ -1,9 +1,11 @@
 #!/bin/bash
 # Bundle everything secret and unrecoverable into one tar.gz: staking/ (all
-# validator identities + the Fuji wallet key) and network.env (the chain
-# identity). Losing these means losing control of the chain; neither is in git
-# or in any kit archive. The same tarball doubles as the per-customer secrets
-# bundle: restoring is untarring it over a fresh kit root.
+# validator identities + the wallet key) and network.env (the chain identity).
+# Losing these means losing control of the chain; neither is in git or in any
+# kit archive. This is YOUR OWN off-machine backup, not a handover bundle: the
+# only secret ever handed to anyone is the single wallet key, everything else
+# here is regenerated on a fresh run. To rebuild a control host, untar this
+# over a fresh kit root and resume (no re-creation, no re-spend).
 set -e
 trap 'echo "ERROR: 03_backup_secrets failed at line $LINENO. Command: $BASH_COMMAND"' ERR
 

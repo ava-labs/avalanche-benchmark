@@ -10,9 +10,9 @@
 #
 # - name is the PRIMARY KEY everywhere: fleet verbs (./fleet up a1), the
 #   staking key dir (staking/l1/<name>), the node-ids.env manifest and the
-#   node's data root on its box (data/<name>). If you received a secrets
-#   bundle, the names below MUST match the staking/l1/<name> dirs in it;
-#   only the host= values are yours to change.
+#   node's data root on its box (data/<name>). On a first run the names are
+#   yours to pick; only edit host=. When restoring a 03_backup_secrets.sh
+#   backup, the names MUST match the staking/l1/<name> dirs already in it.
 # - host: the address the control host ssh'es to AND the node's --public-ip
 #   that its peers dial. Validators are internal-only by design, so use their
 #   DC-internal addresses.
