@@ -1,10 +1,10 @@
 // Package netcfg resolves which Avalanche network the kit targets (fuji or
 // mainnet) into the per-network values every tool needs. Selection order:
-// NETWORK (persisted in network.env by create-l1: the network is a property
+// NETWORK (persisted in network.env by `l1 create`: the network is a property
 // of the created chain), then AVALANCHE_NETWORK (bootstrap-time: the setup
 // scripts' --mainnet flag exports it before network.env exists), then fuji.
 // Individual values keep their pre-existing env overrides (PCHAIN_API,
-// CCHAIN_RPC, AGGREGATOR_URL, GLACIER_URL, FUJI_UPSTREAM_IPS/IDS).
+// FUJI_UPSTREAM_IPS/IDS).
 package netcfg
 
 import (
@@ -21,30 +21,12 @@ type Config struct {
 	Name      string // "fuji" | "mainnet"; also the avalanchego --network-id value
 	NetworkID uint32 // warp / P-chain wallet network ID
 	HRP       string // bech32 HRP for P-chain address formatting
-	// API is the public API base (info + platform.* + C-chain). The kit's own
-	// follow-only RPC tier never serves platform.*, so P-chain txs go here.
-	// Only create-l1 and fuji-wallet use it: the recurring
-	// weight/status/reconcile runtime never touches the P-chain, it reads and
-	// writes the ValidatorManager on the C-chain exclusively.
-	// Env override: PCHAIN_API.
+	// API is the public API base (info + platform.*). The kit's own
+	// follow-only RPC tier never serves platform.*, so P-chain reads and txs
+	// (cmd/l1, fuji-wallet, the fleet's status/exporter reads) go here.
+	// Its backends are load-balanced and can serve stale reads; internal/vset
+	// retries around that. Env override: PCHAIN_API.
 	API string
-	// CChainRPC is the C-chain RPC the fleet-side tools use. Default is the
-	// official API: publicnode's load balancer has non-shared mempools that
-	// can strand sent txs (proven 2026-07-11). The official API rate-limits
-	// aggressive callers (429s) and its backends can serve stale reads, so
-	// override per deployment if needed.
-	// Env override: CCHAIN_RPC.
-	CChainRPC string
-	// CChainID is the network's C-chain blockchain ID (the ValidatorManager's
-	// chain and warp source chain), hardcoded because publicnode does not
-	// serve /ext/info. Mainnet value verified against api.avax.network
-	// info.getBlockchainID on 2026-07-09.
-	CChainID string
-	// AggregatorURL is the primary signature aggregator (our own fly.io
-	// deployment, aggregates fresh per request); GlacierURL is the cached
-	// public fallback. Env overrides: AGGREGATOR_URL / GLACIER_URL.
-	AggregatorURL string
-	GlacierURL    string
 	// UpstreamIPs/IDs: the ONE public bootstrap peer the RPC tier's P-chain
 	// follows (first entry of the pinned avalanchego commit's
 	// genesis/bootstrappers.json for this network; rotates on
@@ -64,10 +46,6 @@ var fuji = Config{
 	NetworkID:        constants.FujiID,
 	HRP:              constants.FujiHRP,
 	API:              "https://api.avax-test.network",
-	CChainRPC:        "https://api.avax-test.network/ext/bc/C/rpc",
-	CChainID:         "yH8D7ThNJkxmtkuv2jgBa4P1Rn3Qpr4pPr7QYNfcdoS6k6HWp",
-	AggregatorURL:    "https://avax-signature-aggregator-fuji.fly.dev/aggregate-signatures",
-	GlacierURL:       "https://glacier-api.avax.network/v1/signatureAggregator/fuji/aggregateSignatures",
 	UpstreamIPs:      "18.192.93.241:9651",
 	UpstreamIDs:      "NodeID-2m38qc95mhHXtrhjyGbe7r2NhniqHHJRB",
 	ValidatorBalance: 100 * units.MilliAvax,
@@ -78,10 +56,6 @@ var mainnet = Config{
 	NetworkID:        constants.MainnetID,
 	HRP:              constants.MainnetHRP,
 	API:              "https://api.avax.network",
-	CChainRPC:        "https://api.avax.network/ext/bc/C/rpc",
-	CChainID:         "2q9e4r6Mu3U68nU1fYjgbR6JvwrRx36CohpAX5UQxse55x1Q5",
-	AggregatorURL:    "https://avax-signature-aggregator-mainnet.fly.dev/aggregate-signatures",
-	GlacierURL:       "https://glacier-api.avax.network/v1/signatureAggregator/mainnet/aggregateSignatures",
 	UpstreamIPs:      "54.232.137.108:9651",
 	UpstreamIDs:      "NodeID-A6onFGyJjA37EZ7kYHANMR1PFRT8NmXrF",
 	ValidatorBalance: 150 * units.MilliAvax,
@@ -107,9 +81,6 @@ func Resolve(getenv func(string) string) (Config, error) {
 		dst *string
 	}{
 		{"PCHAIN_API", &c.API},
-		{"CCHAIN_RPC", &c.CChainRPC},
-		{"AGGREGATOR_URL", &c.AggregatorURL},
-		{"GLACIER_URL", &c.GlacierURL},
 		{"FUJI_UPSTREAM_IPS", &c.UpstreamIPs},
 		{"FUJI_UPSTREAM_IDS", &c.UpstreamIDs},
 	} {

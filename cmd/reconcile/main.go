@@ -1,21 +1,16 @@
-// Command benchmark-fleet drives the two-datacenter Avalanche benchmark L1.
+// Command benchmark-fleet drives the HARDWARE of the two-datacenter Avalanche
+// benchmark L1: provisioning, process up/down, health. It never touches
+// on-chain state; validator weights are the cmd/l1 binary's job
+// (`bin/l1 set-weight` / `bin/l1 apply`), and this tool only READS them back
+// for the status display and the Prometheus exporter.
 //
 // Every machine wears ONE permanent staking identity (internal/topo); the
 // validator+spare slots of both sites are all registered as L1 validators at
-// conversion and NEVER re-registered. Two independent axes operate the fleet:
-//
-//	up/down:   kill or (re)start avalanchego on a box. `down` hard-kills
-//	           (simulated failure, data left on disk); `up` rebuilds the box
-//	           from genesis (wipes L1 chainData, keeps the Fuji P-chain).
-//	           Neither touches on-chain weight: killing or reviving a box must
-//	           never depend on Fuji quorum.
-//	weight:    <tier> <m...> moves the listed registered identities'
-//	           consensus weight to ONE tier (validator|spare|dead) through
-//	           the ValidatorManager contract on Fuji's C-chain (weights.go).
-//	           One tier per invocation; in a failover the operator raises the
-//	           replacements first, then lowers the old ones as a second
-//	           command, so there is never a low-weight window. It never
-//	           starts or stops a process. `status` shows both axes per DC.
+// `l1 create` and NEVER re-registered. up/down kill or (re)start avalanchego
+// on a box: `down` hard-kills (simulated failure, data left on disk); `up`
+// rebuilds the box from genesis (wipes L1 chainData, keeps the anchor
+// P-chain). Neither touches on-chain weight: killing or reviving a box must
+// never depend on anchor-network quorum.
 //
 // The binary self-loads .env + network.env from the repo root, so it is the
 // whole interface: run it directly (or via ./fleet). No wrapper scripts.
@@ -30,8 +25,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/valmgr"
 )
 
 func fatalf(format string, args ...any) {
@@ -51,21 +44,16 @@ func usage() {
                     state re-sync)
   down <m...>       simulate hardware failure: hard-kill the given machines
                     (data left on disk; on-chain weight untouched)
-  weight <tier> <m...>
-                    set on-chain weight to ONE tier: validator|spare|dead (100000|1000|1)
-                    raise replacements first, then lower the old ones:
-                    e.g. weight validator 7 8 9   then   weight dead 1 2 3 4
-                    a RAISE is deferred while its node is behind the fleet tip or
-                    unreachable (fork-wedge prevention); lowers always go through
-  status            read-only report: stake tier and reachability per datacenter
+  status            read-only report: on-chain stake tier and reachability per
+                    datacenter (weights MOVE via bin/l1 set-weight / apply)
   fresh             WIPE every machine and redeploy the whole fleet from genesis
-                    (site A active; destroys all chain data)
+                    (destroys all chain data; on-chain weights untouched)
   destroy           kill every node and remove the deploy dir on every machine;
                     keeps network.env (the chain identity costs AVAX to recreate)
   endpoints         print one line per machine: name, site, role, host, HTTP port
                     (tab-separated; used by run/02_monitoring.sh / run/03_bombard.sh)
-  exporter          serve fleet_desired_weight / fleet_actual_weight Prometheus
-                    gauges on :9091 (started by run/02_monitoring.sh)`)
+  exporter          serve the fleet_actual_weight Prometheus gauge on :9091
+                    (started by run/02_monitoring.sh)`)
 	os.Exit(2)
 }
 
@@ -186,46 +174,6 @@ func main() {
 			}
 		}
 
-	case "weight":
-		cfg.warnColocation()
-		w, ms, err := parseWeightArgs(os.Args[2:], topo)
-		if err != nil {
-			fatalf("%v", err)
-		}
-		prev := mustLoadIntents(cfg)
-		intents := prev
-		for _, m := range ms {
-			// Any error (e.g. an RPC slot in the list) aborts BEFORE the save:
-			// the command changes nothing.
-			next, err := setWeight(intents, m, w, topo)
-			if err != nil {
-				fatalf("%v", err)
-			}
-			intents = next
-		}
-		raised, lowered := false, false
-		for _, m := range ms {
-			if intents[m-1].Weight == prev[m-1].Weight {
-				continue
-			}
-			fmt.Printf("  %s: %s -> %s\n",
-				topo.MachineName(m-1), weightRole(prev[m-1].Weight), weightRole(intents[m-1].Weight))
-			if intents[m-1].Weight > prev[m-1].Weight {
-				raised = true
-			} else {
-				lowered = true
-			}
-		}
-		if !raised && !lowered {
-			fmt.Println("weights already as desired")
-		} else {
-			mustSaveIntents(cfg, intents)
-			if lowered && !raised {
-				fmt.Println("hint: raise replacement validators first if you have not already")
-			}
-		}
-		reconcileWeights(cfg, intents)
-
 	case "exporter":
 		rejectArgs(os.Args[2:])
 		runExporter(cfg, ":9091")
@@ -239,14 +187,13 @@ func main() {
 		cfg.warnColocation()
 		intents := seedIntents(topo)
 		mustSaveIntents(cfg, intents)
-		fmt.Println("== benchmark-fleet fresh: full redeploy from genesis (site A active) ==")
-		printIntents(topo, intents)
+		fmt.Println("== benchmark-fleet fresh: full redeploy from genesis ==")
+		fmt.Println("(on-chain weights untouched; move them with bin/l1 apply / scenarios/00_healthy.sh)")
 		all := map[int]bool{}
 		for i := range intents {
 			all[i] = true
 		}
 		reconcile(cfg, intents, all, true)
-		reconcileWeights(cfg, intents)
 
 	default:
 		usage()
@@ -297,44 +244,6 @@ func parseMachines(args []string, topo Topology) []int {
 	return out
 }
 
-// parseWeightArgs parses `<tier> <m...>`: exactly ONE tier per invocation.
-// A second tier word in the args is an error; a failover is two commands,
-// raises first (`weight validator 7 8 9`, then `weight dead 1 2 3 4`).
-func parseWeightArgs(args []string, topo Topology) (uint64, []int, error) {
-	tiers := map[string]uint64{
-		"validator": valmgr.ValidatorWeight,
-		"spare":     valmgr.SpareWeight,
-		"dead":      valmgr.DeadWeight,
-	}
-	if len(args) == 0 {
-		return 0, nil, fmt.Errorf("usage: weight <validator|spare|dead> <m...>")
-	}
-	w, ok := tiers[args[0]]
-	if !ok {
-		return 0, nil, fmt.Errorf("expected a tier (validator|spare|dead), got %q", args[0])
-	}
-	var ms []int
-	seen := map[int]bool{}
-	for _, a := range args[1:] {
-		if _, isTier := tiers[a]; isTier {
-			return 0, nil, fmt.Errorf("one tier per command; run `weight %s ...` as a separate command (raise replacements before lowering)", a)
-		}
-		m, err := strconv.Atoi(a)
-		if err != nil || m < 1 || m > topo.Size() {
-			return 0, nil, fmt.Errorf("machine must be 1..%d, got %q", topo.Size(), a)
-		}
-		if seen[m] {
-			return 0, nil, fmt.Errorf("machine %d listed twice", m)
-		}
-		seen[m] = true
-		ms = append(ms, m)
-	}
-	if len(ms) == 0 {
-		return 0, nil, fmt.Errorf("usage: weight <validator|spare|dead> <m...>")
-	}
-	return w, ms, nil
-}
-
 // printEndpoints writes one tab-separated line per pool slot -
 // name, site (a|b), role (v1/v2/v3/spare/rpc), host, httpPort - so bash callers
 // (monitoring, benchmark) target each node's ACTUAL port instead of assuming 9652,
@@ -346,17 +255,6 @@ func printEndpoints(topo Topology, insts []instance) {
 			site = "b"
 		}
 		fmt.Printf("%s\t%s\t%s\t%s\t%d\n", topo.MachineName(i), site, topo.SlotRoleName(i), in.host, in.httpPort)
-	}
-}
-
-func printIntents(topo Topology, intents []MachineIntent) {
-	for i, in := range intents {
-		state := "up"
-		if in.Cordoned {
-			state = "down"
-		}
-		fmt.Printf("  %s: weight=%-6d %-9s %s\n",
-			topo.MachineName(i), in.Weight, weightRole(in.Weight), state)
 	}
 }
 
@@ -694,8 +592,10 @@ func status(cfg *config) {
 		}
 	}
 	results := cfg.checkHealth(intents)
-	// One batch of contract reads (C-chain only), shared by both reports.
-	vals, valsErr := fetchContractValidators(cfg, intents)
-	reportHealth(cfg, intents, results, contractWeights(vals))
-	weightsReport(cfg, intents, vals, valsErr, results)
+	// One batch of P-chain reads (read-only; weights MOVE via bin/l1).
+	weights, weightsErr := fetchWeights(cfg)
+	if weightsErr != nil {
+		fmt.Printf("weights: %v (showing reachability only)\n", weightsErr)
+	}
+	reportHealth(cfg, intents, results, weights)
 }

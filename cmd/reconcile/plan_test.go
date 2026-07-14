@@ -2,8 +2,6 @@ package main
 
 import (
 	"testing"
-
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/valmgr"
 )
 
 func twoSiteTopo() Topology {
@@ -16,28 +14,10 @@ func TestSeedIntents(t *testing.T) {
 	if len(intents) != 12 {
 		t.Fatalf("seed size = %d, want 12", len(intents))
 	}
-	total := totalWeight(intents)
-	active := 0
 	for i, in := range intents {
 		if in.Cordoned {
 			t.Errorf("slot %d seeded cordoned", i)
 		}
-		want := valmgr.SpareWeight
-		switch {
-		case topo.IsRPCSlot(i):
-			want = 0
-		case i < 4: // all site A staking slots (validators + spare)
-			want = valmgr.ValidatorWeight
-		}
-		if in.Weight != want {
-			t.Errorf("slot %d weight = %d, want %d", i, in.Weight, want)
-		}
-		if isActiveWeight(in.Weight, total) {
-			active++
-		}
-	}
-	if active != 4 {
-		t.Errorf("active validators in seed = %d, want 4", active)
 	}
 }
 
@@ -122,15 +102,15 @@ func TestPlanHealsWrongKey(t *testing.T) {
 }
 
 func TestIsActiveWeight(t *testing.T) {
-	total := uint64(3*valmgr.ValidatorWeight + 5*valmgr.SpareWeight)
-	if !isActiveWeight(valmgr.ValidatorWeight, total) {
-		t.Error("ValidatorWeight should be active")
+	total := uint64(3*validatorWeight + 5*spareWeight)
+	if !isActiveWeight(validatorWeight, total) {
+		t.Error("validatorWeight should be active")
 	}
-	if isActiveWeight(valmgr.SpareWeight, total) {
-		t.Error("SpareWeight should not be active")
+	if isActiveWeight(spareWeight, total) {
+		t.Error("spareWeight should not be active")
 	}
-	if isActiveWeight(valmgr.DeadWeight, total) {
-		t.Error("DeadWeight should not be active")
+	if isActiveWeight(deadWeight, total) {
+		t.Error("deadWeight should not be active")
 	}
 	if isActiveWeight(0, total) {
 		t.Error("0 should not be active")
@@ -139,10 +119,10 @@ func TestIsActiveWeight(t *testing.T) {
 
 func TestWeightRole(t *testing.T) {
 	cases := map[uint64]string{
-		0:                      "rpc",
-		valmgr.ValidatorWeight: "validator",
-		valmgr.SpareWeight:     "spare",
-		valmgr.DeadWeight:      "dead",
+		0:               "rpc",
+		validatorWeight: "validator",
+		spareWeight:     "spare",
+		deadWeight:      "dead",
 	}
 	for w, want := range cases {
 		if got := weightRole(w); got != want {
@@ -152,25 +132,23 @@ func TestWeightRole(t *testing.T) {
 }
 
 func TestStakeCell(t *testing.T) {
-	v, s, d := valmgr.ValidatorWeight, valmgr.SpareWeight, valmgr.DeadWeight
 	cases := []struct {
-		name            string
-		desired, actual uint64
-		haveActual      bool
-		want            string
+		name       string
+		actual     uint64
+		haveActual bool
+		staking    bool
+		want       string
 	}{
-		{"rpc slot", 0, 0, false, "rpc"},
-		{"converged validator", v, v, true, "validator"},
-		{"converged spare", s, s, true, "spare"},
-		{"demotion in flight shows actual first", s, v, true, "validator -> spare pending"},
-		{"promotion in flight", v, s, true, "spare -> validator pending"},
-		{"kill in flight", d, v, true, "validator -> dead pending"},
-		{"mid-ratchet raw weight", s, 40_600, true, "w=40600 -> spare pending"},
-		{"pchain unreadable falls back to desired", s, 0, false, "spare"},
+		{"rpc slot", 0, false, false, "rpc"},
+		{"validator tier", validatorWeight, true, true, "validator"},
+		{"spare tier", spareWeight, true, true, "spare"},
+		{"dead tier", deadWeight, true, true, "dead"},
+		{"mid-seesaw raw weight", 40_600, true, true, "w=40600"},
+		{"pchain unreadable", 0, false, true, "?"},
 	}
 	for _, c := range cases {
-		if got := stakeCell(c.desired, c.actual, c.haveActual); got != c.want {
-			t.Errorf("%s: stakeCell(%d, %d, %v) = %q, want %q", c.name, c.desired, c.actual, c.haveActual, got, c.want)
+		if got := stakeCell(c.actual, c.haveActual, c.staking); got != c.want {
+			t.Errorf("%s: stakeCell(%d, %v, %v) = %q, want %q", c.name, c.actual, c.haveActual, c.staking, got, c.want)
 		}
 	}
 }

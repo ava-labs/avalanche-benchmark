@@ -25,10 +25,6 @@ func TestFujiDefaultsUnchanged(t *testing.T) {
 			NetworkID:        constants.FujiID,
 			HRP:              constants.FujiHRP,
 			API:              "https://api.avax-test.network",
-			CChainRPC:        "https://api.avax-test.network/ext/bc/C/rpc",
-			CChainID:         "yH8D7ThNJkxmtkuv2jgBa4P1Rn3Qpr4pPr7QYNfcdoS6k6HWp",
-			AggregatorURL:    "https://avax-signature-aggregator-fuji.fly.dev/aggregate-signatures",
-			GlacierURL:       "https://glacier-api.avax.network/v1/signatureAggregator/fuji/aggregateSignatures",
 			UpstreamIPs:      "18.192.93.241:9651",
 			UpstreamIDs:      "NodeID-2m38qc95mhHXtrhjyGbe7r2NhniqHHJRB",
 			ValidatorBalance: 100 * units.MilliAvax,
@@ -47,10 +43,7 @@ func TestMainnet(t *testing.T) {
 	if c.Name != "mainnet" || c.NetworkID != constants.MainnetID || c.HRP != constants.MainnetHRP {
 		t.Errorf("identity fields: %+v", c)
 	}
-	if c.API != "https://api.avax.network" ||
-		c.CChainID != "2q9e4r6Mu3U68nU1fYjgbR6JvwrRx36CohpAX5UQxse55x1Q5" ||
-		c.AggregatorURL != "https://avax-signature-aggregator-mainnet.fly.dev/aggregate-signatures" ||
-		c.GlacierURL != "https://glacier-api.avax.network/v1/signatureAggregator/mainnet/aggregateSignatures" {
+	if c.API != "https://api.avax.network" {
 		t.Errorf("endpoint fields: %+v", c)
 	}
 	if c.ValidatorBalance != 150*units.MilliAvax {
@@ -74,18 +67,13 @@ func TestEnvOverrides(t *testing.T) {
 	c, err := Resolve(env(map[string]string{
 		"AVALANCHE_NETWORK": "mainnet",
 		"PCHAIN_API":        "http://api.example",
-		"CCHAIN_RPC":        "http://c.example",
-		"AGGREGATOR_URL":    "http://agg.example",
-		"GLACIER_URL":       "http://glacier.example",
 		"FUJI_UPSTREAM_IPS": "1.2.3.4:9651",
 		"FUJI_UPSTREAM_IDS": "NodeID-x",
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.API != "http://api.example" || c.CChainRPC != "http://c.example" ||
-		c.AggregatorURL != "http://agg.example" ||
-		c.GlacierURL != "http://glacier.example" || c.UpstreamIPs != "1.2.3.4:9651" ||
+	if c.API != "http://api.example" || c.UpstreamIPs != "1.2.3.4:9651" ||
 		c.UpstreamIDs != "NodeID-x" {
 		t.Errorf("overrides not applied: %+v", c)
 	}

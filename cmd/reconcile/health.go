@@ -332,23 +332,21 @@ func (c *config) checkHealth(intents []MachineIntent) []healthResult {
 }
 
 // reportHealth prints each node grouped by datacenter with two columns - its
-// ACTUAL on-chain STAKE tier (validator/spare/dead/rpc, with a "-> tier
-// pending" marker while a weight change is in flight) and its physical
-// REACHABILITY (SERVING/BOOTSTRAPPING/DOWN, or off when intentionally down) -
-// then an honest summary and hints for the two non-obvious failure modes
-// (lost quorum, and the 75% rejoin latch that keeps a single brought-up
-// validator from recovering a stalled chain). "Validator" in the summary
-// means a slot whose ACTUAL contract weight is the validator tier (>=1% of
-// total); the parenthetical "intended up" still counts by desired weight.
-// actual is the slot -> ValidatorManager contract weight map (C-chain reads
-// only, via fetchContractValidators); nil means the contract was unreadable
-// and everything falls back to desired weights.
+// ACTUAL on-chain STAKE tier (validator/spare/dead/rpc, read from the
+// P-chain; weights MOVE via bin/l1) and its physical REACHABILITY
+// (SERVING/BOOTSTRAPPING/DOWN, or off when intentionally down) - then an
+// honest summary and hints for the two non-obvious failure modes (lost
+// quorum, and the 75% rejoin latch that keeps a single brought-up validator
+// from recovering a stalled chain). "Validator" in the summary means a slot
+// whose on-chain weight is the validator tier (>=1% of total). actual is the
+// staking slot -> P-chain weight map (fetchWeights); nil means the P-chain
+// was unreadable, so the stake column degrades to "?" and the quorum math
+// (which needs the weights) is skipped.
 func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, actual map[int]uint64) {
 	t := cfg.topo
-	total := totalWeight(intents)
-	var actualTotal uint64
+	var total uint64
 	for _, w := range actual {
-		actualTotal += w
+		total += w
 	}
 
 	// The leading number is the machine's CLI handle: `fleet down 7` etc.
@@ -360,13 +358,11 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, 
 		}
 	}
 
-	// Stake column width follows its widest cell: a pending marker
-	// ("validator -> spare pending") is far wider than a bare tier name.
 	stakes := make([]string, len(intents))
 	stakeW := len("stake")
-	for i, in := range intents {
+	for i := range intents {
 		w, have := actual[i]
-		stakes[i] = stakeCell(in.Weight, w, have)
+		stakes[i] = stakeCell(w, have, t.IsStakingSlot(i))
 		if len(stakes[i]) > stakeW {
 			stakeW = len(stakes[i])
 		}
@@ -377,7 +373,7 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, 
 		sites = append(sites, siteB)
 	}
 
-	servingValidators, intendedValidators, activeSlots := 0, 0, 0
+	servingValidators, activeSlots := 0, 0
 	bootstrappingValidator, downUncordoned := false, false
 
 	for _, site := range sites {
@@ -389,11 +385,9 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, 
 			}
 			field := fmt.Sprintf("%s (%s)", t.MachineName(i), cfg.nodeIPs[i])
 			// "active" (a consensus-relevant validator) is judged by the
-			// ACTUAL contract weight when readable, desired otherwise.
-			active := isActiveWeight(in.Weight, total)
-			if w, have := actual[i]; have {
-				active = isActiveWeight(w, actualTotal)
-			}
+			// on-chain weight.
+			w, have := actual[i]
+			active := have && isActiveWeight(w, total)
 			if active {
 				activeSlots++
 			}
@@ -416,9 +410,6 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, 
 			if in.Cordoned {
 				continue
 			}
-			if isActiveWeight(in.Weight, total) {
-				intendedValidators++
-			}
 			if active {
 				switch results[i].state {
 				case healthServing:
@@ -438,18 +429,17 @@ func reportHealth(cfg *config, intents []MachineIntent, results []healthResult, 
 	}
 
 	if actual == nil {
-		fmt.Println("(ValidatorManager contract unreadable, showing desired weights)")
-	}
-	fmt.Printf("validators serving: %d/%d (intended up: %d/%d)\n",
-		servingValidators, activeSlots, intendedValidators, activeSlots)
-
-	if servingValidators < quorumNeeded(activeSlots) {
-		fmt.Printf("WARNING: fewer than %d validators serving - chain lacks quorum and is HALTED until restored.\n", quorumNeeded(activeSlots))
-	}
-	if bootstrappingValidator && intendedValidators < neededOnlineToRejoin(activeSlots) {
-		fmt.Printf("HINT: a rejoining validator needs >=%d of %d validators connected to clear the bootstrap\n",
-			neededOnlineToRejoin(activeSlots), activeSlots)
-		fmt.Println("      startup latch. Bring up the remaining validator machine(s) so they recover together.")
+		fmt.Println("(P-chain weights unreadable: stake tiers and quorum math unavailable this run)")
+	} else {
+		fmt.Printf("validators serving: %d/%d\n", servingValidators, activeSlots)
+		if servingValidators < quorumNeeded(activeSlots) {
+			fmt.Printf("WARNING: fewer than %d validators serving - chain lacks quorum and is HALTED until restored.\n", quorumNeeded(activeSlots))
+		}
+		if bootstrappingValidator && servingValidators < neededOnlineToRejoin(activeSlots) {
+			fmt.Printf("HINT: a rejoining validator needs >=%d of %d validators connected to clear the bootstrap\n",
+				neededOnlineToRejoin(activeSlots), activeSlots)
+			fmt.Println("      startup latch. Bring up the remaining validator machine(s) so they recover together.")
+		}
 	}
 	if downUncordoned {
 		fmt.Println("NOTE: an uncordoned node is not responding - check its logs, or `up` it to rebuild.")

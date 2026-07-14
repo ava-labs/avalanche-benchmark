@@ -4,14 +4,12 @@ import (
 	"fmt"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/topo"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/valmgr"
 )
 
 // The pool layout, per-slot permanent keys and staking-slot order live in
-// internal/topo (shared with create-l1 and fuji-wallet so the
-// slot -> key -> validationID mapping can never drift). Identities never move
-// between machines: failover is a weight change on the ValidatorManager
-// contract, not a key swap.
+// internal/topo (shared with cmd/l1 and fuji-wallet so the slot -> key
+// mapping can never drift). Identities never move between machines: failover
+// is a weight change on the P-chain (driven by cmd/l1), never a key swap.
 type Topology = topo.Topology
 
 const (
@@ -19,84 +17,63 @@ const (
 	siteB = topo.SiteB
 )
 
+// The three weight tiers a registered validator sits in, DISPLAY-ONLY here:
+// on-chain weights live on the P-chain and move only through cmd/l1
+// (set-weight / apply). Kept in sync with cmd/l1's create defaults.
+const (
+	validatorWeight uint64 = 100_000
+	spareWeight     uint64 = 1_000
+	deadWeight      uint64 = 1
+)
+
 // MachineIntent is the persisted desired state for one pool slot: whether the
-// operator has cordoned the machine (process down), and the desired consensus
-// weight of its permanent identity. Weight is 0 for RPC slots (never
-// registered) and >=1 for staking slots (a registered L1 validator's weight
-// can never be set to 0: weight 0 means removal, and we never remove).
+// operator has cordoned the machine (process down). Weight is NOT fleet state
+// anymore: the on-chain weights are authoritative on the P-chain and move
+// only through cmd/l1.
 type MachineIntent struct {
-	Cordoned bool   `json:"cordoned"`
-	Weight   uint64 `json:"weight"`
+	Cordoned bool `json:"cordoned"`
 }
 
-// seedIntents is the state a fresh deploy resets to, matching the conversion
-// weights create-l1 registered: every site A staking slot (validators and
-// spare) carries the consensus at ValidatorWeight; site B staking slots idle
-// at SpareWeight; RPC slots are unregistered. All uncordoned.
+// seedIntents is the state a fresh deploy resets to: everything uncordoned.
 func seedIntents(t Topology) []MachineIntent {
-	intents := make([]MachineIntent, t.Size())
-	for i := range intents {
-		intents[i] = MachineIntent{Cordoned: false, Weight: seedWeight(t, i)}
-	}
-	return intents
+	return make([]MachineIntent, t.Size())
 }
 
-func seedWeight(t Topology, i int) uint64 {
-	switch {
-	case !t.IsStakingSlot(i):
-		return 0
-	case t.Site(i) == siteA:
-		return valmgr.ValidatorWeight
-	default:
-		return valmgr.SpareWeight
-	}
-}
-
-// isActiveWeight reports whether a desired weight makes the slot an acting
-// validator: at least 1% of the fleet's total desired weight. The validator
-// tier (1000x a spare) clears it; spare and dead tiers do not.
+// isActiveWeight reports whether an on-chain weight makes the slot an acting
+// validator: at least 1% of the fleet's total weight. The validator tier
+// (100x a spare) clears it; spare and dead tiers do not.
 func isActiveWeight(w, total uint64) bool {
 	return total > 0 && w*100 >= total
 }
 
-// weightRole names the tier a desired weight sits in, for status display.
-// Unregistered RPC slots carry weight 0; a mid-ratchet on-chain value shows raw.
+// weightRole names the tier a weight sits in, for status display.
+// Unregistered RPC slots carry weight 0; a mid-seesaw value shows raw.
 func weightRole(w uint64) string {
 	switch w {
 	case 0:
 		return "rpc"
-	case valmgr.ValidatorWeight:
+	case validatorWeight:
 		return "validator"
-	case valmgr.SpareWeight:
+	case spareWeight:
 		return "spare"
-	case valmgr.DeadWeight:
+	case deadWeight:
 		return "dead"
 	default:
 		return fmt.Sprintf("w=%d", w)
 	}
 }
 
-// stakeCell renders the status stake column: the ACTUAL contract tier first,
-// with a pending marker when the desired tier differs (a weight change still
-// in flight). haveActual=false means the ValidatorManager contract was
-// unreadable: fall back to the desired tier. RPC slots (weight 0) are never
+// stakeCell renders the status stake column from the ACTUAL on-chain weight.
+// haveActual=false means the P-chain was unreadable. RPC slots are never
 // registered, so they have no on-chain weight to show.
-func stakeCell(desired, actual uint64, haveActual bool) string {
-	if desired == 0 {
+func stakeCell(actual uint64, haveActual, stakingSlot bool) string {
+	if !stakingSlot {
 		return "rpc"
 	}
-	if !haveActual || actual == desired {
-		return weightRole(desired)
+	if !haveActual {
+		return "?"
 	}
-	return weightRole(actual) + " -> " + weightRole(desired) + " pending"
-}
-
-func totalWeight(intents []MachineIntent) uint64 {
-	var sum uint64
-	for _, in := range intents {
-		sum += in.Weight
-	}
-	return sum
+	return weightRole(actual)
 }
 
 // Observed is reconcile's fresh read of one machine's reality.
@@ -108,7 +85,7 @@ type Observed struct {
 
 // Action is what reconcile will do to one machine. Execution order across all
 // machines is: every Stop+SwapKey first (pass 1), then every Start (pass 2).
-// SwapKey now only ever installs the slot's PERMANENT key (first provision or
+// SwapKey only ever installs the slot's PERMANENT key (first provision or
 // healing a hand-mangled active dir): identities never migrate.
 type Action struct {
 	Machine int

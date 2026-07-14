@@ -63,12 +63,13 @@ func TestPchainBeacons(t *testing.T) {
 	}
 
 	// A site-A validator follows site A's RPC slots ONLY (their permanent keys
-	// 10,11), never the public peer, never site B's RPCs.
+	// 9,10: RPC identities come after the 8 staking keys), never the public
+	// peer, never site B's RPCs.
 	ips, ids := c.pchainBeacons(0)
 	if ips != "10.0.0.5:9653,10.0.0.6:9653" {
 		t.Errorf("validator beacon ips = %q", ips)
 	}
-	if ids != c.nodeIDByKey[5]+","+c.nodeIDByKey[6] {
+	if ids != c.nodeIDByKey[9]+","+c.nodeIDByKey[10] {
 		t.Errorf("validator beacon ids = %q", ids)
 	}
 

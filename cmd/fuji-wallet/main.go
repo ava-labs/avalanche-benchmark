@@ -1,14 +1,13 @@
-// Command fuji-wallet manages the per-deploy Fuji fund/fee wallet (the key
-// that pays for subnet/chain creation and validator continuous fees on Fuji's
-// public P-chain, and for the ValidatorManager contract gas on the Fuji
-// C-chain). The key is GENERATED per deploy and gitignored: never committed
-// (see FUJI_PLAN.md "KEY POLICY").
+// Command fuji-wallet manages the per-deploy fund/fee wallet (the key that
+// pays for subnet/chain creation and validator continuous fees on the anchor
+// network's P-chain). The key is GENERATED per deploy and gitignored: never
+// committed (see FUJI_PLAN.md "KEY POLICY"). Everything is P-chain only:
+// there is no ValidatorManager contract and no C-chain gas to fund.
 //
 //	fuji-wallet gen  -key staking/fuji-wallet.key   generate the key, print addresses
-//	fuji-wallet fund -key staking/fuji-wallet.key   print the P- and C-chain
-//	    addresses with the required amounts and poll until BOTH are funded
-//	    (Fuji: at the faucet; mainnet: from your own AVAX). No cross-chain
-//	    moves: fund each chain directly.
+//	fuji-wallet fund -key staking/fuji-wallet.key   print the P-chain address
+//	    with the required amount and poll until funded (Fuji: at the faucet;
+//	    mainnet: from your own AVAX).
 //	fuji-wallet topup [days]                        top up EVERY staking
 //	    slot's validator balance so each has at least <days> (default 3) of
 //	    continuous-fee runway (IncreaseL1ValidatorBalanceTx; anyone may fund
@@ -18,18 +17,13 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/hex"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"math/big"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/ava-labs/avalanchego/ids"
@@ -37,7 +31,7 @@ import (
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/fujikey"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/netcfg"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/topo"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/valmgr"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/vset"
 	"github.com/ava-labs/avalanchego/utils/crypto/secp256k1"
 	"github.com/ava-labs/avalanchego/utils/formatting/address"
 	"github.com/ava-labs/avalanchego/utils/units"
@@ -50,12 +44,8 @@ import (
 
 const (
 	// The per-validator continuous-fee deposit is netcfg.ValidatorBalance
-	// (per-network; create-l1 pays it in ConvertSubnetToL1Tx).
+	// (per-network; `l1 create` pays it in ConvertSubnetToL1Tx).
 	feeBudget = uint64(100 * units.MilliAvax)
-	// requiredCNavax covers the ValidatorManager deploy + initialize +
-	// initializeValidatorSet + a generous margin for later weight-seesaw ops.
-	// Keep in sync with create-l1's cChainGasBudgetAvax.
-	requiredCNavax = uint64(150 * units.MilliAvax)
 	// feeFloorNavaxPerSec is the L1 validator continuous-fee floor (512 nAVAX
 	// per validator-second, ACP-77). topup asks platform.getValidatorFeeState
 	// for the live rate and uses this floor when the rate reads lower or the
@@ -137,9 +127,10 @@ func pAddress(key *secp256k1.PrivateKey) string {
 	return pAddr
 }
 
-// fund prints both funding targets and polls until each chain holds its
-// budget. Idempotent: already-satisfied chains are skipped, so re-runs (and
-// topping up just one side) behave sensibly.
+// fund prints the P-chain funding target and polls until the wallet holds
+// its budget. Idempotent: an already-funded wallet is a no-op, so re-runs
+// behave sensibly. P-chain only: chain creation, validator deposits and
+// weight txs all pay from here (there is no contract gas to fund).
 func fund(net netcfg.Config, keyPath, api string) {
 	key, err := fujikey.Load(keyPath)
 	if err != nil {
@@ -149,11 +140,9 @@ func fund(net netcfg.Config, keyPath, api string) {
 
 	requiredP := requiredPBalance(net.ValidatorBalance)
 	pBal := pBalance(ctx, api, key.Address())
-	cBal := weiToNavax(cBalanceWei(api, key.EthAddress().Hex()))
-	fmt.Printf("Current balances:  %s   %s\n\n",
-		chainStatus("P", pBal, requiredP), chainStatus("C", cBal, requiredCNavax))
-	if pBal >= requiredP && cBal >= requiredCNavax {
-		fmt.Println("Both chains already funded. Nothing to do.")
+	fmt.Printf("Current balance:  %s\n\n", chainStatus("P", pBal, requiredP))
+	if pBal >= requiredP {
+		fmt.Println("Already funded. Nothing to do.")
 		printAddresses(key)
 		return
 	}
@@ -161,31 +150,27 @@ func fund(net netcfg.Config, keyPath, api string) {
 	fmt.Println("================================================================")
 	if net.Name == "fuji" {
 		fmt.Println("  FUND AT THE FUJI FAUCET (https://core.app/tools/testnet-faucet/,")
-		fmt.Println("  2 AVAX/request - pick the chain per request, no cross-chain moves):")
+		fmt.Println("  2 AVAX/request, P-Chain):")
 	} else {
-		fmt.Println("  SEND AVAX FROM YOUR OWN WALLET (mainnet, REAL FUNDS;")
-		fmt.Println("  send per chain directly, no cross-chain moves):")
+		fmt.Println("  SEND AVAX FROM YOUR OWN WALLET (mainnet, REAL FUNDS; P-Chain):")
 	}
 	fmt.Println()
 	printFaucetTarget("P-Chain", pAddress(key), pBal, requiredP,
 		avaxString(net.ValidatorBalance)+" per registered validator + fees")
-	printFaucetTarget("C-Chain", key.EthAddress().Hex(), cBal, requiredCNavax, "ValidatorManager deploy + weight ops gas")
 	fmt.Println("================================================================")
 	fmt.Println()
 
-	fmt.Println("Polling balances (every 5s)...")
+	fmt.Println("Polling balance (every 5s)...")
 	for {
 		pBal = pBalance(ctx, api, key.Address())
-		cBal = weiToNavax(cBalanceWei(api, key.EthAddress().Hex()))
-		if pBal >= requiredP && cBal >= requiredCNavax {
+		if pBal >= requiredP {
 			break
 		}
-		fmt.Printf("  %s  %s   %s\n", time.Now().Format("15:04:05"),
-			chainStatus("P", pBal, requiredP), chainStatus("C", cBal, requiredCNavax))
+		fmt.Printf("  %s  %s\n", time.Now().Format("15:04:05"), chainStatus("P", pBal, requiredP))
 		time.Sleep(5 * time.Second)
 	}
 
-	fmt.Printf("\nDone. P: %s AVAX, C: %s AVAX\n", avaxString(pBal), avaxString(cBal))
+	fmt.Printf("\nDone. P: %s AVAX\n", avaxString(pBal))
 	printAddresses(key)
 }
 
@@ -235,7 +220,7 @@ func topup(keyPath, api string, args []string) {
 	}
 	perDay := rate * 24 * 3600
 
-	vids, names, err := stakingValidationIDs(keyPath)
+	vids, names, err := stakingValidationIDs(ctx, pClient, keyPath)
 	if err != nil {
 		fatalf("%v", err)
 	}
@@ -286,10 +271,11 @@ func topupDeficitDays(balance, ratePerSec uint64, targetDays int) int {
 	return int((need - balance) / (ratePerSec * 24 * 3600))
 }
 
-// stakingValidationIDs derives every registered validator's validationID the
-// same way cmd/reconcile does: the conversion tx sorted validators by NodeID
-// bytes, so the conversion index is recomputed from the committed NodeIDs.
-func stakingValidationIDs(keyPath string) ([]ids.ID, []string, error) {
+// stakingValidationIDs reads every registered validator's validationID
+// straight from the P-chain (the same set cmd/l1 manages) and names each one
+// via the committed manifest, so no conversion-order derivation can ever
+// drift from chain reality.
+func stakingValidationIDs(ctx context.Context, pc *platformvm.Client, keyPath string) ([]ids.ID, []string, error) {
 	subnetStr := os.Getenv("SUBNET_ID")
 	if subnetStr == "" {
 		return nil, nil, fmt.Errorf("SUBNET_ID not set (network.env missing? run from the repo root)")
@@ -298,76 +284,30 @@ func stakingValidationIDs(keyPath string) ([]ids.ID, []string, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse SUBNET_ID: %w", err)
 	}
-	t, _, err := topo.FromEnv(os.Getenv)
+	vs, err := vset.Fetch(ctx, pc, subnetID, 1)
 	if err != nil {
-		return nil, nil, fmt.Errorf("topology from env: %w", err)
+		return nil, nil, err
 	}
-	nodeIDsPath := filepath.Join(filepath.Dir(keyPath), "node-ids.env")
-	vars, err := godotenv.Read(nodeIDsPath)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read %s: %w", nodeIDsPath, err)
-	}
-	slots := t.StakingSlots()
-	nodeIDs := make([]ids.NodeID, len(slots))
-	names := make([]string, len(slots))
-	for i, s := range slots {
-		k := t.KeyOf(s)
-		id, err := ids.NodeIDFromString(strings.TrimSpace(vars[fmt.Sprintf("L1_%d_NODE_ID", k)]))
-		if err != nil {
-			return nil, nil, fmt.Errorf("parse L1_%d_NODE_ID: %w", k, err)
+	names := map[string]string{}
+	if entries, err := vset.ReadManifest(filepath.Dir(keyPath)); err == nil {
+		for _, e := range entries {
+			n := e.Name
+			if n == "" {
+				n = strconv.Itoa(e.Key)
+			}
+			names[e.NodeID.String()] = n
 		}
-		nodeIDs[i] = id
-		names[i] = t.MachineName(s)
 	}
-	conv := valmgr.ConversionIndices(nodeIDs)
-	vids := make([]ids.ID, len(slots))
-	for i := range slots {
-		vids[i] = valmgr.ValidationID(subnetID, uint32(conv[i]))
+	vids := make([]ids.ID, len(vs))
+	nameList := make([]string, len(vs))
+	for i, v := range vs {
+		vids[i] = v.ValidationID
+		nameList[i] = names[v.NodeID.String()]
+		if nameList[i] == "" {
+			nameList[i] = v.NodeID.String()
+		}
 	}
-	return vids, names, nil
-}
-
-// cBalanceWei fetches the EVM account balance with a raw eth_getBalance call
-// (stdlib only: not worth a client dependency for one method).
-func cBalanceWei(api, addr string) *big.Int {
-	body, err := json.Marshal(map[string]any{
-		"jsonrpc": "2.0", "id": 1, "method": "eth_getBalance",
-		"params": []any{addr, "latest"},
-	})
-	if err != nil {
-		fatalf("marshal eth_getBalance: %v", err)
-	}
-	resp, err := http.Post(api+"/ext/bc/C/rpc", "application/json", bytes.NewReader(body))
-	if err != nil {
-		fatalf("eth_getBalance against %s: %v", api, err)
-	}
-	defer resp.Body.Close()
-	var out struct {
-		Result string `json:"result"`
-		Error  *struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		fatalf("decode eth_getBalance response: %v", err)
-	}
-	if out.Error != nil {
-		fatalf("eth_getBalance: %s", out.Error.Message)
-	}
-	wei, ok := new(big.Int).SetString(strings.TrimPrefix(out.Result, "0x"), 16)
-	if !ok {
-		fatalf("eth_getBalance: bad result %q", out.Result)
-	}
-	return wei
-}
-
-// weiToNavax converts an 18-decimal EVM balance to 9-decimal nAVAX.
-func weiToNavax(wei *big.Int) uint64 {
-	navax := new(big.Int).Div(wei, big.NewInt(1_000_000_000))
-	if !navax.IsUint64() {
-		fatalf("balance overflows uint64 nAVAX: %s wei", wei)
-	}
-	return navax.Uint64()
+	return vids, nameList, nil
 }
 
 func avaxString(navax uint64) string {
