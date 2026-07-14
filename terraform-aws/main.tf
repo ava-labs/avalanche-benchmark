@@ -60,13 +60,12 @@ locals {
   public_key    = file(pathexpand(local.config.public_key_path))
   operator_ip   = "${chomp(data.http.my_ip.response_body)}/32"
 
-  # L1 node ports (nodes.ini positional assignment, internal/topo: the first
-  # node on a host serves http 9652, staking 9653; a co-hosted 2nd node lands
-  # on 9654/9655, which these SGs do NOT open - co-hosting on this terraform
-  # needs extra ingress rules; no
-  # co-location on this layout so no +10 strides).
-  http_port    = 9652
-  staking_port = 9653
+  # L1 node port RANGE (nodes.ini positional assignment, internal/topo: the
+  # first node on a host serves http 9650, staking 9651, +2 per extra
+  # co-hosted node). The SGs open the whole range so co-hosting never needs
+  # an SG edit.
+  avax_port_from = 9650
+  avax_port_to   = 9750
 }
 
 # No IAM instance profile: the benchmark nodes need no AWS API access, and the
@@ -172,20 +171,20 @@ resource "aws_security_group_rule" "node_ssh_operator" {
   description       = "SSH from operator (break-glass)"
 }
 
-# HTTP (9652) from the control box only: health checks, reconcile gates,
+# Node ports (9650-9750) from the control box: health checks, reconcile gates,
 # Prometheus scrapes, bombard ingress.
 resource "aws_security_group_rule" "node_http" {
   for_each                 = { validator = aws_security_group.validator.id, rpc = aws_security_group.rpc.id }
   type                     = "ingress"
-  from_port                = local.http_port
-  to_port                  = local.http_port
+  from_port                = local.avax_port_from
+  to_port                  = local.avax_port_to
   protocol                 = "tcp"
   security_group_id        = each.value
   source_security_group_id = aws_security_group.control.id
   description              = "Node HTTP from control (health/scrape/bombard)"
 }
 
-# Staking p2p (9653) within the fleet, in all four SG directions.
+# Staking p2p (the 9650-9750 range) within the fleet, in all four SG directions.
 resource "aws_security_group_rule" "p2p_ingress" {
   for_each = {
     val_from_val = { sg = aws_security_group.validator.id, src = aws_security_group.validator.id }
@@ -194,8 +193,8 @@ resource "aws_security_group_rule" "p2p_ingress" {
     rpc_from_rpc = { sg = aws_security_group.rpc.id, src = aws_security_group.rpc.id }
   }
   type                     = "ingress"
-  from_port                = local.staking_port
-  to_port                  = local.staking_port
+  from_port                = local.avax_port_from
+  to_port                  = local.avax_port_to
   protocol                 = "tcp"
   security_group_id        = each.value.sg
   source_security_group_id = each.value.src
@@ -210,8 +209,8 @@ resource "aws_security_group_rule" "p2p_egress" {
     rpc_to_rpc = { sg = aws_security_group.rpc.id, dst = aws_security_group.rpc.id }
   }
   type                     = "egress"
-  from_port                = local.staking_port
-  to_port                  = local.staking_port
+  from_port                = local.avax_port_from
+  to_port                  = local.avax_port_to
   protocol                 = "tcp"
   security_group_id        = each.value.sg
   source_security_group_id = each.value.dst

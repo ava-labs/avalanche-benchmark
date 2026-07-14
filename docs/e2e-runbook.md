@@ -28,7 +28,8 @@ Put the sites in different regions so the cross-site latency is real.
 
 - 13 Linux hosts (`linux-amd64`): 1 control host + 12 nodes.
 - Control host SSHes to all 12 with one key.
-- Open on each node: 22 (SSH), 9652-9653 (L1 RPC / staking). RPC machines
+- Open on each node: 22 (SSH), 9650-9651 (L1 RPC / staking; open
+  9650-9750 for co-hosting headroom). RPC machines
   additionally need one outbound TCP to the pinned public Fuji peer
   (default `18.192.93.241:9651`).
 - Grafana `:3000` / Prometheus `:9090` reachable on the control host, or
@@ -74,7 +75,7 @@ rpc_b2 host=B6  role=rpc        dc=B
 
 The node name is the handle everywhere (`./fleet down a1`); `weight=` is the
 conversion weight, read only by chain creation; `dc=` is a display/selector
-tag. Ports are positional per host (one node per box = 9652/9653). Preview
+tag. Ports are positional per host (one node per box = 9650/9651). Preview
 the resolved layout before touching anything:
 
 ```bash

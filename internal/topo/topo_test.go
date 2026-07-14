@@ -48,9 +48,9 @@ x10 host=10.0.0.1 role=rpc
 	if err != nil {
 		t.Fatal(err)
 	}
-	// First node on a host: 9652/9653; later nodes on the SAME host step +2
+	// First node on a host: 9650/9651; later nodes on the SAME host step +2
 	// in file order. Distinct hosts each start at the base.
-	want := []struct{ port, p2p int }{{9652, 9653}, {9652, 9653}, {9654, 9655}, {9656, 9657}}
+	want := []struct{ port, p2p int }{{9650, 9651}, {9650, 9651}, {9652, 9653}, {9654, 9655}}
 	for i, w := range want {
 		if nodes[i].Port != w.port || nodes[i].StakingPort() != w.p2p {
 			t.Errorf("%s ports = %d/%d, want %d/%d", nodes[i].Name, nodes[i].Port, nodes[i].StakingPort(), w.port, w.p2p)

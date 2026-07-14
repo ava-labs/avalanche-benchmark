@@ -53,7 +53,7 @@ fi
 #
 # Endpoints come from `fleet endpoints` (the single source of truth for the
 # per-node ports), so a co-hosted rpc node is targeted on its ACTUAL port
-# rather than a hardcoded :9652 (which would hit a housemate on a shared box).
+# rather than a hardcoded :9650 (which would hit a housemate on a shared box).
 RECONCILE_BIN="$SCRIPT_DIR/bin/benchmark-fleet"
 mapfile -t RPC_URLS < <("$RECONCILE_BIN" endpoints | awk -F'\t' -v c="$CHAIN_ID" \
     '$3=="rpc"{printf "http://%s:%s/ext/bc/%s/rpc\n", $4, $5, c}')

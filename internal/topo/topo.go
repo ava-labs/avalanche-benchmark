@@ -21,8 +21,8 @@
 //     the on-chain weight is the sole truth and this tag is never consulted.
 //
 // Ports are positional per host: the k-th node on a host (file order) serves
-// HTTP on 9652+2k and staking p2p on 9653+2k, so a one-node-per-host fleet is
-// uniformly 9652/9653. Reordering nodes that share a host shifts the later
+// HTTP on 9650+2k and staking p2p on 9651+2k, so a one-node-per-host fleet is
+// uniformly 9650/9651. Reordering nodes that share a host shifts the later
 // nodes' ports: redeploy that host's nodes after such an edit.
 package topo
 
@@ -43,7 +43,7 @@ const (
 
 	// baseHTTPPort/portStride set the positional port assignment: the k-th
 	// node on a host gets HTTP baseHTTPPort+stride*k and staking +1.
-	baseHTTPPort = 9652
+	baseHTTPPort = 9650
 	portStride   = 2
 )
 

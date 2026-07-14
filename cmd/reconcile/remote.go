@@ -282,22 +282,6 @@ func (c *config) killCmds(in instance) (kill, alive string) {
 	return kill, alive
 }
 
-// migrateLegacyDataDir claims the retired single-node layout for the FIRST
-// node on a box: a one-time same-filesystem `mv data/validator data/<name>`
-// that preserves the node's synced anchor P-chain db (50G; never copied,
-// never deleted). Runs only inside the rebuild paths (freshClean /
-// rebuildWedged), never on `down` or status, and only when the legacy dir
-// exists and the node's own root does not.
-func (c *config) migrateLegacyDataDir(i int) {
-	in := c.instances[i]
-	if c.instancesOnHost(in.host)[0] != i {
-		return // only the box's first node ever owned data/validator
-	}
-	c.ssh(in.host, fmt.Sprintf(
-		"cd %s 2>/dev/null || exit 0; if [ -d data/validator ] && [ ! -e %s ]; then mv data/validator %s && echo '  %s: migrated legacy data/validator -> %s'; fi",
-		c.remoteDir, in.dataDir, in.dataDir, c.nodes[i].Name, in.dataDir))
-}
-
 // swap wipes the node's active staking dir and installs its permanent
 // committed identity from staking/l1/<name>. Wipe-before-write: a crash
 // mid-swap leaves the key missing (re-run re-copies), never duplicated.
@@ -478,7 +462,6 @@ func (c *config) start(i int) {
 func (c *config) freshClean(i int) {
 	in := c.instances[i]
 	c.killNode(i)
-	c.migrateLegacyDataDir(i)
 	c.ssh(in.host, fmt.Sprintf(
 		"cd %s 2>/dev/null && rm -rf %s/chainData %s || true; "+
 			"mkdir -p %s/bin %s/plugins %s/staking/l1",
@@ -518,7 +501,6 @@ func (c *config) clearBootstrapBacklog(i int) {
 func (c *config) rebuildWedged(i int) {
 	in := c.instances[i]
 	c.killNode(i)
-	c.migrateLegacyDataDir(i)
 	c.ssh(in.host, fmt.Sprintf("cd %s && rm -rf %s/chainData", c.remoteDir, in.dataDir))
 	c.clearBootstrapBacklog(i)
 	c.start(i)

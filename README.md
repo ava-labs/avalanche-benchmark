@@ -44,8 +44,9 @@ The full walkthrough with expected output at each step is in
 
 - A control host plus the fleet machines (12 for the default two-site shape,
   fewer with co-location, see below), all reachable over SSH with one key.
-- Ports on the fleet machines: **22** (SSH) and **9652-9653** (L1 RPC /
-  staking; the first node on a host, +2 per extra co-hosted node). The RPC
+- Ports on the fleet machines: **22** (SSH) and **9650-9651** (L1 RPC /
+  staking; the first node on a host, +2 per extra co-hosted node - open
+  9650-9750 to never think about it again). The RPC
   machines additionally need ONE outbound TCP to the pinned
   upstream peer (default `18.192.93.241:9651` on Fuji,
   `54.232.137.108:9651` on mainnet).
@@ -81,8 +82,8 @@ is the conversion weight, read exactly once, by `l1 create` (default 1);
 after creation the on-chain weight is the only truth.
 
 Ports are positional per host: the k-th node on a host serves HTTP on
-9652+2k and staking on 9653+2k, so one node per box (the production shape)
-is uniformly 9652/9653. Put several nodes on one host to fit the topology
+9650+2k and staking on 9651+2k, so one node per box (the production shape)
+is uniformly 9650/9651. Put several nodes on one host to fit the topology
 onto fewer test boxes (each gets its own ports and `data/<name>` root);
 reordering nodes that share a host shifts the later nodes' ports, so
 redeploy that host's nodes after such an edit. Run `./fleet endpoints` to

@@ -55,7 +55,7 @@ func TestPchainBeacons(t *testing.T) {
 	// A validator follows ALL of the fleet's rpc nodes (dc is display-only),
 	// never the public peer.
 	ips, ids := c.pchainBeacons(0)
-	if ips != "10.0.0.5:9653,10.0.0.6:9653,10.1.0.5:9653,10.1.0.6:9653" {
+	if ips != "10.0.0.5:9651,10.0.0.6:9651,10.1.0.5:9651,10.1.0.6:9651" {
 		t.Errorf("validator beacon ips = %q", ips)
 	}
 	if ids != "NodeID-rpc_a1,NodeID-rpc_a2,NodeID-rpc_b1,NodeID-rpc_b2" {
@@ -76,7 +76,7 @@ func TestSiblingSeeds(t *testing.T) {
 	if len(ipList) != 11 || len(idList) != 11 {
 		t.Fatalf("want 11 sibling seeds, got %d/%d", len(ipList), len(idList))
 	}
-	if ipList[0] != "10.0.0.2:9653" || idList[0] != "NodeID-a2" {
+	if ipList[0] != "10.0.0.2:9651" || idList[0] != "NodeID-a2" {
 		t.Errorf("first seed = %s/%s, want a2", ipList[0], idList[0])
 	}
 	for _, id := range idList {
@@ -95,12 +95,12 @@ func TestStartScriptFlags(t *testing.T) {
 		"--partial-sync-primary-network=true",
 		"--p-chain-follow-only=true",
 		"--network-allow-private-ips=true",
-		"--http-port=9652",
-		"--staking-port=9653",
+		"--http-port=9650",
+		"--staking-port=9651",
 		"--data-dir=data/a1",
 		"--db-dir=data/a1/db",
 		"--staking-tls-cert-file=data/a1/staking/active/staker.crt",
-		"--bootstrap-ips=10.0.0.5:9653,10.0.0.6:9653,10.1.0.5:9653,10.1.0.6:9653",
+		"--bootstrap-ips=10.0.0.5:9651,10.0.0.6:9651,10.1.0.5:9651,10.1.0.6:9651",
 		"--state-sync-ips=",
 		"--track-subnets=\"SUBNET\"",
 		`cp chain-config.json "data/a1/configs/chains/CHAIN/config.json"`,

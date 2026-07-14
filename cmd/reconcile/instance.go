@@ -13,7 +13,7 @@ import (
 // its box, data/<name>, holding its db, chainData, logs and the active
 // staking identity, so nodes sharing a host never collide. Ports come from
 // nodes.ini's positional per-host assignment (the first node on a host is
-// 9652/9653, the next 9654/9655, ...).
+// 9650/9651, the next 9652/9653, ...).
 //
 // NOTE: hosting more than one node on a box trades away fault isolation - a
 // box loss takes every node on it - so it is a TEST affordance, not a
