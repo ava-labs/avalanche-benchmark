@@ -1,21 +1,6 @@
 package main
 
-import (
-	"fmt"
-
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/topo"
-)
-
-// The pool layout, per-slot permanent keys and staking-slot order live in
-// internal/topo (shared with cmd/l1 and fuji-wallet so the slot -> key
-// mapping can never drift). Identities never move between machines: failover
-// is a weight change on the P-chain (driven by cmd/l1), never a key swap.
-type Topology = topo.Topology
-
-const (
-	siteA = topo.SiteA
-	siteB = topo.SiteB
-)
+import "fmt"
 
 // The three weight tiers a registered validator sits in, DISPLAY-ONLY here:
 // on-chain weights live on the P-chain and move only through cmd/l1
@@ -34,7 +19,7 @@ func isActiveWeight(w, total uint64) bool {
 }
 
 // weightRole names the tier a weight sits in, for status display.
-// Unregistered RPC slots carry weight 0; a mid-seesaw value shows raw.
+// Unregistered rpc nodes carry weight 0; a mid-seesaw value shows raw.
 func weightRole(w uint64) string {
 	switch w {
 	case 0:
@@ -51,10 +36,10 @@ func weightRole(w uint64) string {
 }
 
 // stakeCell renders the status stake column from the ACTUAL on-chain weight.
-// haveActual=false means the P-chain was unreadable. RPC slots are never
+// haveActual=false means the P-chain was unreadable. role=rpc nodes are never
 // registered, so they have no on-chain weight to show.
-func stakeCell(actual uint64, haveActual, stakingSlot bool) string {
-	if !stakingSlot {
+func stakeCell(actual uint64, haveActual, isValidator bool) string {
+	if !isValidator {
 		return "rpc"
 	}
 	if !haveActual {

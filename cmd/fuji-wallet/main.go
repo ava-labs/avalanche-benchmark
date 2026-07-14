@@ -183,14 +183,14 @@ func pBalance(ctx context.Context, api string, addr ids.ShortID) uint64 {
 }
 
 // requiredPBalance budgets a continuous-fee deposit for EVERY registered
-// validator: all staking slots of both sites (the conversion registers them
-// all; failover only moves weight).
+// validator: all role=validator nodes of the inventory (the conversion
+// registers them all; failover only moves weight).
 func requiredPBalance(validatorBalance uint64) uint64 {
-	t, _, err := topo.FromEnv(os.Getenv)
+	nodes, err := topo.LoadNear()
 	if err != nil {
-		fatalf("topology from env (source .env via the scripts): %v", err)
+		fatalf("%v", err)
 	}
-	return uint64(len(t.StakingSlots()))*validatorBalance + feeBudget
+	return uint64(len(topo.Validators(nodes)))*validatorBalance + feeBudget
 }
 
 // topup brings every staking slot's validator balance up to at least
@@ -291,11 +291,7 @@ func stakingValidationIDs(ctx context.Context, pc *platformvm.Client, keyPath st
 	names := map[string]string{}
 	if entries, err := vset.ReadManifest(filepath.Dir(keyPath)); err == nil {
 		for _, e := range entries {
-			n := e.Name
-			if n == "" {
-				n = strconv.Itoa(e.Key)
-			}
-			names[e.NodeID.String()] = n
+			names[e.NodeID.String()] = e.Name
 		}
 	}
 	vids := make([]ids.ID, len(vs))

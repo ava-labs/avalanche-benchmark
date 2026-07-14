@@ -9,16 +9,16 @@ import (
 )
 
 // runExporter serves the fleet's on-chain stake weights as Prometheus gauges
-// on addr, one series per staking slot with instance labels matching the node
-// scrape vocabulary (a1..b4). Started by run/02_monitoring.sh next to
-// Prometheus.
+// on addr, one series per role=validator node with instance labels matching
+// the node scrape vocabulary (the nodes.ini names). Started by
+// run/02_monitoring.sh next to Prometheus.
 //
 //	fleet_actual_weight  the P-chain weight per registered validator
 //	                     (read via the same set cmd/l1 manages), refreshed
 //	                     every 30s in the background so a scrape never blocks
 func runExporter(cfg *config, addr string) {
 	var mu sync.Mutex
-	actual := map[int]uint64{} // slot -> last known on-chain weight
+	actual := map[int]uint64{} // node index -> last known on-chain weight
 
 	refresh := func() {
 		w, err := fetchWeights(cfg)
@@ -40,9 +40,9 @@ func runExporter(cfg *config, addr string) {
 		var b strings.Builder
 		b.WriteString("# TYPE fleet_actual_weight gauge\n")
 		mu.Lock()
-		for _, s := range cfg.topo.StakingSlots() {
-			if v, ok := actual[s]; ok {
-				fmt.Fprintf(&b, "fleet_actual_weight{instance=%q} %d\n", cfg.topo.MachineName(s), v)
+		for i, n := range cfg.nodes {
+			if v, ok := actual[i]; ok {
+				fmt.Fprintf(&b, "fleet_actual_weight{instance=%q} %d\n", n.Name, v)
 			}
 		}
 		mu.Unlock()

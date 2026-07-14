@@ -1,225 +1,187 @@
-// Package topo is the single source of truth for the machine-pool layout:
-// slot order, per-slot permanent staking key, and which slots are registered
-// as L1 validators. cmd/l1 (create: conversion order = validationID index),
-// cmd/reconcile (provisioning) and cmd/fuji-wallet (funding math) all derive
-// from it, so the slot -> key mapping can never drift between them.
+// Package topo loads nodes.ini, the fleet inventory and the single source of
+// truth for node names, hosts and roles. Every consumer (cmd/reconcile,
+// cmd/l1, cmd/fuji-wallet, cmd/genstaking; the shell scripts go through
+// `fleet endpoints`) keys off the node NAME, which is also the staking key
+// directory (staking/l1/<name>), the manifest key in staking/node-ids.env and
+// the node's data root on its box (data/<name>).
 //
-// Staking-key layout (staking/l1/<idx>): keys are 1-based. The REGISTERED
-// validators (validator+spare slots of both sites) wear keys 1..N in staking
-// slot order, so `l1 create` can register exactly staking/l1/1..N; the RPC
-// slots (never validators, they just need some node identity) wear the keys
-// after that. Every pool slot wears ONE permanent identity. Identities never
-// move between machines (key-swap failover produced forks); instead all
-// staking slots are registered as L1 validators at conversion and failover
-// only changes their weights (P-chain SetL1ValidatorWeightTx via cmd/l1).
+// Format: Ansible-host-line syntax, no sections. One node per line:
+//
+//	<name> host=<ip> role=validator|rpc [dc=<tag>] [weight=<w>]
+//
+// Comments (#) and blank lines are allowed. Rules:
+//   - name: the primary key everywhere; letters, digits, '_', '-', '.' only.
+//   - host= required. role= required: validator (a registered L1 validator;
+//     a "spare" is just a validator at weight 1) or rpc (tracks the chain and
+//     serves ingress; never registered, never wears a BLS signer key).
+//   - dc= optional, display-only grouping tag (`fleet status` groups by it,
+//     fleet verbs accept `dc=<tag>` selectors). Nothing functional depends on it.
+//   - weight= optional, role=validator only: the CONVERSION weight `l1 create`
+//     registers the node with (default 1). Read only by create; after creation
+//     the on-chain weight is the sole truth and this tag is never consulted.
+//
+// Ports are positional per host: the k-th node on a host (file order) serves
+// HTTP on 9652+2k and staking p2p on 9653+2k, so a one-node-per-host fleet is
+// uniformly 9652/9653. Reordering nodes that share a host shifts the later
+// nodes' ports: redeploy that host's nodes after such an edit.
 package topo
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
 
-// KeyBase is the first staking key index.
-const KeyBase = 1
-
 const (
-	SiteA = 0
-	SiteB = 1
+	RoleValidator = "validator"
+	RoleRPC       = "rpc"
+
+	// File is the canonical inventory filename, in the repo root next to .env.
+	File = "nodes.ini"
+
+	// baseHTTPPort/portStride set the positional port assignment: the k-th
+	// node on a host gets HTTP baseHTTPPort+stride*k and staking +1.
+	baseHTTPPort = 9652
+	portStride   = 2
 )
 
-// Topology describes the machine pool: one site, or two (primary A + backup B).
-// Each site has the same fixed-by-config shape, laid out per site as
-// [v0..v(NVal-1), spare0..., rpc0...].
-type Topology struct {
-	TwoSite bool
-	NVal    int // validators per site (>=3)
-	NSpare  int // hot spares per site (>=0)
-	NRPC    int // pinned dedicated RPCs per site (>=1)
+// Node is one line of nodes.ini.
+type Node struct {
+	Name   string
+	Host   string
+	Role   string // RoleValidator or RoleRPC
+	Port   int    // HTTP/RPC port, assigned positionally per host
+	DC     string // display-only grouping tag
+	Weight uint64 // conversion weight, read ONLY by `l1 create` (default 1)
 }
 
-// SitePool is the number of slots in one site.
-func (t Topology) SitePool() int { return t.NVal + t.NSpare + t.NRPC }
+func (n Node) IsValidator() bool { return n.Role == RoleValidator }
 
-func (t Topology) Size() int {
-	if t.TwoSite {
-		return 2 * t.SitePool()
-	}
-	return t.SitePool()
-}
+// StakingPort is the node's p2p port, always its HTTP port + 1.
+func (n Node) StakingPort() int { return n.Port + 1 }
 
-// Site reports which site slot i (0-based) belongs to.
-func (t Topology) Site(i int) int {
-	if t.TwoSite && i >= t.SitePool() {
-		return SiteB
-	}
-	return SiteA
-}
-
-// SlotInSite is slot i's 0-based position within its own site.
-func (t Topology) SlotInSite(i int) int { return i % t.SitePool() }
-
-// Role predicates by slot position within a site: [validators | spares | rpcs].
-func (t Topology) IsValidatorSlot(i int) bool { return t.SlotInSite(i) < t.NVal }
-func (t Topology) IsSpareSlot(i int) bool {
-	s := t.SlotInSite(i)
-	return s >= t.NVal && s < t.NVal+t.NSpare
-}
-func (t Topology) IsRPCSlot(i int) bool { return t.SlotInSite(i) >= t.NVal+t.NSpare }
-
-// IsStakingSlot reports whether slot i is registered as an L1 validator at
-// conversion (validators and spares of every site; RPC slots never validate).
-func (t Topology) IsStakingSlot(i int) bool { return !t.IsRPCSlot(i) }
-
-// MachineName renders the operator-facing name, encoding role and site:
-// stake-bearing slots (validators+spares) are a1..aN (site A) / b1..bN
-// (site B); RPC slots are rpc_a1.. / rpc_b1... Fleet commands still address
-// machines by pool number (1-based slot index), which status prints alongside.
-func (t Topology) MachineName(i int) string {
-	site := "a"
-	if t.Site(i) == SiteB {
-		site = "b"
-	}
-	s := t.SlotInSite(i)
-	if s < t.NVal+t.NSpare {
-		return site + strconv.Itoa(s+1)
-	}
-	return "rpc_" + site + strconv.Itoa(s-t.NVal-t.NSpare+1)
-}
-
-// KeyOf is slot i's permanent committed staking key index: staking slots wear
-// keys 1..N in staking-slot order (the exact set `l1 create` registers), RPC
-// slots wear the keys after them.
-func (t Topology) KeyOf(i int) int {
-	if t.IsStakingSlot(i) {
-		return KeyBase + t.StakingIndex(i)
-	}
-	nStaking := len(t.StakingSlots())
-	nRPCBefore := 0
-	for j := 0; j < i; j++ {
-		if t.IsRPCSlot(j) {
-			nRPCBefore++
-		}
-	}
-	return KeyBase + nStaking + nRPCBefore
-}
-
-// AllKeys lists every committed key index the pool uses: one per slot.
-func (t Topology) AllKeys() []int {
-	keys := make([]int, t.Size())
-	for i := range keys {
-		keys[i] = t.KeyOf(i)
-	}
-	return keys
-}
-
-// StakingSlots lists the registered-validator slots in slot order. A slot's
-// position in this list IS its conversion-tx validator index, and therefore
-// its validationID = sha256(subnetID || uint32BE(position)). Append-only
-// semantics: this order is committed on-chain at conversion and must never
-// change for a deployed subnet.
-func (t Topology) StakingSlots() []int {
-	var slots []int
-	for i := 0; i < t.Size(); i++ {
-		if t.IsStakingSlot(i) {
-			slots = append(slots, i)
-		}
-	}
-	return slots
-}
-
-// StakingIndex is slot i's position in StakingSlots (its conversion validator
-// index), or -1 for an RPC slot.
-func (t Topology) StakingIndex(i int) int {
-	if !t.IsStakingSlot(i) {
-		return -1
-	}
-	n := 0
-	for j := 0; j < i; j++ {
-		if t.IsStakingSlot(j) {
-			n++
-		}
-	}
-	return n
-}
-
-// SlotRoleName labels a pool slot by its role within its site
-// ([v1..vN, spare..., rpc...]). Human-facing only.
-func (t Topology) SlotRoleName(i int) string {
-	switch s := t.SlotInSite(i); {
-	case s < t.NVal:
-		return "v" + strconv.Itoa(s+1)
-	case s < t.NVal+t.NSpare:
-		return "spare"
-	default:
-		return "rpc"
-	}
-}
-
-// SiteFromName parses an operator site argument ("a" or "b").
-func (t Topology) SiteFromName(s string) (int, bool) {
-	switch s {
-	case "a", "A":
-		return SiteA, true
-	case "b", "B":
-		if !t.TwoSite {
-			return 0, false
-		}
-		return SiteB, true
-	}
-	return 0, false
-}
-
-// splitIPs parses a comma-separated IP list, trimming blanks and dropping empties.
-func splitIPs(csv string) []string {
-	var out []string
-	for _, s := range strings.Split(csv, ",") {
-		if s = strings.TrimSpace(s); s != "" {
-			out = append(out, s)
+// Validators filters the inventory to the role=validator nodes, in file order.
+func Validators(nodes []Node) []Node {
+	var out []Node
+	for _, n := range nodes {
+		if n.IsValidator() {
+			out = append(out, n)
 		}
 	}
 	return out
 }
 
-// FromEnv derives the topology and the ordered pool IPs from the per-role IP
-// env. Each site is defined by three lists whose LENGTHS set the counts and
-// whose VALUES set placement (a repeated IP co-locates another process on that
-// box):
-//
-//	VALIDATOR_IPS / SPARE_IPS / RPC_IPS                      (site A)
-//	BACKUP_VALIDATOR_IPS / BACKUP_SPARE_IPS / BACKUP_RPC_IPS (site B, optional)
-//
-// getenv is os.Getenv in production; injectable for tests.
-func FromEnv(getenv func(string) string) (Topology, []string, error) {
-	valA := splitIPs(getenv("VALIDATOR_IPS"))
-	spareA := splitIPs(getenv("SPARE_IPS"))
-	rpcA := splitIPs(getenv("RPC_IPS"))
-	if len(valA) == 0 && len(spareA) == 0 && len(rpcA) == 0 {
-		return Topology{}, nil, fmt.Errorf("no fleet topology configured (VALIDATOR_IPS etc. are empty); copy .env.example to .env and set the per-role IP lists; if you meant to drive a remote fleet, run this on its control host")
+// Load reads and parses the inventory file.
+func Load(path string) ([]Node, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read fleet inventory: %w (nodes.ini lists every node: `<name> host=<ip> role=validator|rpc ...`; see the shipped nodes.ini)", err)
 	}
-	if len(valA) < 3 {
-		return Topology{}, nil, fmt.Errorf("VALIDATOR_IPS has %d IP(s); the topology needs at least 3 validator slots per site (stake tiers are set separately via fleet weight)", len(valA))
+	nodes, err := Parse(string(data))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	if len(rpcA) < 1 {
-		return Topology{}, nil, fmt.Errorf("RPC_IPS has %d IP(s); the topology needs at least 1 RPC slot per site to serve ingress", len(rpcA))
-	}
+	return nodes, nil
+}
 
-	t := Topology{NVal: len(valA), NSpare: len(spareA), NRPC: len(rpcA)}
-	pool := append(append(append([]string{}, valA...), spareA...), rpcA...)
-
-	if getenv("BACKUP_VALIDATOR_IPS") != "" {
-		valB := splitIPs(getenv("BACKUP_VALIDATOR_IPS"))
-		spareB := splitIPs(getenv("BACKUP_SPARE_IPS"))
-		rpcB := splitIPs(getenv("BACKUP_RPC_IPS"))
-		if len(valB) != t.NVal || len(spareB) != t.NSpare || len(rpcB) != t.NRPC {
-			return Topology{}, nil, fmt.Errorf(
-				"backup site shape (%dv/%ds/%dr) must match primary (%dv/%ds/%dr)",
-				len(valB), len(spareB), len(rpcB), t.NVal, t.NSpare, t.NRPC)
+// LoadNear finds nodes.ini the way the standalone tools find .env: next to the
+// binary's parent dir (the bin/.. kit layout), else the working directory.
+func LoadNear() ([]Node, error) {
+	if exe, err := os.Executable(); err == nil {
+		p := filepath.Join(filepath.Dir(exe), "..", File)
+		if _, err := os.Stat(p); err == nil {
+			return Load(p)
 		}
-		t.TwoSite = true
-		pool = append(pool, valB...)
-		pool = append(pool, spareB...)
-		pool = append(pool, rpcB...)
 	}
-	return t, pool, nil
+	return Load(File)
+}
+
+// Parse parses nodes.ini content: comments and blank lines skipped, first
+// field the node name, the rest key=value pairs. Duplicate names, unknown
+// keys, bad roles and a weight on a non-validator are all errors.
+func Parse(data string) ([]Node, error) {
+	var nodes []Node
+	lineOf := map[string]int{} // node name -> 1-based line, for dup reporting
+	perHost := map[string]int{}
+
+	for lineNo, raw := range strings.Split(data, "\n") {
+		line := raw
+		if i := strings.IndexByte(line, '#'); i >= 0 {
+			line = line[:i]
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		n := Node{Name: fields[0], Weight: 1}
+		errf := func(format string, args ...any) error {
+			return fmt.Errorf("line %d (%s): "+format, append([]any{lineNo + 1, n.Name}, args...)...)
+		}
+		if !validName(n.Name) {
+			return nil, errf("bad node name (letters, digits, '_', '-', '.' only)")
+		}
+		if prev, dup := lineOf[n.Name]; dup {
+			return nil, errf("duplicate node name (already defined on line %d)", prev)
+		}
+		lineOf[n.Name] = lineNo + 1
+
+		weightSet := false
+		for _, f := range fields[1:] {
+			k, v, ok := strings.Cut(f, "=")
+			if !ok || v == "" {
+				return nil, errf("bad field %q (want key=value)", f)
+			}
+			switch k {
+			case "host":
+				n.Host = v
+			case "role":
+				n.Role = v
+			case "dc":
+				n.DC = v
+			case "weight":
+				w, err := strconv.ParseUint(v, 10, 64)
+				if err != nil || w == 0 {
+					return nil, errf("bad weight %q (want a positive integer)", v)
+				}
+				n.Weight = w
+				weightSet = true
+			default:
+				return nil, errf("unknown key %q (want host, role, dc or weight)", k)
+			}
+		}
+		if n.Host == "" {
+			return nil, errf("host= is required")
+		}
+		switch n.Role {
+		case RoleValidator, RoleRPC:
+		case "":
+			return nil, errf("role= is required (validator or rpc)")
+		default:
+			return nil, errf("bad role %q (want validator or rpc; a spare is just a validator at weight 1)", n.Role)
+		}
+		if weightSet && n.Role != RoleValidator {
+			return nil, errf("weight= is only valid on role=validator (rpc nodes are never registered)")
+		}
+		n.Port = baseHTTPPort + portStride*perHost[n.Host]
+		perHost[n.Host]++
+		nodes = append(nodes, n)
+	}
+	if len(nodes) == 0 {
+		return nil, fmt.Errorf("no nodes defined")
+	}
+	return nodes, nil
+}
+
+func validName(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '_', r == '-', r == '.':
+		default:
+			return false
+		}
+	}
+	return s != ""
 }

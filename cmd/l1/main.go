@@ -1,9 +1,9 @@
 // Command l1 is the validator manager for our P-chain-anchored L1: it creates
 // the chain and moves validator weights with no ValidatorManager contract, no
 // courier and no external signature aggregator. We hold every validator's BLS
-// signer key (staking/l1/N/signer.key), so the tool crafts each warp payload,
-// signs it with all the keys it holds, aggregates locally and submits the
-// P-chain tx itself. The only external dependency is one P-chain RPC.
+// signer key (staking/l1/<name>/signer.key), so the tool crafts each warp
+// payload, signs it with all the keys it holds, aggregates locally and submits
+// the P-chain tx itself. The only external dependency is one P-chain RPC.
 //
 // OPERATING MODEL: `create` records the validator manager as living on the
 // L1's OWN chain (sourceChainID = the new blockchainID, sourceAddress =
@@ -13,21 +13,23 @@
 // weights move. It is NOT usable on an L1 whose manager was recorded on the
 // C-chain: there the P-chain expects primary-network signatures we do not have.
 //
-//	l1 create     [--validators N] [--active-weight w] [--standby-weight w]
-//	              [--balance avax] [--force]
-//	              generate missing node identities, create subnet + chain,
-//	              convert to an L1 with all N validators registered; writes
-//	              network.env (the ONLY registration point, run once per chain)
-//	l1 set-weight --node <name|N|nodeID|validationID> --weight <w>
+//	l1 create     [--balance avax] [--force]
+//	              generate missing identities for the inventory's
+//	              role=validator nodes, create subnet + chain, convert to an
+//	              L1 with exactly those nodes registered at their nodes.ini
+//	              weight= (default 1; read only here); writes network.env
+//	              (the ONLY registration point, run once per chain)
+//	l1 set-weight --node <name|nodeID|validationID> --weight <w>
 //	              set one validator's weight (0 removes; we never remove)
 //	l1 apply      --weights a1=100000,a2=100000,b1=1,...
 //	              declarative target weights, applied all raises first then
 //	              lowers, one tx at a time, each verified on-chain
 //	l1 status     print the registered set with balances and a runway warning
 //
-// Config comes from .env / network.env (NETWORK, SUBNET_ID, CHAIN_ID,
-// MANAGER_ADDRESS; PCHAIN_API overrides the RPC) plus the staking/ directory
-// (l1/N/signer.key BLS keys, node-ids.env, fuji-wallet.key fee wallet).
+// Config comes from nodes.ini (the fleet inventory) and .env / network.env
+// (NETWORK, SUBNET_ID, CHAIN_ID, MANAGER_ADDRESS; PCHAIN_API overrides the
+// RPC) plus the staking/ directory (l1/<name>/signer.key BLS keys,
+// node-ids.env, fuji-wallet.key fee wallet).
 //
 // Txs verify at the proposer's P-chain height, which can lag the tip. On a
 // "signature is invalid" or set-mismatch rejection just re-run the command:
@@ -41,7 +43,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 
 	"github.com/ava-labs/libevm/common"
 
@@ -57,6 +58,7 @@ import (
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/fujikey"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/netcfg"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/topo"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/vset"
 )
 
@@ -76,15 +78,12 @@ func main() {
 	switch os.Args[1] {
 	case "create":
 		var opts createOpts
-		fs.IntVar(&opts.validators, "validators", 0, "number of registered validators (default: the .env topology's staking slots, else 8)")
-		fs.Uint64Var(&opts.activeWeight, "active-weight", defaultActiveWeight, "conversion weight of the site A validators")
-		fs.Uint64Var(&opts.standbyWeight, "standby-weight", defaultStandbyWeight, "conversion weight of the site B (standby) validators")
 		fs.Float64Var(&opts.balanceAvax, "balance", 0, "per-validator continuous-fee balance in AVAX (default: the network's standard deposit)")
 		fs.BoolVar(&opts.force, "force", false, "resume/verify even though network.env already records a SUBNET_ID")
 		_ = fs.Parse(os.Args[2:])
 		create(ctx, opts)
 	case "set-weight":
-		node := fs.String("node", "", "validator name (a1..), staking slot number, NodeID-... or validationID")
+		node := fs.String("node", "", "validator name (from nodes.ini), NodeID-... or validationID")
 		weight := fs.Uint64("weight", 0, "target validator weight (0 removes)")
 		_ = fs.Parse(os.Args[2:])
 		if *node == "" {
@@ -173,40 +172,44 @@ func dirExists(p string) bool {
 	return err == nil && st.IsDir()
 }
 
-// loadSigners loads every staking/l1/N/signer.key. We must sign with every
-// registered validator's key to clear the 67% warp quorum, so a slot
-// directory without its signer.key is fatal here rather than a silent
-// below-quorum signature later.
+// loadSigners loads every BLS signer key we hold (staking/l1/<name>/signer.key).
+// Only validator identities carry one - rpc identities never do - so a dir
+// without a signer.key is simply skipped; if the loaded keys cannot clear the
+// 67% warp quorum, signAndAggregate refuses with the exact shortfall.
 func loadSigners(stakingDir string) ([]bls.Signer, error) {
+	if err := vset.CheckNamedKeyDirs(stakingDir); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(filepath.Join(stakingDir, "l1"))
 	if err != nil {
 		return nil, fmt.Errorf("read %s/l1: %w", stakingDir, err)
 	}
 	var signers []bls.Signer
 	for _, e := range entries {
-		key, err := strconv.Atoi(e.Name())
-		if err != nil {
+		if !e.IsDir() {
 			continue
 		}
 		raw, err := os.ReadFile(filepath.Join(stakingDir, "l1", e.Name(), "signer.key"))
+		if os.IsNotExist(err) {
+			continue // an rpc identity: no BLS key, never registered
+		}
 		if err != nil {
-			return nil, fmt.Errorf("read signer.key for slot %d: %w (without every registered key the local signatures cannot clear the 67%% warp quorum)", key, err)
+			return nil, fmt.Errorf("read signer.key for %s: %w", e.Name(), err)
 		}
 		s, err := localsigner.FromBytes(raw)
 		if err != nil {
-			return nil, fmt.Errorf("load signer.key for slot %d: %w", key, err)
+			return nil, fmt.Errorf("load signer.key for %s: %w", e.Name(), err)
 		}
 		signers = append(signers, s)
 	}
 	if len(signers) == 0 {
-		return nil, fmt.Errorf("no signer.key files under %s/l1", stakingDir)
+		return nil, fmt.Errorf("no signer.key files under %s/l1 (validator identities missing?)", stakingDir)
 	}
 	return signers, nil
 }
 
-// namesByNodeID reads the manifest's validator names (written by `l1 create`;
-// key number for entries without a name). Best effort: an unreadable manifest
-// just means unnamed output.
+// namesByNodeID reads the manifest's node names. Best effort: an unreadable
+// manifest just means unnamed output.
 func namesByNodeID(stakingDir string) map[ids.NodeID]string {
 	out := map[ids.NodeID]string{}
 	entries, err := vset.ReadManifest(stakingDir)
@@ -214,17 +217,14 @@ func namesByNodeID(stakingDir string) map[ids.NodeID]string {
 		return out
 	}
 	for _, e := range entries {
-		if e.Name != "" {
-			out[e.NodeID] = e.Name
-		} else {
-			out[e.NodeID] = strconv.Itoa(e.Key)
-		}
+		out[e.NodeID] = e.Name
 	}
 	return out
 }
 
-// resolveValidator maps a --node argument (validator name from the manifest,
-// staking slot number, NodeID or validationID) to a registered validator.
+// resolveValidator maps a --node argument (node name from the manifest,
+// NodeID or validationID) to a registered validator. A name that resolves to
+// a role=rpc node fails with the role named: rpc nodes are never registered.
 func resolveValidator(cfg config, vs []vset.Validator, node string) vset.Validator {
 	var match func(v vset.Validator) bool
 	if nodeID, ok := manifestNodeID(cfg.stakingDir, node); ok {
@@ -234,40 +234,43 @@ func resolveValidator(cfg config, vs []vset.Validator, node string) vset.Validat
 	} else if vid, err := ids.FromString(node); err == nil {
 		match = func(v vset.Validator) bool { return v.ValidationID == vid }
 	} else {
-		fatalf("--node %q is not a validator name, slot number, NodeID or validationID", node)
+		fatalf("--node %q is not a node name, NodeID or validationID", node)
 	}
 	for _, v := range vs {
 		if match(v) {
 			return v
 		}
 	}
+	if nodeRole(node) == topo.RoleRPC {
+		fatalf("%s is role=rpc, not a registered validator", node)
+	}
 	fatalf("--node %q does not match any registered validator (see l1 status)", node)
 	panic("unreachable")
 }
 
-// keysByNodeID maps registered NodeIDs to their manifest key, for stable
-// slot-ordered output. Best effort like namesByNodeID.
-func keysByNodeID(stakingDir string) map[ids.NodeID]int {
-	out := map[ids.NodeID]int{}
-	entries, err := vset.ReadManifest(stakingDir)
+// nodeRole looks a name up in the inventory, "" when nodes.ini is unreadable
+// or the name is not in it. Used only to sharpen error messages.
+func nodeRole(name string) string {
+	nodes, err := topo.LoadNear()
 	if err != nil {
-		return out
+		return ""
 	}
-	for _, e := range entries {
-		out[e.NodeID] = e.Key
+	for _, n := range nodes {
+		if n.Name == name {
+			return n.Role
+		}
 	}
-	return out
+	return ""
 }
 
-// manifestNodeID resolves a validator name (a1..) or staking slot number
-// against the manifest.
+// manifestNodeID resolves a node name against the manifest.
 func manifestNodeID(stakingDir, node string) (ids.NodeID, bool) {
 	entries, err := vset.ReadManifest(stakingDir)
 	if err != nil {
 		return ids.EmptyNodeID, false
 	}
 	for _, e := range entries {
-		if e.Name == node || strconv.Itoa(e.Key) == node {
+		if e.Name == node {
 			return e.NodeID, true
 		}
 	}
@@ -308,8 +311,7 @@ func status(ctx context.Context, cfg config) {
 		fatalf("%v", err)
 	}
 	names := namesByNodeID(cfg.stakingDir)
-	keys := keysByNodeID(cfg.stakingDir)
-	sort.Slice(vs, func(i, j int) bool { return keys[vs[i].NodeID] < keys[vs[j].NodeID] })
+	sort.Slice(vs, func(i, j int) bool { return names[vs[i].NodeID] < names[vs[j].NodeID] })
 	rate := feeRate(ctx, pc)
 
 	var total uint64

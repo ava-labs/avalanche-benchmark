@@ -12,25 +12,25 @@ import (
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/netcfg"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/topo"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/vset"
 )
 
-// config is the runtime environment, supplied by the bash wrapper (which sources
-// _common.sh + network.env and exports the Fuji upstream peer). The pure
-// planner needs none of this; only the I/O orchestration does.
+// config is the runtime environment: the nodes.ini inventory plus .env /
+// network.env settings. The binary self-loads everything (see loadEnvFiles),
+// so it runs directly with no wrapper.
 type config struct {
-	topo        Topology
-	nodeIPs     []string   // pool machines: site A (NODE_IPS), then site B (BACKUP_SITE_NODE_IPS) if configured
-	instances   []instance // one per pool slot, parallel to nodeIPs; carries ports + dirs (co-location aware)
-	sshUser     string
-	sshKey      string
-	remoteDir   string // e.g. ~/avalanche-benchmark (tilde expanded remotely)
-	repoDir     string // local repo root, source of upload artifacts
-	chainID     string
-	subnetID    string
-	subnetEVMID string
-	upstreamIPs string         // public Fuji peer(s) the RPC tier's P-chain follows (ip:port csv)
-	upstreamIDs string         // their NodeIDs (TLS-pinned; a hijacked IP cannot impersonate)
-	nodeIDByKey map[int]string // committed key index -> NodeID, from staking/node-ids.env
+	nodes        []topo.Node // the nodes.ini inventory, in file order
+	instances    []instance  // one per node, parallel to nodes; carries ports + on-box paths
+	sshUser      string
+	sshKey       string
+	remoteDir    string // e.g. ~/avalanche-benchmark (tilde expanded remotely)
+	repoDir      string // local repo root, source of upload artifacts
+	chainID      string
+	subnetID     string
+	subnetEVMID  string
+	upstreamIPs  string            // public anchor-network peer(s) the RPC tier's P-chain follows (ip:port csv)
+	upstreamIDs  string            // their NodeIDs (TLS-pinned; a hijacked IP cannot impersonate)
+	nodeIDByName map[string]string // node name -> NodeID, from staking/node-ids.env
 }
 
 func mustEnv(key string) string {
@@ -46,8 +46,8 @@ func mustEnv(key string) string {
 // same defaults the old _common.sh shell loader supplied, so `benchmark-fleet`
 // runs directly with no wrapper. Values already in the real environment win
 // (godotenv never overrides), so an ad-hoc `FOO=bar benchmark-fleet ...` still
-// overrides a file. The per-role IP lists, SSH_USER, and the chain IDs have no
-// defaults - they must come from the files (topo.FromEnv / mustEnv report a
+// overrides a file. The inventory (nodes.ini), SSH_USER and the chain IDs have
+// no defaults - they must come from the files (topo.Load / mustEnv report a
 // clear error if absent).
 func loadEnvFiles() {
 	repo := os.Getenv("REPO_DIR")
@@ -77,35 +77,20 @@ func setDefault(key, val string) {
 	}
 }
 
-// splitIPs parses a comma-separated IP list, trimming blanks and dropping empties.
-func splitIPs(csv string) []string {
-	var out []string
-	for _, s := range strings.Split(csv, ",") {
-		if s = strings.TrimSpace(s); s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// loadPool derives the topology, ordered pool, and per-slot instances from the
-// per-role IP env (see internal/topo.FromEnv: VALIDATOR_IPS / SPARE_IPS /
-// RPC_IPS for site A, BACKUP_* for the optional site B; lengths set the
-// counts, repeated IPs co-locate). Split out from loadConfig so `endpoints`
-// can run with just the IP env.
-func loadPool() (Topology, []string, []instance) {
-	t, pool, err := topo.FromEnv(os.Getenv)
+// loadPool reads the nodes.ini inventory and derives per-node instances.
+// Split out from loadConfig so `endpoints` can run with just the inventory.
+func loadPool() ([]topo.Node, []instance) {
+	nodes, err := topo.Load(filepath.Join(os.Getenv("REPO_DIR"), topo.File))
 	if err != nil {
 		fatalf("%v", err)
 	}
-	return t, pool, buildInstances(pool)
+	return nodes, buildInstances(nodes)
 }
 
 func loadConfig() *config {
-	t, pool, insts := loadPool()
+	nodes, insts := loadPool()
 	c := &config{
-		topo:        t,
-		nodeIPs:     pool,
+		nodes:       nodes,
 		instances:   insts,
 		sshUser:     mustEnv("SSH_USER"),
 		sshKey:      mustEnv("SSH_KEY_PATH"),
@@ -117,26 +102,19 @@ func loadConfig() *config {
 		upstreamIPs: mustEnv("FUJI_UPSTREAM_IPS"),
 		upstreamIDs: mustEnv("FUJI_UPSTREAM_IDS"),
 	}
-	c.nodeIDByKey = loadNodeIDs(c.repoDir + "/staking/node-ids.env")
-	return c
-}
-
-// loadNodeIDs parses the generated manifest (staking/node-ids.env, written by
-// 00_gen_secrets.sh) into committed-key-index -> NodeID. The NodeIDs feed the
-// per-role --bootstrap-ids / --state-sync-ids lists in startScript.
-func loadNodeIDs(path string) map[int]string {
-	vars, err := godotenv.Read(path)
+	stakingDir := filepath.Join(c.repoDir, "staking")
+	if err := vset.CheckNamedKeyDirs(stakingDir); err != nil {
+		fatalf("%v", err)
+	}
+	entries, err := vset.ReadManifest(stakingDir)
 	if err != nil {
-		fatalf("read %s (run ./setup/00_gen_secrets.sh first): %v", path, err)
+		fatalf("%v (run ./setup/00_gen_secrets.sh first)", err)
 	}
-	out := make(map[int]string, len(vars))
-	for k, v := range vars {
-		var idx int
-		if _, err := fmt.Sscanf(k, "L1_%d_NODE_ID", &idx); err == nil && v != "" {
-			out[idx] = v
-		}
+	c.nodeIDByName = make(map[string]string, len(entries))
+	for _, e := range entries {
+		c.nodeIDByName[e.Name] = e.NodeID.String()
 	}
-	return out
+	return c
 }
 
 func envOr(key, def string) string {
@@ -195,7 +173,7 @@ func (c *config) scpArgs(extra ...string) []string {
 
 // ssh runs a remote command and returns trimmed stdout. SSH failures are fatal:
 // "the simulated up/down went wrong": no best-effort skipping. Flows that must
-// survive a dead host (observe, the provision sweep) use sshTry instead.
+// survive a dead host (the provision sweep) use sshTry instead.
 func (c *config) ssh(host, remoteCmd string) string {
 	out, err := c.sshTry(host, remoteCmd)
 	if err != nil {
@@ -262,15 +240,15 @@ func (c *config) rsyncUpload(localPath, host, remotePath string) {
 // does not), avoiding self-termination of the SSH session.
 const pluginPat = "avalanche-benchmark/[p]lugins/"
 
-// killNode kills the avalanchego for pool slot i AND its orphaned subnet-evm plugin
+// killNode kills the avalanchego for node i AND its orphaned subnet-evm plugin
 // child, then waits for it to disappear. avalanchego runs the VM as a go-plugin child
 // process; SIGKILLing the parent orphans the child, which keeps the plugin binary open
 // (ETXTBSY) and blocks re-upload, and these orphans accumulate across failover cycles.
 // So every stop must reap the plugin too.
 //
-// On a normal (one-process) box this is the exact-name reap it always was: kill every
-// avalanchego + every plugin on the host. On a CO-LOCATED box that broad reap would
-// take down the housemate processes, so we instead target THIS instance by its unique
+// On a normal (one-node) box this is the exact-name reap it always was: kill every
+// avalanchego + every plugin on the host. On a CO-HOSTED box that broad reap would
+// take down the housemate processes, so we instead target THIS node by its unique
 // HTTP port and reap only its own plugin child (pgrep -P on that pid).
 func (c *config) killNode(i int) {
 	in := c.instances[i]
@@ -283,19 +261,19 @@ func (c *config) killNode(i int) {
 		c.ssh(in.host, kill)
 		time.Sleep(250 * time.Millisecond)
 	}
-	fatalf("avalanchego/plugin for %s on %s did not exit after pkill", c.topo.MachineName(i), in.host)
+	fatalf("avalanchego/plugin for %s on %s did not exit after pkill", c.nodes[i].Name, in.host)
 }
 
 // killCmds returns the (kill, liveness-probe) shell commands for an instance, choosing
-// the broad host-wide reap for a single-process box and a PID-scoped reap for a
-// co-located one. Split out so killNode stays a simple kill/wait loop.
+// the broad host-wide reap for a single-node box and a PID-scoped reap for a
+// co-hosted one. Split out so killNode stays a simple kill/wait loop.
 func (c *config) killCmds(in instance) (kill, alive string) {
 	if !in.shared {
 		kill = "pkill -KILL -x avalanchego || true; pkill -KILL -f '" + pluginPat + "' || true"
 		alive = "{ pgrep -x avalanchego >/dev/null || pgrep -f '" + pluginPat + "' >/dev/null; } && echo A || echo D"
 		return kill, alive
 	}
-	// Co-located: find this instance's avalanchego by its unique http-port, kill it and
+	// Co-hosted: find this node's avalanchego by its unique http-port, kill it and
 	// its direct children (the go-plugin process), leaving housemates untouched.
 	kill = fmt.Sprintf(
 		"for pid in $(pgrep -f -- '%s'); do kids=$(pgrep -P \"$pid\" 2>/dev/null || true); kill -KILL \"$pid\" $kids 2>/dev/null || true; done",
@@ -304,57 +282,81 @@ func (c *config) killCmds(in instance) (kill, alive string) {
 	return kill, alive
 }
 
-// swap wipes staking/active and copies the committed key set for the given index
-// in, then rewrites the key_index marker. Wipe-before-write: a crash mid-swap
-// leaves the key missing (re-run re-copies), never duplicated.
-func (c *config) swap(i, keyIdx int) {
+// migrateLegacyDataDir claims the retired single-node layout for the FIRST
+// node on a box: a one-time same-filesystem `mv data/validator data/<name>`
+// that preserves the node's synced anchor P-chain db (50G; never copied,
+// never deleted). Runs only inside the rebuild paths (freshClean /
+// rebuildWedged), never on `down` or status, and only when the legacy dir
+// exists and the node's own root does not.
+func (c *config) migrateLegacyDataDir(i int) {
 	in := c.instances[i]
+	if c.instancesOnHost(in.host)[0] != i {
+		return // only the box's first node ever owned data/validator
+	}
 	c.ssh(in.host, fmt.Sprintf(
-		"cd %s && rm -rf %s && mkdir -p %s && "+
-			"cp staking/l1/%d/staker.crt staking/l1/%d/staker.key staking/l1/%d/signer.key %s/ && "+
-			"echo %d > %s/key_index",
-		c.remoteDir, in.activeDir, in.activeDir, keyIdx, keyIdx, keyIdx, in.activeDir, keyIdx, in.activeDir))
+		"cd %s 2>/dev/null || exit 0; if [ -d data/validator ] && [ ! -e %s ]; then mv data/validator %s && echo '  %s: migrated legacy data/validator -> %s'; fi",
+		c.remoteDir, in.dataDir, in.dataDir, c.nodes[i].Name, in.dataDir))
 }
 
-// nodeIDForKey returns committed key k's NodeID from the generated manifest.
-func (c *config) nodeIDForKey(k int) string {
-	id := c.nodeIDByKey[k]
+// swap wipes the node's active staking dir and installs its permanent
+// committed identity from staking/l1/<name>. Wipe-before-write: a crash
+// mid-swap leaves the key missing (re-run re-copies), never duplicated.
+// Validators MUST carry their BLS signer.key (its absence fails the cp
+// loudly); rpc identities never have one - avalanchego self-generates a
+// throwaway BLS key on start, which is never registered anywhere.
+func (c *config) swap(i int) {
+	n, in := c.nodes[i], c.instances[i]
+	src := "staking/l1/" + n.Name
+	files := src + "/staker.crt " + src + "/staker.key"
+	if n.IsValidator() {
+		files += " " + src + "/signer.key"
+	}
+	c.ssh(in.host, fmt.Sprintf(
+		"cd %s && rm -rf %s && mkdir -p %s && cp %s %s/",
+		c.remoteDir, in.activeDir, in.activeDir, files, in.activeDir))
+}
+
+// nodeIDFor returns a node's NodeID from the generated manifest.
+func (c *config) nodeIDFor(name string) string {
+	id := c.nodeIDByName[name]
 	if id == "" {
-		fatalf("missing L1_%d_NODE_ID in %s/staking/node-ids.env (run ./setup/00_gen_secrets.sh)", k, c.repoDir)
+		fatalf("missing %s in %s/staking/node-ids.env (run ./setup/00_gen_secrets.sh)", name, c.repoDir)
 	}
 	return id
 }
 
-// pchainBeacons returns the --bootstrap-ips/--bootstrap-ids for pool slot i.
+// pchainBeacons returns the --bootstrap-ips/--bootstrap-ids for node i.
 // The whole fleet runs --p-chain-follow-only, re-syncing the P-chain forever
 // from exactly these peers (two-hop chaining, see FUJI_PLAN.md):
-//   - RPC slots follow the pinned public Fuji peer: the fleet's ONE allowed
-//     external TCP (FUJI_UPSTREAM_IPS/IDS; re-check genesis/bootstrappers.json
-//     on every avalanchego bump, the hardcoded IPs rotate between releases);
-//   - every other slot follows its OWN SITE's RPC slots (validators only ever
-//     reach RPC machines in the same DC). Identities are permanent, so this
+//   - role=rpc nodes follow the pinned public anchor-network peer: the
+//     fleet's ONE allowed external TCP (FUJI_UPSTREAM_IPS/IDS; re-check
+//     genesis/bootstrappers.json on every avalanchego bump, the hardcoded IPs
+//     rotate between releases);
+//   - validators follow ALL of the fleet's rpc nodes (dc= is display-only,
+//     nothing functional keys off it). Identities are permanent, so this
 //     list is static per deploy. NOTE the >=75% beacon-weight startup latch:
-//     with 2 RPCs per site a validator needs BOTH connected at (re)start.
+//     a (re)starting validator needs ceil(75%) of these rpc beacons
+//     connected - with 4 rpc nodes, any 3.
 func (c *config) pchainBeacons(i int) (ips, nodeIDs string) {
-	if c.topo.IsRPCSlot(i) {
+	if c.nodes[i].Role == topo.RoleRPC {
 		return c.upstreamIPs, c.upstreamIDs
 	}
 	var ipL, idL []string
 	for j, in := range c.instances {
-		if c.topo.IsRPCSlot(j) && c.topo.Site(j) == c.topo.Site(i) {
+		if c.nodes[j].Role == topo.RoleRPC {
 			ipL = append(ipL, fmt.Sprintf("%s:%d", in.host, in.stakingPort))
-			idL = append(idL, c.nodeIDForKey(c.topo.KeyOf(j)))
+			idL = append(idL, c.nodeIDFor(c.nodes[j].Name))
 		}
 	}
 	return strings.Join(ipL, ","), strings.Join(idL, ",")
 }
 
-// siblingSeeds returns --state-sync-ips/--state-sync-ids for pool slot i: every
-// OTHER pool instance under its permanent identity. Signed-IP gossip never
-// relays the fleet's private IPs, so the L1 consensus mesh must be seeded
-// explicitly: via state-sync-ids, NOT bootstrap-ids, so fresh siblings never
-// become P-chain frontier beacons (the frontier-cap gotcha; proven recipe in
-// the 2026-07-03 e2e). Identities never move, so the list is static per deploy.
+// siblingSeeds returns --state-sync-ips/--state-sync-ids for node i: every
+// OTHER node under its permanent identity. Signed-IP gossip never relays the
+// fleet's private IPs, so the L1 consensus mesh must be seeded explicitly:
+// via state-sync-ids, NOT bootstrap-ids, so fresh siblings never become
+// P-chain frontier beacons (the frontier-cap gotcha; proven recipe in the
+// 2026-07-03 e2e). Identities never move, so the list is static per deploy.
 func (c *config) siblingSeeds(i int) (ips, nodeIDs string) {
 	var ipL, idL []string
 	for j, in := range c.instances {
@@ -362,18 +364,17 @@ func (c *config) siblingSeeds(i int) (ips, nodeIDs string) {
 			continue
 		}
 		ipL = append(ipL, fmt.Sprintf("%s:%d", in.host, in.stakingPort))
-		idL = append(idL, c.nodeIDForKey(c.topo.KeyOf(j)))
+		idL = append(idL, c.nodeIDFor(c.nodes[j].Name))
 	}
 	return strings.Join(ipL, ","), strings.Join(idL, ",")
 }
 
-// startScript renders the launch script for pool slot i. Identity lives in the
-// files under the instance's staking/active dir (swapped in pass 1); the only
-// role-dependent parts are the P-chain beacon and sibling-seed lists above. The
-// data dir is preserved (never wiped here) so a hot spare rejoins in seconds. All
-// ports and paths come from the instance, so a co-located 2nd process lands on its
-// own ports and dirs; for a normal node these are the original 9652/9653 +
-// data/validator values.
+// startScript renders the launch script for node i. Identity lives in the
+// files under the node's data/<name>/staking/active dir (swapped in pass 1);
+// the only role-dependent parts are the P-chain beacon and sibling-seed lists
+// above. The data root is preserved (never wiped here) so a restarted node
+// rejoins in seconds. All ports and paths come from the instance, so nodes
+// sharing a box land on their own ports and dirs.
 //
 // Primary-network flags (see FUJI_PLAN.md): the primary network is the anchor
 // network itself (--network-id=fuji|mainnet, built-in genesis, per netcfg);
@@ -392,7 +393,7 @@ set -e
 cd %[1]s
 
 mkdir -p "%[7]s/configs/chains/%[2]s" "%[7]s/configs/subnets" "%[7]s/db" "%[7]s/logs"
-cp %[8]s "%[7]s/configs/chains/%[2]s/config.json"
+cp chain-config.json "%[7]s/configs/chains/%[2]s/config.json"
 cp subnet-config.json "%[7]s/configs/subnets/%[3]s.json"
 
 # Belt and braces for the stdout capture: coreth once INFO-logged every
@@ -401,7 +402,7 @@ cp subnet-config.json "%[7]s/configs/subnets/%[3]s.json"
 # the spam at the source; this watchdog caps the file at 2 GiB regardless
 # (the file is open O_APPEND, so truncate reclaims space with no restart).
 # The pkill keeps restarts from stacking watchdogs; the trailing ';' in the
-# pattern anchors it so co-located suffixed dirs don't cross-match.
+# pattern anchors it so co-hosted nodes' dirs don't cross-match.
 pkill -f "outwatch=%[7]s;" || true
 setsid bash -c 'outwatch=%[7]s; while sleep 60; do
     [ "$(stat -c%%s "$outwatch/logs/avalanchego.out" 2>/dev/null || echo 0)" -gt 2147483648 ] &&
@@ -415,26 +416,26 @@ done' >/dev/null 2>&1 < /dev/null &
 # forever. Nodes are raw setsid processes (no systemd unit), so there is no
 # MemoryMax hard stop; instead the raised oom_score_adj (also inherited) makes
 # the kernel kill the node tree first, not sshd, if it still exceeds physical
-# RAM. NOTE: co-located instances each get 75%%, acceptable on test-only boxes.
+# RAM. NOTE: co-hosted nodes each get 75%%, acceptable on test-only boxes.
 export GOMEMLIMIT=$(awk '/MemTotal/{printf "%%dB", $2*1024*3/4}' /proc/meminfo)
 echo 500 > /proc/self/oom_score_adj || true
 
 setsid ./bin/avalanchego \
-    --http-port=%[9]d \
-    --staking-port=%[10]d \
+    --http-port=%[8]d \
+    --staking-port=%[9]d \
     --http-host=0.0.0.0 \
     --public-ip=%[4]s \
     --db-dir=%[7]s/db \
     --db-type=pebbledb \
     --log-dir=%[7]s/logs \
     --data-dir=%[7]s \
-    --network-id=%[14]s \
+    --network-id=%[13]s \
     --partial-sync-primary-network=true \
     --p-chain-follow-only=true \
     --network-allow-private-ips=true \
-    --staking-tls-cert-file=%[11]s/staker.crt \
-    --staking-tls-key-file=%[11]s/staker.key \
-    --staking-signer-key-file=%[11]s/signer.key \
+    --staking-tls-cert-file=%[10]s/staker.crt \
+    --staking-tls-key-file=%[10]s/staker.key \
+    --staking-signer-key-file=%[10]s/signer.key \
     --plugin-dir=$(pwd)/plugins \
     --config-file=node-config.json \
     --chain-config-dir=%[7]s/configs/chains \
@@ -442,11 +443,11 @@ setsid ./bin/avalanchego \
     --track-subnets="%[3]s" \
     --bootstrap-ips=%[5]s \
     --bootstrap-ids=%[6]s \
-    --state-sync-ips=%[12]s \
-    --state-sync-ids=%[13]s \
+    --state-sync-ips=%[11]s \
+    --state-sync-ids=%[12]s \
     >%[7]s/logs/avalanchego.out 2>&1 < /dev/null &
 `, c.remoteDir, c.chainID, c.subnetID, in.host, beaconIPs, beaconIDs,
-		in.dataDir, in.chainCfg, in.httpPort, in.stakingPort, in.activeDir,
+		in.dataDir, in.httpPort, in.stakingPort, in.activeDir,
 		seedIPs, seedIDs, netcfg.Get().Name)
 }
 
@@ -459,12 +460,13 @@ func (c *config) start(i int) {
 		script)
 }
 
-// freshClean kills the process for pool slot i and resets it to a from-genesis
-// L1 while PRESERVING the already-synced Fuji P-chain. Used by `reconcile
-// fresh` and `fleet up`. It wipes ONLY the L1 EVM state (data/validator/chainData) and
-// staking/active (so the next observe reads dead + key 0), NOT the whole data
-// dir: keeping data/validator/db keeps the P-chain, so a fresh raise no longer
-// re-replays Fuji (minutes, bursty) before the fleet can serve.
+// freshClean kills the process for node i and resets it to a from-genesis
+// L1 while PRESERVING the already-synced anchor P-chain. Used by `fleet
+// fresh` and `fleet up`. It wipes ONLY the L1 EVM state
+// (data/<name>/chainData) and the active staking dir (re-installed by swap),
+// NOT the whole data root: keeping data/<name>/db keeps the P-chain, so a
+// fresh raise no longer re-replays the anchor chain (minutes, bursty) before
+// the fleet can serve.
 //
 // On restart the dedup-fixed proposervm (containerman17/fde >= 4274f639) sees
 // its outer blocks are all above the now-empty inner frontier, rolls the L1
@@ -472,10 +474,11 @@ func (c *config) start(i int) {
 // the pre-fix binary a chainData-only wipe bricks chain creation ("inner block
 // unavailable for deduplicated block"). C-chain is unaffected - its coreth ethdb
 // lives inside db/ and its chainData dir is empty, so this never resets it.
-// Only this instance's dirs are removed, so co-located housemates are intact.
+// Only this node's dirs are touched, so co-hosted housemates are intact.
 func (c *config) freshClean(i int) {
 	in := c.instances[i]
 	c.killNode(i)
+	c.migrateLegacyDataDir(i)
 	c.ssh(in.host, fmt.Sprintf(
 		"cd %s 2>/dev/null && rm -rf %s/chainData %s || true; "+
 			"mkdir -p %s/bin %s/plugins %s/staking/l1",
@@ -505,8 +508,8 @@ func (c *config) clearBootstrapBacklog(i int) {
 // reach the tip on its own: a fork wedge (self-finalized sibling block, height
 // frozen forever) or a genuinely stalled bootstrap (no progress for its stall
 // budget). Exactly the live repair recipe: kill it, wipe ONLY the L1 EVM state
-// (data dir chainData; NEVER the shared db/ holding the P-chain, NEVER
-// staking/active) plus the chain's bootstrap backlog inside db/ (so the
+// (data root chainData; NEVER the shared db/ holding the P-chain, NEVER the
+// active staking dir) plus the chain's bootstrap backlog inside db/ (so the
 // restart state-syncs clean instead of silently grinding Bootstrapper.Clear),
 // restart. The node rolls the L1 back to genesis and state-syncs onto the live
 // branch; identity and P-chain are untouched, so no key swap or
@@ -515,76 +518,33 @@ func (c *config) clearBootstrapBacklog(i int) {
 func (c *config) rebuildWedged(i int) {
 	in := c.instances[i]
 	c.killNode(i)
+	c.migrateLegacyDataDir(i)
 	c.ssh(in.host, fmt.Sprintf("cd %s && rm -rf %s/chainData", c.remoteDir, in.dataDir))
 	c.clearBootstrapBacklog(i)
 	c.start(i)
 }
 
-// wipeL1Data stops the node and deletes its entire data/validator directory so it
-// rejoins with no local chain state and is forced to state-sync the L1 fresh onto
-// the live branch. Used by `restore` for the recovering site only.
-//
-// The whole dir is removed on purpose. There is no "L1-only" database to delete:
-// avalanchego keeps every chain (P-chain, C/X, and the L1 subnet) in one shared
-// --db-dir (data/validator/db, a single prefixdb with no per-chain subdir), and
-// subnet-evm keeps its EVM state under data/validator/chainData/<chainID>. Removing
-// only db/ is NOT enough: the EVM state resurrects the stale post-failover frontier
-// and the node then reports a height the live validators never had, so it never
-// converges (measured 2026-06-12; see docs/two-site-failover.md). Clearing all of
-// data/validator is the only reliable clean slate.
-//
-// This is safe: nothing unique lives in data/validator. The node identity
-// (staking/active) and generated key sets (staking/l1) are outside it and untouched,
-// so the P-chain validator registration (authoritative on Fuji's public P-chain) is
-// unaffected. On restart the node re-syncs the Fuji P-chain through its beacons
-// (RPC tier, follow-only) and state-syncs the L1 to tip (state-sync-enabled in
-// chain-config.json); startScript re-creates the dirs and re-copies configs.
-func (c *config) wipeL1Data(i int) {
-	in := c.instances[i]
-	c.killNode(i)
-	c.ssh(in.host, fmt.Sprintf("cd %s && rm -rf %s || true", c.remoteDir, in.dataDir))
-}
-
-// provisioned reports whether the box already has binary, plugin, shared configs,
-// every committed key set the topology can assign to it, AND the role chain-config for
-// every instance it hosts (so adding a co-located 2nd instance to a previously
-// single-process box re-triggers an upload for that box's new chain-config-N.json).
-// An ssh-unreachable host returns the error instead of aborting: the sweep
-// records it as a dead host and reconciles the rest.
+// provisioned reports whether the box already has binary, plugin, shared configs
+// AND the committed key set for every node it hosts. An ssh-unreachable host
+// returns the error instead of aborting: the sweep records it as a dead host
+// and reconciles the rest.
 func (c *config) provisioned(host string) (bool, error) {
 	var checks strings.Builder
-	for _, k := range c.topo.AllKeys() {
-		fmt.Fprintf(&checks, "test -d staking/l1/%d && ", k)
-	}
 	for _, i := range c.instancesOnHost(host) {
-		fmt.Fprintf(&checks, "test -f %s && ", c.instances[i].chainCfg)
+		fmt.Fprintf(&checks, "test -d staking/l1/%s && ", c.nodes[i].Name)
 	}
 	out, err := c.sshTry(host, fmt.Sprintf(
 		"cd %s 2>/dev/null && test -f bin/avalanchego && test -f bin/bsclear && test -f plugins/%s && "+
-			"test -f node-config.json && test -f subnet-config.json && "+
+			"test -f node-config.json && test -f subnet-config.json && test -f chain-config.json && "+
 			"%secho OK || echo MISSING",
 		c.remoteDir, c.subnetEVMID, checks.String()))
 	return out == "OK", err
 }
 
-// deployChainConfig writes chain-config.json to pool slot i's instance config file (which the
-// start script copies into place). ONE config for every role: all nodes run pruned +
-// state-sync-enabled, so every role shares one snapshot shape and self-heals via state-sync if
-// it falls more than state-sync-min-blocks behind. min-delay-target is inert on non-building
-// RPC nodes, so a role split buys nothing. (History: RPCs once ran a separate
-// chain-config-rpc.json, originally an archival profile with no self-heal path; unified
-// 2026-07-11.) For a normal node the staged file is chain-config.json; a co-located instance
-// gets chain-config-N.json so housemates don't clobber each other. Re-applied on restore so a
-// node's pruning/state-sync mode is reset to match its DB.
-func (c *config) deployChainConfig(i int) {
-	in := c.instances[i]
-	c.scp(c.repoDir+"/chain-config.json", in.host, c.remoteDir+"/"+in.chainCfg, false)
-}
-
-// upload pushes all artifacts a box needs. Pass 0 of reconcile. The binary, plugin,
-// shared configs and committed key sets are pushed ONCE per physical box; the
-// role chain-config is written per instance the box hosts (one for a normal box, one
-// per co-located process otherwise).
+// upload pushes all artifacts a box needs. Pass 0 of reconcile. The binary,
+// plugin and shared configs go once per physical box; each node the box hosts
+// gets its OWN committed key set (staking/l1/<name>) - a box never holds
+// another node's keys, and rpc key sets carry no BLS signer key at all.
 func (c *config) upload(host string) {
 	c.ssh(host, fmt.Sprintf("mkdir -p %s/bin %s/plugins %s/staking/l1", c.remoteDir, c.remoteDir, c.remoteDir))
 	c.rsyncUpload(c.repoDir+"/bin/avalanchego", host, c.remoteDir+"/bin/")
@@ -592,10 +552,13 @@ func (c *config) upload(host string) {
 	c.rsyncUpload(c.repoDir+"/bin/"+c.subnetEVMID, host, c.remoteDir+"/plugins/")
 	c.scp(c.repoDir+"/node-config.json", host, c.remoteDir+"/", false)
 	c.scp(c.repoDir+"/subnet-config.json", host, c.remoteDir+"/", false)
-	for _, k := range c.topo.AllKeys() {
-		c.scp(fmt.Sprintf("%s/staking/l1/%d", c.repoDir, k), host, c.remoteDir+"/staking/l1/", true)
-	}
+	c.scp(c.repoDir+"/chain-config.json", host, c.remoteDir+"/", false)
 	for _, i := range c.instancesOnHost(host) {
-		c.deployChainConfig(i)
+		name := c.nodes[i].Name
+		local := filepath.Join(c.repoDir, "staking", "l1", name)
+		if _, err := os.Stat(local); err != nil {
+			fatalf("missing key set %s for node %s (run ./setup/00_gen_secrets.sh)", local, name)
+		}
+		c.scp(local, host, c.remoteDir+"/staking/l1/", true)
 	}
 }

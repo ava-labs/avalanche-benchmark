@@ -222,8 +222,7 @@ type healthResult struct {
 	block uint64
 }
 
-// rpcURL is the L1 RPC endpoint for pool slot i, on that instance's HTTP port
-// (9652 for a normal node, bumped for a co-located one).
+// rpcURL is the L1 RPC endpoint for node i, on that node's HTTP port.
 func (c *config) rpcURL(i int) string {
 	in := c.instances[i]
 	return fmt.Sprintf("http://%s:%d/ext/bc/%s/rpc", in.host, in.httpPort, c.chainID)
@@ -328,29 +327,27 @@ func (c *config) checkHealth() []healthResult {
 	return results
 }
 
-// reportHealth prints each node grouped by datacenter with two columns - its
-// ACTUAL on-chain STAKE tier (validator/spare/dead/rpc, read from the
-// P-chain; weights MOVE via bin/l1) and its physical REACHABILITY
-// (SERVING/CATCHING UP/BOOTSTRAPPING/DOWN, all observed facts) - then an
-// honest summary and hints for the two non-obvious failure modes (lost
-// quorum, and the 75% rejoin latch that keeps a single brought-up validator
-// from recovering a stalled chain). "Validator" in the summary means a slot
-// whose on-chain weight is the validator tier (>=1% of total). actual is the
-// staking slot -> P-chain weight map (fetchWeights); nil means the P-chain
-// was unreadable, so the stake column degrades to "?" and the quorum math
-// (which needs the weights) is skipped.
+// reportHealth prints each node - grouped by its display-only dc tag when the
+// inventory carries any, flat otherwise - with two columns: its ACTUAL
+// on-chain STAKE tier (validator/spare/dead/rpc, read from the P-chain;
+// weights MOVE via bin/l1) and its physical REACHABILITY (SERVING/CATCHING
+// UP/BOOTSTRAPPING/DOWN, all observed facts) - then an honest summary and
+// hints for the two non-obvious failure modes (lost quorum, and the 75%
+// rejoin latch that keeps a single brought-up validator from recovering a
+// stalled chain). "Validator" in the summary means a node whose on-chain
+// weight is the validator tier (>=1% of total). actual is the node index ->
+// P-chain weight map (fetchWeights); nil means the P-chain was unreadable, so
+// the stake column degrades to "?" and the quorum math (which needs the
+// weights) is skipped.
 func reportHealth(cfg *config, results []healthResult, actual map[int]uint64) {
-	t := cfg.topo
 	var total uint64
 	for _, w := range actual {
 		total += w
 	}
 
-	// The leading number is the machine's CLI handle: `fleet down 7` etc.
-	numW := len(strconv.Itoa(len(results)))
 	nameW := len("node")
 	for i := range results {
-		if f := fmt.Sprintf("%s (%s)", t.MachineName(i), cfg.nodeIPs[i]); len(f) > nameW {
+		if f := fmt.Sprintf("%s (%s)", cfg.nodes[i].Name, cfg.nodes[i].Host); len(f) > nameW {
 			nameW = len(f)
 		}
 	}
@@ -359,28 +356,36 @@ func reportHealth(cfg *config, results []healthResult, actual map[int]uint64) {
 	stakeW := len("stake")
 	for i := range results {
 		w, have := actual[i]
-		stakes[i] = stakeCell(w, have, t.IsStakingSlot(i))
+		stakes[i] = stakeCell(w, have, cfg.nodes[i].IsValidator())
 		if len(stakes[i]) > stakeW {
 			stakeW = len(stakes[i])
 		}
 	}
 
-	sites := []int{siteA}
-	if t.TwoSite {
-		sites = append(sites, siteB)
+	// Group by dc tag in first-appearance order; untagged inventories get one
+	// flat unlabeled group.
+	var dcs []string
+	byDC := map[string][]int{}
+	for i, n := range cfg.nodes {
+		if _, ok := byDC[n.DC]; !ok {
+			dcs = append(dcs, n.DC)
+		}
+		byDC[n.DC] = append(byDC[n.DC], i)
 	}
 
 	servingValidators, activeSlots := 0, 0
 	bootstrappingValidator, downNode := false, false
 
-	for _, site := range sites {
-		fmt.Printf("DC %s\n", strings.ToUpper(siteName(site)))
-		fmt.Printf("  %-*s  %-*s  %-*s  %s\n", numW, "#", nameW, "node", stakeW, "stake", "reachable")
-		for i := range results {
-			if t.Site(i) != site {
-				continue
-			}
-			field := fmt.Sprintf("%s (%s)", t.MachineName(i), cfg.nodeIPs[i])
+	for _, dc := range dcs {
+		switch {
+		case dc != "":
+			fmt.Printf("DC %s\n", dc)
+		case len(dcs) > 1:
+			fmt.Println("(no dc)")
+		}
+		fmt.Printf("  %-*s  %-*s  %s\n", nameW, "node", stakeW, "stake", "reachable")
+		for _, i := range byDC[dc] {
+			field := fmt.Sprintf("%s (%s)", cfg.nodes[i].Name, cfg.nodes[i].Host)
 			// "active" (a consensus-relevant validator) is judged by the
 			// on-chain weight.
 			w, have := actual[i]
@@ -400,7 +405,7 @@ func reportHealth(cfg *config, results []healthResult, actual map[int]uint64) {
 			default:
 				reach = "DOWN (not responding!)"
 			}
-			fmt.Printf("  %-*d  %-*s  %-*s  %s\n", numW, i+1, nameW, field, stakeW, stakes[i], reach)
+			fmt.Printf("  %-*s  %-*s  %s\n", nameW, field, stakeW, stakes[i], reach)
 
 			if active {
 				switch results[i].state {

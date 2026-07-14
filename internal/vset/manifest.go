@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/ava-labs/avalanchego/ids"
@@ -16,80 +15,110 @@ import (
 )
 
 // Entry is one committed staking identity from the staking/node-ids.env
-// manifest. Key is the staking/l1/<key> directory index; Name is the
-// operator-facing validator name (a1../b1.., written by `l1 create`; empty
-// for RPC identities and manifests predating names).
+// manifest: the node name (the nodes.ini primary key, also the
+// staking/l1/<name> directory) and its NodeID.
 type Entry struct {
-	Key    int
-	NodeID ids.NodeID
 	Name   string
+	NodeID ids.NodeID
 }
 
 func manifestPath(stakingDir string) string {
 	return filepath.Join(stakingDir, "node-ids.env")
 }
 
-// ReadManifest parses staking/node-ids.env (L1_<k>_NODE_ID plus optional
-// L1_<k>_NAME lines) into entries sorted by key.
+// migrateHint points an operator holding the retired numbered layout at the
+// rename procedure.
+const migrateHint = `rename each staking/l1/<N> dir to its node name and rewrite node-ids.env as <name>=<NodeID> lines (see README "Migrating from numbered key dirs")`
+
+// ReadManifest parses staking/node-ids.env (<name>=<NodeID> lines) into
+// entries sorted by name. A manifest in the retired numbered format
+// (L1_<n>_NODE_ID) is an error pointing at the migration procedure.
 func ReadManifest(stakingDir string) ([]Entry, error) {
 	p := manifestPath(stakingDir)
 	vars, err := godotenv.Read(p)
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", p, err)
 	}
-	byKey := map[int]*Entry{}
-	entry := func(k int) *Entry {
-		if byKey[k] == nil {
-			byKey[k] = &Entry{Key: k}
-		}
-		return byKey[k]
-	}
+	out := make([]Entry, 0, len(vars))
 	for k, v := range vars {
-		var key int
-		if _, err := fmt.Sscanf(k, "L1_%d_NODE_ID", &key); err == nil && strings.HasSuffix(k, "_NODE_ID") {
-			id, err := ids.NodeIDFromString(strings.TrimSpace(v))
-			if err != nil {
-				return nil, fmt.Errorf("parse %s in %s: %w", k, p, err)
-			}
-			entry(key).NodeID = id
-			continue
+		if numberedManifestKey(k) {
+			return nil, fmt.Errorf("%s still uses the retired numbered format (%s=...): %s", p, k, migrateHint)
 		}
-		if _, err := fmt.Sscanf(k, "L1_%d_NAME", &key); err == nil && strings.HasSuffix(k, "_NAME") {
-			entry(key).Name = strings.TrimSpace(v)
+		id, err := ids.NodeIDFromString(strings.TrimSpace(v))
+		if err != nil {
+			return nil, fmt.Errorf("parse %s in %s: %w", k, p, err)
 		}
+		out = append(out, Entry{Name: k, NodeID: id})
 	}
-	out := make([]Entry, 0, len(byKey))
-	for _, e := range byKey {
-		if e.NodeID == ids.EmptyNodeID {
-			return nil, fmt.Errorf("%s: L1_%d_NAME has no matching L1_%d_NODE_ID", p, e.Key, e.Key)
-		}
-		out = append(out, *e)
-	}
-	sort.Slice(out, func(a, b int) bool { return out[a].Key < out[b].Key })
+	sort.Slice(out, func(a, b int) bool { return out[a].Name < out[b].Name })
 	return out, nil
 }
 
-// WriteManifest renders the entries back to staking/node-ids.env, sorted by
-// key, one L1_<k>_NODE_ID line each plus an L1_<k>_NAME line when named.
+// numberedManifestKey matches the retired L1_<n>_NODE_ID / L1_<n>_NAME keys.
+func numberedManifestKey(k string) bool {
+	rest, ok := strings.CutPrefix(k, "L1_")
+	if !ok {
+		return false
+	}
+	digits, ok := strings.CutSuffix(rest, "_NODE_ID")
+	if !ok {
+		digits, ok = strings.CutSuffix(rest, "_NAME")
+	}
+	if !ok || digits == "" {
+		return false
+	}
+	for _, r := range digits {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// WriteManifest renders the entries back to staking/node-ids.env, one
+// <name>=<NodeID> line each, sorted by name.
 func WriteManifest(stakingDir string, entries []Entry) error {
 	sorted := append([]Entry(nil), entries...)
-	sort.Slice(sorted, func(a, b int) bool { return sorted[a].Key < sorted[b].Key })
+	sort.Slice(sorted, func(a, b int) bool { return sorted[a].Name < sorted[b].Name })
 	var b strings.Builder
 	for _, e := range sorted {
-		fmt.Fprintf(&b, "L1_%d_NODE_ID=%s\n", e.Key, e.NodeID)
-		if e.Name != "" {
-			fmt.Fprintf(&b, "L1_%d_NAME=%s\n", e.Key, e.Name)
-		}
+		fmt.Fprintf(&b, "%s=%s\n", e.Name, e.NodeID)
 	}
 	return os.WriteFile(manifestPath(stakingDir), []byte(b.String()), 0o644)
 }
 
-// GenerateIdentity creates the full node identity for staking/l1/<key>
-// (staker.crt + staker.key TLS identity that IS the NodeID, plus the BLS
-// signer.key) and returns the NodeID. It refuses to overwrite: an existing
-// identity may be registered on a public P-chain.
-func GenerateIdentity(stakingDir string, key int) (ids.NodeID, error) {
-	dir := filepath.Join(stakingDir, "l1", strconv.Itoa(key))
+// CheckNamedKeyDirs errors when staking/l1 still holds a numbered key dir
+// from the retired layout (staking/l1/3 instead of staking/l1/a3). A missing
+// staking/l1 is fine: nothing generated yet.
+func CheckNamedKeyDirs(stakingDir string) error {
+	entries, err := os.ReadDir(filepath.Join(stakingDir, "l1"))
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		name := e.Name()
+		allDigits := name != ""
+		for _, r := range name {
+			if r < '0' || r > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return fmt.Errorf("%s is a numbered key dir from the retired layout: %s",
+				filepath.Join(stakingDir, "l1", name), migrateHint)
+		}
+	}
+	return nil
+}
+
+// GenerateIdentity creates the node identity for staking/l1/<name>: the
+// staker.crt + staker.key TLS identity that IS the NodeID, plus - for
+// validators only - the BLS signer.key (withSigner; rpc nodes are never
+// registered so no signer key ever exists for them). It refuses to overwrite:
+// an existing identity may be registered on a public P-chain.
+func GenerateIdentity(stakingDir, name string, withSigner bool) (ids.NodeID, error) {
+	dir := filepath.Join(stakingDir, "l1", name)
 	if _, err := os.Stat(dir); err == nil {
 		return ids.EmptyNodeID, fmt.Errorf("%s already exists: refusing to overwrite an identity that may be registered on-chain", dir)
 	}
@@ -98,7 +127,7 @@ func GenerateIdentity(stakingDir string, key int) (ids.NodeID, error) {
 	}
 	certPEM, keyPEM, err := staking.NewCertAndKeyBytes()
 	if err != nil {
-		return ids.EmptyNodeID, fmt.Errorf("generate TLS identity %d: %w", key, err)
+		return ids.EmptyNodeID, fmt.Errorf("generate TLS identity %s: %w", name, err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "staker.crt"), certPEM, 0o644); err != nil {
 		return ids.EmptyNodeID, err
@@ -106,12 +135,14 @@ func GenerateIdentity(stakingDir string, key int) (ids.NodeID, error) {
 	if err := os.WriteFile(filepath.Join(dir, "staker.key"), keyPEM, 0o600); err != nil {
 		return ids.EmptyNodeID, err
 	}
-	signer, err := localsigner.New()
-	if err != nil {
-		return ids.EmptyNodeID, fmt.Errorf("generate BLS key %d: %w", key, err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "signer.key"), signer.ToBytes(), 0o600); err != nil {
-		return ids.EmptyNodeID, err
+	if withSigner {
+		signer, err := localsigner.New()
+		if err != nil {
+			return ids.EmptyNodeID, fmt.Errorf("generate BLS key %s: %w", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "signer.key"), signer.ToBytes(), 0o600); err != nil {
+			return ids.EmptyNodeID, err
+		}
 	}
 	return NodeIDFromCertFile(filepath.Join(dir, "staker.crt"))
 }

@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -29,18 +28,6 @@ import (
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/vset"
 )
 
-const (
-	// The two conversion-time weight tiers: site A (active) carries the
-	// consensus, site B (standby) idles at 1% of an active peer, a live
-	// consensus participant the set can be failed over onto.
-	defaultActiveWeight  uint64 = 100_000
-	defaultStandbyWeight uint64 = 1_000
-
-	// defaultValidators is `create`'s validator count when neither
-	// --validators nor a .env topology says otherwise.
-	defaultValidators = 8
-)
-
 // managerAddress is the conversion-recorded validator manager: address 0x..01
 // on the L1's OWN chain. No contract ever exists there; the P-chain only
 // compares these bytes (and the chainID) against each warp message's source,
@@ -48,53 +35,31 @@ const (
 var managerAddress = ethcommon.HexToAddress("0x0000000000000000000000000000000000000001")
 
 type createOpts struct {
-	validators    int
-	activeWeight  uint64
-	standbyWeight uint64
-	balanceAvax   float64
-	force         bool
+	balanceAvax float64
+	force       bool
 }
 
-// planned is one validator to register: staking key (1..N), operator name,
-// conversion weight, and the identity material once ensured on disk.
+// planned is one validator to register: node name (the staking/l1/<name> key
+// dir), conversion weight, and the identity material once ensured on disk.
 type planned struct {
-	key    int
 	name   string
 	weight uint64
 	nodeID ids.NodeID
 	pop    *signer.ProofOfPossession
 }
 
-// planValidators decides the validator count, names and conversion weights.
-// With a configured .env topology the staking slots rule (names a1../b1.. via
-// topo.MachineName, site A active, site B standby) and key k is the k-th
-// staking slot (topo.KeyOf). An explicit --validators N (or no topology)
-// splits N into an a-half at active weight and a b-half at standby weight.
-func planValidators(opts createOpts) []planned {
-	if opts.validators == 0 {
-		if t, _, err := topo.FromEnv(os.Getenv); err == nil {
-			slots := t.StakingSlots()
-			out := make([]planned, len(slots))
-			for i, s := range slots {
-				w := opts.activeWeight
-				if t.Site(s) == topo.SiteB {
-					w = opts.standbyWeight
-				}
-				out[i] = planned{key: t.KeyOf(s), name: t.MachineName(s), weight: w}
-			}
-			return out
-		}
-		opts.validators = defaultValidators
+// planValidators plans one registration per role=validator node in the
+// inventory, at the node's weight= tag (default 1). The tag is consumed ONLY
+// here: after creation the on-chain weight is the sole truth and set-weight /
+// apply / status never consult it again.
+func planValidators(nodes []topo.Node) []planned {
+	vals := topo.Validators(nodes)
+	if len(vals) == 0 {
+		fatalf("nodes.ini has no role=validator nodes: nothing to register")
 	}
-	n := opts.validators
-	half := (n + 1) / 2
-	out := make([]planned, n)
-	for i := 1; i <= n; i++ {
-		p := planned{key: i, name: "a" + strconv.Itoa(i), weight: opts.activeWeight}
-		if i > half {
-			p = planned{key: i, name: "b" + strconv.Itoa(i-half), weight: opts.standbyWeight}
-		}
-		out[i-1] = p
+	out := make([]planned, len(vals))
+	for i, n := range vals {
+		out[i] = planned{name: n.Name, weight: n.Weight}
 	}
 	return out
 }
@@ -173,15 +138,20 @@ func create(ctx context.Context, opts createOpts) {
 		balance = uint64(opts.balanceAvax * float64(units.Avax))
 	}
 
-	// [1] Node identities: generate whatever staking/l1/<key> is missing the
-	// same way the kit always has, and (re)write the manifest with names.
-	plans := ensureIdentities(stakingDir, planValidators(opts))
+	// [1] Node identities: the role=validator nodes of the inventory.
+	// Generate whatever staking/l1/<name> is missing (generate-if-absent) and
+	// (re)write the manifest.
+	nodes, err := topo.LoadNear()
+	if err != nil {
+		fatalf("%v (`l1 create` registers the inventory's role=validator nodes)", err)
+	}
+	plans := ensureIdentities(stakingDir, planValidators(nodes))
 
 	fmt.Printf("=== l1 create on %s (SPENDS AVAX; resumable via %s) ===\n", net.Name, envPath)
 	fmt.Printf("  P-chain API: %s\n", net.API)
 	fmt.Printf("  Validators: %d, %s AVAX continuous-fee balance each\n", len(plans), avaxString(balance))
 	for _, p := range plans {
-		fmt.Printf("    %-4s key=staking/l1/%-2d weight=%-8d %s\n", p.name, p.key, p.weight, p.nodeID)
+		fmt.Printf("    %-6s key=staking/l1/%-6s weight=%-8d %s\n", p.name, p.name, p.weight, p.nodeID)
 	}
 
 	walletKey, err := fujikey.Load(filepath.Join(stakingDir, "fuji-wallet.key"))
@@ -282,56 +252,59 @@ func create(ctx context.Context, opts createOpts) {
 		prog.subnet, prog.chain, prog.manager)
 	fmt.Println("Registered validators (conversion order = validationID index):")
 	for i, p := range plans {
-		fmt.Printf("  [%d] %-4s key=%-2d weight=%-8d %s  validationID=%s\n",
-			i, p.name, p.key, p.weight, p.nodeID, prog.subnet.Append(uint32(i)))
+		fmt.Printf("  [%d] %-6s weight=%-8d %s  validationID=%s\n",
+			i, p.name, p.weight, p.nodeID, prog.subnet.Append(uint32(i)))
 	}
 	fmt.Printf("Saved to %s. Next: ./setup/03_backup_secrets.sh, then ./run/01_deploy.sh\n", envPath)
 }
 
-// ensureIdentities makes sure every planned staking/l1/<key> identity exists
-// (generating missing ones the way the kit always has), loads each BLS
-// signer's proof of possession, and (re)writes the manifest: planned keys get
-// their NODE_ID + NAME lines, any other committed identities (the RPC tier's)
-// keep theirs.
+// ensureIdentities makes sure every planned staking/l1/<name> identity exists
+// (generating missing VALIDATOR identities, BLS signer key included), loads
+// each BLS signer's proof of possession, and (re)writes the manifest: planned
+// nodes get their lines, any other committed identities (the rpc tier's,
+// generated by setup/00_gen_secrets.sh) keep theirs.
 func ensureIdentities(stakingDir string, plans []planned) []planned {
-	existing := map[int]vset.Entry{}
+	if err := vset.CheckNamedKeyDirs(stakingDir); err != nil {
+		fatalf("%v", err)
+	}
+	existing := map[string]vset.Entry{}
 	if entries, err := vset.ReadManifest(stakingDir); err == nil {
 		for _, e := range entries {
-			existing[e.Key] = e
+			existing[e.Name] = e
 		}
 	}
 	for i := range plans {
 		p := &plans[i]
-		dir := filepath.Join(stakingDir, "l1", strconv.Itoa(p.key))
+		dir := filepath.Join(stakingDir, "l1", p.name)
 		if dirExists(dir) {
 			id, err := vset.NodeIDFromCertFile(filepath.Join(dir, "staker.crt"))
 			if err != nil {
 				fatalf("%v", err)
 			}
 			p.nodeID = id
-			if e, ok := existing[p.key]; ok && e.NodeID != id {
-				fatalf("staking/l1/%d staker.crt yields %s but node-ids.env says %s: manifest and keys disagree, fix staking/ before creating a chain", p.key, id, e.NodeID)
+			if e, ok := existing[p.name]; ok && e.NodeID != id {
+				fatalf("staking/l1/%s staker.crt yields %s but node-ids.env says %s: manifest and keys disagree, fix staking/ before creating a chain", p.name, id, e.NodeID)
 			}
 		} else {
-			id, err := vset.GenerateIdentity(stakingDir, p.key)
+			id, err := vset.GenerateIdentity(stakingDir, p.name, true)
 			if err != nil {
 				fatalf("%v", err)
 			}
-			fmt.Printf("  generated identity staking/l1/%d (%s)\n", p.key, id)
+			fmt.Printf("  generated identity staking/l1/%s (%s)\n", p.name, id)
 			p.nodeID = id
 		}
-		existing[p.key] = vset.Entry{Key: p.key, NodeID: p.nodeID, Name: p.name}
+		existing[p.name] = vset.Entry{Name: p.name, NodeID: p.nodeID}
 
 		raw, err := os.ReadFile(filepath.Join(dir, "signer.key"))
 		if err != nil {
-			fatalf("read staking/l1/%d signer.key: %v", p.key, err)
+			fatalf("read staking/l1/%s signer.key: %v", p.name, err)
 		}
 		sk, err := localsigner.FromBytes(raw)
 		if err != nil {
-			fatalf("load staking/l1/%d signer.key: %v", p.key, err)
+			fatalf("load staking/l1/%s signer.key: %v", p.name, err)
 		}
 		if p.pop, err = signer.NewProofOfPossession(sk); err != nil {
-			fatalf("build PoP for staking/l1/%d: %v", p.key, err)
+			fatalf("build PoP for staking/l1/%s: %v", p.name, err)
 		}
 	}
 	entries := make([]vset.Entry, 0, len(existing))

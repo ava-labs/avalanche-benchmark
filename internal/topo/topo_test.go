@@ -1,96 +1,83 @@
 package topo
 
 import (
-	"reflect"
 	"strings"
 	"testing"
 )
 
-func TestStakingSlotsTwoSite(t *testing.T) {
-	tp := Topology{TwoSite: true, NVal: 3, NSpare: 1, NRPC: 2}
-	// Per site [v v v spare rpc rpc]: staking slots skip the RPCs.
-	want := []int{0, 1, 2, 3, 6, 7, 8, 9}
-	if got := tp.StakingSlots(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("StakingSlots = %v, want %v", got, want)
-	}
-	for k, s := range want {
-		if tp.StakingIndex(s) != k {
-			t.Errorf("StakingIndex(%d) = %d, want %d", s, tp.StakingIndex(s), k)
-		}
-	}
-	if tp.StakingIndex(4) != -1 || tp.StakingIndex(11) != -1 {
-		t.Error("RPC slots must have StakingIndex -1")
-	}
-	// Staking slots wear keys 1..8 in staking-slot order; RPC slots take 9..12.
-	wantKeys := []int{1, 2, 3, 4, 9, 10, 5, 6, 7, 8, 11, 12}
-	for i, w := range wantKeys {
-		if got := tp.KeyOf(i); got != w {
-			t.Errorf("KeyOf(%d) = %d, want %d", i, got, w)
-		}
-	}
-	if got := tp.AllKeys(); !reflect.DeepEqual(got, wantKeys) || len(got) != 12 {
-		t.Errorf("AllKeys = %v", got)
-	}
-}
-
-func TestMachineName(t *testing.T) {
-	tp := Topology{TwoSite: true, NVal: 3, NSpare: 1, NRPC: 2}
-	want := []string{
-		"a1", "a2", "a3", "a4", "rpc_a1", "rpc_a2",
-		"b1", "b2", "b3", "b4", "rpc_b1", "rpc_b2",
-	}
-	for i, w := range want {
-		if got := tp.MachineName(i); got != w {
-			t.Errorf("MachineName(%d) = %q, want %q", i, got, w)
-		}
-	}
-}
-
-func TestFromEnv(t *testing.T) {
-	env := map[string]string{
-		"VALIDATOR_IPS":        "1.1.1.1,1.1.1.2,1.1.1.3",
-		"SPARE_IPS":            "1.1.1.4",
-		"RPC_IPS":              "1.1.1.5,1.1.1.6",
-		"BACKUP_VALIDATOR_IPS": "2.1.1.1,2.1.1.2,2.1.1.3",
-		"BACKUP_SPARE_IPS":     "2.1.1.4",
-		"BACKUP_RPC_IPS":       "2.1.1.5,2.1.1.6",
-	}
-	tp, pool, err := FromEnv(func(k string) string { return env[k] })
+func TestParseBasics(t *testing.T) {
+	nodes, err := Parse(`
+# the fleet
+a1     host=54.183.72.215   role=validator  dc=A  weight=100000
+rpc_a1 host=18.144.224.191  role=rpc        dc=A  # trailing comment
+b1     host=44.251.223.141  role=validator        weight=1000
+x9     host=44.251.223.141  role=validator
+`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !tp.TwoSite || tp.NVal != 3 || tp.NSpare != 1 || tp.NRPC != 2 || len(pool) != 12 {
-		t.Fatalf("FromEnv = %+v pool=%d", tp, len(pool))
+	if len(nodes) != 4 {
+		t.Fatalf("got %d nodes, want 4", len(nodes))
 	}
-	if pool[0] != "1.1.1.1" || pool[6] != "2.1.1.1" || pool[11] != "2.1.1.6" {
-		t.Errorf("pool order wrong: %v", pool)
+	a1 := nodes[0]
+	if a1.Name != "a1" || a1.Host != "54.183.72.215" || a1.Role != RoleValidator ||
+		a1.DC != "A" || a1.Weight != 100000 || !a1.IsValidator() {
+		t.Errorf("a1 = %+v", a1)
 	}
+	if rpc := nodes[1]; rpc.Role != RoleRPC || rpc.IsValidator() || rpc.Weight != 1 || rpc.DC != "A" {
+		t.Errorf("rpc_a1 = %+v", rpc)
+	}
+	if b1 := nodes[2]; b1.DC != "" || b1.Weight != 1000 {
+		t.Errorf("b1 = %+v (dc must default empty)", b1)
+	}
+	if x9 := nodes[3]; x9.Weight != 1 {
+		t.Errorf("x9 weight = %d, want default 1", x9.Weight)
+	}
+	if got := Validators(nodes); len(got) != 3 || got[2].Name != "x9" {
+		t.Errorf("Validators = %v", got)
+	}
+}
 
-	delete(env, "BACKUP_VALIDATOR_IPS")
-	tp, pool, err = FromEnv(func(k string) string { return env[k] })
-	if err != nil || tp.TwoSite || len(pool) != 6 {
-		t.Fatalf("single-site FromEnv = %+v pool=%d err=%v", tp, len(pool), err)
+func TestParsePositionalPorts(t *testing.T) {
+	nodes, err := Parse(`
+a1 host=10.0.0.1 role=validator
+b1 host=10.0.0.2 role=validator
+x9 host=10.0.0.1 role=validator
+x10 host=10.0.0.1 role=rpc
+`)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	env["BACKUP_VALIDATOR_IPS"] = "2.1.1.1" // shape mismatch
-	if _, _, err := FromEnv(func(k string) string { return env[k] }); err == nil {
-		t.Error("mismatched backup shape must error")
+	// First node on a host: 9652/9653; later nodes on the SAME host step +2
+	// in file order. Distinct hosts each start at the base.
+	want := []struct{ port, p2p int }{{9652, 9653}, {9652, 9653}, {9654, 9655}, {9656, 9657}}
+	for i, w := range want {
+		if nodes[i].Port != w.port || nodes[i].StakingPort() != w.p2p {
+			t.Errorf("%s ports = %d/%d, want %d/%d", nodes[i].Name, nodes[i].Port, nodes[i].StakingPort(), w.port, w.p2p)
+		}
 	}
+}
 
-	_, _, err = FromEnv(func(string) string { return "" }) // no .env at all
-	if err == nil || !strings.Contains(err.Error(), "no fleet topology configured") {
-		t.Errorf("all-empty env: got %v, want 'no fleet topology configured'", err)
+func TestParseErrors(t *testing.T) {
+	cases := map[string]string{
+		"a1 host=1.2.3.4 role=validator\na1 host=1.2.3.5 role=rpc": "duplicate node name",
+		"a1 role=validator":                          "host= is required",
+		"a1 host=1.2.3.4":                            "role= is required",
+		"a1 host=1.2.3.4 role=spare":                 "bad role",
+		"r1 host=1.2.3.4 role=rpc weight=5":          "only valid on role=validator",
+		"a1 host=1.2.3.4 role=validator weight=zero": "bad weight",
+		"a1 host=1.2.3.4 role=validator weight=0":    "bad weight",
+		"a1 host=1.2.3.4 role=validator color=red":   "unknown key",
+		"a1 host=1.2.3.4 role=validator port=9660":   "unknown key",
+		"a1 host":                   "bad field",
+		"a=1 host=1.2.3.4 role=rpc": "bad node name",
+		"":                          "no nodes defined",
+		"# only comments\n\n   \n":  "no nodes defined",
 	}
-
-	short := map[string]string{"VALIDATOR_IPS": "1.1.1.1,1.1.1.2", "RPC_IPS": "1.1.1.5"}
-	_, _, err = FromEnv(func(k string) string { return short[k] })
-	if err == nil || !strings.Contains(err.Error(), "at least 3 validator slots") {
-		t.Errorf("2 validators: got %v, want 'at least 3 validator slots'", err)
-	}
-
-	noRPC := map[string]string{"VALIDATOR_IPS": "1.1.1.1,1.1.1.2,1.1.1.3"}
-	_, _, err = FromEnv(func(k string) string { return noRPC[k] })
-	if err == nil || !strings.Contains(err.Error(), "at least 1 RPC slot") {
-		t.Errorf("0 RPC: got %v, want 'at least 1 RPC slot'", err)
+	for src, wantErr := range cases {
+		_, err := Parse(src)
+		if err == nil || !strings.Contains(err.Error(), wantErr) {
+			t.Errorf("Parse(%q) err = %v, want %q", src, err, wantErr)
+		}
 	}
 }

@@ -3,36 +3,40 @@ package vset
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 func TestManifestRoundTripAndIdentity(t *testing.T) {
 	dir := t.TempDir()
 
-	id1, err := GenerateIdentity(dir, 1)
+	id1, err := GenerateIdentity(dir, "a1", true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := GenerateIdentity(dir, 1); err == nil {
+	if _, err := GenerateIdentity(dir, "a1", true); err == nil {
 		t.Fatal("GenerateIdentity must refuse to overwrite")
 	}
-	id2, err := GenerateIdentity(dir, 2)
+	idRPC, err := GenerateIdentity(dir, "rpc_a1", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, f := range []string{"staker.crt", "staker.key", "signer.key"} {
-		if _, err := os.Stat(filepath.Join(dir, "l1", "1", f)); err != nil {
+		if _, err := os.Stat(filepath.Join(dir, "l1", "a1", f)); err != nil {
 			t.Errorf("missing %s: %v", f, err)
 		}
 	}
-	if got, err := NodeIDFromCertFile(filepath.Join(dir, "l1", "1", "staker.crt")); err != nil || got != id1 {
+	// rpc identities never get a BLS signer key.
+	if _, err := os.Stat(filepath.Join(dir, "l1", "rpc_a1", "signer.key")); err == nil {
+		t.Error("rpc identity must not have a signer.key")
+	}
+	if got, err := NodeIDFromCertFile(filepath.Join(dir, "l1", "a1", "staker.crt")); err != nil || got != id1 {
 		t.Errorf("NodeIDFromCertFile = %s (%v), want %s", got, err, id1)
 	}
 
 	in := []Entry{
-		{Key: 2, NodeID: id2, Name: "b1"},
-		{Key: 1, NodeID: id1, Name: "a1"},
-		{Key: 9, NodeID: id1}, // unnamed (RPC-tier identity)
+		{Name: "rpc_a1", NodeID: idRPC},
+		{Name: "a1", NodeID: id1},
 	}
 	if err := WriteManifest(dir, in); err != nil {
 		t.Fatal(err)
@@ -41,8 +45,30 @@ func TestManifestRoundTripAndIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != 3 || out[0].Key != 1 || out[0].Name != "a1" || out[0].NodeID != id1 ||
-		out[1].Key != 2 || out[1].Name != "b1" || out[2].Key != 9 || out[2].Name != "" {
+	if len(out) != 2 || out[0].Name != "a1" || out[0].NodeID != id1 ||
+		out[1].Name != "rpc_a1" || out[1].NodeID != idRPC {
 		t.Fatalf("ReadManifest = %+v", out)
+	}
+
+	if err := CheckNamedKeyDirs(dir); err != nil {
+		t.Errorf("named layout must pass: %v", err)
+	}
+}
+
+func TestNumberedLayoutRejected(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "node-ids.env"),
+		[]byte("L1_1_NODE_ID=NodeID-K2UkKZfq5asStFMBSmWFEjMSVKfDGgzbR\nL1_1_NAME=a1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadManifest(dir); err == nil || !strings.Contains(err.Error(), "numbered format") {
+		t.Errorf("old manifest: err = %v, want numbered-format rejection", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(dir, "l1", "3"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckNamedKeyDirs(dir); err == nil || !strings.Contains(err.Error(), "numbered key dir") {
+		t.Errorf("numbered dir: err = %v, want numbered-key-dir rejection", err)
 	}
 }
