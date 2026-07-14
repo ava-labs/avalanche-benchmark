@@ -30,7 +30,9 @@ recover.
 ## Inventory: nodes.ini
 
 The fleet inventory is one file, `nodes.ini`, the single source of truth for
-node names, hosts and roles. One node per line:
+node names, hosts and roles. The kit ships `nodes.ini.example` with
+placeholder addresses; copy it to `nodes.ini` and point `host=` at your own
+machines. One node per line:
 
 ```
 # <name> host=<ip> role=validator|rpc [dc=<tag>]
@@ -79,8 +81,8 @@ control host.
 Configure once, in the kit root:
 
 ```bash
-cp .env.example .env      # SSH user + key path, optional API_TOKEN
-$EDITOR nodes.ini         # the fleet inventory: one line per node
+cp .env.example .env             # then set SSH_USER + SSH_KEY_PATH (and API_TOKEN if you have one)
+cp nodes.ini.example nodes.ini   # then set every host= to your machines' IPs
 ```
 
 ## Quick start: operate an existing chain
@@ -97,15 +99,20 @@ below re-creates or re-pays for it.
    `network.env` (which records the network, Fuji or mainnet, and the
    subnet/chain/manager IDs).
 3. `cp .env.example .env` and set `SSH_USER` / `SSH_KEY_PATH` (and
-   `API_TOKEN` if you have one). Edit `nodes.ini` so `host=` points at your
-   boxes.
-4. `./fleet status` now reads the fleet. If the nodes are already running,
+   `API_TOKEN` if you have one).
+4. `cp nodes.ini.example nodes.ini` and set every `host=` to your boxes'
+   IPs. Keep the node NAMES exactly as they are: they must match the
+   `staking/l1/<name>` key dirs from the secrets bundle.
+5. `./fleet status` now reads the fleet. If the nodes are already running,
    you are done.
-5. To (re)start stopped nodes: `./fleet up <names...>`. To provision a brand
+6. To (re)start stopped nodes: `./fleet up <names...>`. To provision a brand
    new set of boxes, or to restart the whole L1 from block 0:
    `./run/01_deploy.sh`.
-6. `./run/02_monitoring.sh` brings up Prometheus + Grafana on the control
+7. `./run/02_monitoring.sh` brings up Prometheus + Grafana on the control
    host.
+8. Start load (`./run/03_bombard.sh`, see Load below), reset to the healthy
+   baseline (`./scenarios/00_healthy.sh`), then run the drills
+   (`scenarios/01..07`) while watching `./fleet status` and Grafana.
 
 First boot of freshly provisioned boxes syncs the anchor P-chain from
 scratch (RPC tier first, then validators through them; minutes on Fuji,
@@ -293,7 +300,8 @@ All prebuilt in `bin/`, all run from the kit root:
 
 - `.env` (gitignored): `SSH_USER`, `SSH_KEY_PATH`, optional `API_TOKEN`,
   optional overrides `PCHAIN_API`, `FUJI_UPSTREAM_IPS`/`FUJI_UPSTREAM_IDS`.
-- `nodes.ini`: the fleet inventory (see above).
+- `nodes.ini`: the fleet inventory, copied from `nodes.ini.example` (see
+  above).
 - `network.env` (gitignored, written once by `l1 create`): `NETWORK`,
   `SUBNET_ID`, `CHAIN_ID`, `MANAGER_ADDRESS`. The chain's identity; kept
   even by `fleet destroy`.
@@ -386,5 +394,3 @@ the synced P-chain db is preserved, never copied, never deleted).
   the failover model: weight seesaw, warp message path, halt/recovery theory.
 - [docs/throughput-tuning-and-benchmarks.md](docs/throughput-tuning-and-benchmarks.md):
   the throughput study behind the 4000 tx/s profile (historical).
-- [FUJI_PLAN.md](FUJI_PLAN.md): the original design plan for anchoring on
-  Fuji's public P-chain (historical).

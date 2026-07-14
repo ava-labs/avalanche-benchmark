@@ -54,8 +54,8 @@ cp .env.example .env
 ```
 
 Fill in the SSH settings in `.env` (`.env.example` documents every field),
-then edit `nodes.ini`, the fleet inventory (the kit ships the reference
-fleet's; point the `host=` values at your boxes):
+then create `nodes.ini`, the fleet inventory
+(`cp nodes.ini.example nodes.ini`; point the `host=` values at your boxes):
 
 ```ini
 # <name> host=<ip> role=validator|rpc [dc=<tag>]
