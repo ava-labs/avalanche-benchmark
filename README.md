@@ -66,6 +66,10 @@ cp .env.example .env
 #   BACKUP_RPC_IPS=B5,B6
 ```
 
+Optional in `.env`: `API_TOKEN`, a rate-limit-bypass token sent as a query
+param on every P-chain/info request to the public API (see `.env.example`).
+It is a secret: it lives only in the gitignored `.env`, never in the repo.
+
 Each list's LENGTH is the node count, its VALUES are the placement. Repeat an
 IP to co-locate several nodes on one box (ports and data dirs auto-offset), so
 the full topology fits on as few machines as you have; `.env.example` shows

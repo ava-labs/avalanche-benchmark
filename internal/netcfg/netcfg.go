@@ -9,6 +9,8 @@ package netcfg
 
 import (
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"sync"
 
@@ -106,6 +108,41 @@ func Get() Config {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+		installAPIToken(cfg.API, os.Getenv("API_TOKEN"))
 	})
 	return cfg
+}
+
+// installAPIToken wraps http.DefaultClient (which avalanchego's utils/rpc,
+// and so every platformvm/info client and the primary wallet, sends through)
+// so each request to the public API host carries token=<API_TOKEN> as a query
+// param: the Cloudflare rate-limit-bypass rule on api.avax.network matches
+// it. The value comes from the operator's .env only and is never committed.
+// Requests to any other host (a fleet box's own avalanchego, an overridden
+// PCHAIN_API) are untouched, as is everything when API_TOKEN is unset.
+func installAPIToken(apiURL, token string) {
+	u, err := url.Parse(apiURL)
+	if token == "" || err != nil || u.Host == "" {
+		return
+	}
+	base := http.DefaultClient.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	http.DefaultClient.Transport = &tokenTransport{host: u.Host, token: token, base: base}
+}
+
+type tokenTransport struct {
+	host, token string
+	base        http.RoundTripper
+}
+
+func (t *tokenTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Host == t.host {
+		req = req.Clone(req.Context()) // RoundTrippers must not mutate the caller's request
+		q := req.URL.Query()
+		q.Set("token", t.token)
+		req.URL.RawQuery = q.Encode()
+	}
+	return t.base.RoundTrip(req)
 }

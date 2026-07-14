@@ -1,9 +1,14 @@
 package netcfg
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/ava-labs/avalanchego/utils/constants"
+	"github.com/ava-labs/avalanchego/utils/rpc"
 	"github.com/ava-labs/avalanchego/utils/units"
 )
 
@@ -85,5 +90,52 @@ func TestEnvOverrides(t *testing.T) {
 func TestUnknownNetwork(t *testing.T) {
 	if _, err := Resolve(env(map[string]string{"AVALANCHE_NETWORK": "testnet"})); err == nil {
 		t.Fatal("want error for unknown network")
+	}
+}
+
+// TestAPITokenQueryParam: with the transport installed, an avalanchego rpc
+// request to the API host arrives with token=<value> in the query, and a
+// request to any other host arrives without it.
+func TestAPITokenQueryParam(t *testing.T) {
+	var gotToken string
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.URL.Query().Get("token")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}
+	api := httptest.NewServer(http.HandlerFunc(handler))
+	defer api.Close()
+	other := httptest.NewServer(http.HandlerFunc(handler))
+	defer other.Close()
+
+	saved := http.DefaultClient.Transport
+	defer func() { http.DefaultClient.Transport = saved }()
+	installAPIToken(api.URL, "sekrit")
+
+	send := func(base string) {
+		t.Helper()
+		u, _ := url.Parse(base + "/ext/P")
+		var reply struct{}
+		if err := rpc.SendJSONRequest(context.Background(), u, "platform.getHeight", struct{}{}, &reply); err != nil {
+			t.Fatalf("SendJSONRequest(%s): %v", base, err)
+		}
+	}
+
+	send(api.URL)
+	if gotToken != "sekrit" {
+		t.Errorf("API host request: token = %q, want %q", gotToken, "sekrit")
+	}
+	send(other.URL)
+	if gotToken != "" {
+		t.Errorf("other host request: token = %q, want empty", gotToken)
+	}
+}
+
+// TestAPITokenUnsetNoop: empty token must leave http.DefaultClient alone.
+func TestAPITokenUnsetNoop(t *testing.T) {
+	saved := http.DefaultClient.Transport
+	defer func() { http.DefaultClient.Transport = saved }()
+	installAPIToken("https://api.avax.network", "")
+	if http.DefaultClient.Transport != saved {
+		t.Error("transport replaced despite empty token")
 	}
 }
