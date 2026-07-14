@@ -146,13 +146,14 @@ pack: clean-tools deps build monitoring-deps bin/VERSIONS
 		README.md \
 		docs/
 
-# Client release zip for GitHub releases: the generic kit for operators whose
-# chain already exists. Same payload as pack MINUS setup/ (chain creation is
-# vendor-side) and minus the setup-only genstaking. bin/l1 (weight moves,
-# status) and bin/fuji-wallet (balance top-ups) ship: they are the runtime
-# validator-manager tools. Secrets (staking/, network.env, fuji-wallet.key)
-# are never in any archive; they ship separately per customer and untar over
-# the unpacked kit root.
+# Client release zip for GitHub releases: the complete from-zero kit. The
+# client runs the ENTIRE workflow from a single secret (one funded wallet key
+# at staking/fuji-wallet.key) plus a filled-in nodes.ini: setup/ generates all
+# node staking identities, funds the wallet, and creates the L1; run/ deploys,
+# loads and drills. So setup/ and bin/genstaking ship here too. The ONLY
+# secret handed to the client is that one wallet key; staking/, network.env and
+# fuji-wallet.key are never in any archive (the wallet key is delivered
+# separately, everything else is generated on first run).
 release: clean-tools deps build monitoring-deps bin/VERSIONS
 	rm -f avalanche-l1-kit.zip
 	zip -r avalanche-l1-kit.zip \
@@ -162,12 +163,14 @@ release: clean-tools deps build monitoring-deps bin/VERSIONS
 		bin/benchmark-fleet \
 		bin/l1 \
 		bin/fuji-wallet \
+		bin/genstaking \
 		bin/bsclear \
 		bin/bombard \
 		bin/prometheus \
 		bin/grafana.tar.gz \
 		_common.sh \
 		fleet \
+		setup/ \
 		run/ \
 		scenarios/ \
 		monitoring/grafana-datasources.yml \
