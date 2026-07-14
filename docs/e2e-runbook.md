@@ -13,10 +13,10 @@ node, so it keeps coordinating and recording when a site goes dark.
 | Component | Count | Role |
 |-----------|-------|------|
 | Control host | 1 | `./fleet`, bombard, Prometheus + Grafana. No L1 node. |
-| Site A (primary) | 6 | machines 1-6: `a1..a4` stake slots (all four at validator weight), `rpc_a1`/`rpc_a2` pinned RPCs |
-| Site B (backup) | 6 | machines 7-12: `b1..b4` stake slots at spare weight, `rpc_b1`/`rpc_b2` pinned RPCs |
+| DC A (primary) | 6 | `a1..a4` validators (at validator weight), `rpc_a1`/`rpc_a2` pinned RPCs |
+| DC B (backup) | 6 | `b1..b4` validators at spare weight, `rpc_b1`/`rpc_b2` pinned RPCs |
 
-All 8 stake slots are registered on Fuji's P-chain once, at chain creation.
+All 8 validators are registered on Fuji's P-chain once, at chain creation.
 Failover moves consensus weight between them via `bin/l1`: every weight
 change is a warp message signed locally with all of our validators' BLS keys
 and submitted straight to the P-chain (the manager is recorded on the L1's
@@ -52,32 +52,36 @@ cp .env.example .env
 # then edit .env
 ```
 
-Fill in the SSH settings and the per-role IP lists (`.env.example` documents
-every field and shows co-located shapes):
+Fill in the SSH settings in `.env` (`.env.example` documents every field),
+then edit `nodes.ini`, the fleet inventory (the kit ships the reference
+fleet's; point the `host=` values at your boxes):
 
 ```ini
-SSH_USER=ubuntu
-SSH_KEY_PATH=/path/to/your-fleet-key
-
-# List LENGTH is the node count, VALUES are the placement (repeat an IP to
-# co-locate). VALIDATOR_IPS >= 3, RPC_IPS >= 1 per site.
-VALIDATOR_IPS=A1,A2,A3
-SPARE_IPS=A4
-RPC_IPS=A5,A6
-
-# Site B: set these to enable two-site mode; same shape as A.
-BACKUP_VALIDATOR_IPS=B1,B2,B3
-BACKUP_SPARE_IPS=B4
-BACKUP_RPC_IPS=B5,B6
+# <name> host=<ip> role=validator|rpc [dc=<tag>] [weight=<w>]
+a1     host=A1  role=validator  dc=A  weight=100000
+a2     host=A2  role=validator  dc=A  weight=100000
+a3     host=A3  role=validator  dc=A  weight=100000
+a4     host=A4  role=validator  dc=A  weight=100000
+rpc_a1 host=A5  role=rpc        dc=A
+rpc_a2 host=A6  role=rpc        dc=A
+b1     host=B1  role=validator  dc=B  weight=1000
+b2     host=B2  role=validator  dc=B  weight=1000
+b3     host=B3  role=validator  dc=B  weight=1000
+b4     host=B4  role=validator  dc=B  weight=1000
+rpc_b1 host=B5  role=rpc        dc=B
+rpc_b2 host=B6  role=rpc        dc=B
 ```
 
-Preview the resulting layout before touching anything:
+The node name is the handle everywhere (`./fleet down a1`); `weight=` is the
+conversion weight, read only by chain creation; `dc=` is a display/selector
+tag. Ports are positional per host (one node per box = 9652/9653). Preview
+the resolved layout before touching anything:
 
 ```bash
 ./fleet endpoints
 ```
 
-One tab-separated line per node: name, site, role, host, HTTP port.
+One tab-separated line per node: name, dc, role, host, HTTP port.
 
 ## Step 1: secrets and funding (one time)
 
@@ -89,7 +93,8 @@ One tab-separated line per node: name, site, role, host, HTTP port.
 ./setup/01_fund_wallet.sh
 ```
 
-`00` generates one permanent staking identity per pool slot plus the Fuji
+`00` generates one permanent staking identity per nodes.ini node (BLS signer
+keys for validators only; rpc identities never get one) plus the Fuji
 wallet, all into gitignored `staking/`. `01` prints the P-chain faucet target
 and polls until it is funded at https://core.app/tools/testnet-faucet/
 (2 AVAX per request): 0.1 AVAX per registered validator (a multi-day
@@ -104,9 +109,10 @@ The script exits on its own once the balance clears.
 ./setup/02_create_chain.sh
 ```
 
-Creates the subnet and chain on Fuji's public P-chain and registers all 8
-stake slots in one conversion (site A at validator weight, site B at spare
-weight), with the validator manager recorded on the L1's own chain at
+Creates the subnet and chain on Fuji's public P-chain and registers every
+role=validator node in one conversion, each at its nodes.ini `weight=`
+(the shipped inventory: DC A at validator weight, DC B at spare weight),
+with the validator manager recorded on the L1's own chain at
 `0x..01` so `bin/l1` can self-sign every later weight change. Expected tail:
 
 ```
@@ -150,7 +156,7 @@ recoveries via `./fleet up` do block until the machine is SERVING.)
 
 Starts Prometheus (`:9090`) and Grafana (`:3000`, anonymous admin) on the
 control host. Prometheus scrapes three jobs: `avalanche-l1` (every node's
-`/ext/metrics` on its per-slot port), `fleet` (the weight exporter on
+`/ext/metrics` on its per-node port), `fleet` (the weight exporter on
 `:9091`, gauge `fleet_actual_weight`, read back from the P-chain), and
 `bombard` (`:9092`). Four dashboards are provisioned:
 
@@ -181,8 +187,8 @@ Expect every node `SERVING` and the summary line:
 validators serving: 4/4
 ```
 
-The table shows one row per machine (its number is the CLI handle for
-`down`/`up`), grouped by DC, with its ON-CHAIN stake tier (`validator`,
+The table shows one row per node (its name is the CLI handle for
+`down`/`up`), grouped by dc tag, with its ON-CHAIN stake tier (`validator`,
 `spare`, `dead`, `rpc`) and reachability (`SERVING block=N`,
 `BOOTSTRAPPING`, or `DOWN`). A fresh chain sits at
 `block=0` until load arrives; that is healthy, Avalanche produces blocks on
@@ -195,14 +201,14 @@ demand. `watch -n5 ./fleet status` refreshes continuously.
 ```
 
 One fixed profile: 4000 tx/s, 2000 in-flight cap, 5s resubmit, targeting
-every pinned RPC on both sites. bombard broadcasts each tx to all of them,
+every role=rpc node on both sites. bombard broadcasts each tx to all of them,
 health-checks each endpoint, drops laggards from rotation and re-adds them,
 and resubmits anything in flight, so ingress rides through everything below
 without intervention. Leave it running; it is the live witness.
 
 ## Step 7: the drills (terminal 2)
 
-Each scenario first restores the ground state (all machines up, 1-4
+Each scenario first restores the ground state (every node up, a1-a4
 validating, everything else spare), then executes its failure, so any
 scenario runs from any starting point. Recovery from anything is
 `./scenarios/00_healthy.sh`.
@@ -243,8 +249,8 @@ What to watch during scenario 03:
 - **Failover Overview**: site A serving states drop, stake tier timelines
   seesaw, TPS dips and recovers at site B's cadence (~10 blk/s; TPS is
   unaffected, blocks are just bigger).
-- **`./fleet status`**: machines 1-6 `DOWN`, `b1`-`b3` at
-  tier `validator`, summary `validators serving: 3/3`.
+- **`./fleet status`**: all of DC A `DOWN`, `b1`-`b4` at
+  tier `validator`, summary `validators serving: 4/4`.
 - **bombard** (terminal 1): sends fail over to `rpc_b1`/`rpc_b2`, in-flight
   txs resubmit, throughput recovers.
 
@@ -252,9 +258,9 @@ What to watch during scenario 03:
 
 ```bash
 ./scenarios/00_healthy.sh
-./fleet down 1 2        # 2 of 4 validators dead: quorum lost, chain HALTS
+./fleet down a1 a2      # 2 of 4 validators dead: quorum lost, chain HALTS
 ./fleet status          # prints the quorum WARNING
-./fleet up 1 2          # both back: latch clears, chain resumes in seconds
+./fleet up a1 a2        # both back: latch clears, chain resumes in seconds
 ```
 
 The non-obvious part: bringing back only ONE validator leaves the chain

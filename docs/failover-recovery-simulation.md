@@ -6,12 +6,12 @@ underneath `bin/l1 apply`.
 
 ## Register once, move weight forever
 
-Every stake slot of BOTH sites (validators and spares, `a1..a4` and `b1..b4`
-in the default shape) is registered as an L1 validator exactly once, in the
+Every `role=validator` node in `nodes.ini` (`a1..a4` and `b1..b4` in the
+shipped inventory) is registered as an L1 validator exactly once, in the
 `ConvertSubnetToL1Tx` at chain creation (`setup/02_create_chain.sh`, which
-runs `bin/l1 create`). RPC slots are never registered. After conversion the
-validator set never changes membership; a failover only changes each slot's
-consensus weight.
+runs `bin/l1 create`), at its `weight=` tag. role=rpc nodes are never
+registered. After conversion the validator set never changes membership; a
+failover only changes each validator's consensus weight.
 
 The model in a few sentences: the conversion records the L1's validator
 manager as living on the L1's OWN chain, at address
@@ -19,7 +19,7 @@ manager as living on the L1's OWN chain, at address
 none is needed; the P-chain only ever compares that (chainID, address) pair
 against the source of each weight-change warp message, and then verifies the
 message's BLS aggregate signature against the L1's OWN validator set. We hold
-every validator's BLS signer key (`staking/l1/N/signer.key`), so `bin/l1`
+every validator's BLS signer key (`staking/l1/<name>/signer.key`), so `bin/l1`
 signs each weight message with all of them locally (100% of stake, always
 past the 67% quorum), aggregates, and submits the `SetL1ValidatorWeightTx`
 straight to the P-chain. There is no ValidatorManager contract, no courier
@@ -34,14 +34,14 @@ Weight tiers:
 | `spare` | 1000 | registered, synced, negligible vote |
 | `dead` | 1 | retired (weight 0 would deregister; we never remove) |
 
-Ground state after chain creation: site A slots at `validator`, site B slots
-at `spare` (`planValidators` in `cmd/l1/create.go`; reset any time with
-`scenarios/00_healthy.sh`).
+Ground state after chain creation: DC A validators at `validator`, DC B at
+`spare` (the `weight=` tags in `nodes.ini`, consumed once by `l1 create`;
+reset any time with `scenarios/00_healthy.sh`).
 
 Because staking keys never move between machines, no two live nodes can ever
 share an identity, so double-signing is structurally impossible. (The old
 key-swap design that moved identities between boxes produced forks and was
-deleted; see `internal/topo/topo.go` for the one-permanent-key-per-slot rule.)
+deleted; every node wears its one permanent `staking/l1/<name>` identity.)
 
 ## The weight flow (`cmd/l1`)
 

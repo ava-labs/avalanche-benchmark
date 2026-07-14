@@ -12,10 +12,10 @@ no courier, no signature aggregator; the only external dependency is one
 P-chain RPC. Keys never move between machines, so a failover cannot fork the
 chain.
 
-Each site runs 3 validators + 1 hot spare + 2 fixed RPC nodes (counts
-configurable in `.env`); on the primary site all 4 stake slots (validators and
-spare alike) start at validator weight, so the spare validates from day one.
-One shared control host handles orchestration, load
+The fleet inventory is one file, `nodes.ini`: a name, host, and role
+(validator or rpc) per node. The shipped shape runs 4 validators + 2 fixed
+RPC nodes per data center; a "hot spare" is nothing special, just a
+validator held at weight 1. One shared control host handles orchestration, load
 generation, and monitoring. The control host runs no L1 node, so it keeps
 working when a site is lost.
 
@@ -45,7 +45,8 @@ The full walkthrough with expected output at each step is in
 - A control host plus the fleet machines (12 for the default two-site shape,
   fewer with co-location, see below), all reachable over SSH with one key.
 - Ports on the fleet machines: **22** (SSH) and **9652-9653** (L1 RPC /
-  staking). The RPC machines additionally need ONE outbound TCP to the pinned
+  staking; the first node on a host, +2 per extra co-hosted node). The RPC
+  machines additionally need ONE outbound TCP to the pinned
   upstream peer (default `18.192.93.241:9651` on Fuji,
   `54.232.137.108:9651` on mainnet).
 - The kit is prebuilt and airgap-ready, no Go toolchain needed:
@@ -56,28 +57,40 @@ The full walkthrough with expected output at each step is in
 Configure once:
 
 ```bash
-cp .env.example .env
-# Edit .env: SSH user/key plus one IP list per role, per site.
-#   VALIDATOR_IPS=A1,A2,A3            # site A validators (>=3)
-#   SPARE_IPS=A4                      # site A hot spares
-#   RPC_IPS=A5,A6                     # site A pinned RPCs (>=2)
-#   BACKUP_VALIDATOR_IPS=B1,B2,B3     # site B: set these to enable two-site mode
-#   BACKUP_SPARE_IPS=B4
-#   BACKUP_RPC_IPS=B5,B6
+cp .env.example .env      # SSH user/key and the non-topology settings
+$EDITOR nodes.ini         # the fleet inventory: one line per node
 ```
+
+`nodes.ini` is the single source of truth for the fleet:
+
+```
+# <name> host=<ip> role=validator|rpc [dc=<tag>] [weight=<w>]
+a1     host=10.0.0.1  role=validator  dc=A  weight=100000
+rpc_a1 host=10.0.0.5  role=rpc        dc=A
+b1     host=10.1.0.1  role=validator  dc=B  weight=1000
+```
+
+The node NAME is the primary key everywhere: `./fleet up a1`, the staking key
+dir `staking/l1/a1`, the manifest line in `staking/node-ids.env`, and the
+node's data root `data/a1` on its box. `role=validator` nodes are registered
+as L1 validators at chain creation; `role=rpc` nodes track the chain and
+serve the load-generator ingress, are never registered, and never carry a BLS
+signer key. `dc=` is a display-only tag: `fleet status` groups by it and
+fleet verbs accept `dc=A` selectors, nothing else depends on it. `weight=`
+is the conversion weight, read exactly once, by `l1 create` (default 1);
+after creation the on-chain weight is the only truth.
+
+Ports are positional per host: the k-th node on a host serves HTTP on
+9652+2k and staking on 9653+2k, so one node per box (the production shape)
+is uniformly 9652/9653. Put several nodes on one host to fit the topology
+onto fewer test boxes (each gets its own ports and `data/<name>` root);
+reordering nodes that share a host shifts the later nodes' ports, so
+redeploy that host's nodes after such an edit. Run `./fleet endpoints` to
+preview the resolved layout (name, dc, role, host, port) before deploying.
 
 Optional in `.env`: `API_TOKEN`, a rate-limit-bypass token sent as a query
 param on every P-chain/info request to the public API (see `.env.example`).
 It is a secret: it lives only in the gitignored `.env`, never in the repo.
-
-Each list's LENGTH is the node count, its VALUES are the placement. Repeat an
-IP to co-locate several nodes on one box (ports and data dirs auto-offset), so
-the full topology fits on as few machines as you have; `.env.example` shows
-the worked co-located shapes. Run `./fleet endpoints` to preview the resulting
-layout before deploying. Machines are numbered in list order: site A is 1-6,
-site B is 7-12; the failover commands below use those numbers. Names encode
-the role: site A stake slots (validators + spare) are `a1..a4` and its RPCs
-`rpc_a1 rpc_a2`; site B mirrors them as `b1..b4` and `rpc_b1 rpc_b2`.
 
 ## Install from a release
 
@@ -90,7 +103,9 @@ install; no Go toolchain, no chain creation:
    and extract it into an empty directory (it unpacks flat).
 2. Untar the secrets bundle over the kit root: it restores `staking/` and
    `network.env` (the chain identity, including which network it lives on).
-3. Copy in your `.env` (or `cp .env.example .env` and fill in the fleet IPs).
+3. Copy in your `.env` (or `cp .env.example .env` and fill in SSH settings)
+   and your `nodes.ini` (the release ships the reference fleet's inventory;
+   edit the `host=` values to your boxes).
 4. `./fleet status` now drives the existing fleet; `./run/01_deploy.sh` and
    everything after work as below.
 
@@ -110,8 +125,9 @@ Creating a NEW chain instead is section 1: `00_gen_secrets` -> `01_fund_wallet`
 > already exists, and nothing in step 2 or 3 ever re-creates or re-pays for
 > it.
 
-Three scripts, run in order after `.env` is configured (key generation sizes
-itself to your topology):
+Three scripts, run in order after `.env` and `nodes.ini` are configured (key
+generation follows the inventory: one identity per node, BLS signer keys for
+validators only):
 
 ```bash
 ./setup/00_gen_secrets.sh    # staking identities + fund/fee wallet
@@ -182,7 +198,7 @@ Details** (per-node finalized height, the A-to-B finalized gap, mempools),
 **Benchmark** (per-node TPS, consensus, verification), and **Machine
 Metrics** (per-box CPU, memory, disk, throttle pressure).
 `run/02_monitoring.sh` is re-runnable and discovers the fleet
-from your `.env` topology automatically.
+from `nodes.ini` automatically.
 
 ## 3. Benchmark and failover
 
@@ -193,8 +209,9 @@ Start the load (leave it running through everything below):
 ```
 
 One fixed profile: **4000 tx/s** (override with `-tps N`), 2000 in-flight cap, 5s resubmit.
-Ingress is **every pinned RPC node on both sites** (`rpc_a1` `rpc_a2` `rpc_b1` `rpc_b2` in the
-default shape). bombard broadcasts each tx to ALL of them, health-checks every
+Ingress is **every role=rpc node** (`rpc_a1` `rpc_a2` `rpc_b1` `rpc_b2` in the
+shipped inventory); zero rpc nodes in `nodes.ini` is a hard error, bombard
+never falls back to validators. bombard broadcasts each tx to ALL of them, health-checks every
 endpoint continuously, drops one from rotation when it falls behind and
 re-adds it when it catches up, and resubmits anything in flight, so ingress
 survives dead nodes, dead sites, and recovering nodes without you touching it.
@@ -207,8 +224,9 @@ nonces and mine nothing).
 Operating the fleet is two independent axes, hardware via `./fleet` and
 stake via `bin/l1`:
 
-- **hardware**: `up` / `down` start or hard-kill avalanchego on a machine.
-  `down` is a real crash (SIGKILL); `up` rebuilds the machine clean,
+- **hardware**: `up` / `down` start or hard-kill avalanchego on a node,
+  addressed by name (`a1`, `rpc_b2`) or dc selector (`dc=A`).
+  `down` is a real crash (SIGKILL); `up` rebuilds the node clean,
   state-syncs it from the live network and blocks until it is SERVING at the
   fleet tip. Neither touches stake. While waiting, `up` watches for a
   fork-wedged node (a catching-up node whose height stays frozen across
@@ -236,9 +254,9 @@ warning and proceeds; only commands that target that box specifically fail
 
 ```bash
 watch -n5 ./fleet status                   # live per-DC stake tier + node state
-./fleet down 1                             # crash machine 1
+./fleet down a1                            # crash a1
 ./bin/l1 apply --weights b1=100000,a1=1    # promote a spare, retire the dead box
-./fleet up 1                               # rebuild machine 1, it re-syncs and rejoins
+./fleet up a1                              # rebuild a1, it re-syncs and rejoins
 ```
 
 **Raise the replacement validators before lowering the old ones.** A single
@@ -247,7 +265,7 @@ lowers. Weights only move when you ask: a dead box keeps blocking quorum
 until you drain it (weight 1).
 
 The worked drills live in `scenarios/`. `00_healthy.sh` is the canonical
-reset (all machines up, machines 1-4 validating, site B stake slots spare);
+reset (every node up, a1-a4 validating, site B validators at spare weight);
 every other scenario invokes it first, so they can be run from any starting
 point.
 
@@ -258,7 +276,7 @@ point.
 ./scenarios/03_datacenter_failure.sh       # site A dies, site B takes over
 ./scenarios/04_validator_maintenance.sh    # planned maintenance: drain a1, then power it off
 ./scenarios/05_2x2.sh                      # 2x2 split: consensus spread across both DCs
-./scenarios/06_all_validators.sh           # all eight stake slots validating, four per DC
+./scenarios/06_all_validators.sh           # all eight validators at full weight, four per DC
 ./scenarios/07_two_validators_down.sh      # two validators die at once: chain halts, P-chain weight ops revive it
 ```
 
@@ -290,19 +308,44 @@ txs go straight to the P-chain, so they land even while the L1 is halted
 
 One more recovery: a validator hard-killed under heavy load can come back
 with a diverged local chain (its VM dies repeatedly, `status` shows it
-`BOOTSTRAPPING` forever while others are `SERVING`). `./fleet up <m>` fixes
+`BOOTSTRAPPING` forever while others are `SERVING`). `./fleet up <name>` fixes
 it: the rebuild wipes its chain data and it re-syncs from the live network
 with the same identity. The related fork-wedge case (`CATCHING UP` with a
 height that never moves: the node self-finalized a sibling block) is
 detected and rebuilt by `up` automatically.
 
 Every node starts with two self-defense guards baked into its launch script:
-the stdout capture (`data/validator/logs/avalanchego.out`) is truncated if it
+the stdout capture (`data/<name>/logs/avalanchego.out`) is truncated if it
 ever exceeds 2 GiB (subnet-evm runs at `log-level: warn`, so the capture stays
 small; WARN/ERROR still land in the rotated chain logs), and the process tree
 runs with `GOMEMLIMIT` at 75% of the box's RAM plus a raised `oom_score_adj`,
 so a runaway node is GC-throttled and, at worst, killed by the kernel instead
 of wedging the whole machine.
+
+## Migrating from numbered key dirs
+
+Deployments created before the `nodes.ini` inventory keyed staking
+identities by NUMBER (`staking/l1/1..12`, `L1_<n>_NODE_ID` manifest lines)
+and every box used `data/validator` as its data root. The tools refuse those
+layouts with a pointer here. Migration on the control host is a rename
+(identities never change, nothing touches the chain):
+
+| numbered dir | node name | | numbered dir | node name |
+|---|---|---|---|---|
+| `staking/l1/1` | `staking/l1/a1` | | `staking/l1/7` | `staking/l1/b3` |
+| `staking/l1/2` | `staking/l1/a2` | | `staking/l1/8` | `staking/l1/b4` |
+| `staking/l1/3` | `staking/l1/a3` | | `staking/l1/9` | `staking/l1/rpc_a1` |
+| `staking/l1/4` | `staking/l1/a4` | | `staking/l1/10` | `staking/l1/rpc_a2` |
+| `staking/l1/5` | `staking/l1/b1` | | `staking/l1/11` | `staking/l1/rpc_b1` |
+| `staking/l1/6` | `staking/l1/b2` | | `staking/l1/12` | `staking/l1/rpc_b2` |
+
+Then rewrite `staking/node-ids.env` as `<name>=<NodeID>` lines (same
+NodeIDs), delete `signer.key` from the rpc dirs (rpc identities never carry
+one), and drop the six `*_IPS` topology vars from `.env` in favor of
+`nodes.ini`. On the fleet boxes nothing is renamed by hand: the next
+`fleet up`/`fresh` of a node performs a one-time
+`mv data/validator data/<name>` (same-filesystem rename; the synced P-chain
+db is preserved, never copied, never deleted).
 
 ## Block cadence
 
