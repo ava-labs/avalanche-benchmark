@@ -5,6 +5,7 @@
     "max-outbound-active-requests": 64,
     "state-sync-enabled": true,
     "state-sync-min-blocks": 10000,
+    "state-sync-commit-interval": 4096,
     "pruning-enabled": true,
     "tx-pool-account-slots": 131072,
     "tx-pool-global-slots": 262144,
