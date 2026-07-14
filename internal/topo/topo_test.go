@@ -21,7 +21,14 @@ func TestStakingSlotsTwoSite(t *testing.T) {
 	if tp.StakingIndex(4) != -1 || tp.StakingIndex(11) != -1 {
 		t.Error("RPC slots must have StakingIndex -1")
 	}
-	if got := tp.AllKeys(); got[0] != 1 || got[11] != 12 || len(got) != 12 {
+	// Staking slots wear keys 1..8 in staking-slot order; RPC slots take 9..12.
+	wantKeys := []int{1, 2, 3, 4, 9, 10, 5, 6, 7, 8, 11, 12}
+	for i, w := range wantKeys {
+		if got := tp.KeyOf(i); got != w {
+			t.Errorf("KeyOf(%d) = %d, want %d", i, got, w)
+		}
+	}
+	if got := tp.AllKeys(); !reflect.DeepEqual(got, wantKeys) || len(got) != 12 {
 		t.Errorf("AllKeys = %v", got)
 	}
 }

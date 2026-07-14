@@ -1,16 +1,17 @@
 // Package topo is the single source of truth for the machine-pool layout:
 // slot order, per-slot permanent staking key, and which slots are registered
-// as L1 validators. cmd/create-l1 (conversion order = validationID index),
-// cmd/reconcile (weight reconciliation) and cmd/fuji-wallet (funding math)
-// all derive from it, so the slot -> key -> validationID mapping can never
-// drift between them.
+// as L1 validators. cmd/l1 (create: conversion order = validationID index),
+// cmd/reconcile (provisioning) and cmd/fuji-wallet (funding math) all derive
+// from it, so the slot -> key mapping can never drift between them.
 //
-// Staking-key layout (staking/l1/<idx>): pool keys are 1-based, KeyOf(i) =
-// KeyBase + i for slot i. Every pool slot wears ONE permanent identity. Identities
-// never move between machines (key-swap failover produced forks); instead the
-// validator+spare slots of BOTH sites are all registered as L1 validators at
-// conversion and failover only changes their weights through the
-// ValidatorManager contract on the Fuji C-chain.
+// Staking-key layout (staking/l1/<idx>): keys are 1-based. The REGISTERED
+// validators (validator+spare slots of both sites) wear keys 1..N in staking
+// slot order, so `l1 create` can register exactly staking/l1/1..N; the RPC
+// slots (never validators, they just need some node identity) wear the keys
+// after that. Every pool slot wears ONE permanent identity. Identities never
+// move between machines (key-swap failover produced forks); instead all
+// staking slots are registered as L1 validators at conversion and failover
+// only changes their weights (P-chain SetL1ValidatorWeightTx via cmd/l1).
 package topo
 
 import (
@@ -19,7 +20,7 @@ import (
 	"strings"
 )
 
-// KeyBase is the first staking key index; slot i wears key KeyBase+i.
+// KeyBase is the first staking key index.
 const KeyBase = 1
 
 const (
@@ -86,8 +87,22 @@ func (t Topology) MachineName(i int) string {
 	return "rpc_" + site + strconv.Itoa(s-t.NVal-t.NSpare+1)
 }
 
-// KeyOf is slot i's permanent committed staking key index.
-func (t Topology) KeyOf(i int) int { return KeyBase + i }
+// KeyOf is slot i's permanent committed staking key index: staking slots wear
+// keys 1..N in staking-slot order (the exact set `l1 create` registers), RPC
+// slots wear the keys after them.
+func (t Topology) KeyOf(i int) int {
+	if t.IsStakingSlot(i) {
+		return KeyBase + t.StakingIndex(i)
+	}
+	nStaking := len(t.StakingSlots())
+	nRPCBefore := 0
+	for j := 0; j < i; j++ {
+		if t.IsRPCSlot(j) {
+			nRPCBefore++
+		}
+	}
+	return KeyBase + nStaking + nRPCBefore
+}
 
 // AllKeys lists every committed key index the pool uses: one per slot.
 func (t Topology) AllKeys() []int {
