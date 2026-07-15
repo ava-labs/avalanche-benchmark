@@ -40,6 +40,68 @@ func TestOrderTargetsRaisesFirst(t *testing.T) {
 	}
 }
 
+// TestPlanStepsStaggered: from 8 equal validators to 4 heavy + 4 low, the
+// plan must be raises-first, never exceed the per-step bound, and land exactly
+// on target. No live chain needed.
+func TestPlanStepsStaggered(t *testing.T) {
+	names := []string{"a1", "a2", "a3", "a4", "b1", "b2", "b3", "b4"}
+	targetW := map[string]uint64{
+		"a1": 100000, "a2": 100000, "a3": 100000, "a4": 100000, // heavy (raise)
+		"b1": 10, "b2": 10, "b3": 10, "b4": 10, // low (lower)
+	}
+	start := map[string]uint64{}
+	var ts []target
+	var total uint64
+	for _, n := range names {
+		start[n] = 1000 // 8 equal
+		total += 1000
+		ts = append(ts, target{name: n, weight: targetW[n]})
+	}
+
+	steps := planSteps(orderTargets(ts, start), start, total)
+	if len(steps) == 0 {
+		t.Fatal("planSteps produced no steps")
+	}
+
+	cur := map[string]uint64{}
+	for k, v := range start {
+		cur[k] = v
+	}
+	liveTotal := total
+	seenLower := false
+	for _, s := range steps {
+		c := cur[s.name]
+		var delta uint64
+		raising := s.weight > c
+		if raising {
+			delta = s.weight - c
+		} else {
+			delta = c - s.weight
+		}
+		// (a) raises-first: no raise step may follow a lower step.
+		if raising && seenLower {
+			t.Fatalf("raise step for %s came after a lower step (not raises-first)", s.name)
+		}
+		if !raising {
+			seenLower = true
+		}
+		// (b) per-step bound: no step moves more than maxStepDelta of the
+		// live total at the moment it fires.
+		if bound := maxStepDelta(liveTotal); delta > bound {
+			t.Fatalf("step %s -> %d moves %d, exceeds bound %d (live total %d)",
+				s.name, s.weight, delta, bound, liveTotal)
+		}
+		liveTotal = liveTotal - c + s.weight
+		cur[s.name] = s.weight
+	}
+	// (c) ends exactly at target.
+	for n, w := range targetW {
+		if cur[n] != w {
+			t.Fatalf("%s ended at %d, want %d", n, cur[n], w)
+		}
+	}
+}
+
 func TestRunwayDays(t *testing.T) {
 	// 512 nAVAX/s for 7 days = 309,657,600 nAVAX (~0.31 AVAX).
 	week := uint64(512 * 7 * 86400)
