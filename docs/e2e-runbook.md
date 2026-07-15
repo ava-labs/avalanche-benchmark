@@ -145,11 +145,14 @@ root is the whole restore.
 ./run/01_deploy.sh
 ```
 
-Wipes every node, uploads binaries/plugin/keys/configs, and starts the chain
-from genesis. **Destructive by design**; re-run any time for a clean chain.
-The Fuji registration persists, so re-deploys never re-spend AVAX. First
-boot of a fresh fleet replays Fuji's P-chain: RPC tier first (~minutes),
-then validators sync through them; nodes sit in `BOOTSTRAPPING` until then.
+Resets only the L1 chain data on every node (chainData + bootstrap backlog +
+active staking) and starts the chain from genesis; the primary-network / Fuji
+P-chain db (~49G per node) is PRESERVED. **Destructive to L1 state by design**;
+re-run any time for a clean chain. The Fuji registration persists, so
+re-deploys never re-spend AVAX. Only a genuine first-ever boot (no db yet)
+replays Fuji's P-chain: RPC tier first (~minutes), then validators sync through
+them; nodes sit in `BOOTSTRAPPING` until then (a re-deploy over an existing db
+skips the replay).
 Watch the progress with `watch -n5 ./fleet status`. (Later single-machine
 recoveries via `./fleet up` do block until the machine is SERVING.)
 

@@ -1,17 +1,22 @@
 #!/bin/bash
 # WIPE AND DEPLOY the L1 pool against the chain created (once) by setup/02_create_chain.sh. This is
-# the repeatable from-scratch raise: DESTRUCTIVE BY DESIGN. It kills every pool
-# node, WIPES data/ on all of them, and restarts the L1 from genesis (block 0),
-# throwing away any current chain state. Losing the chain data is the design,
-# not a recovery path. It never touches Fuji's P-chain, so re-deploys never
-# re-spend on chain creation (the subnet/chain/validator registration from 02
-# persists on Fuji). It then force-re-uploads binary/plugin/configs/keys
-# (each node's permanent staking/l1/<name> identity) and starts every node in
-# nodes.ini. After this, drive the fleet with ./fleet {up,down,status}.
+# the repeatable from-scratch raise: DESTRUCTIVE for the L1's own data, NOT for
+# the anchor P-chain. It kills every pool node and resets ONLY the L1 chain data
+# (data/<name>/chainData + the chain's bootstrap backlog + the active staking
+# dir), restarting the L1 from genesis (block 0) and throwing away any current
+# L1 chain state. It PRESERVES data/<name>/db (the primary-network / Fuji
+# P-chain, ~49G per node), so a re-deploy does NOT re-replay the anchor chain.
+# Losing the L1 chain data is the design, not a recovery path. It never touches
+# Fuji's P-chain, so re-deploys never re-spend on chain creation (the
+# subnet/chain/validator registration from 02 persists on Fuji). It then
+# force-re-uploads binary/plugin/configs/keys (each node's permanent
+# staking/l1/<name> identity) and starts every node in nodes.ini. After this,
+# drive the fleet with ./fleet {up,down,status}.
 #
-# First boot on a fresh fleet: the RPC tier full-replays Fuji's P-chain
-# (~minutes) and the validators idle until their RPC beacons finish, then sync
-# through them (serial per hop). Watch with: watch -n5 ./fleet status, don't panic.
+# Only a genuine first-ever boot (no db/ on disk yet) full-replays Fuji's
+# P-chain (RPC tier first, ~minutes) while the validators idle until their RPC
+# beacons finish, then sync through them (serial per hop); a re-deploy over an
+# existing db skips that. Watch with: watch -n5 ./fleet status, don't panic.
 #
 # For an in-place failover (no wipe) use ./fleet. A brand-new chain
 # means re-running setup/02_create_chain.sh first (costs AVAX; usually you don't want that).
