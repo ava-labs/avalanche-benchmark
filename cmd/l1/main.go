@@ -422,8 +422,9 @@ func status(ctx context.Context, cfg config) {
 // BLS keys actually sign this L1's weight changes. A committee validator that
 // drains its continuous-fee balance goes INACTIVE - it drops its BLS key but
 // KEEPS its weight in the quorum denominator, diluting the quorum - so the
-// committee must stay funded. INACTIVE is read as a nil public key from
-// getL1Validator.
+// committee must stay funded. INACTIVE is a drained (balance-0) member: the
+// P-chain drops its key from the signer set even though getL1Validator still
+// returns the key, so activity is read from the balance, not the key.
 func statusCommittee(ctx context.Context, pc *platformvm.Client, cfg config, rate uint64) {
 	cvs, err := vset.Fetch(ctx, pc, cfg.managerSubnetID, 1)
 	if err != nil {
@@ -434,7 +435,7 @@ func statusCommittee(ctx context.Context, pc *platformvm.Client, cfg config, rat
 	var total, active uint64
 	for _, v := range cvs {
 		total += v.Weight
-		if v.PublicKey != nil {
+		if v.Active() {
 			active += v.Weight
 		}
 	}
@@ -447,8 +448,8 @@ func statusCommittee(ctx context.Context, pc *platformvm.Client, cfg config, rat
 	var short []string
 	for i, v := range cvs {
 		state := "ACTIVE"
-		if v.PublicKey == nil {
-			state = "INACTIVE(key dropped, still dilutes quorum)"
+		if !v.Active() {
+			state = "INACTIVE(balance 0, key dropped from signer set, still dilutes quorum)"
 		}
 		days := runwayDays(v.Balance, rate)
 		fmt.Printf("  [%d] %s  %s  weight %-6d balance %s AVAX (%.1f days)  %s\n",

@@ -12,6 +12,8 @@ import (
 	"github.com/ava-labs/avalanchego/vms/platformvm/warp"
 	warpmessage "github.com/ava-labs/avalanchego/vms/platformvm/warp/message"
 	warppayload "github.com/ava-labs/avalanchego/vms/platformvm/warp/payload"
+
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/vset"
 )
 
 const testNetworkID = uint32(1337)
@@ -98,6 +100,83 @@ func TestCommitteeQuorum(t *testing.T) {
 	// 2 of 4 (50% < 67%): must fail the quorum.
 	if _, err := signAndAggregate(unsigned, committee, signers[:2]); !errors.Is(err, warp.ErrInsufficientWeight) {
 		t.Fatalf("signAndAggregate with 2 of 4 committee keys: want ErrInsufficientWeight, got %v", err)
+	}
+}
+
+// committeeVSet builds a []vset.Validator of n equal-weight (1) members with
+// fresh BLS keys. The first `active` are ACTIVE (balance > 0); the rest are
+// INACTIVE (balance 0), which is how a drained committee member reads from the
+// P-chain: getL1Validator still returns their key, but their balance is 0.
+func committeeVSet(t *testing.T, n, active int) ([]bls.Signer, []vset.Validator) {
+	t.Helper()
+	signers := make([]bls.Signer, n)
+	vs := make([]vset.Validator, n)
+	for i := range signers {
+		s, err := localsigner.New()
+		if err != nil {
+			t.Fatalf("localsigner.New: %v", err)
+		}
+		signers[i] = s
+		var balance uint64
+		if i < active {
+			balance = 1_000_000 // ACTIVE: has continuous-fee runway
+		}
+		vs[i] = vset.Validator{
+			NodeID:    ids.GenerateTestNodeID(),
+			Weight:    1,
+			Balance:   balance,
+			PublicKey: s.PublicKey(),
+		}
+	}
+	return signers, vs
+}
+
+// TestCommitteeQuorumWithInactiveMember is the drained-committee-member
+// regression (the release-blocker): a 4-registered committee with one INACTIVE
+// (balance-0) member. The P-chain excludes the inactive member from the signer
+// list (nil key) but keeps its weight in the total, so vset.WarpSet must build
+// a bitset over the FILTERED 3 while the quorum denominator stays 4. Signing
+// with all keys we hold then VERIFIES iff active weight >= 67% of the total:
+// 3-of-4 (75%) passes, 2-of-4 (50%) fails with ErrInsufficientWeight.
+func TestCommitteeQuorumWithInactiveMember(t *testing.T) {
+	unsigned, _, _, _ := testWeightMessage(t)
+
+	// 4 registered, 3 active. WarpSet drops the drained member from the indexed
+	// set but keeps its weight in TotalWeight.
+	signers, vs := committeeVSet(t, 4, 3)
+	warpSet, err := vset.WarpSet(vs)
+	if err != nil {
+		t.Fatalf("vset.WarpSet: %v", err)
+	}
+	if got := len(warpSet.Validators); got != 3 {
+		t.Fatalf("filtered signer set: got %d validators, want 3 (inactive member must be excluded)", got)
+	}
+	if warpSet.TotalWeight != 4 {
+		t.Fatalf("TotalWeight: got %d, want 4 (inactive member's weight must stay in the denominator)", warpSet.TotalWeight)
+	}
+
+	// We hold every committee key on disk (including the inactive member's), so
+	// pass them all: signAndAggregate signs only those in the filtered set.
+	signed, err := signAndAggregate(unsigned, warpSet, signers)
+	if err != nil {
+		t.Fatalf("signAndAggregate 3-active-of-4: %v", err)
+	}
+	if err := signed.Signature.Verify(unsigned, testNetworkID, warpSet, quorumNum, quorumDen); err != nil {
+		t.Fatalf("Verify 3-active-of-4 at %d/%d: %v", quorumNum, quorumDen, err)
+	}
+
+	// 2 active of 4 (50% < 67%): the inactive members' retained weight dilutes
+	// the quorum below threshold, so signing must FAIL.
+	signers2, vs2 := committeeVSet(t, 4, 2)
+	warpSet2, err := vset.WarpSet(vs2)
+	if err != nil {
+		t.Fatalf("vset.WarpSet: %v", err)
+	}
+	if got := len(warpSet2.Validators); got != 2 {
+		t.Fatalf("filtered signer set: got %d validators, want 2", got)
+	}
+	if _, err := signAndAggregate(unsigned, warpSet2, signers2); !errors.Is(err, warp.ErrInsufficientWeight) {
+		t.Fatalf("signAndAggregate 2-active-of-4: want ErrInsufficientWeight, got %v", err)
 	}
 }
 

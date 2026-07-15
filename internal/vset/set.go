@@ -28,6 +28,15 @@ type Validator struct {
 	PublicKey    *bls.PublicKey
 }
 
+// Active mirrors the P-chain's L1Validator.IsActive (Weight != 0 &&
+// EndAccumulatedFee != 0): a registered validator whose continuous-fee balance
+// has drained to 0 is INACTIVE. getL1Validator ALWAYS returns the stored BLS
+// key regardless of activity, so PublicKey != nil is NOT the activity signal;
+// the drained-balance test is. An inactive validator keeps its weight in the
+// total but the P-chain drops its key from the canonical signer set (see
+// WarpSet), so it can neither sign nor be indexed in a warp bitset.
+func (v Validator) Active() bool { return v.Weight != 0 && v.Balance != 0 }
+
 // fetchRetries x fetchDelay bounds how long Fetch waits out a stale read from
 // a load-balanced public API (verified live: right after a conversion one
 // backend transiently served a 0-validator set).
@@ -85,12 +94,25 @@ func Fetch(ctx context.Context, pc *platformvm.Client, subnetID ids.ID, min int)
 
 // WarpSet flattens the fetched validators into the canonical warp set,
 // exactly as the P-chain will at tx-verification time.
+//
+// It mirrors the P-chain's effectivePublicKey: an INACTIVE validator (drained
+// continuous-fee balance) is handed to FlattenValidatorSet with a nil public
+// key, so its weight still counts toward TotalWeight (the quorum denominator)
+// but it is dropped from the indexed signer list. Passing its live key instead
+// would build a bitset with more indices than the verifier's filtered set and
+// get the tx rejected ("NumIndices >= NumFilteredValidators"). getL1Validator
+// returns the key for active and inactive validators alike, so the filtering
+// has to happen here.
 func WarpSet(vs []Validator) (validators.WarpSet, error) {
 	m := make(map[ids.NodeID]*validators.GetValidatorOutput, len(vs))
 	for _, v := range vs {
+		pk := v.PublicKey
+		if !v.Active() {
+			pk = nil
+		}
 		m[v.NodeID] = &validators.GetValidatorOutput{
 			NodeID:    v.NodeID,
-			PublicKey: v.PublicKey,
+			PublicKey: pk,
 			Weight:    v.Weight,
 		}
 	}
