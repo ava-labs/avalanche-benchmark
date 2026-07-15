@@ -451,10 +451,10 @@ func statusCommittee(ctx context.Context, pc *platformvm.Client, cfg config, rat
 			state = "INACTIVE(key dropped, still dilutes quorum)"
 		}
 		days := runwayDays(v.Balance, rate)
-		fmt.Printf("  m%-2d %s  %s  weight %-6d balance %s AVAX (%.1f days)  %s\n",
+		fmt.Printf("  [%d] %s  %s  weight %-6d balance %s AVAX (%.1f days)  %s\n",
 			i, v.NodeID, v.ValidationID, v.Weight, avaxString(v.Balance), days, state)
 		if days < runwayWarnDays {
-			short = append(short, fmt.Sprintf("m%d", i))
+			short = append(short, v.NodeID.String())
 		}
 	}
 	if len(short) > 0 {
