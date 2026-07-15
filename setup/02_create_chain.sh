@@ -17,12 +17,16 @@ trap 'echo "ERROR: Script failed at line $LINENO. Command: $BASH_COMMAND"' ERR
 
 # --mainnet creates the L1 anchored on Avalanche mainnet (REAL AVAX). The
 # choice is persisted as NETWORK in network.env by l1 create; on resume that
-# record wins and a conflicting flag is rejected below.
+# record wins and a conflicting flag is rejected below. Any other flag is
+# forwarded verbatim to `bin/l1 create`, so -balance, -committee,
+# -committee-balance and -allow-fragile-committee all work through here.
 REQUESTED_NETWORK=""
+CREATE_ARGS=()
 for arg in "$@"; do
     case "$arg" in
         --mainnet) REQUESTED_NETWORK=mainnet; export AVALANCHE_NETWORK=mainnet ;;
-        *) echo "usage: $0 [--mainnet]"; exit 2 ;;
+        -h|--help) echo "usage: $0 [--mainnet] [-balance AVAX] [-committee N] [-committee-balance AVAX] [-allow-fragile-committee]"; exit 0 ;;
+        *) CREATE_ARGS+=("$arg") ;;
     esac
 done
 
@@ -61,7 +65,7 @@ fi
 echo "=== Creating L1 on $AVALANCHE_NETWORK ==="
 echo ""
 
-"$SCRIPT_DIR/bin/l1" create $FORCE
+"$SCRIPT_DIR/bin/l1" create $FORCE "${CREATE_ARGS[@]}"
 
 # Load and display results
 source "$NETWORK_ENV"

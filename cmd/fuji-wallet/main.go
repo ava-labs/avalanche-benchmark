@@ -138,6 +138,17 @@ func fund(net netcfg.Config, keyPath, api string) {
 	}
 	ctx := context.Background()
 
+	// The chain already exists: creation funding is moot, and the default
+	// pre-create budget (which assumes standard deposits) can exceed the
+	// leftover balance and poll forever. Point at the post-create tools.
+	if os.Getenv("SUBNET_ID") != "" {
+		fmt.Printf("network.env records SUBNET_ID=%s: the chain is already created.\n", os.Getenv("SUBNET_ID"))
+		fmt.Printf("Current P balance: %s AVAX. Creation funding is done; from here use\n", avaxString(pBalance(ctx, api, key.Address())))
+		fmt.Println("`l1 status` to see validator/committee runway and `fuji-wallet topup` to extend it.")
+		printAddresses(key)
+		return
+	}
+
 	requiredP := requiredPBalance(net.ValidatorBalance)
 	pBal := pBalance(ctx, api, key.Address())
 	fmt.Printf("Current balance:  %s\n\n", chainStatus("P", pBal, requiredP))

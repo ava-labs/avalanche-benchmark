@@ -34,10 +34,14 @@ fi
 # chain, persisted by create-l1) always wins; AVALANCHE_NETWORK from the shell
 # or .env is the pre-creation input (the setup scripts' --mainnet flag exports
 # it); default fuji. Exported so the Go tools resolve the same network.
+# NETWORK in .env is accepted as an alias for AVALANCHE_NETWORK (matching the
+# Go tools' netcfg precedence): without this a NETWORK=mainnet in .env is a
+# silent no-op here, since --mainnet is otherwise the only pre-creation selector.
 if [ -f "$NETWORK_ENV" ]; then
     _network_env_net="$(sed -n 's/^NETWORK=//p' "$NETWORK_ENV" | tail -n1)"
     [ -n "$_network_env_net" ] && AVALANCHE_NETWORK="$_network_env_net"
 fi
+AVALANCHE_NETWORK="${AVALANCHE_NETWORK:-$NETWORK}"
 AVALANCHE_NETWORK="${AVALANCHE_NETWORK:-fuji}"
 export AVALANCHE_NETWORK
 

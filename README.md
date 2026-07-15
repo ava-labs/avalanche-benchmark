@@ -132,6 +132,14 @@ pre-created off-machine.
    baseline (`./scenarios/00_healthy.sh`), then run the drills
    (`scenarios/01..07`) while watching `./fleet status` and Grafana.
 
+Mainnet vs Fuji is selected by the `--mainnet` flag on `01_fund_wallet.sh` and
+`02_create_chain.sh` (Fuji is the default); `AVALANCHE_NETWORK=mainnet` in
+`.env` (or its `NETWORK=` alias) does the same for every command without the
+flag. Either way `02` pins the choice as `NETWORK` in `network.env`, which
+then wins. `02` also forwards any extra flags to `bin/l1 create`, so
+`./setup/02_create_chain.sh -balance 0.05` (or `-committee N`) works without
+calling the binary directly.
+
 `02` persists the chain identity (including `NETWORK=fuji|mainnet`) to
 `network.env`; every later command reads it. Re-running `02` never creates a
 second chain: it resumes/verifies the recorded one. `setup/03_backup_secrets.sh`
