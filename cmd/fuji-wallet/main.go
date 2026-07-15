@@ -8,12 +8,14 @@
 //	fuji-wallet fund -key staking/fuji-wallet.key   print the P-chain address
 //	    with the required amount and poll until funded (Fuji: at the faucet;
 //	    mainnet: from your own AVAX).
-//	fuji-wallet topup [days]                        top up EVERY staking
-//	    slot's validator balance so each has at least <days> (default 3) of
-//	    continuous-fee runway (IncreaseL1ValidatorBalanceTx; anyone may fund
-//	    any validationID). Validators already at or above the target are
-//	    untouched; deficits are rounded down to whole days, so re-running
-//	    right away is a no-op.
+//	fuji-wallet topup [days]                        top up EVERY validator
+//	    balance so each has at least <days> (default 3) of continuous-fee
+//	    runway (IncreaseL1ValidatorBalanceTx; anyone may fund any validationID).
+//	    Funds the signing COMMITTEE (MANAGER_SUBNET_ID) FIRST - a drained
+//	    committee member goes INACTIVE and breaks ALL weight signing - then the
+//	    main-L1 fleet (SUBNET_ID). Validators already at or above the target are
+//	    untouched; deficits are rounded down to whole days, so re-running right
+//	    away is a no-op.
 package main
 
 import (
@@ -208,11 +210,13 @@ func requiredPBalance(validatorBalance uint64) uint64 {
 	return uint64(len(topo.Validators(nodes)))*validatorBalance + committee + feeBudget
 }
 
-// topup brings every staking slot's validator balance up to at least
-// <target> (default 3) days of continuous-fee runway, one
-// IncreaseL1ValidatorBalanceTx per short validator. Chain state (SUBNET_ID)
-// comes from network.env, node IDs from staking/node-ids.env next to the
-// wallet key.
+// topup brings every registered validator's balance up to at least <target>
+// (default 3) days of continuous-fee runway, one IncreaseL1ValidatorBalanceTx
+// per short validator. The signing COMMITTEE (MANAGER_SUBNET_ID) is funded
+// FIRST: a drained committee member goes INACTIVE and breaks ALL weight
+// signing, which is catastrophic, whereas a drained main-L1 validator only
+// loses its own weight. The main-L1 fleet (SUBNET_ID) is funded second. Chain
+// state comes from network.env, names from staking/ next to the wallet key.
 func topup(keyPath, api string, args []string) {
 	target := 3
 	if len(args) > 0 {
@@ -234,44 +238,90 @@ func topup(keyPath, api string, args []string) {
 		rate = uint64(price)
 	}
 	perDay := rate * 24 * 3600
-
-	vids, names, err := stakingValidationIDs(ctx, pClient, keyPath)
-	if err != nil {
-		fatalf("%v", err)
-	}
 	fmt.Printf("Top-up target: %d day(s) of runway at %d nAVAX/s (%s AVAX per validator-day)\n",
 		target, rate, avaxString(perDay))
 
-	var wallet pwallet.Wallet // made lazily: a fully-topped-up fleet needs none
-	var total uint64
-	for i, vid := range vids {
-		v, _, err := pClient.GetL1Validator(ctx, vid)
+	stakingDir := filepath.Dir(keyPath)
+	// Committee FIRST (its drain breaks all signing), then the main-L1 fleet.
+	var sets []topupSet
+	if ms := os.Getenv("MANAGER_SUBNET_ID"); ms != "" {
+		msID, err := ids.FromString(ms)
 		if err != nil {
-			fatalf("platform.getL1Validator(%s): %v", names[i], err)
+			fatalf("parse MANAGER_SUBNET_ID: %v", err)
 		}
-		runway := float64(v.Balance) / float64(perDay)
-		add := topupDeficitDays(v.Balance, rate, target)
-		if add == 0 {
-			fmt.Printf("  %-3s %5.1f days  ok\n", names[i], runway)
-			continue
-		}
+		sets = append(sets, topupSet{"committee", msID, committeeNames(stakingDir)})
+	}
+	subnetStr := os.Getenv("SUBNET_ID")
+	if subnetStr == "" {
+		fatalf("SUBNET_ID not set (network.env missing? run from the repo root)")
+	}
+	subnetID, err := ids.FromString(subnetStr)
+	if err != nil {
+		fatalf("parse SUBNET_ID: %v", err)
+	}
+	sets = append(sets, topupSet{"fleet", subnetID, manifestNames(stakingDir)})
+
+	var wallet pwallet.Wallet // made lazily: a fully-topped-up fleet needs none
+	newWallet := func() pwallet.Wallet {
 		if wallet == nil {
-			if wallet, err = primary.MakePWallet(ctx, api, secp256k1fx.NewKeychain(key), primary.WalletConfig{}); err != nil {
+			w, err := primary.MakePWallet(ctx, api, secp256k1fx.NewKeychain(key), primary.WalletConfig{})
+			if err != nil {
 				fatalf("make P-chain wallet: %v", err)
 			}
+			wallet = w
 		}
-		amount := uint64(add) * perDay
-		if _, err := wallet.IssueIncreaseL1ValidatorBalanceTx(vid, amount); err != nil {
-			fatalf("IncreaseL1ValidatorBalanceTx(%s): %v", names[i], err)
+		return wallet
+	}
+
+	var total uint64
+	for _, s := range sets {
+		vids, names, err := validatorIDs(ctx, pClient, s.subnetID, s.names)
+		if err != nil {
+			fatalf("%s (subnet %s): %v", s.label, s.subnetID, err)
 		}
-		total += amount
-		fmt.Printf("  %-3s %5.1f days  +%d day(s) = %s AVAX\n", names[i], runway, add, avaxString(amount))
+		fmt.Printf("%s (subnet %s): %d validators\n", s.label, s.subnetID, len(vids))
+		total += topupGroup(ctx, pClient, newWallet, perDay, rate, target, vids, names)
 	}
 	if total == 0 {
 		fmt.Printf("all validators at or above %d days\n", target)
 	} else {
 		fmt.Printf("total spent: %s AVAX\n", avaxString(total))
 	}
+}
+
+// topupSet is one subnet's validators to top up: a label for output, the
+// subnet whose registered validators to fund, and a NodeID->name map for
+// display.
+type topupSet struct {
+	label    string
+	subnetID ids.ID
+	names    map[ids.NodeID]string
+}
+
+// topupGroup tops up every validator in one set to targetDays of runway,
+// returning the total AVAX spent. newWallet is called lazily so a set that
+// needs no funding issues no wallet.
+func topupGroup(ctx context.Context, pc *platformvm.Client, newWallet func() pwallet.Wallet, perDay, rate uint64, targetDays int, vids []ids.ID, names []string) uint64 {
+	var total uint64
+	for i, vid := range vids {
+		v, _, err := pc.GetL1Validator(ctx, vid)
+		if err != nil {
+			fatalf("platform.getL1Validator(%s): %v", names[i], err)
+		}
+		runway := float64(v.Balance) / float64(perDay)
+		add := topupDeficitDays(v.Balance, rate, targetDays)
+		if add == 0 {
+			fmt.Printf("  %-6s %5.1f days  ok\n", names[i], runway)
+			continue
+		}
+		amount := uint64(add) * perDay
+		if _, err := newWallet().IssueIncreaseL1ValidatorBalanceTx(vid, amount); err != nil {
+			fatalf("IncreaseL1ValidatorBalanceTx(%s): %v", names[i], err)
+		}
+		total += amount
+		fmt.Printf("  %-6s %5.1f days  +%d day(s) = %s AVAX\n", names[i], runway, add, avaxString(amount))
+	}
+	return total
 }
 
 // topupDeficitDays returns the whole days of continuous fee to add so a
@@ -286,39 +336,59 @@ func topupDeficitDays(balance, ratePerSec uint64, targetDays int) int {
 	return int((need - balance) / (ratePerSec * 24 * 3600))
 }
 
-// stakingValidationIDs reads every registered validator's validationID
-// straight from the P-chain (the same set cmd/l1 manages) and names each one
-// via the committed manifest, so no conversion-order derivation can ever
-// drift from chain reality.
-func stakingValidationIDs(ctx context.Context, pc *platformvm.Client, keyPath string) ([]ids.ID, []string, error) {
-	subnetStr := os.Getenv("SUBNET_ID")
-	if subnetStr == "" {
-		return nil, nil, fmt.Errorf("SUBNET_ID not set (network.env missing? run from the repo root)")
-	}
-	subnetID, err := ids.FromString(subnetStr)
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse SUBNET_ID: %w", err)
-	}
+// validatorIDs reads a subnet's registered validationIDs straight from the
+// P-chain (the same set cmd/l1 manages), so no conversion-order derivation can
+// ever drift from chain reality, and names each one from names (NodeID string
+// when unnamed).
+func validatorIDs(ctx context.Context, pc *platformvm.Client, subnetID ids.ID, names map[ids.NodeID]string) ([]ids.ID, []string, error) {
 	vs, err := vset.Fetch(ctx, pc, subnetID, 1)
 	if err != nil {
 		return nil, nil, err
-	}
-	names := map[string]string{}
-	if entries, err := vset.ReadManifest(filepath.Dir(keyPath)); err == nil {
-		for _, e := range entries {
-			names[e.NodeID.String()] = e.Name
-		}
 	}
 	vids := make([]ids.ID, len(vs))
 	nameList := make([]string, len(vs))
 	for i, v := range vs {
 		vids[i] = v.ValidationID
-		nameList[i] = names[v.NodeID.String()]
+		nameList[i] = names[v.NodeID]
 		if nameList[i] == "" {
 			nameList[i] = v.NodeID.String()
 		}
 	}
 	return vids, nameList, nil
+}
+
+// manifestNames maps the main-L1 fleet's NodeIDs to their committed names
+// (staking/node-ids.env). Best effort: an unreadable manifest just yields
+// NodeID-labelled output.
+func manifestNames(stakingDir string) map[ids.NodeID]string {
+	out := map[ids.NodeID]string{}
+	if entries, err := vset.ReadManifest(stakingDir); err == nil {
+		for _, e := range entries {
+			out[e.NodeID] = e.Name
+		}
+	}
+	return out
+}
+
+// committeeNames maps the signing committee's NodeIDs to their dir names
+// (staking/manager/m<i>, written by `l1 create`; the committee is NOT in the
+// node-ids.env manifest). Best effort: a missing dir yields NodeID labels.
+func committeeNames(stakingDir string) map[ids.NodeID]string {
+	out := map[ids.NodeID]string{}
+	entries, err := os.ReadDir(filepath.Join(stakingDir, "manager"))
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		id, err := vset.NodeIDFromCertFile(filepath.Join(stakingDir, "manager", e.Name(), "staker.crt"))
+		if err == nil {
+			out[id] = e.Name()
+		}
+	}
+	return out
 }
 
 func avaxString(navax uint64) string {
