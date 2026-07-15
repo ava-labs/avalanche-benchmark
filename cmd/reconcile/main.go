@@ -561,6 +561,10 @@ func status(cfg *config) {
 		}
 	}
 	results := cfg.checkHealth()
+	// Overlay HALTED onto any node whose consensus tip is wedged (a frozen
+	// fleet otherwise reads SERVING N/N: nobody is "behind" the fleet max when
+	// every node is stuck at the same height). Status-only.
+	cfg.markHalted(results)
 	// One batch of P-chain reads (read-only; weights MOVE via bin/l1).
 	weights, weightsErr := fetchWeights(cfg)
 	if weightsErr != nil {

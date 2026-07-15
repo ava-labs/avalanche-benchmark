@@ -21,12 +21,21 @@ const (
 	healthBootstrapping
 	healthCatchingUp
 	healthServing
+	// healthHalted: the node answers its RPC (so classifyHealth would call it
+	// SERVING) but its consensus tip is wedged - the oldest undecided block has
+	// been processing longer than maxItemProcessingTime. This is the
+	// whole-fleet-frozen case the relative "behind the fleet max" check misses:
+	// when every node is stuck at the same height nobody is "behind", so the
+	// summary wrongly read SERVING N/N. Overlaid by markHalted, status-only.
+	healthHalted
 )
 
 func (h nodeHealth) String() string {
 	switch h {
 	case healthServing:
 		return "SERVING"
+	case healthHalted:
+		return "HALTED"
 	case healthCatchingUp:
 		return "CATCHING UP"
 	case healthBootstrapping:
@@ -305,6 +314,42 @@ func parseConsensusHealth(body []byte, chainID string) (percentConnected float64
 	return chk.Message.Networking.PercentConnected, lp, chk.Message.Engine.Consensus.LastAcceptedHeight, true
 }
 
+// maxItemProcessingTime mirrors avalanchego's default consensus parameter: a
+// block undecided longer than this trips the "block processing too long"
+// health warning and means the chain has stopped finalizing. A wedged L1
+// under the one-burst weight-shift failure logged "block processing too long:
+// 32s > 30s" right before it stalled with no self-recovery.
+const maxItemProcessingTime = 30 * time.Second
+
+// markHalted overlays HALTED onto any SERVING result whose consensus health
+// shows the oldest undecided block has been processing longer than
+// maxItemProcessingTime: a frozen tip that still answers eth_blockNumber. This
+// is the signal that makes a whole-fleet freeze visible - checkHealth alone
+// only ranks nodes against the fleet max, so an all-frozen fleet reads SERVING
+// N/N. Probed in parallel and only for nodes already answering their RPC (the
+// rest have no consensus tip to stall).
+//
+// Status-only, deliberately NOT folded into checkHealth: the recovery wait
+// loop (waitServing) drives off classifyHealth + wedgeFrozen, and a transient
+// processing spike on a node that has otherwise reached tip must not knock it
+// out of SERVING there and restart its rebuild clock.
+func (c *config) markHalted(results []healthResult) {
+	var wg sync.WaitGroup
+	for i := range results {
+		if results[i].state != healthServing {
+			continue
+		}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, longest, _, ok := c.consensusHealth(i); ok && longest > maxItemProcessingTime {
+				results[i].state = healthHalted
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
 // checkHealth probes every machine's RPC once, in parallel, and returns
 // a point-in-time snapshot of observed facts. Read-only and non-blocking: it
 // never stops/swaps/starts anything and never waits - run `./fleet status`
@@ -374,7 +419,7 @@ func reportHealth(cfg *config, results []healthResult, actual map[int]uint64) {
 	}
 
 	servingValidators, activeSlots := 0, 0
-	bootstrappingValidator, downNode := false, false
+	bootstrappingValidator, downNode, haltedValidator := false, false, false
 
 	for _, dc := range dcs {
 		switch {
@@ -397,6 +442,8 @@ func reportHealth(cfg *config, results []healthResult, actual map[int]uint64) {
 			switch results[i].state {
 			case healthServing:
 				reach = fmt.Sprintf("SERVING block=%d", results[i].block)
+			case healthHalted:
+				reach = fmt.Sprintf("HALTED (block processing > %s, tip frozen at %d)", maxItemProcessingTime, results[i].block)
 			case healthCatchingUp:
 				reach = fmt.Sprintf("CATCHING UP (behind %d) block=%d",
 					fleetMaxBlock(results)-results[i].block, results[i].block)
@@ -411,6 +458,11 @@ func reportHealth(cfg *config, results []healthResult, actual map[int]uint64) {
 				switch results[i].state {
 				case healthServing:
 					servingValidators++
+				case healthHalted:
+					// Answering RPC but consensus wedged: NOT counted as
+					// serving, so it drops out of the quorum tally and the
+					// halt warning below fires.
+					haltedValidator = true
 				case healthCatchingUp:
 					// Alive and syncing: not serving (behind tip), not down,
 					// and past bootstrap so the rejoin-latch hint doesn't apply.
@@ -429,6 +481,9 @@ func reportHealth(cfg *config, results []healthResult, actual map[int]uint64) {
 		fmt.Println("(P-chain weights unreadable: stake tiers and quorum math unavailable this run)")
 	} else {
 		fmt.Printf("validators serving: %d/%d\n", servingValidators, activeSlots)
+		if haltedValidator {
+			fmt.Printf("HALTED: a validator's consensus tip is frozen (block processing > %s) - the L1 has stopped finalizing and will not self-recover; restore the validator set (see the runbook).\n", maxItemProcessingTime)
+		}
 		if servingValidators < quorumNeeded(activeSlots) {
 			fmt.Printf("WARNING: fewer than %d validators serving - chain lacks quorum and is HALTED until restored.\n", quorumNeeded(activeSlots))
 		}
