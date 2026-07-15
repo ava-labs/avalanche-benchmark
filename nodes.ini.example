@@ -25,6 +25,10 @@
 #   constant initial weight of 1000; the real distribution (site A active,
 #   site B standby) is applied via `l1 apply` / scenarios/00_healthy.sh and
 #   the on-chain weight is the sole truth.
+# - The manager-L1 signing committee is NOT listed here: `l1 create` generates
+#   it separately (staking/manager/m<i>, default 4 validators) as the set whose
+#   BLS keys sign this L1's weight changes. It never runs, but keep it funded
+#   (fuji-wallet topup); a drained committee validator dilutes the quorum.
 # - Ports are positional per host: the k-th node on a host serves HTTP on
 #   9650+2k and staking p2p on 9651+2k (one node per host = 9650/9651).
 #   Reordering nodes that share a host shifts the later nodes' ports:

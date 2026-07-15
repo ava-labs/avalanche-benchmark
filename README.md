@@ -11,12 +11,22 @@ recover.
 - All validators, both sites, are registered on the L1 once, at chain
   creation, each at an initial weight of 1000. A failover never registers or
   removes anything: it only moves on-chain consensus weight between them.
-- The chain's validator manager is recorded on the L1's OWN chain (address
-  `0x0000000000000000000000000000000000000001`; no contract exists there).
-  The kit holds every validator's BLS key, so `bin/l1` signs each weight
-  change locally with all of them, aggregates, and submits the
-  `SetL1ValidatorWeightTx` straight to the P-chain. No ValidatorManager
-  contract, no courier, no signature aggregator, no C-chain anywhere.
+- The main L1's validator manager is a small, separate MANAGER L1: its own
+  subnet + a phantom chain that never runs blocks, whose validators are an
+  equal-weight signing COMMITTEE (default 4, so a 3-of-4 = 75% quorum survives
+  one signer loss at the P-chain's strict 67% warp threshold). `l1 create`
+  builds both L1s from the single wallet key and records the manager chain
+  (address `0x0000000000000000000000000000000000000001`) as the main L1's
+  manager. The kit holds every committee BLS key, so `bin/l1` signs each
+  weight change locally, aggregates, and submits the `SetL1ValidatorWeightTx`
+  straight to the P-chain, which verifies it against the MANAGER subnet's
+  validator set. No ValidatorManager contract, no courier, no signature
+  aggregator, no C-chain anywhere.
+- The committee validators never run, but they must stay FUNDED: a committee
+  validator that drains its continuous-fee balance goes INACTIVE, dropping its
+  BLS key while keeping its weight in the quorum denominator, which dilutes and
+  can break the signing quorum. `l1 status` shows the committee with a runway
+  warning; top it up with `fuji-wallet topup`.
 - The only external dependency of the tooling is one P-chain RPC (the public
   Avalanche API by default). Keys never move between machines, so a failover
   cannot fork the chain.
@@ -298,7 +308,9 @@ Metrics** (per-box CPU, memory, disk, throttle pressure).
 All prebuilt in `bin/`, all run from the kit root:
 
 - `benchmark-fleet` (via the `./fleet` wrapper): hardware orchestration.
-- `l1`: chain creation and on-chain weight moves (self-signed warp).
+- `l1`: chain creation (main L1 + manager-L1 signing committee) and on-chain
+  weight moves (committee-signed warp). `--committee N` (default 4, >= 4 unless
+  `--allow-fragile-committee`), `--committee-balance` set the committee.
 - `bombard` (via `run/03_bombard.sh`): the load generator.
 - `fuji-wallet`: `gen` / `fund` / `topup [days]` for the fund/fee wallet.
 - `genstaking`: generates missing staking identities from `nodes.ini`
@@ -313,8 +325,12 @@ All prebuilt in `bin/`, all run from the kit root:
 - `nodes.ini`: the fleet inventory, copied from `nodes.ini.example` (see
   above).
 - `network.env` (gitignored, written once by `l1 create`): `NETWORK`,
-  `SUBNET_ID`, `CHAIN_ID`, `MANAGER_ADDRESS`. The chain's identity; kept
-  even by `fleet destroy`.
+  `SUBNET_ID`, `CHAIN_ID`, `MANAGER_ADDRESS` (the main L1), plus
+  `MANAGER_SUBNET_ID`, `MANAGER_CHAIN_ID` (the signing committee's L1: its set
+  signs weight changes, and `MANAGER_CHAIN_ID` is the warp sourceChainID). The
+  chain's identity; kept even by `fleet destroy`. A `network.env` without the
+  two `MANAGER_*` L1 fields is a legacy self-managed chain: `bin/l1` falls back
+  to signing against the L1's own set with `staking/l1/` keys.
 - `chain-config.json`: subnet-evm config. `min-delay-target: 25` sets the
   25ms block cadence; throughput is gas-bound, not block-rate-bound (see
   [docs/throughput-tuning-and-benchmarks.md](docs/throughput-tuning-and-benchmarks.md)).
@@ -337,8 +353,10 @@ All prebuilt in `bin/`, all run from the kit root:
 ### Secrets
 
 Never commit, never put in a kit archive: `staking/` (per-node TLS
-identities, validator BLS keys, `fuji-wallet.key`), `network.env`, `.env`.
-A leaked staking key means validator impersonation; losing `staking/` +
+identities, validator BLS keys, the manager-L1 committee keys under
+`staking/manager/`, `fuji-wallet.key`), `network.env`, `.env`. A leaked
+staking key means validator impersonation, and a leaked committee key lets its
+holder co-sign the main L1's weight changes; losing `staking/` +
 `network.env` means losing control of the chain. The one secret that comes
 from outside is the wallet key you drop at `staking/fuji-wallet.key`; every
 other file in `staking/` and `network.env` is generated on first run. The

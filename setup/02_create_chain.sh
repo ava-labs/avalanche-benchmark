@@ -1,13 +1,15 @@
 #!/bin/bash
-# CREATE the chain: subnet + chain + ConvertSubnetToL1Tx via `bin/l1 create`,
-# issued against the PUBLIC API (our own RPC tier is follow-only, so its
-# platform.* API is gated forever). The conversion records the validator
-# manager on the L1's OWN chain (address 0x..01): we hold every validator's
-# BLS key, so all later weight changes are self-signed locally by `bin/l1`
-# with no contract, courier or aggregator. This SPENDS AVAX (fees + the
-# per-validator continuous-fee balance) and registers the generated NodeIDs
-# on a public chain, so run it ONCE per chain. Re-deploys of the fleet go
-# through ./run/01_deploy.sh, which never re-creates (and never re-spends).
+# CREATE the chain via `bin/l1 create`, issued against the PUBLIC API (our own
+# RPC tier is follow-only, so its platform.* API is gated forever). This builds
+# TWO L1s from the one wallet key: a small MANAGER L1 whose equal-weight
+# validators are a signing COMMITTEE (default 4), and the MAIN L1 (the fleet)
+# whose recorded validator manager is that committee's chain. We hold every
+# committee BLS key, so all later weight changes are self-signed locally by
+# `bin/l1` with no contract, courier or aggregator. This SPENDS AVAX (fees +
+# the per-validator continuous-fee balances of BOTH L1s; keep the committee
+# funded) and registers the generated NodeIDs on a public chain, so run it ONCE
+# per chain. Re-deploys of the fleet go through ./run/01_deploy.sh, which never
+# re-creates (and never re-spends).
 set -e
 
 # Error handler to show what went wrong
@@ -67,9 +69,11 @@ source "$NETWORK_ENV"
 echo ""
 echo "=== L1 Created ==="
 echo ""
-echo "Subnet ID: $SUBNET_ID"
-echo "Chain ID:  $CHAIN_ID"
-echo "Manager:   $MANAGER_ADDRESS (on the L1's own chain; weights move via bin/l1)"
+echo "Subnet ID:        $SUBNET_ID"
+echo "Chain ID:         $CHAIN_ID"
+echo "Manager subnet:   ${MANAGER_SUBNET_ID:-<self-managed>}"
+echo "Manager chain:    ${MANAGER_CHAIN_ID:-<self-managed>} (its committee signs weight moves via bin/l1)"
+echo "Manager address:  $MANAGER_ADDRESS"
 echo ""
 echo "Saved to: $NETWORK_ENV"
 echo ""
