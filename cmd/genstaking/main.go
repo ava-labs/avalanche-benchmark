@@ -65,7 +65,7 @@ func main() {
 			fmt.Printf("  %s exists (%s): keeping it\n", dir, id)
 			continue
 		}
-		id, err := vset.GenerateIdentity(stakingDir, n.Name, n.IsValidator())
+		id, err := vset.GenerateIdentity(stakingDir, "l1", n.Name, n.IsValidator())
 		if err != nil {
 			fatalf("%v", err)
 		}

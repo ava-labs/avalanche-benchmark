@@ -10,14 +10,14 @@ import (
 func TestManifestRoundTripAndIdentity(t *testing.T) {
 	dir := t.TempDir()
 
-	id1, err := GenerateIdentity(dir, "a1", true)
+	id1, err := GenerateIdentity(dir, "l1", "a1", true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := GenerateIdentity(dir, "a1", true); err == nil {
+	if _, err := GenerateIdentity(dir, "l1", "a1", true); err == nil {
 		t.Fatal("GenerateIdentity must refuse to overwrite")
 	}
-	idRPC, err := GenerateIdentity(dir, "rpc_a1", false)
+	idRPC, err := GenerateIdentity(dir, "l1", "rpc_a1", false)
 	if err != nil {
 		t.Fatal(err)
 	}

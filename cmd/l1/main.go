@@ -1,36 +1,46 @@
 // Command l1 is the validator manager for our P-chain-anchored L1: it creates
 // the chain and moves validator weights with no ValidatorManager contract, no
-// courier and no external signature aggregator. We hold every validator's BLS
-// signer key (staking/l1/<name>/signer.key), so the tool crafts each warp
-// payload, signs it with all the keys it holds, aggregates locally and submits
-// the P-chain tx itself. The only external dependency is one P-chain RPC.
+// courier and no external signature aggregator. We hold every SIGNING BLS key,
+// so the tool crafts each warp payload, signs it with all the keys it holds,
+// aggregates locally and submits the P-chain tx itself. The only external
+// dependency is one P-chain RPC.
 //
-// OPERATING MODEL: `create` records the validator manager as living on the
-// L1's OWN chain (sourceChainID = the new blockchainID, sourceAddress =
-// 0x0000000000000000000000000000000000000001). The P-chain then verifies our
-// weight messages against OUR validator set, which we can sign for because we
-// hold all the keys. The validator list NEVER changes after create; only
-// weights move. It is NOT usable on an L1 whose manager was recorded on the
-// C-chain: there the P-chain expects primary-network signatures we do not have.
+// OPERATING MODEL (committee): `create` builds TWO L1s from the single wallet
+// key. A small MANAGER L1 (its own subnet + a phantom chain that never runs)
+// registers an equal-weight signing COMMITTEE whose BLS keys we generate and
+// hold under staking/manager/. The MAIN L1 (the fleet) is then converted with
+// its recorded validator manager set to the MANAGER L1's blockchainID
+// (sourceChainID) + address 0x0000000000000000000000000000000000000001. The
+// P-chain verifies the main L1's weight messages against the MANAGER subnet's
+// validator set, which the committee keys sign for. Both validator lists NEVER
+// change after create; only the main L1's weights move. The default committee
+// is 4 (3-of-4 = 75% survives one signer loss at the strict 67% warp quorum).
+// The committee must stay FUNDED: a drained committee validator goes INACTIVE
+// (drops its BLS key, keeps its weight in the denominator) and dilutes quorum.
 //
-//	l1 create     [--balance avax] [--force]
-//	              generate missing identities for the inventory's
-//	              role=validator nodes, create subnet + chain, convert to an
-//	              L1 with exactly those nodes registered, all at a constant
-//	              initial weight of 1000 (the real distribution comes from
-//	              `l1 apply` right after); writes network.env
-//	              (the ONLY registration point, run once per chain)
+// A network.env without MANAGER_CHAIN_ID/MANAGER_SUBNET_ID is a legacy
+// self-managed chain: weight messages then carry sourceChainID = the L1's own
+// chain and are signed by the L1's own validators (staking/l1/), verified
+// against the L1's own set. `create` always writes the committee fields.
+//
+//	l1 create     [--balance avax] [--committee N] [--committee-balance avax]
+//	              [--allow-fragile-committee] [--force]
+//	              generate the committee + the inventory's role=validator
+//	              nodes, create both subnets + chains, convert both to L1s;
+//	              writes network.env (the ONLY registration point, run once)
 //	l1 set-weight --node <name|nodeID|validationID> --weight <w>
 //	              set one validator's weight (0 removes; we never remove)
 //	l1 apply      --weights a1=100000,a2=100000,b1=1,...
 //	              declarative target weights, applied all raises first then
 //	              lowers, one tx at a time, each verified on-chain
-//	l1 status     print the registered set with balances and a runway warning
+//	l1 status     print the registered set + the committee, with balances and
+//	              runway warnings
 //
 // Config comes from nodes.ini (the fleet inventory) and .env / network.env
-// (NETWORK, SUBNET_ID, CHAIN_ID, MANAGER_ADDRESS; PCHAIN_API overrides the
-// RPC) plus the staking/ directory (l1/<name>/signer.key BLS keys,
-// node-ids.env, fuji-wallet.key fee wallet).
+// (NETWORK, SUBNET_ID, CHAIN_ID, MANAGER_ADDRESS, MANAGER_SUBNET_ID,
+// MANAGER_CHAIN_ID; PCHAIN_API overrides the RPC) plus the staking/ directory
+// (manager/<name>/signer.key committee keys, l1/<name>/signer.key fleet BLS
+// keys, node-ids.env, fuji-wallet.key fee wallet).
 //
 // Txs verify at the proposer's P-chain height, which can lag the tip. On a
 // "signature is invalid" or set-mismatch rejection just re-run the command:
@@ -81,6 +91,9 @@ func main() {
 		var opts createOpts
 		fs.Float64Var(&opts.balanceAvax, "balance", 0, "per-validator continuous-fee balance in AVAX (default: the network's standard deposit)")
 		fs.BoolVar(&opts.force, "force", false, "resume/verify even though network.env already records a SUBNET_ID")
+		fs.IntVar(&opts.committee, "committee", defaultCommittee, "manager-L1 signing committee size (equal-weight); must be >= 4 so 67% quorum survives one signer loss")
+		fs.Float64Var(&opts.committeeBalanceAvax, "committee-balance", 0, "per-committee-validator continuous-fee balance in AVAX (default: keeps the committee ACTIVE well past a benchmark)")
+		fs.BoolVar(&opts.allowFragile, "allow-fragile-committee", false, "permit a committee < 4 (cannot tolerate one signer loss at the 67% quorum)")
 		_ = fs.Parse(os.Args[2:])
 		create(ctx, opts)
 	case "set-weight":
@@ -124,12 +137,55 @@ func loadEnvFiles() {
 
 // config is everything the weight/status subcommands need, resolved once from
 // the env. `create` runs before network.env exists and resolves its own.
+//
+// Two signing models coexist, chosen by whether MANAGER_CHAIN_ID is set:
+//   - committee (managerChainID != Empty): weight-change warp messages carry
+//     sourceChainID = the manager L1's blockchainID and are signed by the
+//     manager L1's committee (staking/manager/<name>), verified by the
+//     P-chain against the MANAGER subnet's validator set. This is what
+//     `l1 create` writes.
+//   - self-managed (managerChainID == Empty): the legacy model where the L1
+//     manages itself; messages carry sourceChainID = the L1's own chainID and
+//     are signed by the L1's own validators (staking/l1/<name>). Kept so a
+//     chain created before the committee model still works.
 type config struct {
-	net         netcfg.Config
-	subnetID    ids.ID
-	chainID     ids.ID // the L1's blockchainID: warp sourceChainID
-	managerAddr []byte // recorded manager address: warp sourceAddress
-	stakingDir  string
+	net             netcfg.Config
+	subnetID        ids.ID
+	chainID         ids.ID // the main L1's blockchainID
+	managerAddr     []byte // recorded manager address: warp sourceAddress (0x..01)
+	managerChainID  ids.ID // committee model: the manager L1's blockchainID (warp sourceChainID); Empty => self-managed
+	managerSubnetID ids.ID // committee model: the manager L1's subnetID (its validator set signs; also used for reads/reclaim)
+	stakingDir      string
+}
+
+// committee reports whether the committee signing model is in force.
+func (c config) committee() bool { return c.managerChainID != ids.Empty }
+
+// signChainID is the warp sourceChainID for weight messages: the manager L1's
+// chain under the committee model, the L1's own chain when self-managed.
+func (c config) signChainID() ids.ID {
+	if c.committee() {
+		return c.managerChainID
+	}
+	return c.chainID
+}
+
+// signSubnetID is the subnet whose validator set the P-chain verifies weight
+// messages against: the manager subnet under the committee model, the L1's own
+// subnet when self-managed.
+func (c config) signSubnetID() ids.ID {
+	if c.committee() {
+		return c.managerSubnetID
+	}
+	return c.subnetID
+}
+
+// signTier is the staking/<tier> directory holding the signing BLS keys.
+func (c config) signTier() string {
+	if c.committee() {
+		return "manager"
+	}
+	return "l1"
 }
 
 // stakingDirPath resolves the staking/ directory exe-relative first, cwd
@@ -157,6 +213,20 @@ func loadConfig() config {
 		fatalf("MANAGER_ADDRESS %q is not a hex address", addr)
 	}
 	c.managerAddr = common.HexToAddress(addr).Bytes()
+	// Committee model: both MANAGER_CHAIN_ID and MANAGER_SUBNET_ID are written
+	// together by `l1 create`; either alone is a corrupt network.env.
+	mc, ms := os.Getenv("MANAGER_CHAIN_ID"), os.Getenv("MANAGER_SUBNET_ID")
+	if (mc == "") != (ms == "") {
+		fatalf("network.env has only one of MANAGER_CHAIN_ID / MANAGER_SUBNET_ID; both or neither")
+	}
+	if mc != "" {
+		if c.managerChainID, err = ids.FromString(mc); err != nil {
+			fatalf("parse MANAGER_CHAIN_ID: %v", err)
+		}
+		if c.managerSubnetID, err = ids.FromString(ms); err != nil {
+			fatalf("parse MANAGER_SUBNET_ID: %v", err)
+		}
+	}
 	return c
 }
 
@@ -173,24 +243,28 @@ func dirExists(p string) bool {
 	return err == nil && st.IsDir()
 }
 
-// loadSigners loads every BLS signer key we hold (staking/l1/<name>/signer.key).
-// Only validator identities carry one - rpc identities never do - so a dir
+// loadSigners loads every BLS signer key we hold under staking/<tier>/<name>/
+// signer.key. tier is "manager" (the committee) or "l1" (self-managed). Only
+// validator identities carry a key - rpc identities never do - so a dir
 // without a signer.key is simply skipped; if the loaded keys cannot clear the
 // 67% warp quorum, signAndAggregate refuses with the exact shortfall.
-func loadSigners(stakingDir string) ([]bls.Signer, error) {
-	if err := vset.CheckNamedKeyDirs(stakingDir); err != nil {
-		return nil, err
+func loadSigners(stakingDir, tier string) ([]bls.Signer, error) {
+	if tier == "l1" {
+		// CheckNamedKeyDirs guards the retired numbered l1 layout only.
+		if err := vset.CheckNamedKeyDirs(stakingDir); err != nil {
+			return nil, err
+		}
 	}
-	entries, err := os.ReadDir(filepath.Join(stakingDir, "l1"))
+	entries, err := os.ReadDir(filepath.Join(stakingDir, tier))
 	if err != nil {
-		return nil, fmt.Errorf("read %s/l1: %w", stakingDir, err)
+		return nil, fmt.Errorf("read %s/%s: %w", stakingDir, tier, err)
 	}
 	var signers []bls.Signer
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		raw, err := os.ReadFile(filepath.Join(stakingDir, "l1", e.Name(), "signer.key"))
+		raw, err := os.ReadFile(filepath.Join(stakingDir, tier, e.Name(), "signer.key"))
 		if os.IsNotExist(err) {
 			continue // an rpc identity: no BLS key, never registered
 		}
@@ -204,7 +278,7 @@ func loadSigners(stakingDir string) ([]bls.Signer, error) {
 		signers = append(signers, s)
 	}
 	if len(signers) == 0 {
-		return nil, fmt.Errorf("no signer.key files under %s/l1 (validator identities missing?)", stakingDir)
+		return nil, fmt.Errorf("no signer.key files under %s/%s (validator identities missing?)", stakingDir, tier)
 	}
 	return signers, nil
 }
@@ -337,6 +411,55 @@ func status(ctx context.Context, cfg config) {
 	if len(short) > 0 {
 		fmt.Printf("WARNING: %v under %.0f days of continuous-fee runway; a drained validator goes\n", short, runwayWarnDays)
 		fmt.Println("         INACTIVE and dilutes the warp quorum. Top up with: fuji-wallet topup")
+	}
+
+	if cfg.committee() {
+		statusCommittee(ctx, pc, cfg, rate)
+	}
+}
+
+// statusCommittee prints the manager L1's signing committee: the set whose
+// BLS keys actually sign this L1's weight changes. A committee validator that
+// drains its continuous-fee balance goes INACTIVE - it drops its BLS key but
+// KEEPS its weight in the quorum denominator, diluting the quorum - so the
+// committee must stay funded. INACTIVE is read as a nil public key from
+// getL1Validator.
+func statusCommittee(ctx context.Context, pc *platformvm.Client, cfg config, rate uint64) {
+	cvs, err := vset.Fetch(ctx, pc, cfg.managerSubnetID, 1)
+	if err != nil {
+		fmt.Printf("committee (manager subnet %s): FETCH FAILED: %v\n", cfg.managerSubnetID, err)
+		return
+	}
+	sort.Slice(cvs, func(i, j int) bool { return cvs[i].NodeID.Compare(cvs[j].NodeID) < 0 })
+	var total, active uint64
+	for _, v := range cvs {
+		total += v.Weight
+		if v.PublicKey != nil {
+			active += v.Weight
+		}
+	}
+	// The P-chain passes weight messages at the strict 67% quorum; report the
+	// live active-weight headroom against it.
+	quorumOK := active*quorumDen >= total*quorumNum
+	fmt.Printf("committee (manager chain %s, subnet %s): %d validators, active weight %d/%d, quorum %d%% %s\n",
+		cfg.managerChainID, cfg.managerSubnetID, len(cvs), active, total, quorumNum,
+		map[bool]string{true: "OK", false: "LOST (weight changes will be REJECTED)"}[quorumOK])
+	var short []string
+	for i, v := range cvs {
+		state := "ACTIVE"
+		if v.PublicKey == nil {
+			state = "INACTIVE(key dropped, still dilutes quorum)"
+		}
+		days := runwayDays(v.Balance, rate)
+		fmt.Printf("  m%-2d %s  %s  weight %-6d balance %s AVAX (%.1f days)  %s\n",
+			i, v.NodeID, v.ValidationID, v.Weight, avaxString(v.Balance), days, state)
+		if days < runwayWarnDays {
+			short = append(short, fmt.Sprintf("m%d", i))
+		}
+	}
+	if len(short) > 0 {
+		fmt.Printf("WARNING: committee %v under %.0f days of runway; a drained committee validator goes\n", short, runwayWarnDays)
+		fmt.Println("         INACTIVE and dilutes the SIGNING quorum. Keep the committee funded: fuji-wallet topup")
 	}
 }
 

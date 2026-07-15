@@ -77,6 +77,30 @@ func TestSignAndAggregateQuorum(t *testing.T) {
 	}
 }
 
+// TestCommitteeQuorum is the manager-L1 committee model's core evidence: an
+// L1ValidatorWeight message signed against a synthetic 4-equal-weight
+// committee (the smallest that survives one signer loss) VERIFIES at 3-of-4
+// (75% >= 67%) and FAILS at 2-of-4 (50% < 67%) with ErrInsufficientWeight -
+// exactly the check the P-chain runs against the manager subnet's set.
+func TestCommitteeQuorum(t *testing.T) {
+	signers, committee := syntheticSet(t, 4)
+	unsigned, _, _, _ := testWeightMessage(t)
+
+	// 3 of 4: passes. signAndAggregate verifies internally; assert again here.
+	signed, err := signAndAggregate(unsigned, committee, signers[:3])
+	if err != nil {
+		t.Fatalf("signAndAggregate with 3 of 4 committee keys: %v", err)
+	}
+	if err := signed.Signature.Verify(unsigned, testNetworkID, committee, quorumNum, quorumDen); err != nil {
+		t.Fatalf("Verify 3-of-4 at %d/%d: %v", quorumNum, quorumDen, err)
+	}
+
+	// 2 of 4 (50% < 67%): must fail the quorum.
+	if _, err := signAndAggregate(unsigned, committee, signers[:2]); !errors.Is(err, warp.ErrInsufficientWeight) {
+		t.Fatalf("signAndAggregate with 2 of 4 committee keys: want ErrInsufficientWeight, got %v", err)
+	}
+}
+
 // TestWeightMessageRoundTrip re-parses the built message bytes through
 // avalanchego's own parsers and asserts every field survives.
 func TestWeightMessageRoundTrip(t *testing.T) {

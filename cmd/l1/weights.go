@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ava-labs/avalanchego/ids"
+	"github.com/ava-labs/avalanchego/snow/validators"
 	"github.com/ava-labs/avalanchego/utils/crypto/bls"
 	"github.com/ava-labs/avalanchego/vms/platformvm"
 	warpmessage "github.com/ava-labs/avalanchego/vms/platformvm/warp/message"
@@ -16,8 +17,9 @@ import (
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/vset"
 )
 
-// setWeight moves ONE validator's weight: sign locally with every key we
-// hold, submit the SetL1ValidatorWeightTx, done.
+// setWeight moves ONE validator's weight: sign against the signing set (the
+// committee under the committee model, the L1's own set when self-managed),
+// submit the SetL1ValidatorWeightTx, done.
 func setWeight(ctx context.Context, cfg config, node string, weight uint64) {
 	pc := platformvm.NewClient(cfg.net.API)
 	vs, err := vset.Fetch(ctx, pc, cfg.subnetID, 1)
@@ -25,31 +27,46 @@ func setWeight(ctx context.Context, cfg config, node string, weight uint64) {
 		fatalf("%v", err)
 	}
 	v := resolveValidator(cfg, vs, node)
-	signers, err := loadSigners(cfg.stakingDir)
+	signers, err := loadSigners(cfg.stakingDir, cfg.signTier())
 	if err != nil {
 		fatalf("%v", err)
 	}
-	if err := submitWeight(ctx, cfg, makeWallet(ctx, cfg), signers, vs, v, weight); err != nil {
+	signSet, err := signingSet(ctx, pc, cfg, vs)
+	if err != nil {
+		fatalf("%v", err)
+	}
+	if err := submitWeight(cfg, makeWallet(ctx, cfg), signers, signSet, v, weight); err != nil {
 		fatalf("%v (safe to re-run: each run refetches the set and re-signs)", err)
 	}
 }
 
-// submitWeight signs and submits one SetL1ValidatorWeightTx moving v to
-// weight, against the given freshly fetched set.
-func submitWeight(ctx context.Context, cfg config, wallet pwallet.Wallet, signers []bls.Signer, vs []vset.Validator, v vset.Validator, weight uint64) error {
-	warpSet, err := vset.WarpSet(vs)
-	if err != nil {
-		return err
+// signingSet is the canonical warp set the P-chain verifies weight messages
+// against: the MANAGER subnet's committee under the committee model, the main
+// L1's own set (the caller's freshly fetched mainVS) when self-managed.
+func signingSet(ctx context.Context, pc *platformvm.Client, cfg config, mainVS []vset.Validator) (validators.WarpSet, error) {
+	if cfg.committee() {
+		cvs, err := vset.Fetch(ctx, pc, cfg.managerSubnetID, 1)
+		if err != nil {
+			return validators.WarpSet{}, fmt.Errorf("fetch committee (manager subnet %s): %w", cfg.managerSubnetID, err)
+		}
+		return vset.WarpSet(cvs)
 	}
+	return vset.WarpSet(mainVS)
+}
+
+// submitWeight signs and submits one SetL1ValidatorWeightTx moving v to
+// weight. signSet is the canonical set the signatures are verified against;
+// cfg.signChainID() is the warp sourceChainID.
+func submitWeight(cfg config, wallet pwallet.Wallet, signers []bls.Signer, signSet validators.WarpSet, v vset.Validator, weight uint64) error {
 	payload, err := warpmessage.NewL1ValidatorWeight(v.ValidationID, v.MinNonce, weight)
 	if err != nil {
 		return fmt.Errorf("build L1ValidatorWeight: %w", err)
 	}
-	unsigned, err := addressedCall(cfg.net.NetworkID, cfg.chainID, cfg.managerAddr, payload.Bytes())
+	unsigned, err := addressedCall(cfg.net.NetworkID, cfg.signChainID(), cfg.managerAddr, payload.Bytes())
 	if err != nil {
 		return fmt.Errorf("build warp message: %w", err)
 	}
-	signed, err := signAndAggregate(unsigned, warpSet, signers)
+	signed, err := signAndAggregate(unsigned, signSet, signers)
 	if err != nil {
 		return err
 	}
@@ -164,7 +181,7 @@ func apply(ctx context.Context, cfg config, weightsCSV string) {
 		fmt.Printf("  %s: %d -> %d\n", t.name, current[t.name], t.weight)
 	}
 
-	signers, err := loadSigners(cfg.stakingDir)
+	signers, err := loadSigners(cfg.stakingDir, cfg.signTier())
 	if err != nil {
 		fatalf("%v", err)
 	}
@@ -208,7 +225,12 @@ func applyStep(ctx context.Context, cfg config, pc *platformvm.Client, wallet pw
 		if v.Weight == t.weight {
 			return nil // already there (converged earlier, or a resumed re-run)
 		}
-		if err := submitWeight(ctx, cfg, wallet, signers, vs, *v, t.weight); err != nil {
+		signSet, err := signingSet(ctx, pc, cfg, vs)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if err := submitWeight(cfg, wallet, signers, signSet, *v, t.weight); err != nil {
 			lastErr = err
 			continue
 		}

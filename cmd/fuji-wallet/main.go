@@ -184,13 +184,17 @@ func pBalance(ctx context.Context, api string, addr ids.ShortID) uint64 {
 
 // requiredPBalance budgets a continuous-fee deposit for EVERY registered
 // validator: all role=validator nodes of the inventory (the conversion
-// registers them all; failover only moves weight).
+// registers them all; failover only moves weight), plus the default manager-L1
+// signing committee that `l1 create` also funds. Approximate: a create run
+// with a non-default --committee / --committee-balance shifts this, and the
+// create pre-flight is the authoritative gate.
 func requiredPBalance(validatorBalance uint64) uint64 {
 	nodes, err := topo.LoadNear()
 	if err != nil {
 		fatalf("%v", err)
 	}
-	return uint64(len(topo.Validators(nodes)))*validatorBalance + feeBudget
+	committee := uint64(netcfg.DefaultCommittee) * netcfg.DefaultCommitteeBalance
+	return uint64(len(topo.Validators(nodes)))*validatorBalance + committee + feeBudget
 }
 
 // topup brings every staking slot's validator balance up to at least

@@ -18,6 +18,17 @@ import (
 	"github.com/ava-labs/avalanchego/utils/units"
 )
 
+// DefaultCommittee is the manager-L1 signing committee size `l1 create` uses:
+// 4 equal-weight validators, the smallest that survives one signer loss at the
+// strict 67% warp quorum (3-of-4 = 75%). DefaultCommitteeBalance is the
+// per-committee-validator continuous-fee deposit, deliberately generous so the
+// committee outlasts a benchmark (an INACTIVE committee validator dilutes the
+// signing quorum). Shared so fuji-wallet's funding target covers the committee.
+const (
+	DefaultCommittee        = 4
+	DefaultCommitteeBalance = 1 * units.Avax
+)
+
 // Config is the resolved per-network configuration.
 type Config struct {
 	Name      string // "fuji" | "mainnet"; also the avalanchego --network-id value

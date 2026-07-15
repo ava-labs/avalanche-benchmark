@@ -112,13 +112,15 @@ func CheckNamedKeyDirs(stakingDir string) error {
 	return nil
 }
 
-// GenerateIdentity creates the node identity for staking/l1/<name>: the
+// GenerateIdentity creates the node identity for staking/<tier>/<name>: the
 // staker.crt + staker.key TLS identity that IS the NodeID, plus - for
 // validators only - the BLS signer.key (withSigner; rpc nodes are never
-// registered so no signer key ever exists for them). It refuses to overwrite:
-// an existing identity may be registered on a public P-chain.
-func GenerateIdentity(stakingDir, name string, withSigner bool) (ids.NodeID, error) {
-	dir := filepath.Join(stakingDir, "l1", name)
+// registered so no signer key ever exists for them). tier is "l1" for the
+// fleet nodes and "manager" for the phantom manager-L1 signing committee. It
+// refuses to overwrite: an existing identity may be registered on a public
+// P-chain.
+func GenerateIdentity(stakingDir, tier, name string, withSigner bool) (ids.NodeID, error) {
+	dir := filepath.Join(stakingDir, tier, name)
 	if _, err := os.Stat(dir); err == nil {
 		return ids.EmptyNodeID, fmt.Errorf("%s already exists: refusing to overwrite an identity that may be registered on-chain", dir)
 	}
