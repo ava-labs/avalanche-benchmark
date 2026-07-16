@@ -59,13 +59,6 @@ of the reset preamble, the failover is three commands:
                                 # raise site B first, then retire site A's stake
 ```
 
-`apply` self-staggers a large multi-validator shift: it converges in bounded
-steps (each moves <=20% of the live total, then waits out the ~30s
-proposer-lag window before the next), so the change is absorbed gradually and
-the L1 keeps quorum under sustained load instead of wedging on a one-burst
-weight flip. This makes the shift take several minutes; pausing the load
-generator across it is optional defense-in-depth, no longer required.
-
 Expect a pause of up to ~5 minutes between the weight flip and site B's
 first block: post-Durango proposer selection still derives from the parent
 block's pre-flip P-chain height, so a spare-weight (1000) B validator must

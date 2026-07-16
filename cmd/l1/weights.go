@@ -139,105 +139,6 @@ func orderTargets(ts []target, current map[string]uint64) []target {
 	return append(raises, lowers...)
 }
 
-// weightStep is one intermediate SetL1ValidatorWeightTx in a staggered
-// converge: drive validator name to weight (which may be an intermediate
-// value on the way to its final target, not the target itself).
-type weightStep struct {
-	name   string
-	weight uint64
-}
-
-// maxStepDelta is the most weight a single step may add or remove: 20% of the
-// current live total. Ported from the deleted C-chain converge engine
-// (cmd/reconcile/weights.go nextWeight, maxDelta = total/5), which moved
-// weight in bounded increments so the churn-limited manager absorbed each one.
-// That engine relied on the contract's churn tracker to space the effects;
-// self-signed apply has no such tracker, so planSteps caps the per-step delta
-// AND apply spaces the steps in wall-clock time (settleWait). Both are needed:
-// a step larger than this concentrates too much weight in one proposer-lag
-// window and can wedge the L1 under load.
-func maxStepDelta(total uint64) uint64 {
-	d := total / 5
-	if d == 0 {
-		d = 1
-	}
-	return d
-}
-
-// nextWeight returns the furthest weight toward desired reachable in ONE step
-// without moving more than maxStepDelta of the live total.
-func nextWeight(current, desired, total uint64) uint64 {
-	max := maxStepDelta(total)
-	if desired > current {
-		if desired-current > max {
-			return current + max
-		}
-		return desired
-	}
-	if current-desired > max {
-		return current - max
-	}
-	return desired
-}
-
-// maxPlanSteps bounds the simulated step sequence; each step moves at least 1
-// toward its target so a real plan terminates far below this. A hit means a
-// bug, not a legitimate plan.
-const maxPlanSteps = 1000
-
-// planSteps expands ordered targets into a staggered sequence of
-// single-validator weight steps. It replays the converge locally: raises to
-// completion FIRST (so the live total never dips through a low window
-// mid-seesaw and quorum is preserved), then lowers, each step capped by
-// nextWeight so no single proposer-lag window absorbs more than ~20% of the
-// live total. The final step for every validator is EXACTLY its target
-// (nextWeight lands on desired once the remaining delta fits under the cap).
-// Pure and deterministic: drives the offline planner test. total is the whole
-// L1's live total weight; non-target validators are baked into it and never
-// move.
-func planSteps(ordered []target, current map[string]uint64, total uint64) []weightStep {
-	cur := make(map[string]uint64, len(current))
-	for k, v := range current {
-		cur[k] = v
-	}
-	var steps []weightStep
-	for len(steps) < maxPlanSteps {
-		var pick *target
-		for i := range ordered { // raises first
-			if ordered[i].weight > cur[ordered[i].name] {
-				pick = &ordered[i]
-				break
-			}
-		}
-		if pick == nil {
-			for i := range ordered { // then lowers
-				if ordered[i].weight < cur[ordered[i].name] {
-					pick = &ordered[i]
-					break
-				}
-			}
-		}
-		if pick == nil {
-			return steps // converged
-		}
-		c := cur[pick.name]
-		to := nextWeight(c, pick.weight, total)
-		steps = append(steps, weightStep{name: pick.name, weight: to})
-		total = total - c + to
-		cur[pick.name] = to
-	}
-	return steps
-}
-
-// settleWait is the pause between staggered weight steps. Post-Durango the
-// proposer schedule and consensus vote weight only pick up a committed weight
-// change after RecentlyAcceptedWindowTTL (30s) plus a couple of blocks, so
-// each step must clear that window before the next lands: otherwise the steps'
-// effects stack inside one window and reproduce the one-burst concentration
-// this staggering exists to prevent. Slower apply is the deliberate trade
-// (correctness over speed for weight shifts under load).
-const settleWait = 35 * time.Second
-
 // applyStepAttempts x the vset fetch retries bounds how often one weight step
 // is retried against transient rejections (stale proposer context, stale
 // load-balanced reads).
@@ -275,40 +176,19 @@ func apply(ctx context.Context, cfg config, weightsCSV string) {
 		fmt.Println("weights already as desired")
 		return
 	}
-
-	// Live total across the WHOLE registered set (not just the targets):
-	// per-step bound is a fraction of it, and non-target validators still
-	// count toward the weight the L1 votes with.
-	var liveTotal uint64
-	for i := range vs {
-		liveTotal += vs[i].Weight
-	}
-	steps := planSteps(ordered, current, liveTotal)
-
-	fmt.Printf("applying %d weight change(s) in %d staggered step(s), raises first:\n", len(ordered), len(steps))
+	fmt.Printf("applying %d weight change(s), raises first:\n", len(ordered))
 	for _, t := range ordered {
 		fmt.Printf("  %s: %d -> %d\n", t.name, current[t.name], t.weight)
 	}
-	fmt.Printf("each step moves <=20%% of the live total, then waits %s for the proposer schedule to catch up before the next (prevents the one-burst weight concentration that wedges the L1 under load)\n", settleWait)
 
 	signers, err := loadSigners(cfg.stakingDir, cfg.signTier())
 	if err != nil {
 		fatalf("%v", err)
 	}
 	wallet := makeWallet(ctx, cfg)
-	for i, s := range steps {
-		fmt.Printf("step %d/%d: %s -> %d\n", i+1, len(steps), s.name, s.weight)
-		st := target{name: s.name, weight: s.weight}
-		if err := applyStep(ctx, cfg, pc, wallet, signers, byName[s.name].NodeID, st, len(vs)); err != nil {
-			fatalf("apply %s: %v (already-applied steps are on-chain; re-run the same apply to resume, it skips converged validators)", s.name, err)
-		}
-		if i < len(steps)-1 {
-			fmt.Printf("  settling %s before the next step...\n", settleWait)
-			select {
-			case <-ctx.Done():
-				fatalf("apply: %v (already-applied steps are on-chain; re-run the same apply to resume)", ctx.Err())
-			case <-time.After(settleWait):
-			}
+	for _, t := range ordered {
+		if err := applyStep(ctx, cfg, pc, wallet, signers, byName[t.name].NodeID, t, len(vs)); err != nil {
+			fatalf("apply %s: %v (already-applied steps are on-chain; re-run the same apply to resume, it skips converged validators)", t.name, err)
 		}
 	}
 	fmt.Println("applied: all targets verified on-chain")
