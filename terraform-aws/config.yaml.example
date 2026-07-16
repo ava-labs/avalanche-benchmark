@@ -1,12 +1,22 @@
-prefix: "your-name"
-# Public key imported as the EC2 key pair in both regions (us-west-1 + us-west-2).
-public_key_path: "~/.ssh/your-key.pub"
-owner: "you@avalabs.org"  # required by org SCP (Owner tag on instances)
+prefix: "ilya-failover-bench"
+project: "avalanche-benchmark"
 
-# Per-DC machine counts. Terraform provisions N boxes per region; roles
-# (validator/spare/RPC) are assigned later in the reconcile/.env layer.
-# The validated topology is 6 per site (3 validators + 1 spare + 2 RPC).
-# Set site_b_count: 0 for a single-DC run - no us-west-2 EC2 spend (the us-west-2
-# security group + key pair are free and remain; outputs collapse to empty).
-site_a_count: 6
-site_b_count: 6
+# Required by org SCP p-9zri1kwo. Terraform sends Owner and Project tags for
+# both the instance and its root volume in the RunInstances request.
+owner: "ilya.solohin@avalabs.org"
+
+# Public key imported independently into both regions.
+public_key_path: "~/.ssh/fleet.pub"
+
+site_a_region: "us-west-1"
+site_b_region: "us-west-2"
+instance_type: "m6a.4xlarge"
+
+# Optional. If omitted, Terraform detects the caller's public IP. Keep this a
+# single trusted operator /32; it gates SSH, Grafana, and Prometheus ingress.
+# operator_cidr: "203.0.113.10/32"
+
+# Must match the mainnet p-chain-follow-only bootstrap flag in the kit config.
+# RPC nodes can reach this one destination on this one TCP port.
+mainnet_upstream_cidr: "54.232.137.108/32"
+mainnet_upstream_port: 9651

@@ -5,124 +5,159 @@ terraform {
   }
 }
 
-# Fuji-anchored single-site topology (FUJI_PLAN.md item 5), one region:
-#   control box (public: SSH from operator, Grafana/Prometheus)
-#   validators + spare: NO external connectivity; p2p only to/from the fleet SGs
-#   RPC tier: exactly ONE external egress, the pinned public Fuji peer
-#     (fuji_upstream_cidr:9651; keep in lockstep with FUJI_UPSTREAM_IPS in
-#     _common.sh/.env, and re-check genesis/bootstrappers.json on every
-#     avalanchego bump: the hardcoded bootstrapper IPs rotate between releases).
-# DNS (Route53 resolver) and NTP (Amazon Time Sync, 169.254.169.123) are
-# link-local and exempt from SG filtering, so the locked tiers keep working.
-# Nodes carry public IPs (default VPC) but their SGs drop everything external;
-# ALL fleet traffic (.env IP lists, --public-ip, ssh from control) uses the
-# PRIVATE addresses, so the SG-reference rules actually match.
+# Mainnet two-site topology:
+#   us-west-1: control, a1-a4 validators, rpc_a1-rpc_a2
+#   us-west-2: b1-b4 validators, rpc_b1-rpc_b2
 #
-# Two-site mode (site B) is not expressed here yet; replicate the node SGs +
-# instances in a second region when the two-site drill moves to Fuji.
-#
-# Every resource is tagged with the configured project/owner (spend audit +
-# teardown filters key on it).
+# Node security groups have no default egress. Validators can dial validators,
+# the control box, and TCP/9651 on RPC nodes. The last exception is required:
+# master configures every validator's P-chain beacons as all four RPC nodes.
+# RPC nodes can dial TCP/9651 on the fleet, the control box, and the one pinned
+# mainnet upstream. Every fleet path uses exact instance public /32s because
+# nodes.ini advertises public IPs. AWS security-group references authorize the
+# attached ENIs' private IPs, not traffic addressed through public IPs.
 
 provider "aws" {
-  region = local.region
-  default_tags { tags = { Project = local.project, Owner = local.owner } }
+  region = local.site_a_region
+  default_tags {
+    tags = local.common_tags
+  }
 }
 
-# Public IP of the machine running Terraform (the operator), for SSH ingress.
+provider "aws" {
+  alias  = "site_b"
+  region = local.site_b_region
+  default_tags {
+    tags = local.common_tags
+  }
+}
+
 data "http" "my_ip" {
   url = "https://checkip.amazonaws.com"
 }
 
 locals {
   config = yamldecode(file("${path.module}/config.yaml"))
-  prefix = local.config.prefix
-  owner  = local.config.owner # required by org SCP: instances must carry an Owner tag
-  # Distinct project tag per deployment so parallel clusters in one account are
-  # separable (the live failover cluster uses "avalanche-benchmark").
+
+  prefix  = local.config.prefix
+  owner   = local.config.owner
   project = try(local.config.project, "avalanche-benchmark")
-  region  = try(local.config.region, "us-west-2")
 
-  # Per-role machine counts: the SGs are role-shaped, so terraform must know
-  # which box is which. Keep these in lockstep with the host= values in
-  # nodes.ini (which assigns each box its node name and role).
-  validator_count = try(local.config.validator_count, 3)
-  spare_count     = try(local.config.spare_count, 1)
-  rpc_count       = try(local.config.rpc_count, 2)
-
-  # The ONE allowed external destination for the RPC tier: the pinned public
-  # Fuji bootstrap peer (identity NodeID-pinned by the TLS handshake; the SG
-  # only constrains the destination).
-  fuji_upstream_cidr = try(local.config.fuji_upstream_cidr, "18.192.93.241/32")
-  fuji_upstream_port = try(local.config.fuji_upstream_port, 9651)
+  site_a_region = try(local.config.site_a_region, "us-west-1")
+  site_b_region = try(local.config.site_b_region, "us-west-2")
 
   instance_type = try(local.config.instance_type, "m6a.4xlarge")
   public_key    = file(pathexpand(local.config.public_key_path))
-  operator_ip   = "${chomp(data.http.my_ip.response_body)}/32"
+  operator_cidr = try(local.config.operator_cidr, "${chomp(data.http.my_ip.response_body)}/32")
 
-  # L1 node port RANGE (nodes.ini positional assignment, internal/topo: the
-  # first node on a host serves http 9650, staking 9651, +2 per extra
-  # co-hosted node). The SGs open the whole range so co-hosting never needs
-  # an SG edit.
-  avax_port_from = 9650
-  avax_port_to   = 9750
+  mainnet_upstream_cidr = try(local.config.mainnet_upstream_cidr, "54.232.137.108/32")
+  mainnet_upstream_port = try(local.config.mainnet_upstream_port, 9651)
+
+  node_http_from = 9650
+  node_http_to   = 9750
+  staking_port   = 9651
+
+  common_tags = {
+    Owner   = local.owner
+    Project = local.project
+  }
+
+  site_a_defs = {
+    a1     = "validator"
+    a2     = "validator"
+    a3     = "validator"
+    a4     = "validator"
+    rpc_a1 = "rpc"
+    rpc_a2 = "rpc"
+  }
+  site_b_defs = {
+    b1     = "validator"
+    b2     = "validator"
+    b3     = "validator"
+    b4     = "validator"
+    rpc_b1 = "rpc"
+    rpc_b2 = "rpc"
+  }
 }
 
-# No IAM instance profile: the benchmark nodes need no AWS API access, and the
-# org SCP denies iam:CreateRole for this role anyway.
+# No IAM instance profile is used. The seed must be staged with temporary
+# credentials or a presigned URL, as described by the rebuild runbook.
 
-resource "aws_key_pair" "fleet" {
+resource "aws_key_pair" "site_a" {
   key_name   = "${local.prefix}-key"
   public_key = local.public_key
 }
 
-data "aws_ami" "ubuntu" {
+resource "aws_key_pair" "site_b" {
+  provider   = aws.site_b
+  key_name   = "${local.prefix}-key"
+  public_key = local.public_key
+}
+
+data "aws_ami" "site_a_ubuntu" {
   most_recent = true
-  owners      = ["099720109477"] # Canonical
+  owners      = ["099720109477"]
   filter {
-    name = "name"
-    # 26.04 so the target glibc is >= the build box's (binaries are built on
-    # the operator machine and shipped in the kit).
+    name   = "name"
     values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-*-26.04-amd64-server-*"]
   }
 }
 
-# ---- Control box --------------------------------------------------------------
-# Runs the orchestration scripts, bombard, and Prometheus/Grafana. Holds no L1
-# node. Needs open egress (public Fuji API for create-l1/fund, node provisioning).
+data "aws_ami" "site_b_ubuntu" {
+  provider    = aws.site_b
+  most_recent = true
+  owners      = ["099720109477"]
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-*-26.04-amd64-server-*"]
+  }
+}
+
+# Security groups are deliberately rule-free here. Standalone rules below keep
+# SG creation independent of instances, and cross-region rules depend on
+# instance public IPs without creating a graph cycle.
 resource "aws_security_group" "control" {
   name        = "${local.prefix}-control"
   description = "Benchmark control box"
 }
 
-resource "aws_security_group_rule" "control_ssh" {
-  type              = "ingress"
-  from_port         = 22
-  to_port           = 22
-  protocol          = "tcp"
-  security_group_id = aws_security_group.control.id
-  cidr_blocks       = [local.operator_ip]
-  description       = "SSH from operator"
+resource "aws_security_group" "validator_a" {
+  name        = "${local.prefix}-validator-a"
+  description = "Site A validators"
 }
 
-resource "aws_security_group_rule" "control_grafana" {
-  type              = "ingress"
-  from_port         = 3000
-  to_port           = 3000
-  protocol          = "tcp"
-  security_group_id = aws_security_group.control.id
-  cidr_blocks       = ["0.0.0.0/0"]
-  description       = "Grafana (anonymous viewer for the team)"
+resource "aws_security_group" "rpc_a" {
+  name        = "${local.prefix}-rpc-a"
+  description = "Site A RPC nodes"
 }
 
-resource "aws_security_group_rule" "control_prometheus" {
+resource "aws_security_group" "validator_b" {
+  provider    = aws.site_b
+  name        = "${local.prefix}-validator-b"
+  description = "Site B validators"
+}
+
+resource "aws_security_group" "rpc_b" {
+  provider    = aws.site_b
+  name        = "${local.prefix}-rpc-b"
+  description = "Site B RPC nodes"
+}
+
+# Control ingress is operator-only. Control egress remains open for package
+# provisioning, public APIs, and fetching staged artifacts.
+resource "aws_security_group_rule" "control_ingress" {
+  for_each = {
+    ssh        = { from = 22, to = 22 }
+    grafana    = { from = 3000, to = 3000 }
+    prometheus = { from = 9090, to = 9090 }
+  }
   type              = "ingress"
-  from_port         = 9090
-  to_port           = 9090
+  from_port         = each.value.from
+  to_port           = each.value.to
   protocol          = "tcp"
   security_group_id = aws_security_group.control.id
-  cidr_blocks       = ["0.0.0.0/0"]
-  description       = "Prometheus"
+  cidr_blocks       = [local.operator_cidr]
+  description       = "${each.key} from operator"
 }
 
 resource "aws_security_group_rule" "control_egress" {
@@ -132,117 +167,123 @@ resource "aws_security_group_rule" "control_egress" {
   protocol          = "-1"
   security_group_id = aws_security_group.control.id
   cidr_blocks       = ["0.0.0.0/0"]
-  description       = "All outbound (public Fuji API, provisioning)"
+  description       = "Open egress for provisioning and public APIs"
 }
 
-# ---- Validator/spare tier: zero external connectivity ------------------------
-resource "aws_security_group" "validator" {
-  name        = "${local.prefix}-validator"
-  description = "L1 validators + hot spare: p2p only within the fleet"
-}
-
-# ---- RPC tier: one external egress (the pinned Fuji peer) --------------------
-resource "aws_security_group" "rpc" {
-  name        = "${local.prefix}-rpc"
-  description = "Pinned RPC trackers: fleet p2p + one Fuji upstream"
-}
-
-# SSH for provisioning: reconcile drives everything from the control box over
-# the private network. Operator IP included as a break-glass path.
-resource "aws_security_group_rule" "node_ssh" {
-  for_each                 = { validator = aws_security_group.validator.id, rpc = aws_security_group.rpc.id }
-  type                     = "ingress"
-  from_port                = 22
-  to_port                  = 22
-  protocol                 = "tcp"
-  security_group_id        = each.value
-  source_security_group_id = aws_security_group.control.id
-  description              = "SSH from control box"
-}
-
-resource "aws_security_group_rule" "node_ssh_operator" {
-  for_each          = { validator = aws_security_group.validator.id, rpc = aws_security_group.rpc.id }
+# Operator break-glass SSH in each region.
+resource "aws_security_group_rule" "node_operator_ssh_a" {
+  for_each          = { validator = aws_security_group.validator_a.id, rpc = aws_security_group.rpc_a.id }
   type              = "ingress"
   from_port         = 22
   to_port           = 22
   protocol          = "tcp"
   security_group_id = each.value
-  cidr_blocks       = [local.operator_ip]
-  description       = "SSH from operator (break-glass)"
+  cidr_blocks       = [local.operator_cidr]
+  description       = "SSH from operator"
 }
 
-# Node ports (9650-9750) from the control box: health checks, reconcile gates,
-# Prometheus scrapes, bombard ingress.
-resource "aws_security_group_rule" "node_http" {
-  for_each                 = { validator = aws_security_group.validator.id, rpc = aws_security_group.rpc.id }
-  type                     = "ingress"
-  from_port                = local.avax_port_from
-  to_port                  = local.avax_port_to
-  protocol                 = "tcp"
-  security_group_id        = each.value
-  source_security_group_id = aws_security_group.control.id
-  description              = "Node HTTP from control (health/scrape/bombard)"
-}
-
-# Staking p2p (the 9650-9750 range) within the fleet, in all four SG directions.
-resource "aws_security_group_rule" "p2p_ingress" {
-  for_each = {
-    val_from_val = { sg = aws_security_group.validator.id, src = aws_security_group.validator.id }
-    val_from_rpc = { sg = aws_security_group.validator.id, src = aws_security_group.rpc.id }
-    rpc_from_val = { sg = aws_security_group.rpc.id, src = aws_security_group.validator.id }
-    rpc_from_rpc = { sg = aws_security_group.rpc.id, src = aws_security_group.rpc.id }
-  }
-  type                     = "ingress"
-  from_port                = local.avax_port_from
-  to_port                  = local.avax_port_to
-  protocol                 = "tcp"
-  security_group_id        = each.value.sg
-  source_security_group_id = each.value.src
-  description              = "Avalanche p2p within the fleet"
-}
-
-resource "aws_security_group_rule" "p2p_egress" {
-  for_each = {
-    val_to_val = { sg = aws_security_group.validator.id, dst = aws_security_group.validator.id }
-    val_to_rpc = { sg = aws_security_group.validator.id, dst = aws_security_group.rpc.id }
-    rpc_to_val = { sg = aws_security_group.rpc.id, dst = aws_security_group.validator.id }
-    rpc_to_rpc = { sg = aws_security_group.rpc.id, dst = aws_security_group.rpc.id }
-  }
-  type                     = "egress"
-  from_port                = local.avax_port_from
-  to_port                  = local.avax_port_to
-  protocol                 = "tcp"
-  security_group_id        = each.value.sg
-  source_security_group_id = each.value.dst
-  description              = "Avalanche p2p within the fleet"
-}
-
-# THE one external hole: RPC tier -> pinned public Fuji bootstrap peer.
-# Expected identity NodeID-2m38qc95mhHXtrhjyGbe7r2NhniqHHJRB (TLS-enforced).
-resource "aws_security_group_rule" "rpc_fuji_upstream" {
-  type              = "egress"
-  from_port         = local.fuji_upstream_port
-  to_port           = local.fuji_upstream_port
+resource "aws_security_group_rule" "node_operator_ssh_b" {
+  provider          = aws.site_b
+  for_each          = { validator = aws_security_group.validator_b.id, rpc = aws_security_group.rpc_b.id }
+  type              = "ingress"
+  from_port         = 22
+  to_port           = 22
   protocol          = "tcp"
-  security_group_id = aws_security_group.rpc.id
-  cidr_blocks       = [local.fuji_upstream_cidr]
-  description       = "P-chain follow-only upstream (pinned public Fuji peer)"
+  security_group_id = each.value
+  cidr_blocks       = [local.operator_cidr]
+  description       = "SSH from operator"
 }
 
-# ---- Instances ----------------------------------------------------------------
-locals {
-  node_defs = merge(
-    { for i in range(local.validator_count) : "v${i + 1}" => aws_security_group.validator.id },
-    { for i in range(local.spare_count) : "s${i + 1}" => aws_security_group.validator.id },
-    { for i in range(local.rpc_count) : "r${i + 1}" => aws_security_group.rpc.id },
-  )
+# nodes.ini and control provisioning use public IPs, so both regions authorize
+# the control instance's exact public /32.
+resource "aws_security_group_rule" "control_to_node_a" {
+  for_each = {
+    validator_ssh  = { sg = aws_security_group.validator_a.id, from = 22, to = 22 }
+    rpc_ssh        = { sg = aws_security_group.rpc_a.id, from = 22, to = 22 }
+    validator_http = { sg = aws_security_group.validator_a.id, from = local.node_http_from, to = local.node_http_to }
+    rpc_http       = { sg = aws_security_group.rpc_a.id, from = local.node_http_from, to = local.node_http_to }
+  }
+  type              = "ingress"
+  from_port         = each.value.from
+  to_port           = each.value.to
+  protocol          = "tcp"
+  security_group_id = each.value.sg
+  cidr_blocks       = ["${aws_instance.control.public_ip}/32"]
+  description       = "Control public IP access to site A nodes"
 }
 
+resource "aws_security_group_rule" "control_to_node_b" {
+  provider = aws.site_b
+  for_each = {
+    validator_ssh  = { sg = aws_security_group.validator_b.id, from = 22, to = 22 }
+    rpc_ssh        = { sg = aws_security_group.rpc_b.id, from = 22, to = 22 }
+    validator_http = { sg = aws_security_group.validator_b.id, from = local.node_http_from, to = local.node_http_to }
+    rpc_http       = { sg = aws_security_group.rpc_b.id, from = local.node_http_from, to = local.node_http_to }
+  }
+  type              = "ingress"
+  from_port         = each.value.from
+  to_port           = each.value.to
+  protocol          = "tcp"
+  security_group_id = each.value.sg
+  cidr_blocks       = ["${aws_instance.control.public_ip}/32"]
+  description       = "Control access to site B nodes"
+}
+
+# Nodes may initiate traffic to the control box. Stateful SGs automatically
+# permit responses to control-initiated SSH, HTTP, and scrape connections.
+resource "aws_security_group_rule" "node_to_control_a" {
+  for_each          = { validator = aws_security_group.validator_a.id, rpc = aws_security_group.rpc_a.id }
+  type              = "egress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  security_group_id = each.value
+  cidr_blocks       = ["${aws_instance.control.public_ip}/32"]
+  description       = "Node egress to control public IP"
+}
+
+resource "aws_security_group_rule" "node_to_control_b" {
+  provider          = aws.site_b
+  for_each          = { validator = aws_security_group.validator_b.id, rpc = aws_security_group.rpc_b.id }
+  type              = "egress"
+  from_port         = 0
+  to_port           = 0
+  protocol          = "-1"
+  security_group_id = each.value
+  cidr_blocks       = ["${aws_instance.control.public_ip}/32"]
+  description       = "Node egress to control"
+}
+
+# RPC nodes have exactly one non-fleet P2P destination.
+resource "aws_security_group_rule" "rpc_mainnet_upstream_a" {
+  type              = "egress"
+  from_port         = local.mainnet_upstream_port
+  to_port           = local.mainnet_upstream_port
+  protocol          = "tcp"
+  security_group_id = aws_security_group.rpc_a.id
+  cidr_blocks       = [local.mainnet_upstream_cidr]
+  description       = "P-chain follow-only pinned mainnet upstream"
+}
+
+resource "aws_security_group_rule" "rpc_mainnet_upstream_b" {
+  provider          = aws.site_b
+  type              = "egress"
+  from_port         = local.mainnet_upstream_port
+  to_port           = local.mainnet_upstream_port
+  protocol          = "tcp"
+  security_group_id = aws_security_group.rpc_b.id
+  cidr_blocks       = [local.mainnet_upstream_cidr]
+  description       = "P-chain follow-only pinned mainnet upstream"
+}
+
+# Instances explicitly tag both instance and root volume in RunInstances.
+# Provider default_tags cover all other taggable resources as well.
 resource "aws_instance" "control" {
-  ami                    = data.aws_ami.ubuntu.id
-  instance_type          = local.instance_type
-  key_name               = aws_key_pair.fleet.key_name
-  vpc_security_group_ids = [aws_security_group.control.id]
+  ami                         = data.aws_ami.site_a_ubuntu.id
+  instance_type               = local.instance_type
+  key_name                    = aws_key_pair.site_a.key_name
+  vpc_security_group_ids      = [aws_security_group.control.id]
+  associate_public_ip_address = true
 
   metadata_options {
     http_endpoint               = "enabled"
@@ -255,15 +296,17 @@ resource "aws_instance" "control" {
     iops        = 6000
     throughput  = 500
   }
-  tags = { Name = "${local.prefix}-control" }
+  tags        = merge(local.common_tags, { Name = "${local.prefix}-control" })
+  volume_tags = merge(local.common_tags, { Name = "${local.prefix}-control-root" })
 }
 
-resource "aws_instance" "node" {
-  for_each               = local.node_defs
-  ami                    = data.aws_ami.ubuntu.id
-  instance_type          = local.instance_type
-  key_name               = aws_key_pair.fleet.key_name
-  vpc_security_group_ids = [each.value]
+resource "aws_instance" "site_a" {
+  for_each                    = local.site_a_defs
+  ami                         = data.aws_ami.site_a_ubuntu.id
+  instance_type               = local.instance_type
+  key_name                    = aws_key_pair.site_a.key_name
+  vpc_security_group_ids      = [each.value == "validator" ? aws_security_group.validator_a.id : aws_security_group.rpc_a.id]
+  associate_public_ip_address = true
 
   metadata_options {
     http_endpoint               = "enabled"
@@ -276,29 +319,138 @@ resource "aws_instance" "node" {
     iops        = 6000
     throughput  = 500
   }
-  tags = { Name = "${local.prefix}-${each.key}" }
+  tags        = merge(local.common_tags, { Name = "${local.prefix}-${each.key}", Role = each.value, Site = "A" })
+  volume_tags = merge(local.common_tags, { Name = "${local.prefix}-${each.key}-root", Role = each.value, Site = "A" })
 }
 
-# ---- Outputs (formatted for .env: PRIVATE addresses, fleet-internal) ----------
+resource "aws_instance" "site_b" {
+  provider                    = aws.site_b
+  for_each                    = local.site_b_defs
+  ami                         = data.aws_ami.site_b_ubuntu.id
+  instance_type               = local.instance_type
+  key_name                    = aws_key_pair.site_b.key_name
+  vpc_security_group_ids      = [each.value == "validator" ? aws_security_group.validator_b.id : aws_security_group.rpc_b.id]
+  associate_public_ip_address = true
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+  }
+  root_block_device {
+    volume_size = 200
+    volume_type = "gp3"
+    iops        = 6000
+    throughput  = 500
+  }
+  tags        = merge(local.common_tags, { Name = "${local.prefix}-${each.key}", Role = each.value, Site = "B" })
+  volume_tags = merge(local.common_tags, { Name = "${local.prefix}-${each.key}-root", Role = each.value, Site = "B" })
+}
+
+# Exact public /32 rules for all fleet P2P, including same-region traffic.
+# These rules are created only after EC2 has assigned every address. Both role
+# groups need the full fleet on TCP/9651: validators follow every RPC as a
+# P-chain beacon, and all nodes are explicit L1 state-sync peers.
+resource "aws_security_group_rule" "fleet_p2p_ingress_a" {
+  for_each          = { validator = aws_security_group.validator_a.id, rpc = aws_security_group.rpc_a.id }
+  type              = "ingress"
+  from_port         = local.staking_port
+  to_port           = local.staking_port
+  protocol          = "tcp"
+  security_group_id = each.value
+  cidr_blocks = concat(
+    [for instance in aws_instance.site_a : "${instance.public_ip}/32"],
+    [for instance in aws_instance.site_b : "${instance.public_ip}/32"],
+  )
+  description = "Avalanche P2P from exact fleet public IPs"
+}
+
+resource "aws_security_group_rule" "fleet_p2p_ingress_b" {
+  provider          = aws.site_b
+  for_each          = { validator = aws_security_group.validator_b.id, rpc = aws_security_group.rpc_b.id }
+  type              = "ingress"
+  from_port         = local.staking_port
+  to_port           = local.staking_port
+  protocol          = "tcp"
+  security_group_id = each.value
+  cidr_blocks = concat(
+    [for instance in aws_instance.site_a : "${instance.public_ip}/32"],
+    [for instance in aws_instance.site_b : "${instance.public_ip}/32"],
+  )
+  description = "Avalanche P2P from exact fleet public IPs"
+}
+
+resource "aws_security_group_rule" "fleet_p2p_egress_a" {
+  for_each          = { validator = aws_security_group.validator_a.id, rpc = aws_security_group.rpc_a.id }
+  type              = "egress"
+  from_port         = local.staking_port
+  to_port           = local.staking_port
+  protocol          = "tcp"
+  security_group_id = each.value
+  cidr_blocks = concat(
+    [for instance in aws_instance.site_a : "${instance.public_ip}/32"],
+    [for instance in aws_instance.site_b : "${instance.public_ip}/32"],
+  )
+  description = "Avalanche P2P to exact fleet public IPs"
+}
+
+resource "aws_security_group_rule" "fleet_p2p_egress_b" {
+  provider          = aws.site_b
+  for_each          = { validator = aws_security_group.validator_b.id, rpc = aws_security_group.rpc_b.id }
+  type              = "egress"
+  from_port         = local.staking_port
+  to_port           = local.staking_port
+  protocol          = "tcp"
+  security_group_id = each.value
+  cidr_blocks = concat(
+    [for instance in aws_instance.site_a : "${instance.public_ip}/32"],
+    [for instance in aws_instance.site_b : "${instance.public_ip}/32"],
+  )
+  description = "Avalanche P2P to exact fleet public IPs"
+}
+
 output "control_ip" {
   value = aws_instance.control.public_ip
 }
 
-output "control_private_ip" {
-  value = aws_instance.control.private_ip
+output "site_a_public_ips" {
+  value = { for name, instance in aws_instance.site_a : name => instance.public_ip }
+}
+
+output "site_b_public_ips" {
+  value = { for name, instance in aws_instance.site_b : name => instance.public_ip }
 }
 
 output "validator_ips" {
-  description = "validator hosts for nodes.ini (private)"
-  value       = join(",", [for i in range(local.validator_count) : aws_instance.node["v${i + 1}"].private_ip])
-}
-
-output "spare_ips" {
-  description = "spare-validator hosts for nodes.ini (private)"
-  value       = join(",", [for i in range(local.spare_count) : aws_instance.node["s${i + 1}"].private_ip])
+  description = "All validator public IPs, ordered a1-a4 then b1-b4"
+  value = join(",", concat(
+    [for name in ["a1", "a2", "a3", "a4"] : aws_instance.site_a[name].public_ip],
+    [for name in ["b1", "b2", "b3", "b4"] : aws_instance.site_b[name].public_ip],
+  ))
 }
 
 output "rpc_ips" {
-  description = "rpc hosts for nodes.ini (private)"
-  value       = join(",", [for i in range(local.rpc_count) : aws_instance.node["r${i + 1}"].private_ip])
+  description = "All RPC public IPs, ordered rpc_a1-rpc_a2 then rpc_b1-rpc_b2"
+  value = join(",", concat(
+    [for name in ["rpc_a1", "rpc_a2"] : aws_instance.site_a[name].public_ip],
+    [for name in ["rpc_b1", "rpc_b2"] : aws_instance.site_b[name].public_ip],
+  ))
+}
+
+output "nodes_ini" {
+  description = "Ready-to-paste master nodes.ini inventory using cross-region-reachable public IPs"
+  value = join("\n", [
+    "a1     host=${aws_instance.site_a["a1"].public_ip}  role=validator  dc=A",
+    "a2     host=${aws_instance.site_a["a2"].public_ip}  role=validator  dc=A",
+    "a3     host=${aws_instance.site_a["a3"].public_ip}  role=validator  dc=A",
+    "a4     host=${aws_instance.site_a["a4"].public_ip}  role=validator  dc=A",
+    "rpc_a1 host=${aws_instance.site_a["rpc_a1"].public_ip}  role=rpc        dc=A",
+    "rpc_a2 host=${aws_instance.site_a["rpc_a2"].public_ip}  role=rpc        dc=A",
+    "b1     host=${aws_instance.site_b["b1"].public_ip}  role=validator  dc=B",
+    "b2     host=${aws_instance.site_b["b2"].public_ip}  role=validator  dc=B",
+    "b3     host=${aws_instance.site_b["b3"].public_ip}  role=validator  dc=B",
+    "b4     host=${aws_instance.site_b["b4"].public_ip}  role=validator  dc=B",
+    "rpc_b1 host=${aws_instance.site_b["rpc_b1"].public_ip}  role=rpc        dc=B",
+    "rpc_b2 host=${aws_instance.site_b["rpc_b2"].public_ip}  role=rpc        dc=B",
+  ])
 }
