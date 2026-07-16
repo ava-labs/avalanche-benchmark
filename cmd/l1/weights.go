@@ -13,6 +13,7 @@ import (
 	"github.com/ava-labs/avalanchego/vms/platformvm"
 	warpmessage "github.com/ava-labs/avalanchego/vms/platformvm/warp/message"
 	pwallet "github.com/ava-labs/avalanchego/wallet/chain/p/wallet"
+	walletcommon "github.com/ava-labs/avalanchego/wallet/subnet/primary/common"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/vset"
 )
@@ -76,7 +77,10 @@ func submitWeight(cfg config, wallet pwallet.Wallet, signers []bls.Signer, signS
 		action = fmt.Sprintf("remove (weight %d -> 0)", v.Weight)
 	}
 	fmt.Printf("%s %s (%s), nonce %d: submitting SetL1ValidatorWeightTx...\n", v.NodeID, v.ValidationID, action, v.MinNonce)
-	tx, err := wallet.IssueSetL1ValidatorWeightTx(signed.Bytes())
+	tx, err := wallet.IssueSetL1ValidatorWeightTx(
+		signed.Bytes(),
+		walletcommon.WithPollFrequency(time.Second),
+	)
 	if err != nil {
 		return fmt.Errorf("SetL1ValidatorWeightTx: %w", err)
 	}
