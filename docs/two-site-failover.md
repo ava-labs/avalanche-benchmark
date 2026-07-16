@@ -59,14 +59,6 @@ of the reset preamble, the failover is three commands:
                                 # raise site B first, then retire site A's stake
 ```
 
-`apply` converges a large multi-validator shift in bounded steps (each moves
-<=20% of the live total, reinstating the churn cap the removed C-chain
-ValidatorManager used to enforce), raises first so the live total never dips
-through a low window. The next step fires as soon as the previous weight lands
-on-chain (no fixed wall-clock settle), so the whole ratchet takes seconds and
-the raises-first sub-quorum window stays short rather than stretching into
-minutes.
-
 Expect a pause of up to ~5 minutes between the weight flip and site B's
 first block: post-Durango proposer selection still derives from the parent
 block's pre-flip P-chain height, so a spare-weight (1000) B validator must

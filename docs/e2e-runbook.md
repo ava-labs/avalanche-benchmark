@@ -231,39 +231,25 @@ Failing back after 03 is just running `./scenarios/00_healthy.sh`: site A
 rebuilds, re-syncs, and consensus moves home.
 
 What a weight move looks like: `bin/l1 apply` lists the planned changes
-(raises first), then converges them in bounded steps, e.g.
+(raises first), then submits and verifies one P-chain tx per change, e.g.
 
 ```
-applying 2 weight change(s) in 3 bounded step(s), raises first:
+applying 2 weight change(s), raises first:
   b1: 1000 -> 100000
   a1: 100000 -> 1
-each step moves <=20% of the live total; the next fires as soon as the previous lands on-chain (no fixed settle)
-step 1/3: b1 -> 81800
-NodeID-... (weight 1000 -> 81800), nonce 3: submitting SetL1ValidatorWeightTx...
+NodeID-... (weight 1000 -> 100000), nonce 3: submitting SetL1ValidatorWeightTx...
 accepted: <txid>
-step 2/3: b1 -> 100000
-...
+NodeID-... (weight 100000 -> 1), nonce 5: submitting SetL1ValidatorWeightTx...
+accepted: <txid>
 applied: all targets verified on-chain
 ```
 
 Each tx is signed locally with every validator BLS key the kit holds and
-verified against the P-chain before the next one is planned. `apply` does NOT
-land the whole shift as one consecutive-nonce burst: an unbounded jump (e.g. a
-spare 1000 -> 100000, 100x) in one tx flips the proposer schedule and vote
-weight in a single step ~30s later (RecentlyAcceptedWindowTTL proposer lag),
-concentrating weight onto the freshly load-stressed heavy nodes and wedging the
-L1 with no self-recovery. This reinstates the ~20%-per-execution churn cap the
-C-chain ValidatorManager used to enforce before the self-signed cutover
-removed the contract: each step moves at most ~20% of the live total and the
-NEXT step fires as soon as the previous weight lands on-chain (the nonce only
-advances when the P-chain applies it, so the on-chain landing is the gate). No
-fixed wall-clock settle is inserted, so the whole ratchet completes in about
-the time one weight update takes (seconds), keeping the raises-first
-sub-quorum window of a dead-DC failover short. A single-validator `set-weight`
-stays one-shot (proven safe under load). A transient "signature is invalid"
-rejection (stale proposer height, stale load-balanced read) is retried
-automatically; if a run still dies, re-running the same `apply` resumes,
-already-converged validators are skipped. Background on the model: see
+verified against the P-chain before the next one is planned, so the whole
+move completes in seconds. A transient "signature is invalid" rejection
+(stale proposer height, stale load-balanced read) is retried automatically;
+if a run still dies, re-running the same `apply` resumes, already-applied
+steps are skipped. Background on the model: see
 [failover-recovery-simulation.md](failover-recovery-simulation.md).
 
 What to watch during scenario 03:
