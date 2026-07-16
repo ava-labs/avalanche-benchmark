@@ -16,7 +16,8 @@ instance_type: "m6a.4xlarge"
 # single trusted operator /32; it gates SSH, Grafana, and Prometheus ingress.
 # operator_cidr: "203.0.113.10/32"
 
-# Must match the mainnet p-chain-follow-only bootstrap flag in the kit config.
+# Must match the p-chain-follow-only bootstrap flag in the kit config. This is
+# the pinned Fuji upstream shipped by master; change it with the network.
 # RPC nodes can reach this one destination on this one TCP port.
-mainnet_upstream_cidr: "54.232.137.108/32"
-mainnet_upstream_port: 9651
+anchor_upstream_cidr: "18.192.93.241/32"
+anchor_upstream_port: 9651

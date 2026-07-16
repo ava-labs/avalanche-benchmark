@@ -5,7 +5,7 @@ terraform {
   }
 }
 
-# Mainnet two-site topology:
+# Two-site benchmark topology:
 #   us-west-1: control, a1-a4 validators, rpc_a1-rpc_a2
 #   us-west-2: b1-b4 validators, rpc_b1-rpc_b2
 #
@@ -13,7 +13,7 @@ terraform {
 # the control box, and TCP/9651 on RPC nodes. The last exception is required:
 # master configures every validator's P-chain beacons as all four RPC nodes.
 # RPC nodes can dial TCP/9651 on the fleet, the control box, and the one pinned
-# mainnet upstream. Every fleet path uses exact instance public /32s because
+# anchor-network upstream. Every fleet path uses exact instance public /32s because
 # nodes.ini advertises public IPs. AWS security-group references authorize the
 # attached ENIs' private IPs, not traffic addressed through public IPs.
 
@@ -50,8 +50,8 @@ locals {
   public_key    = file(pathexpand(local.config.public_key_path))
   operator_cidr = try(local.config.operator_cidr, "${chomp(data.http.my_ip.response_body)}/32")
 
-  mainnet_upstream_cidr = try(local.config.mainnet_upstream_cidr, "54.232.137.108/32")
-  mainnet_upstream_port = try(local.config.mainnet_upstream_port, 9651)
+  anchor_upstream_cidr = try(local.config.anchor_upstream_cidr, "18.192.93.241/32")
+  anchor_upstream_port = try(local.config.anchor_upstream_port, 9651)
 
   node_http_from = 9650
   node_http_to   = 9750
@@ -255,25 +255,25 @@ resource "aws_security_group_rule" "node_to_control_b" {
 }
 
 # RPC nodes have exactly one non-fleet P2P destination.
-resource "aws_security_group_rule" "rpc_mainnet_upstream_a" {
+resource "aws_security_group_rule" "rpc_anchor_upstream_a" {
   type              = "egress"
-  from_port         = local.mainnet_upstream_port
-  to_port           = local.mainnet_upstream_port
+  from_port         = local.anchor_upstream_port
+  to_port           = local.anchor_upstream_port
   protocol          = "tcp"
   security_group_id = aws_security_group.rpc_a.id
-  cidr_blocks       = [local.mainnet_upstream_cidr]
-  description       = "P-chain follow-only pinned mainnet upstream"
+  cidr_blocks       = [local.anchor_upstream_cidr]
+  description       = "P-chain follow-only pinned anchor upstream"
 }
 
-resource "aws_security_group_rule" "rpc_mainnet_upstream_b" {
+resource "aws_security_group_rule" "rpc_anchor_upstream_b" {
   provider          = aws.site_b
   type              = "egress"
-  from_port         = local.mainnet_upstream_port
-  to_port           = local.mainnet_upstream_port
+  from_port         = local.anchor_upstream_port
+  to_port           = local.anchor_upstream_port
   protocol          = "tcp"
   security_group_id = aws_security_group.rpc_b.id
-  cidr_blocks       = [local.mainnet_upstream_cidr]
-  description       = "P-chain follow-only pinned mainnet upstream"
+  cidr_blocks       = [local.anchor_upstream_cidr]
+  description       = "P-chain follow-only pinned anchor upstream"
 }
 
 # Instances explicitly tag both instance and root volume in RunInstances.
