@@ -286,16 +286,14 @@ value are refused, so the tool cannot remove membership or create unexplained
 intermediate states. This is a performance/failover benchmark with fixed
 membership, not a membership manager.
 
-Immediately after the management L1 conversion, P-chain Warp verification can
-temporarily use a safe height from before that conversion. If this produces an
-empty-management-set rejection, `set-weight` reads the management validators'
-on-chain `StartTime`, reports the management L1 conversion time in JST, confirms
-that no transaction was accepted, and tells the operator when to retry. The
-normal visibility window is up to 30 seconds. `StartTime` is the conversion
-timestamp, which is the relevant point when the validator set starts to exist;
-the subnet ID and chain ID remain the `CreateSubnetTx` and `CreateChainTx` IDs.
-No local creation timestamp or
-lifecycle marker is maintained.
+P-chain Warp admission can verify against an ACP-181 epoch height older than the
+latest state returned by `weights`. After a fresh management L1 conversion on a
+quiet P-chain, that epoch can predate the entire management validator set. On
+the resulting exact empty-set rejection, the weight transaction is not
+accepted. `set-weight` visibly submits one no-op P-chain `BaseTx` from the same
+wallet to force a new block so the verifier context can advance, prints its
+transaction ID, exits with the original rejection, and tells the operator to
+rerun the command. It never hides the failure in an automatic retry loop.
 
 In frozen mode the transaction would confirm on the P-chain but never reach your
 fleet, so `set-weight` refuses to run when the relay is down.

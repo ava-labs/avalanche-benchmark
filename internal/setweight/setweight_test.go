@@ -1,16 +1,22 @@
 package setweight
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/snow/validators"
 	"github.com/ava-labs/avalanchego/utils/crypto/bls"
 	"github.com/ava-labs/avalanchego/utils/crypto/bls/signer/localsigner"
+	"github.com/ava-labs/avalanchego/utils/rpc"
+	"github.com/ava-labs/avalanchego/vms/components/avax"
+	"github.com/ava-labs/avalanchego/vms/platformvm"
+	"github.com/ava-labs/avalanchego/vms/platformvm/txs"
 	"github.com/ava-labs/avalanchego/vms/platformvm/warp"
+	commonopts "github.com/ava-labs/avalanchego/wallet/subnet/primary/common"
 )
 
 func TestValidateWeight(t *testing.T) {
@@ -79,55 +85,101 @@ func TestSignAndAggregateEnforcesProtocolQuorum(t *testing.T) {
 	}
 }
 
-func TestManagementConversionTimeUsesEarliestValidator(t *testing.T) {
-	convertedAt := managementConversionTime([]registeredValidator{
-		{StartTime: 200},
-		{StartTime: 100},
-		{StartTime: 0},
-	})
-	if got, want := convertedAt.Unix(), int64(100); got != want {
-		t.Fatalf("creation time = %d, want %d", got, want)
-	}
-}
-
-func TestExplainEmptyManagementSetFresh(t *testing.T) {
+func TestSubmitEmptyManagementSetNudgesOnceAndRequiresManualRetry(t *testing.T) {
 	original := errors.New("unknown validator: NumIndices (0) >= NumFilteredValidators (0)")
-	convertedAt := time.Date(2026, time.July, 22, 9, 0, 0, 0, time.UTC)
-	err := explainEmptyManagementSet(original, convertedAt, convertedAt.Add(10*time.Second))
-	for _, expected := range []string{
-		"management validator set was empty",
-		"2026-07-22 18:00:00 JST",
-		"10s ago",
-		"retry in about 20s",
-		"no transaction was accepted",
-	} {
+	nudgeID := ids.GenerateTestID()
+	wallet := &fakeWallet{
+		weightErr: original,
+		baseTx:    &txs.Tx{TxID: nudgeID},
+	}
+	var output bytes.Buffer
+	err := submitAndVerify(
+		context.Background(),
+		fakeClient{},
+		wallet,
+		testMessage(t),
+		1,
+		registeredValidator{NodeID: ids.GenerateTestNodeID(), Weight: ActiveWeight},
+		DeadWeight,
+		&output,
+	)
+	if err == nil {
+		t.Fatal("expected visible failure after nudge")
+	}
+	if wallet.weightCalls != 1 || wallet.baseCalls != 1 {
+		t.Fatalf("calls: weight=%d base=%d, want one each", wallet.weightCalls, wallet.baseCalls)
+	}
+	for _, expected := range []string{"weight transaction was not accepted", "rerun set-weight", nudgeID.String()} {
 		if !strings.Contains(err.Error(), expected) {
 			t.Errorf("error %q does not contain %q", err, expected)
 		}
+	}
+	if !strings.Contains(output.String(), nudgeID.String()) {
+		t.Fatalf("nudge transaction is not printed: %q", output.String())
 	}
 	if !errors.Is(err, original) {
-		t.Fatalf("error does not wrap original: %v", err)
+		t.Fatalf("error does not wrap original rejection: %v", err)
 	}
 }
 
-func TestExplainEmptyManagementSetOutsideCreationWindow(t *testing.T) {
-	original := errors.New("unknown validator: NumIndices (0) >= NumFilteredValidators (0)")
-	convertedAt := time.Date(2026, time.July, 22, 9, 0, 0, 0, time.UTC)
-	err := explainEmptyManagementSet(original, convertedAt, convertedAt.Add(time.Hour))
-	for _, expected := range []string{
-		"2026-07-22 18:00:00 JST",
-		"outside the normal 30s conversion window",
-		"retry after the P-Chain safe height advances",
-	} {
-		if !strings.Contains(err.Error(), expected) {
-			t.Errorf("error %q does not contain %q", err, expected)
-		}
+func TestSubmitOtherFailureDoesNotNudge(t *testing.T) {
+	wallet := &fakeWallet{weightErr: errors.New("insufficient funds")}
+	err := submitAndVerify(
+		context.Background(),
+		fakeClient{},
+		wallet,
+		testMessage(t),
+		1,
+		registeredValidator{NodeID: ids.GenerateTestNodeID(), Weight: ActiveWeight},
+		DeadWeight,
+		&bytes.Buffer{},
+	)
+	if err == nil || wallet.baseCalls != 0 {
+		t.Fatalf("unrelated failure must not nudge: err=%v baseCalls=%d", err, wallet.baseCalls)
 	}
 }
 
-func TestExplainEmptyManagementSetLeavesOtherErrorsAlone(t *testing.T) {
-	original := errors.New("insufficient funds")
-	if got := explainEmptyManagementSet(original, time.Now(), time.Now()); got != original {
-		t.Fatalf("unexpected replacement: %v", got)
+func testMessage(t *testing.T) *warp.Message {
+	t.Helper()
+	unsigned, err := warp.NewUnsignedMessage(1, ids.GenerateTestID(), []byte("test"))
+	if err != nil {
+		t.Fatal(err)
 	}
+	message, err := warp.NewMessage(unsigned, &warp.BitSetSignature{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return message
+}
+
+type fakeWallet struct {
+	weightErr   error
+	baseErr     error
+	baseTx      *txs.Tx
+	weightCalls int
+	baseCalls   int
+}
+
+func (f *fakeWallet) IssueSetL1ValidatorWeightTx([]byte, ...commonopts.Option) (*txs.Tx, error) {
+	f.weightCalls++
+	return nil, f.weightErr
+}
+
+func (f *fakeWallet) IssueBaseTx([]*avax.TransferableOutput, ...commonopts.Option) (*txs.Tx, error) {
+	f.baseCalls++
+	return f.baseTx, f.baseErr
+}
+
+type fakeClient struct{}
+
+func (fakeClient) GetCurrentValidators(context.Context, ids.ID, []ids.NodeID, ...rpc.Option) ([]platformvm.ClientPermissionlessValidator, error) {
+	return nil, nil
+}
+
+func (fakeClient) GetHeight(context.Context, ...rpc.Option) (uint64, error) {
+	return 0, nil
+}
+
+func (fakeClient) GetL1Validator(context.Context, ids.ID, ...rpc.Option) (platformvm.L1Validator, uint64, error) {
+	return platformvm.L1Validator{}, 0, nil
 }
