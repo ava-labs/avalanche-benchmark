@@ -2,7 +2,6 @@ package setweight
 
 import (
 	"context"
-	"encoding/pem"
 	"fmt"
 	"io"
 	"os"
@@ -13,10 +12,10 @@ import (
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/funding"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/weights"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/snow/validators"
-	"github.com/ava-labs/avalanchego/staking"
 	"github.com/ava-labs/avalanchego/utils/constants"
 	"github.com/ava-labs/avalanchego/utils/crypto/bls"
 	"github.com/ava-labs/avalanchego/utils/crypto/bls/signer/localsigner"
@@ -80,7 +79,7 @@ func Run(
 	if err := validateIdentity(cfg.Nodes, identityNumber); err != nil {
 		return err
 	}
-	targetNodeID, err := nodeIDFromCertificate(filepath.Join(
+	targetNodeID, err := identity.LoadNodeID(filepath.Join(
 		deploymentDirectory,
 		"nodes",
 		strconv.Itoa(identityNumber),
@@ -193,22 +192,6 @@ func validateIdentity(nodes []config.Node, number int) error {
 		return nil
 	}
 	return fmt.Errorf("validator identity %d is not declared in nodes.ini", number)
-}
-
-func nodeIDFromCertificate(path string) (ids.NodeID, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return ids.EmptyNodeID, fmt.Errorf("read %s: %w", path, err)
-	}
-	block, _ := pem.Decode(contents)
-	if block == nil {
-		return ids.EmptyNodeID, fmt.Errorf("%s has no PEM block", path)
-	}
-	certificate, err := staking.ParseCertificate(block.Bytes)
-	if err != nil {
-		return ids.EmptyNodeID, fmt.Errorf("parse %s: %w", path, err)
-	}
-	return ids.NodeIDFromCert(certificate), nil
 }
 
 func fetchValidatorsAt(ctx context.Context, pChain client, subnetID ids.ID, minimumHeight uint64) ([]registeredValidator, error) {

@@ -156,13 +156,13 @@ transaction is reported explicitly.
 l1 create              one-time, on-chain: committee L1 + main L1 (see below)
 l1 address             show funding addresses and spendable P-chain balance
 l1 keygen              generate FUNDING_PRIVATE_KEY directly into an empty .env field
-l1 weights             show live NodeIDs, weights, and days of fee balance left
+l1 weights             show live identity numbers, NodeIDs, weights, and fee days left
 l1 topup <days>        fund every registered validator to <days> of runway
 l1 destroy             disable both L1 validator sets and reclaim their balances
 l1 reset               provision (unconditional rsync) + seed P-chain + start
                        everything at canonical placement (identity i on node i)
 l1 place <id> <node>   SWAP identity <id> with whatever identity node <node> runs
-l1 set-weight <id> <w> set one validator to 1 (dead), 1000 (spare), or 100000 (active)
+l1 set-weight <id> <w> set main identity <id> to 1 (dead), 1000 (spare), or 100000 (active)
 l1 down <n|dc=X>       kill node(s), wipe ONLY the L1 chain data (P-chain kept)
 l1 up <n|dc=X>         start node(s); state-sync the L1, wait until at tip
 l1 relay start|stop    the P-chain proxy on control = the mode switch
@@ -270,6 +270,7 @@ ships mechanisms, not failover policy.
 
 ### set-weight: weight-change failover
 
+The `IDENTITY` column from `weights` is the numeric argument to `set-weight`.
 `set-weight 4 100000` fetches identity 4's main L1 validator (validationID,
 nonce) from
 the P-chain, builds the `L1ValidatorWeight` Warp payload, wraps it in an

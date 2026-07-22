@@ -75,20 +75,16 @@ func generateOne(dir, name string, nodeNumber int, role config.Role, withBLS boo
 		return Identity{}, fmt.Errorf("write %s staker.key: %w", name, err)
 	}
 
-	block, _ := pem.Decode(certPEM)
-	if block == nil {
-		return Identity{}, fmt.Errorf("generated TLS certificate for %s has no PEM block", name)
-	}
-	cert, err := staking.ParseCertificate(block.Bytes)
+	nodeID, err := LoadNodeID(filepath.Join(dir, "staker.crt"))
 	if err != nil {
-		return Identity{}, fmt.Errorf("parse generated TLS certificate for %s: %w", name, err)
+		return Identity{}, fmt.Errorf("load generated TLS identity %s: %w", name, err)
 	}
 	generated := Identity{
 		Name:       name,
 		NodeNumber: nodeNumber,
 		Role:       role,
 		Directory:  dir,
-		NodeID:     ids.NodeIDFromCert(cert),
+		NodeID:     nodeID,
 	}
 	if !withBLS {
 		return generated, nil
@@ -106,4 +102,20 @@ func generateOne(dir, name string, nodeNumber int, role config.Role, withBLS boo
 		return Identity{}, fmt.Errorf("build proof of possession for %s: %w", name, err)
 	}
 	return generated, nil
+}
+
+func LoadNodeID(path string) (ids.NodeID, error) {
+	certPEM, err := os.ReadFile(path)
+	if err != nil {
+		return ids.EmptyNodeID, fmt.Errorf("read %s: %w", path, err)
+	}
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return ids.EmptyNodeID, fmt.Errorf("%s has no PEM block", path)
+	}
+	cert, err := staking.ParseCertificate(block.Bytes)
+	if err != nil {
+		return ids.EmptyNodeID, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return ids.NodeIDFromCert(cert), nil
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"text/tabwriter"
 
@@ -13,9 +14,11 @@ import (
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/destroy"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/funding"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/setweight"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/topup"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/weights"
+	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/utils/units"
 )
 
@@ -53,7 +56,7 @@ func run() error {
 
 func usage(program string) string {
 	return fmt.Sprintf(
-		"  %s create\n  %s address\n  %s keygen\n  %s weights\n  %s topup <days>\n  %s set-weight <identity> <weight>\n  %s destroy",
+		"  %s create\n  %s address\n  %s keygen\n  %s weights\n  %s topup <days>\n  %s set-weight <main-identity> <1|1000|100000>\n  %s destroy",
 		program,
 		program,
 		program,
@@ -185,30 +188,78 @@ func generateKey(root string) error {
 }
 
 func showWeights(root string) error {
-	envPath := filepath.Join(root, ".env")
-	environment, err := config.LoadEnvironment(envPath)
+	cfg, err := config.Load(root)
 	if err != nil {
 		return err
 	}
 	statePath := filepath.Join(root, "deployment", "network.env")
-	deployment, err := weights.LoadDeployment(statePath, environment.Network)
+	deployment, err := weights.LoadDeployment(statePath, cfg.Environment.Network)
 	if err != nil {
 		return err
 	}
-	report, err := weights.Fetch(context.Background(), environment.PChainAPI, deployment)
+	identityNumbers, err := loadIdentityNumbers(filepath.Join(root, "deployment"), cfg)
 	if err != nil {
 		return err
 	}
+	report, err := weights.Fetch(context.Background(), cfg.Environment.PChainAPI, deployment)
+	if err != nil {
+		return err
+	}
+	for _, validator := range report.Validators {
+		if _, ok := identityNumbers[identityKey{L1: validator.L1, NodeID: validator.NodeID}]; !ok {
+			return fmt.Errorf("%s validator %s has no local identity", validator.L1, validator.NodeID)
+		}
+	}
+	sort.Slice(report.Validators, func(i, j int) bool {
+		left := identityNumbers[identityKey{L1: report.Validators[i].L1, NodeID: report.Validators[i].NodeID}]
+		right := identityNumbers[identityKey{L1: report.Validators[j].L1, NodeID: report.Validators[j].NodeID}]
+		if report.Validators[i].L1 != report.Validators[j].L1 {
+			return report.Validators[i].L1 == "management"
+		}
+		return left < right
+	})
 	fmt.Printf("management chain ID: %s\n", report.ManagementChainID)
 	fmt.Printf("main chain ID: %s\n", report.MainChainID)
 	fmt.Printf("validator fee price: %d nAVAX/second\n", report.FeePrice)
 	fmt.Printf("validator fee cost: %.6f AVAX/30 days per validator\n", float64(report.FeePrice)*30*24*60*60/float64(units.Avax))
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "L1\tNODE ID\tWEIGHT\tDAYS LEFT")
+	fmt.Fprintln(w, "L1\tIDENTITY\tNODE ID\tWEIGHT\tDAYS LEFT")
 	for _, validator := range report.Validators {
-		fmt.Fprintf(w, "%s\t%s\t%d\t%.2f\n", validator.L1, validator.NodeID, validator.Weight, validator.DaysLeft)
+		identityNumber := identityNumbers[identityKey{L1: validator.L1, NodeID: validator.NodeID}]
+		fmt.Fprintf(w, "%s\t%d\t%s\t%d\t%.2f\n", validator.L1, identityNumber, validator.NodeID, validator.Weight, validator.DaysLeft)
 	}
 	return w.Flush()
+}
+
+type identityKey struct {
+	L1     string
+	NodeID ids.NodeID
+}
+
+func loadIdentityNumbers(deploymentDirectory string, cfg config.Config) (map[identityKey]int, error) {
+	numbers := make(map[identityKey]int, len(cfg.Nodes)+cfg.Environment.ManagerCommittee)
+	load := func(l1 string, number int, path string) error {
+		nodeID, err := identity.LoadNodeID(path)
+		if err != nil {
+			return err
+		}
+		numbers[identityKey{L1: l1, NodeID: nodeID}] = number
+		return nil
+	}
+	for _, node := range cfg.Nodes {
+		if node.Role != config.RoleValidator {
+			continue
+		}
+		if err := load("main", node.Number, filepath.Join(deploymentDirectory, "nodes", strconv.Itoa(node.Number), "staker.crt")); err != nil {
+			return nil, fmt.Errorf("load main identity %d: %w", node.Number, err)
+		}
+	}
+	for number := 1; number <= cfg.Environment.ManagerCommittee; number++ {
+		if err := load("management", number, filepath.Join(deploymentDirectory, "manager", strconv.Itoa(number), "staker.crt")); err != nil {
+			return nil, fmt.Errorf("load management identity %d: %w", number, err)
+		}
+	}
+	return numbers, nil
 }
 
 func topUp(root, rawDays string) error {

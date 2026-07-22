@@ -22,6 +22,9 @@ func TestUsageRepeatsProgramName(t *testing.T) {
 				t.Fatalf("usage line does not start with program name %q: %q", program, line)
 			}
 		}
+		if !strings.Contains(output, "set-weight <main-identity> <1|1000|100000>") {
+			t.Fatalf("usage does not explain set-weight arguments: %q", output)
+		}
 	}
 }
 
