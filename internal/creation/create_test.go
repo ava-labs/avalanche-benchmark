@@ -160,3 +160,20 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 		t.Fatal("create must refuse existing output")
 	}
 }
+
+func TestRequiredFreshCreateBalanceIncludesAllRegistrationsAndFeeReserve(t *testing.T) {
+	cfg := config.Config{
+		Environment: config.Environment{ManagerCommittee: 4},
+		Nodes: []config.Node{
+			{Role: config.RoleValidator},
+			{Role: config.RoleValidator},
+			{Role: config.RoleValidator},
+			{Role: config.RoleValidator},
+			{Role: config.RoleRPC},
+		},
+	}
+	want := uint64(9) * initialBalance
+	if got := requiredFreshCreateBalance(cfg); got != want {
+		t.Fatalf("unexpected required balance: got %d, want %d", got, want)
+	}
+}

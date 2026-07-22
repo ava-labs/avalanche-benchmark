@@ -10,6 +10,7 @@ import (
 	"sort"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/funding"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/utils/constants"
@@ -30,6 +31,7 @@ const (
 	lowWeight          = 1000
 	managerWeight      = 1000
 	initialBalance     = units.Avax / 10
+	creationFeeReserve = units.Avax / 10
 )
 
 var managerAddress = ethcommon.HexToAddress("0x0000000000000000000000000000000000000001")
@@ -47,7 +49,44 @@ type walletFactory func(
 ) (pwallet.Wallet, error)
 
 func Create(ctx context.Context, cfg config.Config, outputDirectory, genesisTemplatePath string) (Result, error) {
+	if err := requireMissing(outputDirectory); err != nil {
+		return Result{}, err
+	}
+	fundingInfo, err := funding.Inspect(ctx, cfg.Environment)
+	if err != nil {
+		return Result{}, fmt.Errorf("funding preflight: %w", err)
+	}
+	requiredBalance := requiredFreshCreateBalance(cfg)
+	if fundingInfo.Balance < requiredBalance {
+		return Result{}, fmt.Errorf(
+			"funding preflight: P-chain address %s has %s, fresh creation requires at least %s; add AVAX and run `go run ./cmd/l1 fund` before retrying",
+			fundingInfo.Addresses.PChain,
+			formatAVAX(fundingInfo.Balance),
+			formatAVAX(requiredBalance),
+		)
+	}
+	fmt.Printf(
+		"funding preflight passed: %s has %s, required minimum %s\n",
+		fundingInfo.Addresses.PChain,
+		formatAVAX(fundingInfo.Balance),
+		formatAVAX(requiredBalance),
+	)
 	return create(ctx, cfg, outputDirectory, genesisTemplatePath, primary.MakePWallet)
+}
+
+func requiredFreshCreateBalance(cfg config.Config) uint64 {
+	validatorCount := 0
+	for _, node := range cfg.Nodes {
+		if node.Role == config.RoleValidator {
+			validatorCount++
+		}
+	}
+	registrations := validatorCount + cfg.Environment.ManagerCommittee
+	return uint64(registrations)*initialBalance + creationFeeReserve
+}
+
+func formatAVAX(amount uint64) string {
+	return fmt.Sprintf("%d.%09d AVAX", amount/units.Avax, amount%units.Avax)
 }
 
 func create(

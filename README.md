@@ -186,6 +186,12 @@ committee validator starts with a 0.1 AVAX continuous-fee balance. Before creati
 renders its genesis allocation for the funding key's derived EVM address. A
 static pre-funded address is never accepted.
 
+Before generating identities or submitting the first transaction, `create`
+checks the configured P-chain address. It requires 0.1 AVAX for every main and
+committee validator plus a 0.1 AVAX transaction-fee reserve. The reserve is a
+fail-fast safety margin, not an additional transfer. An insufficient wallet
+fails before creating `deployment/` or mutating the P-chain.
+
 Creation does not freeze the P-chain. The L1 may be pre-created on another
 machine. The client or deployment control machine later syncs past both
 conversions and runs `snapshot`; the resulting local P-chain frontier is the
