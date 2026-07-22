@@ -152,6 +152,7 @@ l1 address             show funding addresses and spendable P-chain balance
 l1 keygen              generate FUNDING_PRIVATE_KEY directly into an empty .env field
 l1 weights             show live NodeIDs, weights, and days of fee balance left
 l1 topup <days>        fund every registered validator to <days> of runway
+l1 destroy             disable both L1 validator sets and reclaim their balances
 l1 reset               provision (unconditional rsync) + seed P-chain + start
                        everything at canonical placement (identity i on node i)
 l1 place <id> <node>   SWAP identity <id> with whatever identity node <node> runs
@@ -220,6 +221,19 @@ sets from the selected P-chain API, and labels every management and main NodeID
 with its live weight and remaining fee balance in days at the current validator
 fee price. It submits no transaction and does not treat generated artifacts as
 weight truth.
+
+### destroy
+
+`l1 destroy` permanently disables every active main validator, then every
+active management validator. Before submitting the first transaction it
+verifies that `FUNDING_PRIVATE_KEY` is both the deactivation owner and the
+remaining-balance owner of every validator. Each `DisableL1ValidatorTx` stops
+that validator's continuous fee and returns its remaining balance to the
+funding key's P-Chain address. The command prints one accepted transaction ID
+per validator and can be rerun after a partial failure. Height-consistent
+zero-balance records are treated as already disabled even if a stale membership
+response still lists them. The command keeps
+`deployment/network.env` as the record of what was destroyed.
 
 ### place: key-swap failover
 
@@ -362,6 +376,6 @@ and restores canonical placement: identity `i` on node `i`.
   hold only their active identity.
 - Networks: set `NETWORK=fuji` or `NETWORK=mainnet` explicitly and provide the
   matching `PCHAIN_API` explicitly.
-- Cleanup: registered L1 validators pay a continuous fee forever. When
-  abandoning an L1, disable its validators (`DisableL1ValidatorTx`) to
-  stop the burn.
+- Cleanup: registered L1 validators pay a continuous fee forever. Run
+  `go run ./cmd/l1 destroy` when abandoning this deployment to stop the burn
+  and reclaim every remaining validator balance.

@@ -11,6 +11,7 @@ import (
 	"github.com/ava-labs/avalanchego/utils/rpc"
 	"github.com/ava-labs/avalanchego/vms/components/gas"
 	"github.com/ava-labs/avalanchego/vms/platformvm"
+	"github.com/ava-labs/avalanchego/vms/secp256k1fx"
 	"github.com/joho/godotenv"
 )
 
@@ -29,12 +30,14 @@ type Deployment struct {
 }
 
 type Validator struct {
-	L1           string
-	NodeID       ids.NodeID
-	ValidationID ids.ID
-	Weight       uint64
-	Balance      uint64
-	DaysLeft     float64
+	L1                    string
+	NodeID                ids.NodeID
+	ValidationID          ids.ID
+	Weight                uint64
+	Balance               uint64
+	DaysLeft              float64
+	RemainingBalanceOwner *secp256k1fx.OutputOwners
+	DeactivationOwner     *secp256k1fx.OutputOwners
 }
 
 type Report struct {
@@ -90,10 +93,16 @@ func LoadDeployment(path, network string) (Deployment, error) {
 }
 
 func Fetch(ctx context.Context, api string, deployment Deployment) (Report, error) {
-	return fetch(ctx, platformvm.NewClient(api), deployment)
+	return fetch(ctx, platformvm.NewClient(api), deployment, true)
 }
 
-func fetch(ctx context.Context, pChain client, deployment Deployment) (Report, error) {
+// FetchActive is equivalent to Fetch but permits an empty validator set. It is
+// used by destroy so a partially completed destruction can be resumed.
+func FetchActive(ctx context.Context, api string, deployment Deployment) (Report, error) {
+	return fetch(ctx, platformvm.NewClient(api), deployment, false)
+}
+
+func fetch(ctx context.Context, pChain client, deployment Deployment, requireValidators bool) (Report, error) {
 	height, err := pChain.GetHeight(ctx)
 	if err != nil {
 		return Report{}, fmt.Errorf("read P-chain height: %w", err)
@@ -106,11 +115,11 @@ func fetch(ctx context.Context, pChain client, deployment Deployment) (Report, e
 		return Report{}, fmt.Errorf("current validator fee price is zero")
 	}
 
-	management, err := fetchValidators(ctx, pChain, "management", deployment.ManagementSubnetID, height, feePrice)
+	management, err := fetchValidators(ctx, pChain, "management", deployment.ManagementSubnetID, height, feePrice, requireValidators)
 	if err != nil {
 		return Report{}, err
 	}
-	main, err := fetchValidators(ctx, pChain, "main", deployment.MainSubnetID, height, feePrice)
+	main, err := fetchValidators(ctx, pChain, "main", deployment.MainSubnetID, height, feePrice, requireValidators)
 	if err != nil {
 		return Report{}, err
 	}
@@ -129,12 +138,12 @@ func fetch(ctx context.Context, pChain client, deployment Deployment) (Report, e
 	}, nil
 }
 
-func fetchValidators(ctx context.Context, pChain client, l1 string, subnetID ids.ID, minimumHeight uint64, feePrice gas.Price) ([]Validator, error) {
+func fetchValidators(ctx context.Context, pChain client, l1 string, subnetID ids.ID, minimumHeight uint64, feePrice gas.Price, requireValidators bool) ([]Validator, error) {
 	validators, err := pChain.GetCurrentValidators(ctx, subnetID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("read %s validators for %s: %w", l1, subnetID, err)
 	}
-	if len(validators) == 0 {
+	if requireValidators && len(validators) == 0 {
 		return nil, fmt.Errorf("read %s validators for %s: no validators returned", l1, subnetID)
 	}
 	rows := make([]Validator, 0, len(validators))
@@ -149,12 +158,14 @@ func fetchValidators(ctx context.Context, pChain client, l1 string, subnetID ids
 		balance := l1Validator.Balance
 		secondsLeft := balance / uint64(feePrice)
 		rows = append(rows, Validator{
-			L1:           l1,
-			NodeID:       l1Validator.NodeID,
-			ValidationID: *validator.ValidationID,
-			Weight:       l1Validator.Weight,
-			Balance:      balance,
-			DaysLeft:     float64(secondsLeft) / secondsPerDay,
+			L1:                    l1,
+			NodeID:                l1Validator.NodeID,
+			ValidationID:          *validator.ValidationID,
+			Weight:                l1Validator.Weight,
+			Balance:               balance,
+			DaysLeft:              float64(secondsLeft) / secondsPerDay,
+			RemainingBalanceOwner: l1Validator.RemainingBalanceOwner,
+			DeactivationOwner:     l1Validator.DeactivationOwner,
 		})
 	}
 	return rows, nil

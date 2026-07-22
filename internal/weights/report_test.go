@@ -123,7 +123,7 @@ func TestFetchSortsValidatorsAndCalculatesDaysAtCurrentPrice(t *testing.T) {
 		ManagementChainID:  managementChainID,
 		MainSubnetID:       mainSubnetID,
 		MainChainID:        mainChainID,
-	})
+	}, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,5 +135,25 @@ func TestFetchSortsValidatorsAndCalculatesDaysAtCurrentPrice(t *testing.T) {
 	}
 	if report.Validators[0].DaysLeft != 3 || report.Validators[1].DaysLeft != 2 || report.Validators[2].DaysLeft != 1 {
 		t.Fatalf("unexpected days left: %+v", report.Validators)
+	}
+}
+
+func TestFetchActiveAllowsDestroyedValidatorSets(t *testing.T) {
+	report, err := fetch(context.Background(), fakeClient{
+		feePrice:     10,
+		height:       100,
+		validators:   map[ids.ID][]platformvm.ClientPermissionlessValidator{},
+		l1Validators: map[ids.ID]platformvm.L1Validator{},
+	}, Deployment{
+		ManagementSubnetID: ids.GenerateTestID(),
+		ManagementChainID:  ids.GenerateTestID(),
+		MainSubnetID:       ids.GenerateTestID(),
+		MainChainID:        ids.GenerateTestID(),
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Validators) != 0 {
+		t.Fatalf("expected no active validators, got %+v", report.Validators)
 	}
 }

@@ -10,6 +10,7 @@ import (
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/destroy"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/funding"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/topup"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/weights"
@@ -37,10 +38,12 @@ func run() error {
 		return generateKey(root)
 	case len(os.Args) == 2 && os.Args[1] == "weights":
 		return showWeights(root)
+	case len(os.Args) == 2 && os.Args[1] == "destroy":
+		return destroyL1s(root)
 	case len(os.Args) == 3 && os.Args[1] == "topup":
 		return topUp(root, os.Args[2])
 	default:
-		return fmt.Errorf("usage:\n  go run ./cmd/l1 create\n  go run ./cmd/l1 address\n  go run ./cmd/l1 keygen\n  go run ./cmd/l1 weights\n  go run ./cmd/l1 topup <days>")
+		return fmt.Errorf("usage:\n  go run ./cmd/l1 create\n  go run ./cmd/l1 address\n  go run ./cmd/l1 keygen\n  go run ./cmd/l1 weights\n  go run ./cmd/l1 topup <days>\n  go run ./cmd/l1 destroy")
 	}
 }
 
@@ -134,4 +137,19 @@ func topUp(root, rawDays string) error {
 		return err
 	}
 	return topup.Run(context.Background(), environment, deployment, days, os.Stdout)
+}
+
+func destroyL1s(root string) error {
+	environment, err := config.LoadEnvironment(filepath.Join(root, ".env"))
+	if err != nil {
+		return err
+	}
+	deployment, err := weights.LoadDeployment(
+		filepath.Join(root, "deployment", "network.env"),
+		environment.Network,
+	)
+	if err != nil {
+		return err
+	}
+	return destroy.Run(context.Background(), environment, deployment, os.Stdout)
 }
