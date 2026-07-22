@@ -80,5 +80,5 @@ func generateKey(root string) error {
 		return err
 	}
 	fmt.Printf("generated FUNDING_PRIVATE_KEY in %s\n", envPath)
-	return nil
+	return showFunding(root)
 }

@@ -126,7 +126,9 @@ go run ./cmd/l1 keygen
 ```
 
 The private key is network-agnostic. `keygen` never prints it, never overwrites
-an existing key, and protects the updated `.env` with mode `0600`.
+an existing key, and protects the updated `.env` with mode `0600`. It then runs
+the same inspection as `fund`, using `.env`'s explicit network to show the
+P-Chain funding address, EVM genesis address, and current P-Chain balance.
 
 To inspect the configured identity and its spendable P-chain balance without
 submitting a transaction:
