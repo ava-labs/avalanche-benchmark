@@ -101,7 +101,7 @@ The creation settings are deliberately small:
 
 ```dotenv
 NETWORK=fuji
-PCHAIN_WALLET_KEY=staking/pchain-wallet.key
+FUNDING_PRIVATE_KEY=
 MANAGER_COMMITTEE=1
 SSH_USER=ubuntu
 SSH_KEY_PATH=/path/to/fleet-key
@@ -110,9 +110,10 @@ SSH_KEY_PATH=/path/to/fleet-key
 `NETWORK` is `fuji` or `mainnet`. Fuji is always called Fuji, never
 "testnet". `PCHAIN_API` may override the selected network's default endpoint.
 `MANAGER_COMMITTEE` accepts only `1` or `4` and defaults to `1`.
-`PCHAIN_WALLET_KEY` selects the deployment's funding key. The same secp256k1
-key pays P-chain creation and validator fees, and its derived EVM address
-receives the main L1's genesis allocation. There is no built-in funded account
+`FUNDING_PRIVATE_KEY` contains the raw 32-byte secp256k1 private key as 64 hex
+characters with no `0x` prefix. The same key pays P-chain creation and
+validator fees, and its derived EVM address receives the main L1's genesis
+allocation. There is no key-file setting, second key, built-in funded account,
 or fallback private key.
 
 ## Commands
@@ -146,9 +147,8 @@ same for the main L1 with the committee chain recorded as validator manager.
 first 3 validators at 100000, the rest at 1000.** No Warp message is
 constructed at creation time. The committee is not exercised until you first
 call `weight`. Resumable via generated deployment state; re-running never
-double-spends. Needs the funded key selected by `PCHAIN_WALLET_KEY` (default
-`staking/pchain-wallet.key`). Every main and committee validator starts with
-a 0.1 AVAX continuous-fee balance. Before creating the main chain, `create`
+double-spends. It requires `FUNDING_PRIVATE_KEY` from `.env`. Every main and
+committee validator starts with a 0.1 AVAX continuous-fee balance. Before creating the main chain, `create`
 renders its genesis allocation for the funding key's derived EVM address. A
 static pre-funded address is never accepted.
 
@@ -279,7 +279,7 @@ and `place` preserves the identity↔node bijection.
 ```bash
 cp nodes.ini.example nodes.ini    # edit host= lines
 cp .env.example .env              # choose fuji or mainnet and set key paths
-# fund the PCHAIN_WALLET_KEY selected in .env
+# fund the P-chain address derived from FUNDING_PRIVATE_KEY
 
 ./bin/l1 create        # on-chain: committee + main L1 (resumable)
 ./bin/l1 snapshot      # client/control syncs the P-chain and builds the seed
@@ -300,7 +300,7 @@ and restores canonical placement: identity `i` on node `i`.
   uses public IPs, but same-VPC traffic arrives from private IPs. SG rules
   listing only public CIDRs silently break intra-region peering.
 - The public package contains no private keys or generated deployment secrets.
-  Transfer the funded wallet, committee keys, validator staking keys, and
+  Transfer the populated `.env`, committee keys, validator staking keys, and
   generated deployment state separately as a private handover bundle. Nodes
   hold only their active identity.
 - Networks: `NETWORK=fuji` by default; `NETWORK=mainnet` uses mainnet.

@@ -44,8 +44,8 @@ Decisions and motivations:
 - Initial weights are baked DIRECTLY into the conversion tx: first 3 validators 100000, all remaining validators 1000. Motivation: (a) a simple opinionated default beats freestyle weight config; (b) writing weights into ConvertSubnetToL1Tx means `create` NEVER touches warp/committee signing, which removes the whole committee-signature dependency from creation and makes create work identically in both modes.
 - Weight-change certification at create DROPPED (the old flow registered everyone at 1 and raised 1,2,3 via the committee purely to prove the path). Motivation: the proxied mode exercises weight changing for real; a create-time proof is redundant.
 - `genstaking` folded into `create` (generate keys if absent, as create already does for the committee). One command less.
-- Configuration comes from `.env`, which every command explicitly loads. `NETWORK` is `fuji` or `mainnet`; Fuji is always called Fuji, never "testnet". `PCHAIN_API` is an optional endpoint override. `MANAGER_COMMITTEE` is `1` or `4`, default `1`. `PCHAIN_WALLET_KEY` points to the funding key and defaults to `staking/pchain-wallet.key`.
-- The funding key is the deployment's single funding identity. Its P-chain address owns creation and validator-balance transactions. Its derived EVM address receives the main L1's genesis allocation and is the transaction sender used by the benchmark. Genesis is rendered from this address during `create`; there is no static pre-funded address, built-in private key, or fallback benchmark account.
+- Configuration comes from `.env`, which every command explicitly loads. `NETWORK` is `fuji` or `mainnet`; Fuji is always called Fuji, never "testnet". `PCHAIN_API` is an optional endpoint override. `MANAGER_COMMITTEE` is `1` or `4`, default `1`. `FUNDING_PRIVATE_KEY` contains the raw 32-byte secp256k1 private key as 64 hex characters with no `0x` prefix. There is no key-file setting.
+- `FUNDING_PRIVATE_KEY` is the deployment's only funding identity. Its P-chain address owns creation and validator-balance transactions. Its derived EVM address receives the main L1's genesis allocation and is the transaction sender used by the benchmark. Genesis is rendered from this address during `create`; there is no second key, static pre-funded address, built-in private key, or fallback benchmark account.
 - Every registered main and committee validator starts with a 0.1 AVAX continuous-fee balance. `l1 topup <days>` reads the current P-chain fee rate and raises every registered balance to at least that many days of runway. Validators already above the target are left unchanged.
 - Creation is not freezing. A chain may be pre-created anywhere with P-chain access. The deployment control machine later syncs beyond both conversions, snapshots its local P-chain state, and ships that snapshot to the isolated fleet.
 
@@ -61,7 +61,7 @@ ini-style inventory; the shape is the user's, we impose almost nothing ("freesty
 - dc= is a freeform tag, default dc1/dcA. Display and selector ONLY (fleet status grouping, batch verbs like `down dc=A` to simulate a whole-DC failure, per-DC dashboard panels are a nice-to-have). Nothing functional may ever depend on it.
 - Weights are NOT inventory: on-chain weight is the sole truth.
 - There is no generated `registry.json` or `staking/node-ids.env`. NodeID is derived from the TLS certificate; validation ID, weight, and active state come from the P-chain.
-- The public package contains no private keys or generated deployment secrets. The funded wallet, committee keys, validator staking keys, and generated deployment state are transferred separately as a private handover bundle.
+- The public package contains no private keys or generated deployment secrets. The populated `.env`, committee keys, validator staking keys, and generated deployment state are transferred separately as a private handover bundle.
 - The committee is not in the inventory; create generates it separately. It never runs, but must stay funded (a drained committee validator dilutes the quorum).
 
 ## The two primitives
@@ -112,4 +112,4 @@ An RPC node is: a PINNED (IP, NodeID) that tracks the chain, serves ingress, and
 
 - Never name any specific client in git (public repo). STT note: "C-chain" in dictation almost always means P-chain.
 - Never print or commit private keys, funded keys, or API tokens.
-- The funded wallet, committee keys, validator staking keys, and generated deployment state are private handover artifacts: back them up, transfer them separately from the public package, and keep every registered validator funded.
+- The populated `.env`, committee keys, validator staking keys, and generated deployment state are private handover artifacts: back them up, transfer them separately from the public package, and keep every registered validator funded.
