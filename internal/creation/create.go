@@ -140,8 +140,8 @@ func create(
 	if err != nil {
 		return Result{}, err
 	}
-	fmt.Println("creating manager phantom chain")
-	managerChainTx, err := wallet.IssueCreateChainTx(state.ManagerSubnetID, genesis, constants.SubnetEVMID, nil, "manager")
+	fmt.Println("creating management chain")
+	managerChainTx, err := wallet.IssueCreateChainTx(state.ManagerSubnetID, genesis, constants.SubnetEVMID, nil, "management")
 	if err != nil {
 		return Result{}, fmt.Errorf("manager CreateChainTx: %w", err)
 	}
@@ -216,7 +216,7 @@ func create(
 	if err != nil {
 		return Result{}, err
 	}
-	fmt.Println("converting main subnet to an L1 managed by the manager chain")
+	fmt.Println("converting main subnet to an L1 managed by the management chain")
 	mainConvertTx, err := wallet.IssueConvertSubnetToL1Tx(
 		state.SubnetID,
 		state.ManagerChainID,

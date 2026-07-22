@@ -15,12 +15,12 @@ Design rationale: **[DESIGN.md](DESIGN.md)**. This README is the operator manual
 Two L1s, one fleet, one relay:
 
 - **Main L1**: the benchmarked chain (subnet-evm). Its validators are your
-  fleet. Registered once via `ConvertSubnetToL1Tx` with the manager chain set
+  fleet. Registered once via `ConvertSubnetToL1Tx` with the management chain set
   to the committee L1's blockchain (manager address `0x…01`).
-- **Committee L1**: the validator manager. A subnet + phantom chain that is
+- **Committee L1**: the validator manager. Its management chain is
   never deployed and never produces blocks; it exists as P-chain BLS-key
   records (1 member by default, or 4 for one-signer-loss tolerance; weight
-  1000 each). It is self-managed through its own phantom chain at manager
+  1000 each). It is self-managed through its own management chain at manager
   address `0x…01`. Weight changes to the main L1
   are `SetL1ValidatorWeightTx`s carrying a Warp `AddressedCall` sourced from
   the committee chain, signed by an aggregated BLS `BitSetSignature` meeting
