@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/weights"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/vms/platformvm/txs"
@@ -31,6 +32,16 @@ func TestOwnedByRequiresExactSingleUnlockedOwner(t *testing.T) {
 	}
 	if ownedBy(nil, address) {
 		t.Fatal("missing owner must fail")
+	}
+}
+
+func TestRunWithoutConversionsNeedsNoPChain(t *testing.T) {
+	var output bytes.Buffer
+	if err := Run(t.Context(), config.Environment{}, weights.Deployment{}, &output); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "nothing to reclaim") {
+		t.Fatalf("unexpected output: %q", output.String())
 	}
 }
 

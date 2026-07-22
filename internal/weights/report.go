@@ -61,9 +61,9 @@ func LoadDeployment(path, network string) (Deployment, error) {
 	return loadDeployment(path, network, true)
 }
 
-// LoadDeploymentForDestroy accepts creation state as soon as either L1 was
-// converted. Destroy is the cleanup path for a failed create, so requiring the
-// later main conversion here would strand the earlier management deposit.
+// LoadDeploymentForDestroy accepts every creation stage. Destroy removes local
+// output even when creation stopped before either L1 conversion, and requiring
+// the later main conversion would strand an earlier management deposit.
 func LoadDeploymentForDestroy(path, network string) (Deployment, error) {
 	return loadDeployment(path, network, false)
 }
@@ -81,10 +81,6 @@ func loadDeployment(path, network string, requireComplete bool) (Deployment, err
 	if requireComplete && !mainConverted {
 		return Deployment{}, fmt.Errorf("%s: required field CONVERT_TX_ID is not provided; creation is incomplete", path)
 	}
-	if !requireComplete && !managerConverted && !mainConverted {
-		return Deployment{}, fmt.Errorf("%s: creation stopped before either L1 was converted; there are no validator balances to reclaim", path)
-	}
-
 	deployment := Deployment{}
 	if managerConverted || requireComplete {
 		deployment.ManagementConvertTxID, err = requiredID(path, values, "MANAGER_CONVERT_TX_ID")

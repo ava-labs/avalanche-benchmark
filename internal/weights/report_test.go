@@ -108,8 +108,12 @@ func TestLoadDeploymentForDestroyAcceptsManagementOnlyCreation(t *testing.T) {
 	if err := os.WriteFile(path, []byte("NETWORK=fuji\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadDeploymentForDestroy(path, "fuji"); err == nil || !strings.Contains(err.Error(), "no validator balances to reclaim") {
-		t.Fatalf("expected no converted L1 error, got %v", err)
+	empty, err := LoadDeploymentForDestroy(path, "fuji")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.ManagementSubnetID != ids.Empty || empty.MainSubnetID != ids.Empty {
+		t.Fatalf("unexpected unconverted deployment: %+v", empty)
 	}
 }
 

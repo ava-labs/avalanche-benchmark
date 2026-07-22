@@ -142,8 +142,9 @@ go run ./cmd/l1 address
 ```
 
 Before creation, `address` remains available so an imported funding key can be
-funded. Once `deployment/network.env` exists, it fails if that deployment has
-no active validators because destruction is a terminal lifecycle state.
+funded. While `deployment/network.env` exists, it fails if that deployment has
+no active validators because `destroy` has not finished removing its local
+state.
 
 Configuration is strict. Missing required fields, unknown fields, duplicate
 node numbers, malformed values, and missing prior-step artifacts stop the
@@ -193,8 +194,8 @@ first 3 validators at 100000, the rest at 1000.** No Warp message is
 constructed at creation time. The committee is not exercised until you first
 call `set-weight`. A failed partial creation is abandoned. The operator runs
 `l1 destroy` to reclaim any validator balances whose conversion already
-succeeded, then explicitly removes its output before starting another clean
-attempt with new identities and new L1s. It requires `FUNDING_PRIVATE_KEY` from
+succeeded and remove its output before starting another clean attempt with new
+identities and new L1s. It requires `FUNDING_PRIVATE_KEY` from
 `.env`. Every main and
 committee validator starts with a 0.1 AVAX continuous-fee balance. Before creating the main chain, `create`
 renders its genesis allocation for the funding key's derived EVM address. A
@@ -247,14 +248,16 @@ that validator's continuous fee and returns its remaining balance to the
 funding key's P-Chain address. The command prints one accepted transaction ID
 per validator and can be rerun after a partial failure. Height-consistent
 zero-balance records are treated as already disabled even if a stale membership
-response still lists them. The command keeps `deployment/network.env` as the
-record of which chain was destroyed.
+response still lists them. If any transaction or verification fails, the
+complete `deployment/` directory stays in place so the operator can rerun
+`destroy`. After every balance is reclaimed, the command removes `deployment/`,
+including its private keys and transaction state. If the validators were
+already disabled but the directory remained from an interrupted or older
+cleanup, `destroy` removes it without another transaction. `.env` and
+`nodes.ini` are never removed.
 
-Destruction is terminal. Repeating `destroy`, or running `address`, `weights`,
-or `topup` against the destroyed deployment, fails with `deployment has no
-active validators` rather than reporting a successful no-op or stale state.
-There is no local destroyed flag. Height-consistent P-Chain state is the only
-lifecycle truth, and zero active validators means the chain is destroyed.
+After successful destruction, the absence of `deployment/` means the workspace
+is ready for a new `create`. There is no local destroyed flag.
 
 ### place: key-swap failover
 
@@ -420,4 +423,5 @@ identity `b` on the second, and so on.
   matching `PCHAIN_API` explicitly.
 - Cleanup: registered L1 validators pay a continuous fee forever. Run
   `go run ./cmd/l1 destroy` when abandoning this deployment to stop the burn
-  and reclaim every remaining validator balance.
+  and reclaim every remaining validator balance. Successful cleanup also
+  removes `./deployment`.

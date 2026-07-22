@@ -25,6 +25,10 @@ func Run(
 	deployment weights.Deployment,
 	output io.Writer,
 ) error {
+	if deployment.MainSubnetID == ids.Empty && deployment.ManagementSubnetID == ids.Empty {
+		fmt.Fprintln(output, "no converted validators; nothing to reclaim")
+		return nil
+	}
 	fundingKey, err := funding.ParsePrivateKey(environment.FundingPrivateKey)
 	if err != nil {
 		return err
@@ -39,10 +43,8 @@ func Run(
 	}
 	validators := reclaimableMainBeforeManagement(report.Validators)
 	if len(validators) == 0 {
-		// Destroy is a terminal transition. Failing a repeated invocation makes
-		// stale deployment selection visible instead of reporting a misleading
-		// successful no-op in a benchmark procedure.
-		return fmt.Errorf("deployment has no active validators; it is already destroyed")
+		fmt.Fprintln(output, "no active validators; balances already reclaimed")
+		return nil
 	}
 	for _, validator := range validators {
 		if !ownedBy(validator.DeactivationOwner, fundingKey.Address()) {

@@ -330,7 +330,8 @@ func destroyL1s(root string) error {
 	if err != nil {
 		return err
 	}
-	statePath := filepath.Join(root, "deployment", "network.env")
+	deploymentPath := filepath.Join(root, "deployment")
+	statePath := filepath.Join(deploymentPath, "network.env")
 	deployment, err := weights.LoadDeploymentForDestroy(
 		statePath,
 		environment.Network,
@@ -338,5 +339,14 @@ func destroyL1s(root string) error {
 	if err != nil {
 		return err
 	}
-	return destroy.Run(context.Background(), environment, deployment, os.Stdout)
+	if err := destroy.Run(context.Background(), environment, deployment, os.Stdout); err != nil {
+		// Keep every local key and transaction ID needed to retry a partial
+		// destruction. Local state is removed only after all balances return.
+		return err
+	}
+	if err := os.RemoveAll(deploymentPath); err != nil {
+		return fmt.Errorf("remove destroyed deployment ./deployment: %w", err)
+	}
+	fmt.Println("removed ./deployment")
+	return nil
 }

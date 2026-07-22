@@ -105,3 +105,35 @@ func TestWeightsLoadLetteredIdentities(t *testing.T) {
 		}
 	}
 }
+
+func TestDestroyRemovesUnconvertedDeploymentOnly(t *testing.T) {
+	root := t.TempDir()
+	environment := strings.Join([]string{
+		"NETWORK=fuji",
+		"PCHAIN_API=https://api.avax-test.network",
+		"FUNDING_PRIVATE_KEY=" + strings.Repeat("1", 64),
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte(environment), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deploymentPath := filepath.Join(root, "deployment")
+	if err := os.Mkdir(deploymentPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deploymentPath, "network.env"), []byte("NETWORK=fuji\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deploymentPath, "private-key"), []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := destroyL1s(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(deploymentPath); !os.IsNotExist(err) {
+		t.Fatalf("deployment must be removed, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".env")); err != nil {
+		t.Fatalf(".env must remain: %v", err)
+	}
+}
