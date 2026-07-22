@@ -67,9 +67,10 @@ relay = feed.
 ```
 
 - Node numbers are the primary key everywhere: data roots (`data/<n>`),
-  staking key dirs (`staking/l1/<n>`), command arguments.
+  identity dirs (`deployment/nodes/<n>`), command arguments.
 - Validators are registered in ascending node-number order. The first three
   validators in that order start at weight 100000; the rest start at 1000.
+- Inventory requires at least four validators and at least one RPC.
 - `role` is the only functional field. `validator` = registered on-chain,
   carries stake, swappable. `rpc` = never registered, no BLS signer key
   (runs `--staking-ephemeral-signer-enabled`), pinned identity, serves
@@ -150,7 +151,9 @@ fresh TLS and BLS staking keys for validators, stable TLS identities without
 BLS signer keys for RPC nodes, and fresh TLS+BLS identities for the manager
 committee. It never loads or reuses an existing identity. Before any P-chain
 transaction, `create` requires an empty creation-output directory and names the
-blocking path if old artifacts are present. It then issues, in order:
+blocking path if old artifacts are present. That directory is `deployment/`.
+It contains `nodes/<n>/`, `manager/<n>/`, the rendered `genesis.json`, and
+`network.env` with accepted IDs and transaction IDs. It then issues, in order:
 `CreateSubnetTx` + `CreateChainTx` + `ConvertSubnetToL1Tx` for the committee L1
 (1 or 4 members, default 1, weight 1000), then the
 same for the main L1 with the committee chain recorded as validator manager.
@@ -293,7 +296,7 @@ cp nodes.ini.example nodes.ini    # edit host= lines
 cp .env.example .env              # choose fuji or mainnet and set key paths
 # fund the P-chain address derived from FUNDING_PRIVATE_KEY
 
-./bin/l1 create        # on-chain: committee + main L1 (resumable)
+go run ./cmd/l1 create # fresh on-chain committee + main L1
 ./bin/l1 snapshot      # client/control syncs the P-chain and builds the seed
 ./bin/l1 reset         # rsync artifacts + seed P-chain + start all nodes
 ./04_monitoring.sh     # Prometheus + Grafana on control

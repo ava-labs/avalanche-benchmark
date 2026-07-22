@@ -4,6 +4,7 @@
 /network.env
 /network-info.env
 /registry.json
+/deployment/
 
 # Secrets that must NEVER be committed:
 #   - the funded Fuji wallet key (controls real AVAX)

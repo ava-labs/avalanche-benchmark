@@ -33,7 +33,7 @@ Motivations:
 
 One `l1 create`, run from any designated creation machine with P-chain access. The creation machine does not have to be the client's deployment control machine. Creates BOTH L1s at genesis:
 
-1. Manager L1 (the committee): own subnet + a phantom chain (never deployed, never runs blocks) + ConvertSubnetToL1Tx registering an equal-weight signing committee (staking/manager/m<i>, BLS keys generated and held on control). It is self-managed through its own phantom chain at manager address `0x..01`. Committee size is exactly 1 or 4 (default 1), member weight 1000. One is the minimum, simplest signing authority. Four provides one-signer-loss tolerance with a 3-of-4 quorum. Sizes 2 and 3 add keys without providing that tolerance.
+1. Manager L1 (the committee): own subnet + a phantom chain (never deployed, never runs blocks) + ConvertSubnetToL1Tx registering an equal-weight signing committee (`deployment/manager/<n>`, BLS keys generated and held on control). It is self-managed through its own phantom chain at manager address `0x..01`. Committee size is exactly 1 or 4 (the shipped example selects 1), member weight 1000. One is the minimum, simplest signing authority. Four provides one-signer-loss tolerance with a 3-of-4 quorum. Sizes 2 and 3 add keys without providing that tolerance.
 2. Main L1: own subnet + chain + ConvertSubnetToL1Tx registering the fleet's validators, with the recorded validator manager set to the MANAGER L1's chain (address 0x..01). The P-chain verifies this L1's weight changes against the committee's set.
 
 Decisions and motivations:
@@ -54,9 +54,10 @@ Decisions and motivations:
 
 ini-style inventory; the shape is the user's, we impose almost nothing ("freestyle"). We deliberately do NOT provide a "do good" binary that decides swaps or weights for the user: primitives, not policy.
 
-- Machines and nodes are NUMBERS, not names (numbers go in paths, e.g. data/<n>). Motivation: names added a sync burden (staking dirs, data roots, manifests keyed by name) with no benefit; letters-for-identities were also dropped because `status` already answers "which identity is where".
+- Machines and nodes are NUMBERS, not names (numbers go in paths, e.g. `deployment/nodes/<n>` and `data/<n>`). Motivation: names added a sync burden (staking dirs, data roots, manifests keyed by name) with no benefit; letters-for-identities were also dropped because `status` already answers "which identity is where".
 - role is a property of the NODE: validator | rpc. The ONE functional field.
 - Validators are registered in ascending node-number order. The first three in that order receive weight 100000; all remaining validators receive weight 1000.
+- Inventory requires at least four validators and at least one RPC. Three high validators plus at least one low validator are the minimum useful failover shape; an RPC is required for stable ingress and bootstrap anchoring.
 - `create` freshly generates TLS and BLS staking keys for validators, stable TLS identities without BLS signer keys for RPC nodes, and TLS+BLS identities for the manager committee. No identity is reused between creation attempts.
 - Many nodes may co-host on one machine, but the unified experience default is one blockchain node per physical machine, permanently, even under key swaps.
 - dc= is an optional freeform tag. If omitted, it remains visibly unset; the tool does not invent one. Display and selector ONLY (fleet status grouping, batch verbs like `down dc=A` to simulate a whole-DC failure, per-DC dashboard panels are a nice-to-have). Nothing functional may ever depend on it.
