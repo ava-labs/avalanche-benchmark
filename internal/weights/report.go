@@ -24,11 +24,12 @@ const (
 )
 
 type Deployment struct {
-	ManagementSubnetID ids.ID
-	ManagementChainID  ids.ID
-	MainSubnetID       ids.ID
-	MainChainID        ids.ID
-	ManagerAddress     ethcommon.Address
+	ManagementSubnetID    ids.ID
+	ManagementChainID     ids.ID
+	ManagementConvertTxID ids.ID
+	MainSubnetID          ids.ID
+	MainChainID           ids.ID
+	ManagerAddress        ethcommon.Address
 }
 
 type Validator struct {
@@ -70,6 +71,10 @@ func LoadDeployment(path, network string) (Deployment, error) {
 	if _, err := requiredID(path, values, "CONVERT_TX_ID"); err != nil {
 		return Deployment{}, err
 	}
+	managementConvertTxID, err := requiredID(path, values, "MANAGER_CONVERT_TX_ID")
+	if err != nil {
+		return Deployment{}, err
+	}
 	managementChainID, err := requiredID(path, values, "MANAGER_CHAIN_ID")
 	if err != nil {
 		return Deployment{}, err
@@ -91,11 +96,12 @@ func LoadDeployment(path, network string) (Deployment, error) {
 		return Deployment{}, fmt.Errorf("%s: required field MANAGER_ADDRESS must be a hex address, got %q", path, managerAddressRaw)
 	}
 	return Deployment{
-		ManagementSubnetID: managementSubnetID,
-		ManagementChainID:  managementChainID,
-		MainSubnetID:       mainSubnetID,
-		MainChainID:        mainChainID,
-		ManagerAddress:     ethcommon.HexToAddress(managerAddressRaw),
+		ManagementSubnetID:    managementSubnetID,
+		ManagementChainID:     managementChainID,
+		ManagementConvertTxID: managementConvertTxID,
+		MainSubnetID:          mainSubnetID,
+		MainChainID:           mainChainID,
+		ManagerAddress:        ethcommon.HexToAddress(managerAddressRaw),
 	}, nil
 }
 

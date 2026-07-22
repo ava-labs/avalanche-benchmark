@@ -23,7 +23,7 @@ func TestGenerateCreatesFreshRawKeys(t *testing.T) {
 
 func TestGenerateIntoEnvironmentWritesOnceAndProtectsFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".env")
-	contents := "NETWORK=fuji\nFUNDING_PRIVATE_KEY=\nMANAGER_COMMITTEE=1\n"
+	contents := "NETWORK=fuji\nPCHAIN_API=https://api.avax-test.network\nFUNDING_PRIVATE_KEY=\n"
 	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
 		t.Fatal(err)
 	}

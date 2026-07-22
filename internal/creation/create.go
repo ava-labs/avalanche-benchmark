@@ -48,7 +48,10 @@ type walletFactory func(
 	primary.WalletConfig,
 ) (pwallet.Wallet, error)
 
-func Create(ctx context.Context, cfg config.Config, outputDirectory, genesisTemplatePath string) (Result, error) {
+func Create(ctx context.Context, cfg config.Config, outputDirectory, genesisTemplatePath string, managerCommittee int) (Result, error) {
+	if err := ValidateManagerCommittee(managerCommittee); err != nil {
+		return Result{}, err
+	}
 	if err := requireMissing(outputDirectory); err != nil {
 		return Result{}, err
 	}
@@ -56,7 +59,7 @@ func Create(ctx context.Context, cfg config.Config, outputDirectory, genesisTemp
 	if err != nil {
 		return Result{}, fmt.Errorf("funding preflight: %w", err)
 	}
-	requiredBalance := requiredFreshCreateBalance(cfg)
+	requiredBalance := requiredFreshCreateBalance(cfg, managerCommittee)
 	if fundingInfo.Balance < requiredBalance {
 		return Result{}, fmt.Errorf(
 			"funding preflight: P-chain address %s has %s, fresh creation requires at least %s; add AVAX and run `go run ./cmd/l1 address` before retrying",
@@ -71,17 +74,24 @@ func Create(ctx context.Context, cfg config.Config, outputDirectory, genesisTemp
 		formatAVAX(fundingInfo.Balance),
 		formatAVAX(requiredBalance),
 	)
-	return create(ctx, cfg, outputDirectory, genesisTemplatePath, primary.MakePWallet)
+	return create(ctx, cfg, outputDirectory, genesisTemplatePath, managerCommittee, primary.MakePWallet)
 }
 
-func requiredFreshCreateBalance(cfg config.Config) uint64 {
+func ValidateManagerCommittee(size int) error {
+	if size != 1 && size != 4 {
+		return fmt.Errorf("create manager committee must be 1 or 4, got %d", size)
+	}
+	return nil
+}
+
+func requiredFreshCreateBalance(cfg config.Config, managerCommittee int) uint64 {
 	validatorCount := 0
 	for _, node := range cfg.Nodes {
 		if node.Role == config.RoleValidator {
 			validatorCount++
 		}
 	}
-	registrations := validatorCount + cfg.Environment.ManagerCommittee
+	registrations := validatorCount + managerCommittee
 	return uint64(registrations)*initialBalance + creationFeeReserve
 }
 
@@ -94,6 +104,7 @@ func create(
 	cfg config.Config,
 	outputDirectory string,
 	genesisTemplatePath string,
+	managerCommittee int,
 	newWallet walletFactory,
 ) (Result, error) {
 	keyBytes, err := hex.DecodeString(cfg.Environment.FundingPrivateKey)
@@ -124,7 +135,7 @@ func create(
 	}
 	fmt.Printf("generated %s\n", genesisPath)
 
-	identities, err := identity.Generate(outputDirectory, cfg.Nodes, cfg.Environment.ManagerCommittee)
+	identities, err := identity.Generate(outputDirectory, cfg.Nodes, managerCommittee)
 	if err != nil {
 		return Result{}, err
 	}
@@ -209,7 +220,6 @@ func create(
 	if err := state.Save(); err != nil {
 		return Result{}, err
 	}
-
 	fmt.Println("creating main subnet")
 	mainSubnetTx, err := wallet.IssueCreateSubnetTx(subnetOwner)
 	if err != nil {

@@ -104,14 +104,13 @@ The creation settings are deliberately small:
 NETWORK=fuji
 PCHAIN_API=https://api.avax-test.network
 FUNDING_PRIVATE_KEY=
-MANAGER_COMMITTEE=1
 SSH_USER=ubuntu
 SSH_KEY_PATH=/path/to/fleet-key
 ```
 
 `NETWORK` is `fuji` or `mainnet`. Fuji is always called Fuji, never
-"testnet". `PCHAIN_API` is required. `MANAGER_COMMITTEE` accepts only `1` or
-`4`; the example explicitly selects `1`.
+"testnet". `PCHAIN_API` is required. Committee size is an optional argument to
+`create`, not environment state: omit it for 1 or pass 4.
 `FUNDING_PRIVATE_KEY` contains the raw 32-byte secp256k1 private key as 64 hex
 characters with no `0x` prefix. The same key pays P-chain creation and
 validator fees, and its derived EVM address receives the main L1's genesis
@@ -153,7 +152,7 @@ transaction is reported explicitly.
 ## Commands
 
 ```
-l1 create              one-time, on-chain: committee L1 + main L1 (see below)
+l1 create [1|4]        one-time, on-chain: committee L1 + main L1; default 1
 l1 address             show funding addresses and spendable P-chain balance
 l1 keygen              generate FUNDING_PRIVATE_KEY directly into an empty .env field
 l1 weights             show live identity numbers, NodeIDs, weights, and fee days left
@@ -286,14 +285,21 @@ value are refused, so the tool cannot remove membership or create unexplained
 intermediate states. This is a performance/failover benchmark with fixed
 membership, not a membership manager.
 
-P-chain Warp admission can verify against an ACP-181 epoch height older than the
-latest state returned by `weights`. After a fresh management L1 conversion on a
-quiet P-chain, that epoch can predate the entire management validator set. On
-the resulting exact empty-set rejection, the weight transaction is not
-accepted. `set-weight` visibly submits one no-op P-chain `BaseTx` from the same
-wallet to force a new block so the verifier context can advance, prints its
-transaction ID, exits with the original rejection, and tells the operator to
-rerun the command. It never hides the failure in an automatic retry loop.
+P-chain Warp admission verifies against the P-chain height pinned in the current
+ACP-181 epoch, not the latest state returned by `weights`. Before constructing
+or submitting a weight transaction, `set-weight` derives the management
+conversion's exact block height from its already-recorded transaction ID,
+without storing another field. It then makes one `proposervm.getCurrentEpoch`
+call and requires
+`currentEpoch.pChainHeight >= managementConversionHeight`.
+
+If the pinned height is older, no weight transaction is attempted. Before the
+epoch can seal, the command reports its earliest seal time in JST and the
+remaining wait. Once it is sealable, the command visibly submits one no-op
+P-chain `BaseTx` from the same wallet, prints its transaction ID, exits, and
+tells the operator to rerun. A quiet P-chain may need a second visible nudge
+because epoch advancement tests the new block's parent timestamp. There is no
+polling or automatic weight retry.
 
 In frozen mode the transaction would confirm on the P-chain but never reach your
 fleet, so `set-weight` refuses to run when the relay is down.
@@ -378,7 +384,8 @@ cp nodes.ini.example nodes.ini    # edit host= lines
 cp .env.example .env              # choose fuji or mainnet and set key paths
 # fund the P-chain address derived from FUNDING_PRIVATE_KEY
 
-go run ./cmd/l1 create # fresh on-chain committee + main L1
+go run ./cmd/l1 create   # fresh on-chain committee + main L1, one manager
+# go run ./cmd/l1 create 4  # four-manager alternative
 ./bin/l1 snapshot      # client/control syncs the P-chain and builds the seed
 ./bin/l1 reset         # rsync artifacts + seed P-chain + start all nodes
 ./04_monitoring.sh     # Prometheus + Grafana on control

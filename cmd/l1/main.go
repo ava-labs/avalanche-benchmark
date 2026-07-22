@@ -35,8 +35,15 @@ func run() error {
 		return fmt.Errorf("get working directory: %w", err)
 	}
 	switch {
-	case len(os.Args) == 2 && os.Args[1] == "create":
-		return create(root)
+	case (len(os.Args) == 2 || len(os.Args) == 3) && os.Args[1] == "create":
+		managerCommittee := 1
+		if len(os.Args) == 3 {
+			managerCommittee, err = strconv.Atoi(os.Args[2])
+			if err != nil {
+				return fmt.Errorf("create manager committee must be 1 or 4, got %q", os.Args[2])
+			}
+		}
+		return create(root, managerCommittee)
 	case len(os.Args) == 2 && os.Args[1] == "address":
 		return showAddress(root)
 	case len(os.Args) == 2 && os.Args[1] == "keygen":
@@ -56,7 +63,7 @@ func run() error {
 
 func usage(program string) string {
 	return fmt.Sprintf(
-		"  %s create\n  %s address\n  %s keygen\n  %s weights\n  %s topup <days>\n  %s set-weight <main-identity> <1|1000|100000>\n  %s destroy",
+		"  %s create [1|4]\n  %s address\n  %s keygen\n  %s weights\n  %s topup <days>\n  %s set-weight <main-identity> <1|1000|100000>\n  %s destroy",
 		program,
 		program,
 		program,
@@ -101,7 +108,10 @@ func setWeight(root, rawIdentity, rawWeight string) error {
 	)
 }
 
-func create(root string) error {
+func create(root string, managerCommittee int) error {
+	if err := creation.ValidateManagerCommittee(managerCommittee); err != nil {
+		return err
+	}
 	deploymentPath := filepath.Join(root, "deployment")
 	if _, err := os.Stat(deploymentPath); err == nil {
 		return fmt.Errorf("chain already exists in ./deployment; delete ./deployment only if you want a new chain")
@@ -117,13 +127,14 @@ func create(root string) error {
 		cfg.Environment.Network,
 		cfg.Environment.PChainAPI,
 		len(cfg.Nodes),
-		cfg.Environment.ManagerCommittee,
+		managerCommittee,
 	)
 	_, err = creation.Create(
 		context.Background(),
 		cfg,
 		deploymentPath,
 		filepath.Join(root, "genesis-template.json"),
+		managerCommittee,
 	)
 	return err
 }
@@ -247,7 +258,7 @@ type identityKey struct {
 }
 
 func loadIdentityNumbers(deploymentDirectory string, cfg config.Config) (map[identityKey]int, error) {
-	numbers := make(map[identityKey]int, len(cfg.Nodes)+cfg.Environment.ManagerCommittee)
+	numbers := make(map[identityKey]int, len(cfg.Nodes))
 	load := func(l1 string, number int, path string) error {
 		nodeID, err := identity.LoadNodeID(path)
 		if err != nil {
@@ -264,10 +275,25 @@ func loadIdentityNumbers(deploymentDirectory string, cfg config.Config) (map[ide
 			return nil, fmt.Errorf("load main identity %d: %w", node.Number, err)
 		}
 	}
-	for number := 1; number <= cfg.Environment.ManagerCommittee; number++ {
-		if err := load("management", number, filepath.Join(deploymentDirectory, "manager", strconv.Itoa(number), "staker.crt")); err != nil {
+	managerDirectory := filepath.Join(deploymentDirectory, "manager")
+	entries, err := os.ReadDir(managerDirectory)
+	if err != nil {
+		return nil, fmt.Errorf("read management identities %s: %w", managerDirectory, err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			return nil, fmt.Errorf("unexpected file in management identities: %s", filepath.Join(managerDirectory, entry.Name()))
+		}
+		number, err := strconv.Atoi(entry.Name())
+		if err != nil || number <= 0 {
+			return nil, fmt.Errorf("management identity directory must be a positive number, got %q", entry.Name())
+		}
+		if err := load("management", number, filepath.Join(managerDirectory, entry.Name(), "staker.crt")); err != nil {
 			return nil, fmt.Errorf("load management identity %d: %w", number, err)
 		}
+	}
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("no management identities found in %s", managerDirectory)
 	}
 	return numbers, nil
 }

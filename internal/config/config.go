@@ -32,7 +32,6 @@ type Environment struct {
 	Network           string
 	PChainAPI         string
 	FundingPrivateKey string
-	ManagerCommittee  int
 	SSHUser           string
 	SSHKeyPath        string
 }
@@ -71,7 +70,6 @@ func LoadEnvironment(path string) (Environment, error) {
 		"NETWORK":             {},
 		"PCHAIN_API":          {},
 		"FUNDING_PRIVATE_KEY": {},
-		"MANAGER_COMMITTEE":   {},
 		"SSH_USER":            {},
 		"SSH_KEY_PATH":        {},
 	}
@@ -130,20 +128,10 @@ func LoadEnvironment(path string) (Environment, error) {
 		return Environment{}, fmt.Errorf("%s: FUNDING_PRIVATE_KEY must not be zero", path)
 	}
 
-	committeeRaw, err := required("MANAGER_COMMITTEE")
-	if err != nil {
-		return Environment{}, err
-	}
-	managerCommittee, err := strconv.Atoi(committeeRaw)
-	if err != nil || (managerCommittee != 1 && managerCommittee != 4) {
-		return Environment{}, fmt.Errorf("%s: MANAGER_COMMITTEE must be 1 or 4, got %q", path, committeeRaw)
-	}
-
 	return Environment{
 		Network:           network,
 		PChainAPI:         pChainAPI,
 		FundingPrivateKey: fundingPrivateKey,
-		ManagerCommittee:  managerCommittee,
 		SSHUser:           strings.TrimSpace(values["SSH_USER"]),
 		SSHKeyPath:        strings.TrimSpace(values["SSH_KEY_PATH"]),
 	}, nil

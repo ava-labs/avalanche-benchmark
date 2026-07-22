@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
@@ -16,18 +15,22 @@ import (
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/weights"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/snow/validators"
+	"github.com/ava-labs/avalanchego/upgrade"
 	"github.com/ava-labs/avalanchego/utils/constants"
 	"github.com/ava-labs/avalanchego/utils/crypto/bls"
 	"github.com/ava-labs/avalanchego/utils/crypto/bls/signer/localsigner"
 	"github.com/ava-labs/avalanchego/utils/rpc"
 	"github.com/ava-labs/avalanchego/utils/set"
-	"github.com/ava-labs/avalanchego/vms/components/avax"
 	"github.com/ava-labs/avalanchego/vms/platformvm"
+	pblock "github.com/ava-labs/avalanchego/vms/platformvm/block"
 	"github.com/ava-labs/avalanchego/vms/platformvm/txs"
 	"github.com/ava-labs/avalanchego/vms/platformvm/warp"
 	warpmessage "github.com/ava-labs/avalanchego/vms/platformvm/warp/message"
 	warppayload "github.com/ava-labs/avalanchego/vms/platformvm/warp/payload"
+	"github.com/ava-labs/avalanchego/vms/proposervm"
+	proposerblock "github.com/ava-labs/avalanchego/vms/proposervm/block"
 	"github.com/ava-labs/avalanchego/vms/secp256k1fx"
+	pwallet "github.com/ava-labs/avalanchego/wallet/chain/p/wallet"
 	"github.com/ava-labs/avalanchego/wallet/subnet/primary"
 	commonopts "github.com/ava-labs/avalanchego/wallet/subnet/primary/common"
 )
@@ -51,8 +54,23 @@ type client interface {
 }
 
 type wallet interface {
-	IssueBaseTx([]*avax.TransferableOutput, ...commonopts.Option) (*txs.Tx, error)
 	IssueSetL1ValidatorWeightTx([]byte, ...commonopts.Option) (*txs.Tx, error)
+}
+
+type epochClient interface {
+	GetCurrentEpoch(context.Context, ...rpc.Option) (proposerblock.Epoch, error)
+}
+
+type blockReader interface {
+	Block(context.Context, uint64) (time.Time, []ids.ID, error)
+}
+
+type platformBlockClient interface {
+	GetBlockByHeight(context.Context, uint64, ...rpc.Option) ([]byte, error)
+}
+
+type platformBlockReader struct {
+	client platformBlockClient
 }
 
 type registeredValidator struct {
@@ -62,6 +80,7 @@ type registeredValidator struct {
 	Balance      uint64
 	MinNonce     uint64
 	PublicKey    *bls.PublicKey
+	StartTime    uint64
 }
 
 func Run(
@@ -88,7 +107,6 @@ func Run(
 	if err != nil {
 		return fmt.Errorf("load validator identity %d: %w", identityNumber, err)
 	}
-
 	pChain := platformvm.NewClient(cfg.Environment.PChainAPI)
 	height, err := pChain.GetHeight(ctx)
 	if err != nil {
@@ -110,24 +128,60 @@ func Run(
 		return nil
 	}
 
+	networkID, err := constants.NetworkID(cfg.Environment.Network)
+	if err != nil {
+		return fmt.Errorf("resolve network %q: %w", cfg.Environment.Network, err)
+	}
 	managementValidators, err := fetchValidatorsAt(ctx, pChain, deployment.ManagementSubnetID, height)
 	if err != nil {
 		return fmt.Errorf("read management validators: %w", err)
 	}
-	if len(managementValidators) != cfg.Environment.ManagerCommittee {
-		return fmt.Errorf("management validator count is %d, expected %d", len(managementValidators), cfg.Environment.ManagerCommittee)
-	}
-	warpSet, err := canonicalWarpSet(managementValidators)
-	if err != nil {
-		return fmt.Errorf("build management signing set: %w", err)
-	}
-	signers, err := loadManagerSigners(filepath.Join(deploymentDirectory, "manager"), cfg.Environment.ManagerCommittee)
+	signers, err := loadManagerSigners(filepath.Join(deploymentDirectory, "manager"))
 	if err != nil {
 		return err
 	}
-	networkID, err := constants.NetworkID(cfg.Environment.Network)
+	if len(managementValidators) != len(signers) {
+		return fmt.Errorf("management validator count is %d, but %d local manager identities exist", len(managementValidators), len(signers))
+	}
+	conversionTime, err := managerConversionTime(managementValidators)
 	if err != nil {
-		return fmt.Errorf("resolve network %q: %w", cfg.Environment.Network, err)
+		return err
+	}
+	conversionHeight, err := findConversionHeight(
+		ctx,
+		platformBlockReader{client: pChain},
+		height,
+		conversionTime,
+		deployment.ManagementConvertTxID,
+	)
+	if err != nil {
+		return fmt.Errorf("locate management conversion transaction %s: %w", deployment.ManagementConvertTxID, err)
+	}
+	if err := gateManagementConversion(
+		ctx,
+		proposervm.NewJSONRPCClient(cfg.Environment.PChainAPI, "P"),
+		conversionHeight,
+		upgrade.GetConfig(networkID).GraniteEpochDuration,
+		time.Now(),
+		func() (ids.ID, error) {
+			pWallet, err := makeFundingWallet(ctx, cfg)
+			if err != nil {
+				return ids.Empty, err
+			}
+			tx, err := pWallet.IssueBaseTx(nil, commonopts.WithPollFrequency(time.Second))
+			if err != nil {
+				return ids.Empty, err
+			}
+			return tx.ID(), nil
+		},
+		output,
+	); err != nil {
+		return err
+	}
+
+	warpSet, err := canonicalWarpSet(managementValidators)
+	if err != nil {
+		return fmt.Errorf("build management signing set: %w", err)
 	}
 	payload, err := warpmessage.NewL1ValidatorWeight(target.ValidationID, target.MinNonce, targetWeight)
 	if err != nil {
@@ -146,18 +200,9 @@ func Run(
 		return err
 	}
 
-	fundingKey, err := funding.ParsePrivateKey(cfg.Environment.FundingPrivateKey)
+	pWallet, err := makeFundingWallet(ctx, cfg)
 	if err != nil {
 		return err
-	}
-	pWallet, err := primary.MakePWallet(
-		ctx,
-		cfg.Environment.PChainAPI,
-		secp256k1fx.NewKeychain(fundingKey),
-		primary.WalletConfig{},
-	)
-	if err != nil {
-		return fmt.Errorf("connect P-chain wallet to %s: %w", cfg.Environment.PChainAPI, err)
 	}
 	return submitAndVerify(
 		ctx,
@@ -170,6 +215,170 @@ func Run(
 		output,
 	)
 }
+
+func (r platformBlockReader) Block(ctx context.Context, height uint64) (time.Time, []ids.ID, error) {
+	blockBytes, err := r.client.GetBlockByHeight(ctx, height)
+	if err != nil {
+		return time.Time{}, nil, err
+	}
+	parsed, err := pblock.Parse(pblock.Codec, blockBytes)
+	if err != nil {
+		return time.Time{}, nil, fmt.Errorf("parse P-chain block %d: %w", height, err)
+	}
+	banff, ok := parsed.(pblock.BanffBlock)
+	if !ok {
+		return time.Time{}, nil, nil
+	}
+	txs := parsed.Txs()
+	txIDs := make([]ids.ID, len(txs))
+	for i, tx := range txs {
+		txIDs[i] = tx.ID()
+	}
+	return banff.Timestamp(), txIDs, nil
+}
+
+func managerConversionTime(validators []registeredValidator) (time.Time, error) {
+	if len(validators) == 0 {
+		return time.Time{}, fmt.Errorf("management L1 has no validators")
+	}
+	startTime := validators[0].StartTime
+	if startTime == 0 {
+		return time.Time{}, fmt.Errorf("management validator %s has no start time", validators[0].NodeID)
+	}
+	for _, validator := range validators[1:] {
+		if validator.StartTime != startTime {
+			return time.Time{}, fmt.Errorf("management validators have different conversion times: %d and %d", startTime, validator.StartTime)
+		}
+	}
+	return time.Unix(int64(startTime), 0), nil
+}
+
+func findConversionHeight(
+	ctx context.Context,
+	blocks blockReader,
+	tipHeight uint64,
+	conversionTime time.Time,
+	conversionTxID ids.ID,
+) (uint64, error) {
+	// L1 validator StartTime is the conversion block timestamp. P-chain block
+	// timestamps are monotonic, so binary search reaches the first block stamped
+	// at that second. The transaction ID then identifies the exact block when
+	// several blocks share a timestamp. This derives one public-chain fact from
+	// two other public-chain facts and deliberately stores no duplicate state.
+	low, high := uint64(0), tipHeight
+	for low < high {
+		mid := low + (high-low)/2
+		timestamp, _, err := blocks.Block(ctx, mid)
+		if err != nil {
+			return 0, fmt.Errorf("read P-chain block %d: %w", mid, err)
+		}
+		if timestamp.IsZero() || timestamp.Before(conversionTime) {
+			low = mid + 1
+		} else {
+			high = mid
+		}
+	}
+
+	for height := low; ; height++ {
+		timestamp, txIDs, err := blocks.Block(ctx, height)
+		if err != nil {
+			return 0, fmt.Errorf("read P-chain block %d: %w", height, err)
+		}
+		if !timestamp.Equal(conversionTime) {
+			break
+		}
+		for _, txID := range txIDs {
+			if txID == conversionTxID {
+				return height, nil
+			}
+		}
+		if height == tipHeight {
+			break
+		}
+	}
+	return 0, fmt.Errorf("transaction was not found in P-chain blocks stamped %s", conversionTime.In(jst).Format("2006-01-02 15:04:05 MST"))
+}
+
+func makeFundingWallet(ctx context.Context, cfg config.Config) (pwallet.Wallet, error) {
+	fundingKey, err := funding.ParsePrivateKey(cfg.Environment.FundingPrivateKey)
+	if err != nil {
+		return nil, err
+	}
+	pWallet, err := primary.MakePWallet(
+		ctx,
+		cfg.Environment.PChainAPI,
+		secp256k1fx.NewKeychain(fundingKey),
+		primary.WalletConfig{},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("connect P-chain wallet to %s: %w", cfg.Environment.PChainAPI, err)
+	}
+	return pWallet, nil
+}
+
+func gateManagementConversion(
+	ctx context.Context,
+	epochs epochClient,
+	conversionHeight uint64,
+	epochDuration time.Duration,
+	now time.Time,
+	nudge func() (ids.ID, error),
+	output io.Writer,
+) error {
+	epoch, err := epochs.GetCurrentEpoch(ctx)
+	if err != nil {
+		return fmt.Errorf("read current P-chain Warp epoch: %w", err)
+	}
+
+	// ACP-181 deliberately freezes Warp's validator-set view at the epoch's
+	// PChainHeight while normal P-chain blocks continue to advance. Therefore
+	// current validator reads can include the management conversion while Warp
+	// admission still sees an empty management set. Comparing the pinned height
+	// with the conversion's exact inclusion height proves readiness directly;
+	// epoch numbers and timestamps are only indirect signals.
+	if epoch.PChainHeight >= conversionHeight {
+		return nil
+	}
+
+	sealTime := time.Unix(epoch.StartTime, 0).Add(epochDuration)
+	if now.Before(sealTime) {
+		remaining := sealTime.Sub(now)
+		remaining = ((remaining + time.Second - 1) / time.Second) * time.Second
+		return fmt.Errorf(
+			"management conversion at P-chain height %d is not visible to Warp epoch %d pinned at height %d; epoch can seal at %s (%s remaining); rerun set-weight after that time",
+			conversionHeight,
+			epoch.Number,
+			epoch.PChainHeight,
+			sealTime.In(jst).Format("2006-01-02 15:04:05 MST"),
+			remaining,
+		)
+	}
+
+	// A quiet P-chain needs a block after the epoch boundary, and sometimes one
+	// more child block, before the pinned height advances. Each command issues at
+	// most one visible nudge and exits. The operator controls every rerun.
+	nudgeID, err := nudge()
+	if err != nil {
+		return fmt.Errorf(
+			"management conversion at P-chain height %d is not visible to Warp epoch %d pinned at height %d; epoch has been sealable since %s; issue P-chain context nudge: %w",
+			conversionHeight,
+			epoch.Number,
+			epoch.PChainHeight,
+			sealTime.In(jst).Format("2006-01-02 15:04:05 MST"),
+			err,
+		)
+	}
+	fmt.Fprintf(output, "issued P-chain Warp context nudge, tx %s\n", nudgeID)
+	return fmt.Errorf(
+		"management conversion at P-chain height %d is not visible to Warp epoch %d pinned at height %d; issued no-op tx %s; rerun set-weight",
+		conversionHeight,
+		epoch.Number,
+		epoch.PChainHeight,
+		nudgeID,
+	)
+}
+
+var jst = time.FixedZone("JST", 9*60*60)
 
 func ValidateWeight(weight uint64) error {
 	switch weight {
@@ -214,6 +423,7 @@ func fetchValidatorsAt(ctx context.Context, pChain client, subnetID ids.ID, mini
 			Balance:      state.Balance,
 			MinNonce:     state.MinNonce,
 			PublicKey:    state.PublicKey,
+			StartTime:    state.StartTime,
 		})
 	}
 	return validators, nil
@@ -264,10 +474,20 @@ func canonicalWarpSet(registered []registeredValidator) (validators.WarpSet, err
 	return validators.FlattenValidatorSet(validatorSet)
 }
 
-func loadManagerSigners(directory string, count int) ([]bls.Signer, error) {
-	signers := make([]bls.Signer, 0, count)
-	for i := 1; i <= count; i++ {
-		path := filepath.Join(directory, strconv.Itoa(i), "signer.key")
+func loadManagerSigners(directory string) ([]bls.Signer, error) {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil, fmt.Errorf("read management identities %s: %w", directory, err)
+	}
+	signers := make([]bls.Signer, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			return nil, fmt.Errorf("unexpected file in management identities: %s", filepath.Join(directory, entry.Name()))
+		}
+		if number, err := strconv.Atoi(entry.Name()); err != nil || number <= 0 {
+			return nil, fmt.Errorf("management identity directory must be a positive number, got %q", entry.Name())
+		}
+		path := filepath.Join(directory, entry.Name(), "signer.key")
 		contents, err := os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("read management signer %s: %w", path, err)
@@ -277,6 +497,9 @@ func loadManagerSigners(directory string, count int) ([]bls.Signer, error) {
 			return nil, fmt.Errorf("load management signer %s: %w", path, err)
 		}
 		signers = append(signers, signer)
+	}
+	if len(signers) == 0 {
+		return nil, fmt.Errorf("no management identities found in %s", directory)
 	}
 	return signers, nil
 }
@@ -335,33 +558,6 @@ func submitAndVerify(
 		commonopts.WithPollFrequency(time.Second),
 	)
 	if err != nil {
-		if isEmptyManagementSet(err) {
-			nudgeTx, nudgeErr := pWallet.IssueBaseTx(
-				nil,
-				commonopts.WithPollFrequency(time.Second),
-			)
-			if nudgeErr != nil {
-				return fmt.Errorf(
-					"set identity %d validator %s weight %d -> %d: weight transaction was not accepted because the P-chain Warp context predates the management L1 conversion; advance that context with a no-op BaseTx: %v; original rejection: %w",
-					identityNumber,
-					validator.NodeID,
-					validator.Weight,
-					targetWeight,
-					nudgeErr,
-					err,
-				)
-			}
-			fmt.Fprintf(output, "issued P-chain Warp context nudge, tx %s\n", nudgeTx.ID())
-			return fmt.Errorf(
-				"set identity %d validator %s weight %d -> %d: weight transaction was not accepted because the P-chain Warp context predates the management L1 conversion; issued no-op tx %s; rerun set-weight: %w",
-				identityNumber,
-				validator.NodeID,
-				validator.Weight,
-				targetWeight,
-				nudgeTx.ID(),
-				err,
-			)
-		}
 		return fmt.Errorf("set identity %d validator %s weight %d -> %d: %w", identityNumber, validator.NodeID, validator.Weight, targetWeight, err)
 	}
 	fmt.Fprintf(output, "identity %d %s: weight %d -> %d, tx %s\n", identityNumber, validator.NodeID, validator.Weight, targetWeight, tx.ID())
@@ -385,9 +581,4 @@ func submitAndVerify(
 		case <-time.After(2 * time.Second):
 		}
 	}
-}
-
-func isEmptyManagementSet(err error) bool {
-	message := err.Error()
-	return strings.Contains(message, "unknown validator") && strings.Contains(message, "NumFilteredValidators (0)")
 }

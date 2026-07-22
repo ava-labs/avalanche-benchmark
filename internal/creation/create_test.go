@@ -81,7 +81,6 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 			Network:           "fuji",
 			PChainAPI:         "https://example.invalid",
 			FundingPrivateKey: strings.Repeat("1", 64),
-			ManagerCommittee:  1,
 		},
 		Nodes: []config.Node{
 			{Number: 1, Host: "v1", Role: config.RoleValidator},
@@ -104,7 +103,7 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	}
 
 	output := filepath.Join(dir, "deployment")
-	result, err := create(context.Background(), cfg, output, templatePath, factory)
+	result, err := create(context.Background(), cfg, output, templatePath, 1, factory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,14 +155,13 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	if constants.SubnetEVMID == ids.Empty {
 		t.Fatal("unexpected empty Subnet-EVM VM ID")
 	}
-	if _, err := create(context.Background(), cfg, output, templatePath, factory); err == nil {
+	if _, err := create(context.Background(), cfg, output, templatePath, 1, factory); err == nil {
 		t.Fatal("create must refuse existing output")
 	}
 }
 
 func TestRequiredFreshCreateBalanceIncludesAllRegistrationsAndFeeReserve(t *testing.T) {
 	cfg := config.Config{
-		Environment: config.Environment{ManagerCommittee: 4},
 		Nodes: []config.Node{
 			{Role: config.RoleValidator},
 			{Role: config.RoleValidator},
@@ -173,7 +171,20 @@ func TestRequiredFreshCreateBalanceIncludesAllRegistrationsAndFeeReserve(t *test
 		},
 	}
 	want := uint64(9) * initialBalance
-	if got := requiredFreshCreateBalance(cfg); got != want {
+	if got := requiredFreshCreateBalance(cfg, 4); got != want {
 		t.Fatalf("unexpected required balance: got %d, want %d", got, want)
+	}
+}
+
+func TestValidateManagerCommittee(t *testing.T) {
+	for _, size := range []int{1, 4} {
+		if err := ValidateManagerCommittee(size); err != nil {
+			t.Errorf("size %d: %v", size, err)
+		}
+	}
+	for _, size := range []int{0, 2, 3, 5} {
+		if err := ValidateManagerCommittee(size); err == nil {
+			t.Errorf("size %d accepted", size)
+		}
 	}
 }

@@ -45,10 +45,12 @@ func TestLoadDeploymentRequiresCompletedMatchingCreation(t *testing.T) {
 	mainChainID := ids.GenerateTestID()
 	mainSubnetID := ids.GenerateTestID()
 	convertTxID := ids.GenerateTestID()
+	managerConvertTxID := ids.GenerateTestID()
 	contents := strings.Join([]string{
 		"NETWORK=fuji",
 		"MANAGER_SUBNET_ID=" + managementSubnetID.String(),
 		"MANAGER_CHAIN_ID=" + managementChainID.String(),
+		"MANAGER_CONVERT_TX_ID=" + managerConvertTxID.String(),
 		"SUBNET_ID=" + mainSubnetID.String(),
 		"CHAIN_ID=" + mainChainID.String(),
 		"CONVERT_TX_ID=" + convertTxID.String(),
@@ -61,7 +63,7 @@ func TestLoadDeploymentRequiresCompletedMatchingCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if deployment.ManagementSubnetID != managementSubnetID || deployment.ManagementChainID != managementChainID || deployment.MainSubnetID != mainSubnetID || deployment.MainChainID != mainChainID {
+	if deployment.ManagementSubnetID != managementSubnetID || deployment.ManagementChainID != managementChainID || deployment.ManagementConvertTxID != managerConvertTxID || deployment.MainSubnetID != mainSubnetID || deployment.MainChainID != mainChainID {
 		t.Fatalf("unexpected deployment: %+v", deployment)
 	}
 	if _, err := LoadDeployment(path, "mainnet"); err == nil {

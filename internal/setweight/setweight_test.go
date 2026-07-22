@@ -6,16 +6,17 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/snow/validators"
 	"github.com/ava-labs/avalanchego/utils/crypto/bls"
 	"github.com/ava-labs/avalanchego/utils/crypto/bls/signer/localsigner"
 	"github.com/ava-labs/avalanchego/utils/rpc"
-	"github.com/ava-labs/avalanchego/vms/components/avax"
 	"github.com/ava-labs/avalanchego/vms/platformvm"
 	"github.com/ava-labs/avalanchego/vms/platformvm/txs"
 	"github.com/ava-labs/avalanchego/vms/platformvm/warp"
+	proposerblock "github.com/ava-labs/avalanchego/vms/proposervm/block"
 	commonopts "github.com/ava-labs/avalanchego/wallet/subnet/primary/common"
 )
 
@@ -85,40 +86,103 @@ func TestSignAndAggregateEnforcesProtocolQuorum(t *testing.T) {
 	}
 }
 
-func TestSubmitEmptyManagementSetNudgesOnceAndRequiresManualRetry(t *testing.T) {
-	original := errors.New("unknown validator: NumIndices (0) >= NumFilteredValidators (0)")
-	nudgeID := ids.GenerateTestID()
-	wallet := &fakeWallet{
-		weightErr: original,
-		baseTx:    &txs.Tx{TxID: nudgeID},
-	}
-	var output bytes.Buffer
-	err := submitAndVerify(
+func TestGateManagementConversionAllowsVisibleHeight(t *testing.T) {
+	epochs := fakeEpochClient{epoch: proposerblock.Epoch{Number: 8, PChainHeight: 101, StartTime: 1_000}}
+	nudges := 0
+	err := gateManagementConversion(
 		context.Background(),
-		fakeClient{},
-		wallet,
-		testMessage(t),
-		1,
-		registeredValidator{NodeID: ids.GenerateTestNodeID(), Weight: ActiveWeight},
-		DeadWeight,
+		epochs,
+		101,
+		5*time.Minute,
+		time.Unix(1_100, 0),
+		func() (ids.ID, error) {
+			nudges++
+			return ids.GenerateTestID(), nil
+		},
+		&bytes.Buffer{},
+	)
+	if err != nil || nudges != 0 {
+		t.Fatalf("ready gate: err=%v nudges=%d", err, nudges)
+	}
+}
+
+func TestFindConversionHeightUsesTimestampThenTransactionID(t *testing.T) {
+	conversionTime := time.Unix(100, 0)
+	target := ids.GenerateTestID()
+	blocks := fakeBlockReader{blocks: make(map[uint64]fakeBlock)}
+	for height := uint64(0); height <= 15; height++ {
+		timestamp := time.Unix(99, 0)
+		switch {
+		case height >= 13:
+			timestamp = time.Unix(101, 0)
+		case height >= 11:
+			timestamp = conversionTime
+		}
+		blocks.blocks[height] = fakeBlock{timestamp: timestamp}
+	}
+	blocks.blocks[12] = fakeBlock{timestamp: conversionTime, txIDs: []ids.ID{target}}
+
+	height, err := findConversionHeight(context.Background(), blocks, 15, conversionTime, target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if height != 12 {
+		t.Fatalf("height=%d, want 12", height)
+	}
+}
+
+func TestGateManagementConversionReportsWaitBeforeSeal(t *testing.T) {
+	epochs := fakeEpochClient{epoch: proposerblock.Epoch{Number: 8, PChainHeight: 100, StartTime: 1_000}}
+	nudges := 0
+	err := gateManagementConversion(
+		context.Background(),
+		epochs,
+		101,
+		5*time.Minute,
+		time.Unix(1_135, 0),
+		func() (ids.ID, error) {
+			nudges++
+			return ids.GenerateTestID(), nil
+		},
+		&bytes.Buffer{},
+	)
+	if err == nil || nudges != 0 {
+		t.Fatalf("waiting gate: err=%v nudges=%d", err, nudges)
+	}
+	for _, expected := range []string{"height 101", "epoch 8 pinned at height 100", "2m45s remaining", "1970-01-01 09:21:40 JST"} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Errorf("error %q does not contain %q", err, expected)
+		}
+	}
+}
+
+func TestGateManagementConversionNudgesOnceAfterSeal(t *testing.T) {
+	nudgeID := ids.GenerateTestID()
+	epochs := fakeEpochClient{epoch: proposerblock.Epoch{Number: 8, PChainHeight: 100, StartTime: 1_000}}
+	nudges := 0
+	var output bytes.Buffer
+	err := gateManagementConversion(
+		context.Background(),
+		epochs,
+		101,
+		5*time.Minute,
+		time.Unix(1_301, 0),
+		func() (ids.ID, error) {
+			nudges++
+			return nudgeID, nil
+		},
 		&output,
 	)
-	if err == nil {
-		t.Fatal("expected visible failure after nudge")
+	if err == nil || nudges != 1 {
+		t.Fatalf("sealable gate: err=%v nudges=%d", err, nudges)
 	}
-	if wallet.weightCalls != 1 || wallet.baseCalls != 1 {
-		t.Fatalf("calls: weight=%d base=%d, want one each", wallet.weightCalls, wallet.baseCalls)
-	}
-	for _, expected := range []string{"weight transaction was not accepted", "rerun set-weight", nudgeID.String()} {
+	for _, expected := range []string{"height 101", "epoch 8 pinned at height 100", "rerun set-weight", nudgeID.String()} {
 		if !strings.Contains(err.Error(), expected) {
 			t.Errorf("error %q does not contain %q", err, expected)
 		}
 	}
 	if !strings.Contains(output.String(), nudgeID.String()) {
 		t.Fatalf("nudge transaction is not printed: %q", output.String())
-	}
-	if !errors.Is(err, original) {
-		t.Fatalf("error does not wrap original rejection: %v", err)
 	}
 }
 
@@ -134,8 +198,8 @@ func TestSubmitOtherFailureDoesNotNudge(t *testing.T) {
 		DeadWeight,
 		&bytes.Buffer{},
 	)
-	if err == nil || wallet.baseCalls != 0 {
-		t.Fatalf("unrelated failure must not nudge: err=%v baseCalls=%d", err, wallet.baseCalls)
+	if err == nil || wallet.weightCalls != 1 {
+		t.Fatalf("submit failure: err=%v weightCalls=%d", err, wallet.weightCalls)
 	}
 }
 
@@ -154,10 +218,7 @@ func testMessage(t *testing.T) *warp.Message {
 
 type fakeWallet struct {
 	weightErr   error
-	baseErr     error
-	baseTx      *txs.Tx
 	weightCalls int
-	baseCalls   int
 }
 
 func (f *fakeWallet) IssueSetL1ValidatorWeightTx([]byte, ...commonopts.Option) (*txs.Tx, error) {
@@ -165,9 +226,27 @@ func (f *fakeWallet) IssueSetL1ValidatorWeightTx([]byte, ...commonopts.Option) (
 	return nil, f.weightErr
 }
 
-func (f *fakeWallet) IssueBaseTx([]*avax.TransferableOutput, ...commonopts.Option) (*txs.Tx, error) {
-	f.baseCalls++
-	return f.baseTx, f.baseErr
+type fakeEpochClient struct {
+	epoch proposerblock.Epoch
+	err   error
+}
+
+type fakeBlock struct {
+	timestamp time.Time
+	txIDs     []ids.ID
+}
+
+type fakeBlockReader struct {
+	blocks map[uint64]fakeBlock
+}
+
+func (f fakeBlockReader) Block(_ context.Context, height uint64) (time.Time, []ids.ID, error) {
+	block := f.blocks[height]
+	return block.timestamp, block.txIDs, nil
+}
+
+func (f fakeEpochClient) GetCurrentEpoch(context.Context, ...rpc.Option) (proposerblock.Epoch, error) {
+	return f.epoch, f.err
 }
 
 type fakeClient struct{}

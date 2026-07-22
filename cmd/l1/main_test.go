@@ -25,6 +25,9 @@ func TestUsageRepeatsProgramName(t *testing.T) {
 		if !strings.Contains(output, "set-weight <main-identity> <1|1000|100000>") {
 			t.Fatalf("usage does not explain set-weight arguments: %q", output)
 		}
+		if !strings.Contains(output, "create [1|4]") {
+			t.Fatalf("usage does not explain create committee argument: %q", output)
+		}
 	}
 }
 
@@ -51,7 +54,7 @@ func TestCreateRejectsExistingDeploymentBeforeLoadingConfiguration(t *testing.T)
 	if err := os.Mkdir(filepath.Join(root, "deployment"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	err := create(root)
+	err := create(root, 1)
 	if err == nil || err.Error() != "chain already exists in ./deployment; delete ./deployment only if you want a new chain" {
 		t.Fatalf("unexpected error: %v", err)
 	}

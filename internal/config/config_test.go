@@ -15,7 +15,6 @@ func TestLoadFiles(t *testing.T) {
 		"NETWORK=fuji",
 		"PCHAIN_API=https://api.avax-test.network",
 		"FUNDING_PRIVATE_KEY=" + strings.Repeat("1", 64),
-		"MANAGER_COMMITTEE=1",
 		"SSH_USER=ubuntu",
 		"SSH_KEY_PATH=/tmp/fleet-key",
 	}, "\n"))
@@ -31,7 +30,7 @@ func TestLoadFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Environment.Network != "fuji" || cfg.Environment.ManagerCommittee != 1 {
+	if cfg.Environment.Network != "fuji" {
 		t.Fatalf("unexpected environment: %+v", cfg.Environment)
 	}
 	if len(cfg.Nodes) != 5 {
@@ -52,20 +51,23 @@ func TestLoadEnvironmentFailsLoudly(t *testing.T) {
 		"missing key": strings.Join([]string{
 			"NETWORK=fuji",
 			"PCHAIN_API=https://api.avax-test.network",
-			"MANAGER_COMMITTEE=1",
 		}, "\n"),
 		"unknown field": strings.Join([]string{
 			"NETWORK=fuji",
 			"PCHAIN_API=https://api.avax-test.network",
 			"FUNDING_PRIVATE_KEY=" + strings.Repeat("1", 64),
-			"MANAGER_COMMITTEE=1",
 			"LEGACY_FALLBACK=yes",
+		}, "\n"),
+		"committee belongs to create": strings.Join([]string{
+			"NETWORK=fuji",
+			"PCHAIN_API=https://api.avax-test.network",
+			"FUNDING_PRIVATE_KEY=" + strings.Repeat("1", 64),
+			"MANAGER_COMMITTEE=1",
 		}, "\n"),
 		"prefixed key": strings.Join([]string{
 			"NETWORK=fuji",
 			"PCHAIN_API=https://api.avax-test.network",
 			"FUNDING_PRIVATE_KEY=0x" + strings.Repeat("1", 64),
-			"MANAGER_COMMITTEE=1",
 		}, "\n"),
 	}
 	for name, contents := range tests {
