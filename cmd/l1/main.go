@@ -222,13 +222,23 @@ func showWeights(root string) error {
 	fmt.Printf("main chain ID: %s\n", report.MainChainID)
 	fmt.Printf("validator fee price: %d nAVAX/second\n", report.FeePrice)
 	fmt.Printf("validator fee cost: %.6f AVAX/30 days per validator\n", float64(report.FeePrice)*30*24*60*60/float64(units.Avax))
-	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "L1\tIDENTITY\tNODE ID\tWEIGHT\tDAYS LEFT")
-	for _, validator := range report.Validators {
-		identityNumber := identityNumbers[identityKey{L1: validator.L1, NodeID: validator.NodeID}]
-		fmt.Fprintf(w, "%s\t%d\t%s\t%d\t%.2f\n", validator.L1, identityNumber, validator.NodeID, validator.Weight, validator.DaysLeft)
+	printTable := func(l1 string) error {
+		fmt.Printf("\n%s validators:\n", l1)
+		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(w, "IDENTITY\tNODE ID\tWEIGHT\tDAYS LEFT")
+		for _, validator := range report.Validators {
+			if validator.L1 != l1 {
+				continue
+			}
+			identityNumber := identityNumbers[identityKey{L1: validator.L1, NodeID: validator.NodeID}]
+			fmt.Fprintf(w, "%d\t%s\t%d\t%.2f\n", identityNumber, validator.NodeID, validator.Weight, validator.DaysLeft)
+		}
+		return w.Flush()
 	}
-	return w.Flush()
+	if err := printTable("management"); err != nil {
+		return err
+	}
+	return printTable("main")
 }
 
 type identityKey struct {

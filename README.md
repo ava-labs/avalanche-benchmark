@@ -225,9 +225,10 @@ under the requested minimum.
 prints the management and main chain IDs, reads both L1s' current validator
 sets from the selected P-chain API, and labels every management and main NodeID
 with its live weight and remaining fee balance in days at the current validator
-fee price. The report shows that price in nAVAX per second and its equivalent
-30-day cost in AVAX per validator. It submits no transaction and does not treat
-generated artifacts as weight truth.
+fee price. Management and main validators are printed in separate tables, each
+ordered by local identity number. The report shows the price in nAVAX per second
+and its equivalent 30-day cost in AVAX per validator. It submits no transaction
+and does not treat generated artifacts as weight truth.
 
 ### destroy
 
