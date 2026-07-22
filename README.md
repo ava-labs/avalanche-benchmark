@@ -1,328 +1,304 @@
-# Avalanche L1 Failover Benchmark
+# Avalanche for Isolated Networks
 
-Tools to stand up an Avalanche L1 across **two data centers**, drive it with
-transaction load, and **simulate cross-region validator failover** — losing a
-whole site and recovering the validator set onto the backup — on a fixed pool of
-machines, without ever adding or removing machines from the fleet.
+Benchmark and failover toolset for Avalanche L1s running inside isolated
+networks: no internet egress, fixed validator membership (isolation implies
+PoA: permissionless stake requires open peering, which an isolated network
+forbids). Stand up an L1 on Fuji or mainnet, run it airgapped, drive
+it with transaction load, and exercise data-center failover: first by moving
+staking identities, later by moving stake weight, on one deployment, with no
+chain re-creation between the two.
 
-**Topology (configurable):** each site runs **N validators + S hot spares + R
-pinned archive RPC nodes**, plus a shared control host. The counts are set per
-site in `.env` via per-role IP lists — `VALIDATOR_IPS` (≥3), `SPARE_IPS` (≥0),
-`RPC_IPS` (≥1) — and the **length of each list is the count, the values are the
-placement**. An IP may repeat to **co-locate** multiple nodes on one machine
-(each on its own port + data dir), so node count is decoupled from machine count:
-the full topology can run on as few as one box, or one node per box. The default
-example is the validated shape — **3 validators + 1 spare + 2 RPC** per site (6
-machines), site B (backup) running the same shape as zero-weight syncing
-trackers. The validator identities (staking keys) are *conserved* — they move
-between machines, and across sites on a `site-failover`, but are never
-duplicated, so the chain stays a single branch. The pinned RPC nodes are never
-promoted to validators, so the load generator's ingress survives failover. The
-control host runs the 5 P-chain (primary network) validators the L1 bootstraps
-against, the load generator, and the monitoring stack — it holds no L1 node, so
-it keeps coordinating through a full-site outage. Single-site mode (no backup) is
-supported unchanged — just leave the `BACKUP_*` lists unset.
+Design rationale: **[DESIGN.md](DESIGN.md)**. This README is the operator manual.
 
-> **Co-location is a TEST affordance**, not a production layout: stacking nodes
-> on one box removes fault isolation (one box loss takes them all), so a
-> representative DR test still wants each site's validators on separate machines,
-> ideally in two regions. The tooling warns when a box carries more than one node.
+## Architecture
 
-> **Want the full end-to-end drill in one place?** See
-> **[docs/e2e-runbook.md](docs/e2e-runbook.md)** — install → configure → deploy →
-> benchmark → site failover → graceful failback, start to finish.
+Two L1s, one fleet, one relay:
 
-## Ports
+- **Main L1**: the benchmarked chain (subnet-evm). Its validators are your
+  fleet. Registered once via `ConvertSubnetToL1Tx` with the manager chain set
+  to the committee L1's blockchain (manager address `0x…01`).
+- **Committee L1**: the validator manager. A subnet + phantom chain that is
+  never deployed and never produces blocks; it exists as P-chain BLS-key
+  records (1 member by default, or 4 for one-signer-loss tolerance; weight
+  1000 each). It is self-managed through its own phantom chain at manager
+  address `0x…01`. Weight changes to the main L1
+  are `SetL1ValidatorWeightTx`s carrying a Warp `AddressedCall` sourced from
+  the committee chain, signed by an aggregated BLS `BitSetSignature` meeting
+  the 67% quorum. The committee's keys live on the control host; **nodes never
+  sign management messages**. During a DC outage the dead validators' stake
+  must still be movable.
+- **The relay**: a follow-only P-chain proxy on the control host, the fleet's
+  single allowed external TCP. The fleet's P-chain state has exactly two
+  regimes, distinguished only by relay state:
 
-Open the following ports on your remote nodes:
+| Mode | Relay | P-chain | Failover mechanism |
+|---|---|---|---|
+| **Frozen P-chain** | down / absent | last delivered snapshot, served as a frozen frontier | key swap (`place`) |
+| **Proxied P-chain** | up | live, streamed through the relay | weight change (`weight`) |
 
-| Port | Service | Required | Notes |
-|------|---------|----------|-------|
-| 22 | SSH | Yes | Remote access |
-| 9652-9653 | AvalancheGo | Yes | L1 HTTP (RPC) / staking ports |
+There is no per-node configuration difference between the modes. Validators
+bootstrap from the fleet's RPC nodes; RPC nodes bootstrap from the relay's
+`(IP, NodeID)`. A down relay is just an unreachable peer. **Going live is
+starting one process on control.** Nothing is re-registered, re-keyed, or
+redeployed.
 
-The five local P-chain validators run on the control host on ports `9650/9651`,
-`9660/9661`, `9670/9671`, `9680/9681`, and `9690/9691`.
+Every node runs `--partial-sync-primary-network`: the C and X chains are never
+synced, in either mode. Each node's P-chain database is seeded from a snapshot
+taken on control. This is mandatory in both modes, since bootstrapping a fleet's
+P-chain from genesis through one relay is not practical. Snapshot = seed;
+relay = feed.
 
-## Install
+## Inventory: nodes.ini
 
-The release ships prebuilt and airgap-ready — no Go toolchain or network access
-needed on the control host:
-
-```bash
-sudo rpm -i avalanche-benchmark-2026.06.23.x86_64.rpm   # installs to /opt/avalanche-benchmark
-cd /opt/avalanche-benchmark
+```ini
+# <node-number> host=<address> role=validator|rpc [dc=<tag>]
+1  host=10.0.0.11 role=validator dc=A
+2  host=10.0.0.12 role=validator dc=A
+3  host=10.0.0.13 role=validator dc=A
+4  host=10.0.0.14 role=validator dc=A
+5  host=10.1.0.11 role=validator dc=B
+6  host=10.1.0.12 role=validator dc=B
+7  host=10.1.0.13 role=validator dc=B
+8  host=10.1.0.14 role=validator dc=B
+9  host=10.0.0.15 role=rpc       dc=A
+10 host=10.0.0.16 role=rpc       dc=A
+11 host=10.1.0.15 role=rpc       dc=B
+12 host=10.1.0.16 role=rpc       dc=B
 ```
 
-(Or extract `remote-benchmark.tar.gz` on a non-RHEL control host.) To build from
-source instead (Linux, requires Go and git): `make`.
+- Node numbers are the primary key everywhere: data roots (`data/<n>`),
+  staking key dirs (`staking/l1/<n>`), command arguments.
+- Validators are registered in ascending node-number order. The first three
+  validators in that order start at weight 100000; the rest start at 1000.
+- `role` is the only functional field. `validator` = registered on-chain,
+  carries stake, swappable. `rpc` = never registered, no BLS signer key
+  (runs `--staking-ephemeral-signer-enabled`), pinned identity, serves
+  ingress and anchors bootstrap.
+- `dc` is a freeform display/selector tag (default `dc1`). Fleet verbs accept
+  `dc=<tag>` selectors and `status` groups by it. Nothing functional depends
+  on it.
+- Weights are **not** inventory. On-chain weight is the sole truth; `status`
+  reads it from the P-chain.
+- There is no generated registry or NodeID manifest. NodeIDs are derived from
+  TLS certificates; validation IDs, weights, and active state come from the
+  P-chain.
+- Several nodes may share a host (ports are positional: the k-th node on a
+  host gets HTTP `9650+2k`, staking `9651+2k`), but the intended shape is one
+  node per machine, permanently. Identities move; nodes do not.
 
-## Configure
+Copy `nodes.ini.example` to `nodes.ini`, then edit its hosts and optional DC
+tags. Inventory defines machines and roles only. It does not contain secrets.
+
+## Configuration: .env
+
+Every command explicitly loads `.env` from the repository root. Start with:
 
 ```bash
 cp .env.example .env
-# Edit .env — explicit per-role IP lists (length = count, values = placement;
-# repeat an IP to co-locate). VALIDATOR_IPS >= 3, RPC_IPS >= 2 (redundant RPC required).
-#   SSH_USER=ubuntu
-#   SSH_KEY_PATH=/path/to/your-fleet-key
-#   VALIDATOR_IPS=A1,A2,A3      # site A validators (>=3)
-#   SPARE_IPS=A4                # site A hot spares (any count, incl. 0)
-#   RPC_IPS=A5,A6              # site A pinned archive RPCs (>=2; may co-locate)
-#   BACKUP_VALIDATOR_IPS=B1,B2,B3   # site B — set these to enable two-site mode
-#   BACKUP_SPARE_IPS=B4
-#   BACKUP_RPC_IPS=B5,B6
 ```
 
-`.env.example` documents every field and shows alternate shapes (e.g. the full
-topology co-located on 3 boxes, or everything on one). After editing, run
-`./bin/reconcile endpoints` to print the resulting per-node layout
-(name / site / role / host / port) before deploying. Setting the `BACKUP_*` lists
-enables **two-site mode**: a backup data center of zero-weight syncing trackers the
-validator set can be swapped onto when the whole primary site goes down
-(`./scripts/failover/site-failover.sh b`). To return once the primary is healthy,
-use the graceful `restore.sh a` — it rolls the set back one validator at a time
-with no chain downtime; `site-failover.sh a` is the hard-cutover failback for a
-true outage (see the rollback caveat in
-[docs/two-site-failover.md](docs/two-site-failover.md)). Single-site behavior is
-unchanged when the `BACKUP_*` lists are unset.
+The creation settings are deliberately small:
 
-> **Validator count > 3** needs more committed staking identities than the 20
-> shipped in `staking/l1/`. `02_create_l1.sh` pre-flights this and prints the exact
-> `go run ./cmd/genstaking <lo> <hi>` to run (locally, then rebuild the kit).
-> The legacy positional `NODE_IPS` / `BACKUP_SITE_NODE_IPS` (exactly 6 each, fixed
-> 3/1/2) still works if `VALIDATOR_IPS` is unset.
+```dotenv
+NETWORK=fuji
+PCHAIN_WALLET_KEY=staking/pchain-wallet.key
+MANAGER_COMMITTEE=1
+SSH_USER=ubuntu
+SSH_KEY_PATH=/path/to/fleet-key
+```
+
+`NETWORK` is `fuji` or `mainnet`. Fuji is always called Fuji, never
+"testnet". `PCHAIN_API` may override the selected network's default endpoint.
+`MANAGER_COMMITTEE` accepts only `1` or `4` and defaults to `1`.
+
+## Commands
+
+```
+l1 create              one-time, on-chain: committee L1 + main L1 (see below)
+l1 topup <days>        fund every registered validator to <days> of runway
+l1 reset               provision (unconditional rsync) + seed P-chain + start
+                       everything at canonical placement (identity i on node i)
+l1 place <id> <node>   SWAP identity <id> with whatever identity node <node> runs
+l1 weight <id> <w>     committee-signed SetL1ValidatorWeightTx (proxied mode)
+l1 down <n|dc=X>       kill node(s), wipe ONLY the L1 chain data (P-chain kept)
+l1 up <n|dc=X>         start node(s); state-sync the L1, wait until at tip
+l1 relay start|stop    the P-chain proxy on control = the mode switch
+l1 snapshot            sync the selected P-chain on control, produce the seed
+l1 status | verify | endpoints        read-only
+bombard                load generator (drives the RPC nodes)
+```
+
+### create
+
+Run from any designated creation machine with P-chain access. This does not
+have to be the client's deployment control machine. It explicitly loads `.env` and
+reads validators from `nodes.ini` in ascending node-number order. It generates
+fresh TLS and BLS staking keys for validators, stable TLS identities for RPC
+nodes, and no BLS signer keys for RPC nodes. It then issues, in order:
+`CreateSubnetTx` + `CreateChainTx` + `ConvertSubnetToL1Tx` for the committee L1
+(1 or 4 members, default 1, weight 1000), then the
+same for the main L1 with the committee chain recorded as validator manager.
+**Initial weights are written directly into the main L1's conversion: the
+first 3 validators at 100000, the rest at 1000.** No Warp message is
+constructed at creation time. The committee is not exercised until you first
+call `weight`. Resumable via generated deployment state; re-running never
+double-spends. Needs the funded key selected by `PCHAIN_WALLET_KEY` (default
+`staking/pchain-wallet.key`). Every main and committee validator starts with
+a 0.1 AVAX continuous-fee balance.
+
+Creation does not freeze the P-chain. The L1 may be pre-created on another
+machine. The client or deployment control machine later syncs past both
+conversions and runs `snapshot`; the resulting local P-chain frontier is the
+frozen seed shipped to the isolated fleet.
+
+### topup
+
+`l1 topup 20` reads the current continuous-fee price from the selected P-chain
+and makes sure every registered main and committee validator has at least 20
+days of runway. It adds only the shortfall and leaves balances already above
+the target unchanged.
+
+### place: key-swap failover
+
+`place 1 5` puts identity 1 on node 5 **and identity-previously-on-5 on
+identity 1's old node**. Placement is always a transposition, so the
+identity↔node bijection is preserved by construction. An identity can never
+be live on two nodes (that's equivocation, and it is structurally
+inexpressible, not merely checked). Execution is two-pass: stop both nodes,
+swap key material on disk, then start both; the identities are never live
+crossed mid-move. Control pushes the key files at swap time (~1 KB over ssh);
+nodes hold only their currently-active identity.
+
+Two refusals, both correctness rather than policy:
+1. an identity that would end up live twice (cannot be expressed anyway);
+2. any swap involving an `rpc` node. RPC identities are bootstrap anchors
+   (see below) and unstaked, so moving them breaks the mesh, and moving a
+   validator onto an RPC slot silently de-anchors it.
+
+Everything else, including which identity goes where, when, and why, is yours. The tool
+ships mechanisms, not failover policy.
+
+### weight: weight-change failover
+
+`weight 4 100000` fetches the main L1's validator (validationID, nonce) from
+the P-chain, builds the `L1ValidatorWeight` Warp payload, wraps it in an
+`AddressedCall` from the committee chain, signs with the committee BLS keys
+held on control, aggregates to a `BitSetSignature`, verifies locally at the
+67/100 protocol quorum, and submits the `SetL1ValidatorWeightTx`. It polls
+until the weight reads back from the P-chain.
+
+Constraints: weight `0` is refused (zero removes the validator from the set);
+there is no add/remove-validator functionality at all. This is a
+performance/failover benchmark with fixed membership, not a membership
+manager.
+
+In frozen mode the transaction would confirm on the P-chain but never reach your
+fleet, so `weight` refuses to run when the relay is down.
+
+### down / up: recovery primitive
+
+`down` wipes only `chainData/<L1-chain-id>` and logs, never the P-chain DB
+(re-syncing the P-chain costs hours; re-state-syncing the L1 costs
+seconds). A downed node therefore can never return on a stale fork: `up`
+state-syncs the L1 fresh onto the majority branch. This is also the fork
+recovery procedure for a node that diverged without dying: find nodes whose
+accepted block hash differs from the majority of high-weight validators
+(`verify` does this), then `down` + `up` them.
+
+`down dc=B` / `up dc=B` batch over the tag. That is the whole-DC drill.
+
+## Bootstrap topology
+
+Two-hop, and the reason RPC identities are pinned:
+
+- Validators' `--bootstrap-ips/ids` (and state-sync lists, which are the same list) point
+  at the fleet's **RPC nodes**.
+- RPC nodes point at the **relay** upstream.
+
+Bootstrap entries are `(IP, NodeID)` pairs verified by TLS at dial time, so
+anchors must never change identity. This is exactly why `place` refuses RPC
+nodes, and why validators (which nothing anchors on) are free to swap.
+Explicit lists are required: with `--partial-sync-primary-network` and no
+egress, peers are **not** discovered from P-chain records.
+
+Why RPCs exist at all: serving transaction ingress on a validator measurably
+slows its block production. RPCs take the load (`bombard` fans across all of
+them and resubmits in-flight transactions, so ingress rides through drills);
+validators only validate.
+
+## The benchmark
+
+The scenario is a bank-style integrity workload: a single writer, ordered
+linear nonces, high-value transactions, and the requirement that a
+data-center failover loses and reorders nothing. The application-level
+backstop assumed throughout: because there is one sender with linear nonces
+recorded in a registry, the majority branch is canonical by definition, a
+nonce gap is detectable, and replaying the last few minutes heals it. An
+already-accepted nonce is rejected, only missing transactions land, a fork
+cannot forge an unsigned transaction. Consensus-level failover therefore does
+not need to be perfectly lossless; it needs to be fast and convergent.
+
+Consensus is tuned so that losing one high-weight validator (~66% of stake
+remaining) still finalizes at four-digit TPS: `alpha` sits just below the
+maximum, and `k` must not exceed the validator count (`k=5, alpha=4` for the
+flat 8-validator shape; `k` larger than the set never finalizes:
+`errInsufficientWeight`, blocks build but are never accepted).
+
+There is no scores file. The deliverable is the drill itself plus the live
+dashboards: run `bombard`, run a drill, watch throughput, finalized height per
+node, and stake placement move in Grafana (`04_monitoring.sh` runs
+Prometheus + Grafana on control, scraping every node's `/ext/metrics`).
+
+### Drills
+
+```bash
+# Frozen mode: DC-B dies; move its high identities onto DC-A spares.
+./bin/l1 down dc=B
+./bin/l1 place 1 5        # dead high identity -> live low node (repeat per identity)
+./bin/l1 up dc=B          # later: nodes rejoin, state-sync, wear the ridden-back identities
+
+# Proxied mode: same failure, no identity moves at all.
+./bin/l1 relay start      # once; this is the mode transition
+./bin/l1 down dc=B
+./bin/l1 weight 5 100000  # promote a surviving low validator
+./bin/l1 weight 1 1000    # demote the dead high one (never 0)
+```
+
+Both drills run under load. The two mechanisms coexist on one deployment and
+cannot corrupt each other: weight attaches to the identity wherever it sits,
+and `place` preserves the identity↔node bijection.
 
 ## Quick start
 
-Run from the kit root on the control host. This is the condensed sequence; the
-full walkthrough — with what to expect at each step — is in
-[docs/e2e-runbook.md](docs/e2e-runbook.md).
-
 ```bash
-./01_bootstrap_primary_network.sh   # 5 local P-chain validators (leave running)
-./02_create_l1.sh                   # one-time: register validators, write network.env
-./03_wipe_and_deploy_l1.sh          # deploy all 12 nodes, start chain from genesis (destructive)
-./04_monitoring.sh                  # Prometheus + Grafana on the control host
-./scripts/failover/status.sh        # expect all nodes SERVING, "validators serving: N/N" (3/3 by default)
-./05_benchmark.sh                   # drive ~4000 tx/s at the pinned RPC nodes
+cp nodes.ini.example nodes.ini    # edit host= lines
+cp .env.example .env              # choose fuji or mainnet and set key paths
+# fund the PCHAIN_WALLET_KEY selected in .env
+
+./bin/l1 create        # on-chain: committee + main L1 (resumable)
+./bin/l1 snapshot      # client/control syncs the P-chain and builds the seed
+./bin/l1 reset         # rsync artifacts + seed P-chain + start all nodes
+./04_monitoring.sh     # Prometheus + Grafana on control
+./bin/l1 status        # all nodes SERVING, weights read from the P-chain
+./05_benchmark.sh      # bombard at the RPC nodes
 ```
 
-Then run the failover drill (separate terminal, benchmark left running):
+`reset` provisions unconditionally (rsync, idempotent, near-instant when
+unchanged; there is deliberately no "already provisioned" check to go stale)
+and restores canonical placement: identity `i` on node `i`.
 
-```bash
-./scripts/failover/site-failover.sh b   # nuke site A, fail the validator set onto B
-./scripts/failover/restore.sh a         # graceful rolling failback to A (no chain downtime)
-```
+## Operational notes
 
-`03_wipe_and_deploy_l1.sh` is **destructive** — it wipes node data and restarts
-the chain from genesis (block 0). Re-run any time to reset to a clean chain; the
-P-chain registration is preserved, so you don't re-run `01`/`02`. Editing
-`chain-config.json` and re-running `03` is how you apply a new chain config. A
-fresh chain sits at block 0 until the benchmark drives load — Avalanche produces
-blocks on demand.
-
-## Monitoring (Prometheus + Grafana)
-
-`04_monitoring.sh` runs Prometheus + Grafana **on the control host** — not on a
-pool node, since a pool node disappears during a site failover — and scrapes
-every node's `:9652/ext/metrics`, so the dashboards keep recording the survivors
-as a site drops out.
-
-```bash
-make monitoring-deps     # one-time (source builds only): fetch prometheus + grafana
-./04_monitoring.sh       # generate scrape config, start both, print URLs
-```
-
-It discovers the fleet from `reconcile endpoints` (the single source of truth for
-the configured topology + co-location-aware ports) and labels each target by
-`site` (`a`/`b`), `machine` (`m1`…/`b1`…), and `role` (`validator`/`spare`/`rpc`/
-`tracker`) — so the dashboards track whatever counts you set. Two dashboards are
-provisioned:
-
-- **Avalanche Benchmark** (`/d/avalanche-benchmark`) — per-node TPS, consensus,
-  and verification panels.
-- **Avalanche Failover** (`/d/avalanche-failover`) — built for this demo:
-  per-node last-accepted (finalized) height, the **A→B finalized gap**, node
-  up/down, and block-acceptance rate. Watch site A flatline and site B take over
-  live.
-
-Grafana is on `:3000`, Prometheus on `:9090` (anonymous admin, no login). If
-those ports aren't open to you, tunnel over SSH:
-
-```bash
-ssh -i <key> -L3000:localhost:3000 -L9090:localhost:9090 <user>@<control-host>
-# then open http://localhost:3000
-```
-
-Re-runnable (kills + restarts cleanly). Works in single-site mode too — the A→B
-gap panel is just empty without a backup site.
-
-## Failover commands
-
-`scripts/failover/` moves validator identities across the fixed pool. Within a
-site the hot spare covers a downed validator; a `site-failover` moves the whole
-set across sites. See
-[docs/failover-recovery-simulation.md](docs/failover-recovery-simulation.md)
-(single-site) and [docs/two-site-failover.md](docs/two-site-failover.md)
-(two-site) for the design.
-
-```bash
-./scripts/failover/status.sh     # read-only: each node's ACTUAL state + honest validators-serving count
-./scripts/failover/verify.sh     # read-only: prove the live network is ONE branch + quorum healthy
-./scripts/failover/down.sh <m>   # cordon machine m (take it "offline") — within-site failover
-./scripts/failover/up.sh <m>     # uncordon machine m (return it to service)
-./scripts/failover/clean.sh <m>  # wipe machine m's chain data and re-bootstrap it clean
-
-# Two-site mode (requires BACKUP_SITE_NODE_IPS):
-./scripts/failover/site-failover.sh <a|b>  # hard cutover: nuke the other site, swap the whole set here
-./scripts/failover/restore.sh <a|b>        # graceful rolling failback: one validator at a time, no downtime
-```
-
-`site-failover` models a real outage: it **hard-kills every node on the down site
-at once** (freezing its tip at the true data-loss boundary), then the surviving
-site forms consensus on the blocks it already holds — no state is pulled from the
-dead site. `status.sh` reports every node as `SERVING@block` / `BOOTSTRAPPING` /
-`DOWN` and an honest `validators serving: X/N`, so you see what is *actually*
-happening rather than what was *intended*.
-
-## Recovering From a Stalled Chain
-
-> The worked example below uses the default **3 validators**; the thresholds
-> scale with the configured count `N` — quorum is `ceil(2/3·N)` and the bootstrap
-> rejoin latch is `ceil(75%·N)` (both = 3 when N = 3). `status.sh` computes them
-> from `N` and prints the right numbers for your topology.
-
-With 3 validators, the L1 behaves very differently depending on whether you are
-**taking a validator down** or **bringing one back up**. The asymmetry is not a
-bug — it comes from how AvalancheGo bootstraps a (re)starting validator.
-
-### Taking validators down is safe (the chain keeps going)
-
-- **Take 1 of 3 down, hot spare present:** the spare immediately assumes the
-  downed validator's identity → back to 3 active validators → **full speed**.
-- **Take 1 of 3 down, no spare left:** the chain runs on **2 of 3**. Quorum is a
-  simple majority (>50%), so it **keeps producing blocks — just slower**: the
-  missing validator is the scheduled proposer for ~1/3 of slots, and each of those
-  slots stalls ~1s before another validator takes over. Lower TPS, higher tail
-  latency, but the chain never stops.
-- **Take 2 of 3 down:** only **1 of 3** is left. That is below quorum, so the
-  chain **HALTS** until validators are restored. (This is an expected, supported
-  scenario — it is how you test recovery.)
-
-### Bringing validators back up requires ALL THREE — not two
-
-This is the part that surprises people. **Restarting a validator does not just
-need quorum; it needs ~75% of validator stake online before it can bootstrap.**
-AvalancheGo will not let a (re)starting validator begin syncing until it is
-connected to `ceil(75%)` of the validator set. With 3 equal validators that
-rounds up to **all 3**.
-
-- Normal failover never hits this, because when one validator restarts the
-  **other two are still running** — it sees 3/3 = 100% and bootstraps in seconds.
-- But once the chain has **stalled** (down to 1 live validator), bringing back
-  **only one more is not enough**. With two validators online (66% < 75%), the
-  one you just started will sit forever in
-  `API call rejected because chain is not done bootstrapping`, its block height
-  frozen, and **the chain stays halted**. This is not a glitch and it will not
-  resolve on its own.
-
-**To recover a stalled chain, start all three validators.** You can bring them up
-one at a time — nothing will happen until the **third** one connects, at which
-point all of them clear the bootstrap latch together and the chain resumes within
-seconds. If you bring up only two and the chain does not recover, that is expected
-— bring up the last one.
-
-`status.sh` makes this visible: a node waiting on the latch shows as
-`BOOTSTRAPPING`, and the tool prints a hint reminding you to bring the remaining
-validator(s) online.
-
-| Action | Result |
-|--------|--------|
-| Take 1 of 3 down, spare present | Spare takes over → 3 active → full speed |
-| Take 1 of 3 down, no spare | Runs on 2/3 → keeps producing, slower |
-| Take 2 of 3 down | 1/3 → quorum lost → chain **HALTS** |
-| Bring back **one** validator into a stalled chain | Still halted — rejoining node needs ≥75% (all 3) online |
-| Bring back **all three** validators | Latch clears → chain resumes in seconds |
-
-## Recovering a Node Stuck `BOOTSTRAPPING` (diverged local chain)
-
-Occasionally a node comes back and **never finishes bootstrapping** — `status.sh`
-shows it `BOOTSTRAPPING` indefinitely while the others are `SERVING`, and its
-subnet-evm VM keeps dying. This is different from the 75% latch above: here the
-node's **local chain database has diverged** from the network.
-
-It happens when a validator is **hard-killed (SIGKILL) under heavy load** — which
-is exactly what `down.sh` does to simulate a crash. The node can have locally
-committed a block right before being killed that the network then reorged away,
-so on restart its last-accepted block sits on an **orphaned fork**. It then fails
-to verify the network's next block against its forked tip, the subnet VM logs a
-`FATAL ... failed to verify block ... in bootstrapping` and exits, and the node is
-stuck with no VM. A plain restart just re-hits the same bad data.
-
-A node in this state can't be fixed by `up.sh`/`failover.sh` (they preserve
-runtime data on purpose, so a hot spare rejoins fast). You have to **wipe its
-chain data and let it re-bootstrap from the network**:
-
-```bash
-./scripts/failover/clean.sh <m>   # wipe machine m's data/, keep credentials, restart clean
-```
-
-`clean.sh` kills the node, removes only its `data/` directory (chain DB, logs,
-generated chain configs), and restarts it via `reconcile apply`. It does **not**
-touch `staking/` (the validator/spare identity) or the uploaded binaries/configs,
-so the node returns with the **same identity** and re-syncs from the live
-validators. Quorum is unaffected when you clean the spare; if you must clean an
-active validator, do it while the other two are serving so the chain keeps
-producing.
-
-## Benchmark profile
-
-`05_benchmark.sh` intentionally accepts no command-line flags — the failover demo
-uses one fixed profile:
-
-- target rate: **4000 rps**, with a 1% overshoot so *mined* TPS lands at or above
-  target
-- in-flight cap: **2000** (sized to the block cadence so the rps limiter binds,
-  not the cap)
-- resubmit interval: **5s**
-- ingress: the **pinned archive RPC nodes** — `m5`/`m6` on site A, plus `b5`/`b6`
-  on site B in two-site mode. These are never promoted to validators, so ingress
-  survives a failover; bombard fans across all reachable RPCs and resubmits
-  in-flight txs, so it rides straight through a `site-failover`.
-
-To change the profile, edit the constants at the top of `05_benchmark.sh`. See
-[docs/throughput-tuning-and-benchmarks.md](docs/throughput-tuning-and-benchmarks.md)
-for why block cadence — not rps — sets the throughput ceiling, and the reasoning
-behind these values.
-
-If you pushed too hard and need to restart, wait 60 seconds for the mempool to
-clear before starting a new benchmark (mempool expiration is 1 minute).
-
-## Block time
-
-Genesis is configured with ACP-226 excess-gas parameters for fast block
-production from the start, and the packaged AvalancheGo build pins a 1s
-proposer-window branch. The two sites run **different cadences**, applied at
-deploy time:
-
-- **Site A (primary): 25 ms** (`min-delay-target` in `chain-config.json`) — the
-  hot ~40 blk/s profile.
-- **Site B (backup): 100 ms** — ~10 blk/s, and only while it *produces* (i.e.
-  after a failover). `min-delay-target` governs a node only while it proposes, so
-  B tracks A's 25 ms blocks at full speed during normal operation; the slower
-  backup cadence is what lets a recovering site converge without a rolling
-  restart. See [docs/two-site-failover.md](docs/two-site-failover.md).
-
-To tune, edit `min-delay-target` in `chain-config.json` and re-run
-`./03_wipe_and_deploy_l1.sh` (which resets the chain to genesis).
-
-## Further reading
-
-- [docs/e2e-runbook.md](docs/e2e-runbook.md) — the full end-to-end failover &
-  recovery drill.
-- [docs/two-site-failover.md](docs/two-site-failover.md) — two-site design,
-  identity map, and what is simulated vs. production.
-- [docs/failover-recovery-simulation.md](docs/failover-recovery-simulation.md) —
-  the single-site failover model and stalled-chain recovery theory.
-- [docs/throughput-tuning-and-benchmarks.md](docs/throughput-tuning-and-benchmarks.md)
-  — the 4000-rps profile and block-cadence tuning.
+- Open between nodes: the staking port (default 9651, positional per host)
+  in **both** directions, and from control: ssh + HTTP. Cross-region peering
+  uses public IPs, but same-VPC traffic arrives from private IPs. SG rules
+  listing only public CIDRs silently break intra-region peering.
+- The public package contains no private keys or generated deployment secrets.
+  Transfer the funded wallet, committee keys, validator staking keys, and
+  generated deployment state separately as a private handover bundle. Nodes
+  hold only their active identity.
+- Networks: `NETWORK=fuji` by default; `NETWORK=mainnet` uses mainnet.
+  `PCHAIN_API` is an optional endpoint override.
+- Cleanup: registered L1 validators pay a continuous fee forever. When
+  abandoning an L1, disable its validators (`DisableL1ValidatorTx`) to
+  stop the burn.
