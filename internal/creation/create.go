@@ -89,12 +89,23 @@ func create(
 	if err != nil {
 		return Result{}, err
 	}
+	validatorCount := 0
+	rpcCount := 0
 	for _, generated := range identities.Nodes {
-		fmt.Printf("generated %s identity %s at %s\n", generated.Role, generated.NodeID, generated.Directory)
+		switch generated.Role {
+		case config.RoleValidator:
+			validatorCount++
+		case config.RoleRPC:
+			rpcCount++
+		}
 	}
-	for _, generated := range identities.Manager {
-		fmt.Printf("generated manager identity %s at %s\n", generated.NodeID, generated.Directory)
-	}
+	fmt.Printf(
+		"generated identities: validators=%d rpc=%d managers=%d root=%s\n",
+		validatorCount,
+		rpcCount,
+		len(identities.Manager),
+		outputDirectory,
+	)
 
 	state := State{
 		Path:              filepath.Join(outputDirectory, "network.env"),
