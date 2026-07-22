@@ -127,14 +127,14 @@ go run ./cmd/l1 keygen
 
 The private key is network-agnostic. `keygen` never prints it, never overwrites
 an existing key, and protects the updated `.env` with mode `0600`. It then runs
-the same inspection as `fund`, using `.env`'s explicit network to show the
+the same inspection as `address`, using `.env`'s explicit network to show the
 P-Chain funding address, EVM genesis address, and current P-Chain balance.
 
 To inspect the configured identity and its spendable P-chain balance without
 submitting a transaction:
 
 ```bash
-go run ./cmd/l1 fund
+go run ./cmd/l1 address
 ```
 
 Configuration is strict. Missing required fields, unknown fields, duplicate
@@ -148,7 +148,7 @@ transaction is reported explicitly.
 
 ```
 l1 create              one-time, on-chain: committee L1 + main L1 (see below)
-l1 fund                show funding addresses and spendable P-chain balance
+l1 address             show funding addresses and spendable P-chain balance
 l1 keygen              generate FUNDING_PRIVATE_KEY directly into an empty .env field
 l1 topup <days>        fund every registered validator to <days> of runway
 l1 reset               provision (unconditional rsync) + seed P-chain + start

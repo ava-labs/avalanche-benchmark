@@ -59,7 +59,7 @@ func Create(ctx context.Context, cfg config.Config, outputDirectory, genesisTemp
 	requiredBalance := requiredFreshCreateBalance(cfg)
 	if fundingInfo.Balance < requiredBalance {
 		return Result{}, fmt.Errorf(
-			"funding preflight: P-chain address %s has %s, fresh creation requires at least %s; add AVAX and run `go run ./cmd/l1 fund` before retrying",
+			"funding preflight: P-chain address %s has %s, fresh creation requires at least %s; add AVAX and run `go run ./cmd/l1 address` before retrying",
 			fundingInfo.Addresses.PChain,
 			formatAVAX(fundingInfo.Balance),
 			formatAVAX(requiredBalance),

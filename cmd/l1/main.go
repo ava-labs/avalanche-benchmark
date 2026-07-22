@@ -27,12 +27,12 @@ func run() error {
 	switch {
 	case len(os.Args) == 2 && os.Args[1] == "create":
 		return create(root)
-	case len(os.Args) == 2 && os.Args[1] == "fund":
-		return showFunding(root)
+	case len(os.Args) == 2 && os.Args[1] == "address":
+		return showAddress(root)
 	case len(os.Args) == 2 && os.Args[1] == "keygen":
 		return generateKey(root)
 	default:
-		return fmt.Errorf("usage:\n  go run ./cmd/l1 create\n  go run ./cmd/l1 fund\n  go run ./cmd/l1 keygen")
+		return fmt.Errorf("usage:\n  go run ./cmd/l1 create\n  go run ./cmd/l1 address\n  go run ./cmd/l1 keygen")
 	}
 }
 
@@ -57,7 +57,7 @@ func create(root string) error {
 	return err
 }
 
-func showFunding(root string) error {
+func showAddress(root string) error {
 	envPath := filepath.Join(root, ".env")
 	environment, err := config.LoadEnvironment(envPath)
 	if err != nil {
@@ -80,5 +80,5 @@ func generateKey(root string) error {
 		return err
 	}
 	fmt.Printf("generated FUNDING_PRIVATE_KEY in %s\n", envPath)
-	return showFunding(root)
+	return showAddress(root)
 }
