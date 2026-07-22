@@ -43,8 +43,20 @@ func run() error {
 	case len(os.Args) == 3 && os.Args[1] == "topup":
 		return topUp(root, os.Args[2])
 	default:
-		return fmt.Errorf("usage:\n  go run ./cmd/l1 create\n  go run ./cmd/l1 address\n  go run ./cmd/l1 keygen\n  go run ./cmd/l1 weights\n  go run ./cmd/l1 topup <days>\n  go run ./cmd/l1 destroy")
+		return fmt.Errorf("usage:\n%s", usage(filepath.Base(os.Args[0])))
 	}
+}
+
+func usage(program string) string {
+	return fmt.Sprintf(
+		"  %s create\n  %s address\n  %s keygen\n  %s weights\n  %s topup <days>\n  %s destroy",
+		program,
+		program,
+		program,
+		program,
+		program,
+		program,
+	)
 }
 
 func create(root string) error {
