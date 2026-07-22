@@ -3,6 +3,8 @@ package weights
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -27,6 +29,7 @@ type Deployment struct {
 	ManagementChainID  ids.ID
 	MainSubnetID       ids.ID
 	MainChainID        ids.ID
+	Destroyed          bool
 }
 
 type Validator struct {
@@ -84,15 +87,72 @@ func LoadDeployment(path, network string) (Deployment, error) {
 	if err != nil {
 		return Deployment{}, err
 	}
+	destroyed := strings.TrimSpace(values["DESTROYED"])
+	if destroyed != "" && destroyed != "true" {
+		return Deployment{}, fmt.Errorf("%s: DESTROYED must be true when provided, got %q", path, destroyed)
+	}
 	return Deployment{
 		ManagementSubnetID: managementSubnetID,
 		ManagementChainID:  managementChainID,
 		MainSubnetID:       mainSubnetID,
 		MainChainID:        mainChainID,
+		Destroyed:          destroyed == "true",
 	}, nil
 }
 
+func (d Deployment) RequireActive() error {
+	// DisableL1ValidatorTx is irreversible for these validation IDs. Persisting
+	// that terminal fact lets every later command reject destroyed benchmark
+	// state before making a network request or printing misleading output.
+	if d.Destroyed {
+		return fmt.Errorf("deployment has no active validators; it is destroyed")
+	}
+	return nil
+}
+
+func MarkDestroyed(path string) error {
+	values, err := godotenv.Read(path)
+	if err != nil {
+		return fmt.Errorf("read creation state %s: %w", path, err)
+	}
+	if destroyed := strings.TrimSpace(values["DESTROYED"]); destroyed != "" {
+		return fmt.Errorf("%s: DESTROYED is already %q", path, destroyed)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read creation state %s: %w", path, err)
+	}
+	if len(contents) > 0 && contents[len(contents)-1] != '\n' {
+		contents = append(contents, '\n')
+	}
+	contents = append(contents, "DESTROYED=true\n"...)
+	temp, err := os.CreateTemp(filepath.Dir(path), ".network.env-destroyed-*")
+	if err != nil {
+		return fmt.Errorf("create temporary state beside %s: %w", path, err)
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		temp.Close()
+		return fmt.Errorf("protect temporary state %s: %w", tempPath, err)
+	}
+	if _, err := temp.Write(contents); err != nil {
+		temp.Close()
+		return fmt.Errorf("write temporary state %s: %w", tempPath, err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close temporary state %s: %w", tempPath, err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("publish destroyed state %s: %w", path, err)
+	}
+	return nil
+}
+
 func Fetch(ctx context.Context, api string, deployment Deployment) (Report, error) {
+	if err := deployment.RequireActive(); err != nil {
+		return Report{}, err
+	}
 	return fetch(ctx, platformvm.NewClient(api), deployment, true)
 }
 
@@ -115,15 +175,18 @@ func fetch(ctx context.Context, pChain client, deployment Deployment, requireVal
 		return Report{}, fmt.Errorf("current validator fee price is zero")
 	}
 
-	management, err := fetchValidators(ctx, pChain, "management", deployment.ManagementSubnetID, height, feePrice, requireValidators)
+	management, err := fetchValidators(ctx, pChain, "management", deployment.ManagementSubnetID, height, feePrice)
 	if err != nil {
 		return Report{}, err
 	}
-	main, err := fetchValidators(ctx, pChain, "main", deployment.MainSubnetID, height, feePrice, requireValidators)
+	main, err := fetchValidators(ctx, pChain, "main", deployment.MainSubnetID, height, feePrice)
 	if err != nil {
 		return Report{}, err
 	}
 	rows := append(management, main...)
+	if requireValidators && len(rows) == 0 {
+		return Report{}, fmt.Errorf("deployment has no active validators; it is destroyed")
+	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].L1 != rows[j].L1 {
 			return rows[i].L1 == "management"
@@ -138,13 +201,10 @@ func fetch(ctx context.Context, pChain client, deployment Deployment, requireVal
 	}, nil
 }
 
-func fetchValidators(ctx context.Context, pChain client, l1 string, subnetID ids.ID, minimumHeight uint64, feePrice gas.Price, requireValidators bool) ([]Validator, error) {
+func fetchValidators(ctx context.Context, pChain client, l1 string, subnetID ids.ID, minimumHeight uint64, feePrice gas.Price) ([]Validator, error) {
 	validators, err := pChain.GetCurrentValidators(ctx, subnetID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("read %s validators for %s: %w", l1, subnetID, err)
-	}
-	if requireValidators && len(validators) == 0 {
-		return nil, fmt.Errorf("read %s validators for %s: no validators returned", l1, subnetID)
 	}
 	rows := make([]Validator, 0, len(validators))
 	for _, validator := range validators {
@@ -156,6 +216,12 @@ func fetchValidators(ctx context.Context, pChain client, l1 string, subnetID ids
 			return nil, fmt.Errorf("read %s validator %s: %w", l1, validator.NodeID, err)
 		}
 		balance := l1Validator.Balance
+		// Membership responses can lag committed disables. A zero balance from a
+		// height-consistent L1 record is terminal, so treating it as inactive
+		// prevents reports and lifecycle commands from acting on destroyed state.
+		if balance == 0 {
+			continue
+		}
 		secondsLeft := balance / uint64(feePrice)
 		rows = append(rows, Validator{
 			L1:                    l1,

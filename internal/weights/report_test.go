@@ -63,6 +63,22 @@ func TestLoadDeploymentRequiresCompletedMatchingCreation(t *testing.T) {
 	if deployment.ManagementSubnetID != managementSubnetID || deployment.ManagementChainID != managementChainID || deployment.MainSubnetID != mainSubnetID || deployment.MainChainID != mainChainID {
 		t.Fatalf("unexpected deployment: %+v", deployment)
 	}
+	if err := MarkDestroyed(path); err != nil {
+		t.Fatal(err)
+	}
+	destroyedDeployment, err := LoadDeployment(path, "fuji")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !destroyedDeployment.Destroyed {
+		t.Fatal("destroyed marker was not loaded")
+	}
+	if err := destroyedDeployment.RequireActive(); err == nil || !strings.Contains(err.Error(), "deployment has no active validators") {
+		t.Fatalf("expected terminal deployment error, got %v", err)
+	}
+	if err := MarkDestroyed(path); err == nil {
+		t.Fatal("duplicate destroyed marker must fail")
+	}
 	if _, err := LoadDeployment(path, "mainnet"); err == nil {
 		t.Fatal("network mismatch must fail")
 	}
@@ -139,15 +155,27 @@ func TestFetchSortsValidatorsAndCalculatesDaysAtCurrentPrice(t *testing.T) {
 }
 
 func TestFetchActiveAllowsDestroyedValidatorSets(t *testing.T) {
+	managementSubnetID := ids.GenerateTestID()
+	mainSubnetID := ids.GenerateTestID()
+	staleValidationID := ids.GenerateTestID()
 	report, err := fetch(context.Background(), fakeClient{
-		feePrice:     10,
-		height:       100,
-		validators:   map[ids.ID][]platformvm.ClientPermissionlessValidator{},
-		l1Validators: map[ids.ID]platformvm.L1Validator{},
+		feePrice: 10,
+		height:   100,
+		validators: map[ids.ID][]platformvm.ClientPermissionlessValidator{
+			mainSubnetID: {
+				{
+					ClientStaker:      platformvm.ClientStaker{NodeID: ids.GenerateTestNodeID(), Weight: 1000},
+					ClientL1Validator: platformvm.ClientL1Validator{ValidationID: &staleValidationID},
+				},
+			},
+		},
+		l1Validators: map[ids.ID]platformvm.L1Validator{
+			staleValidationID: {Balance: 0},
+		},
 	}, Deployment{
-		ManagementSubnetID: ids.GenerateTestID(),
+		ManagementSubnetID: managementSubnetID,
 		ManagementChainID:  ids.GenerateTestID(),
-		MainSubnetID:       ids.GenerateTestID(),
+		MainSubnetID:       mainSubnetID,
 		MainChainID:        ids.GenerateTestID(),
 	}, false)
 	if err != nil {
@@ -155,5 +183,16 @@ func TestFetchActiveAllowsDestroyedValidatorSets(t *testing.T) {
 	}
 	if len(report.Validators) != 0 {
 		t.Fatalf("expected no active validators, got %+v", report.Validators)
+	}
+	if _, err := fetch(context.Background(), fakeClient{
+		feePrice:     10,
+		height:       100,
+		validators:   map[ids.ID][]platformvm.ClientPermissionlessValidator{},
+		l1Validators: map[ids.ID]platformvm.L1Validator{},
+	}, Deployment{
+		ManagementSubnetID: managementSubnetID,
+		MainSubnetID:       mainSubnetID,
+	}, true); err == nil || !strings.Contains(err.Error(), "deployment has no active validators") {
+		t.Fatalf("expected destroyed deployment error, got %v", err)
 	}
 }

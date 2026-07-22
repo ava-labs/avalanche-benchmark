@@ -126,9 +126,11 @@ go run ./cmd/l1 keygen
 ```
 
 The private key is network-agnostic. `keygen` never prints it, never overwrites
-an existing key, and protects the updated `.env` with mode `0600`. It then runs
-the same inspection as `address`, using `.env`'s explicit network to show the
-P-Chain funding address, EVM genesis address, and current P-Chain balance.
+an existing key, and is valid only before `deployment/network.env` exists. This
+prevents replacing the identity that owns an existing deployment. It protects
+the updated `.env` with mode `0600`, then runs the same inspection as `address`,
+using `.env`'s explicit network to show the P-Chain funding address, EVM genesis
+address, and current P-Chain balance.
 
 To inspect the configured identity and its spendable P-chain balance without
 submitting a transaction:
@@ -136,6 +138,10 @@ submitting a transaction:
 ```bash
 go run ./cmd/l1 address
 ```
+
+Before creation, `address` remains available so an imported funding key can be
+funded. Once `deployment/network.env` exists, it fails if that deployment has
+no active validators because destruction is a terminal lifecycle state.
 
 Configuration is strict. Missing required fields, unknown fields, duplicate
 node numbers, malformed values, and missing prior-step artifacts stop the
@@ -233,7 +239,12 @@ funding key's P-Chain address. The command prints one accepted transaction ID
 per validator and can be rerun after a partial failure. Height-consistent
 zero-balance records are treated as already disabled even if a stale membership
 response still lists them. The command keeps
-`deployment/network.env` as the record of what was destroyed.
+`deployment/network.env` as the record of what was destroyed and writes
+`DESTROYED=true` only after every disable transaction succeeds.
+
+Destruction is terminal. Repeating `destroy`, or running `address`, `weights`,
+or `topup` against the destroyed deployment, fails with `deployment has no
+active validators` rather than reporting a successful no-op or stale state.
 
 ### place: key-swap failover
 

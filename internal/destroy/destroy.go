@@ -25,6 +25,9 @@ func Run(
 	deployment weights.Deployment,
 	output io.Writer,
 ) error {
+	if err := deployment.RequireActive(); err != nil {
+		return err
+	}
 	fundingKey, err := funding.ParsePrivateKey(environment.FundingPrivateKey)
 	if err != nil {
 		return err
@@ -39,8 +42,10 @@ func Run(
 	}
 	validators := reclaimableMainBeforeManagement(report.Validators)
 	if len(validators) == 0 {
-		fmt.Fprintln(output, "already destroyed: no active management or main validators")
-		return nil
+		// Destroy is a terminal transition. Failing a repeated invocation makes
+		// stale deployment selection visible instead of reporting a misleading
+		// successful no-op in a benchmark procedure.
+		return fmt.Errorf("deployment has no active validators; it is already destroyed")
 	}
 	for _, validator := range validators {
 		if !ownedBy(validator.DeactivationOwner, fundingKey.Address()) {

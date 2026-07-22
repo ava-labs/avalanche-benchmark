@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -86,6 +87,9 @@ func showAddress(root string) error {
 	if err != nil {
 		return err
 	}
+	if err := rejectDestroyedDeployment(context.Background(), root, environment); err != nil {
+		return err
+	}
 	info, err := funding.Inspect(context.Background(), environment)
 	if err != nil {
 		return err
@@ -97,7 +101,43 @@ func showAddress(root string) error {
 	return nil
 }
 
+func rejectDestroyedDeployment(ctx context.Context, root string, environment config.Environment) error {
+	statePath := filepath.Join(root, "deployment", "network.env")
+	if _, err := os.Stat(statePath); errors.Is(err, os.ErrNotExist) {
+		// Address must remain available before creation so an imported funding
+		// key can be funded. Once creation state exists, zero active validators
+		// means the benchmark lifecycle is over and commands must fail loudly.
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect creation state %s: %w", statePath, err)
+	}
+	deployment, err := weights.LoadDeployment(statePath, environment.Network)
+	if err != nil {
+		return err
+	}
+	if err := deployment.RequireActive(); err != nil {
+		return err
+	}
+	report, err := weights.FetchActive(ctx, environment.PChainAPI, deployment)
+	if err != nil {
+		return err
+	}
+	if len(report.Validators) == 0 {
+		return fmt.Errorf("deployment has no active validators; it is destroyed")
+	}
+	return nil
+}
+
 func generateKey(root string) error {
+	statePath := filepath.Join(root, "deployment", "network.env")
+	if _, err := os.Stat(statePath); err == nil {
+		// Replacing the funding identity after creation would disconnect local
+		// configuration from every on-chain owner. Key generation is therefore
+		// strictly a pre-creation operation, regardless of validator activity.
+		return fmt.Errorf("keygen is only valid before creation; deployment state already exists at %s", statePath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect creation state %s: %w", statePath, err)
+	}
 	envPath := filepath.Join(root, ".env")
 	if err := funding.GenerateIntoEnvironment(envPath); err != nil {
 		return err
@@ -156,12 +196,20 @@ func destroyL1s(root string) error {
 	if err != nil {
 		return err
 	}
+	statePath := filepath.Join(root, "deployment", "network.env")
 	deployment, err := weights.LoadDeployment(
-		filepath.Join(root, "deployment", "network.env"),
+		statePath,
 		environment.Network,
 	)
 	if err != nil {
 		return err
 	}
-	return destroy.Run(context.Background(), environment, deployment, os.Stdout)
+	if err := destroy.Run(context.Background(), environment, deployment, os.Stdout); err != nil {
+		return err
+	}
+	if err := weights.MarkDestroyed(statePath); err != nil {
+		return err
+	}
+	fmt.Printf("recorded terminal state in %s\n", statePath)
+	return nil
 }
