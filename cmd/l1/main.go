@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"text/tabwriter"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/funding"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/topup"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/weights"
 	"github.com/ava-labs/avalanchego/utils/units"
 )
@@ -35,8 +37,10 @@ func run() error {
 		return generateKey(root)
 	case len(os.Args) == 2 && os.Args[1] == "weights":
 		return showWeights(root)
+	case len(os.Args) == 3 && os.Args[1] == "topup":
+		return topUp(root, os.Args[2])
 	default:
-		return fmt.Errorf("usage:\n  go run ./cmd/l1 create\n  go run ./cmd/l1 address\n  go run ./cmd/l1 keygen\n  go run ./cmd/l1 weights")
+		return fmt.Errorf("usage:\n  go run ./cmd/l1 create\n  go run ./cmd/l1 address\n  go run ./cmd/l1 keygen\n  go run ./cmd/l1 weights\n  go run ./cmd/l1 topup <days>")
 	}
 }
 
@@ -111,4 +115,23 @@ func showWeights(root string) error {
 		fmt.Fprintf(w, "%s\t%s\t%d\t%.2f\n", validator.L1, validator.NodeID, validator.Weight, validator.DaysLeft)
 	}
 	return w.Flush()
+}
+
+func topUp(root, rawDays string) error {
+	days, err := strconv.ParseUint(rawDays, 10, 64)
+	if err != nil || days == 0 {
+		return fmt.Errorf("topup days must be a positive integer, got %q", rawDays)
+	}
+	environment, err := config.LoadEnvironment(filepath.Join(root, ".env"))
+	if err != nil {
+		return err
+	}
+	deployment, err := weights.LoadDeployment(
+		filepath.Join(root, "deployment", "network.env"),
+		environment.Network,
+	)
+	if err != nil {
+		return err
+	}
+	return topup.Run(context.Background(), environment, deployment, days, os.Stdout)
 }

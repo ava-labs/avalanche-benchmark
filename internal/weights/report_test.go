@@ -15,8 +15,10 @@ import (
 )
 
 type fakeClient struct {
-	validators map[ids.ID][]platformvm.ClientPermissionlessValidator
-	feePrice   gas.Price
+	validators   map[ids.ID][]platformvm.ClientPermissionlessValidator
+	l1Validators map[ids.ID]platformvm.L1Validator
+	feePrice     gas.Price
+	height       uint64
 }
 
 func (f fakeClient) GetCurrentValidators(_ context.Context, subnetID ids.ID, _ []ids.NodeID, _ ...rpc.Option) ([]platformvm.ClientPermissionlessValidator, error) {
@@ -25,6 +27,14 @@ func (f fakeClient) GetCurrentValidators(_ context.Context, subnetID ids.ID, _ [
 
 func (f fakeClient) GetValidatorFeeState(context.Context, ...rpc.Option) (gas.Gas, gas.Price, time.Time, error) {
 	return 0, f.feePrice, time.Time{}, nil
+}
+
+func (f fakeClient) GetHeight(context.Context, ...rpc.Option) (uint64, error) {
+	return f.height, nil
+}
+
+func (f fakeClient) GetL1Validator(_ context.Context, validationID ids.ID, _ ...rpc.Option) (platformvm.L1Validator, uint64, error) {
+	return f.l1Validators[validationID], f.height, nil
 }
 
 func TestLoadDeploymentRequiresCompletedMatchingCreation(t *testing.T) {
@@ -81,6 +91,7 @@ func TestFetchSortsValidatorsAndCalculatesDaysAtCurrentPrice(t *testing.T) {
 	managementNodeID := ids.GenerateTestNodeID()
 	pChain := fakeClient{
 		feePrice: 10,
+		height:   100,
 		validators: map[ids.ID][]platformvm.ClientPermissionlessValidator{
 			managementSubnetID: {
 				{
@@ -98,6 +109,11 @@ func TestFetchSortsValidatorsAndCalculatesDaysAtCurrentPrice(t *testing.T) {
 					ClientL1Validator: platformvm.ClientL1Validator{ValidationID: &firstValidationID, Balance: &firstBalance},
 				},
 			},
+		},
+		l1Validators: map[ids.ID]platformvm.L1Validator{
+			managementValidationID: {NodeID: managementNodeID, Weight: 1000, Balance: managementBalance},
+			firstValidationID:      {NodeID: firstNodeID, Weight: 100000, Balance: firstBalance},
+			secondValidationID:     {NodeID: secondNodeID, Weight: 1000, Balance: secondBalance},
 		},
 	}
 	managementChainID := ids.GenerateTestID()

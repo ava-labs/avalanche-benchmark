@@ -202,10 +202,15 @@ frozen seed shipped to the isolated fleet.
 
 ### topup
 
-`l1 topup 20` reads the current continuous-fee price from the selected P-chain
-and makes sure every registered main and committee validator has at least 20
-days of runway. It adds only the shortfall and leaves balances already above
-the target unchanged.
+`l1 topup 20` accepts exactly one positive-integer days argument, reads the
+current continuous-fee price from the selected P-chain, and raises every
+registered management and main validator to the corresponding balance target.
+Before submitting anything, it checks that the funding wallet covers all
+shortfalls plus a 0.1 AVAX transaction-fee reserve. It prints exactly one line
+per validator: either the accepted transaction ID or `already had X.XX days`.
+Balances below the requested minimum are raised to one hour beyond it so API
+lag and sequential transaction settlement do not leave the final set just
+under the requested minimum.
 
 ### weights
 
