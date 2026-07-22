@@ -118,6 +118,23 @@ validator fees, and its derived EVM address receives the main L1's genesis
 allocation. There is no key-file setting, second key, built-in funded account,
 or fallback private key.
 
+To generate a new identity directly into an existing `.env` whose
+`FUNDING_PRIVATE_KEY` is empty:
+
+```bash
+go run ./cmd/l1 keygen
+```
+
+The private key is network-agnostic. `keygen` never prints it, never overwrites
+an existing key, and protects the updated `.env` with mode `0600`.
+
+To inspect the configured identity and its spendable P-chain balance without
+submitting a transaction:
+
+```bash
+go run ./cmd/l1 fund
+```
+
 Configuration is strict. Missing required fields, unknown fields, duplicate
 node numbers, malformed values, and missing prior-step artifacts stop the
 command before it performs work. Errors name the exact field, path, or required
@@ -129,6 +146,8 @@ transaction is reported explicitly.
 
 ```
 l1 create              one-time, on-chain: committee L1 + main L1 (see below)
+l1 fund                show funding addresses and spendable P-chain balance
+l1 keygen              generate FUNDING_PRIVATE_KEY directly into an empty .env field
 l1 topup <days>        fund every registered validator to <days> of runway
 l1 reset               provision (unconditional rsync) + seed P-chain + start
                        everything at canonical placement (identity i on node i)
