@@ -110,6 +110,10 @@ SSH_KEY_PATH=/path/to/fleet-key
 `NETWORK` is `fuji` or `mainnet`. Fuji is always called Fuji, never
 "testnet". `PCHAIN_API` may override the selected network's default endpoint.
 `MANAGER_COMMITTEE` accepts only `1` or `4` and defaults to `1`.
+`PCHAIN_WALLET_KEY` selects the deployment's funding key. The same secp256k1
+key pays P-chain creation and validator fees, and its derived EVM address
+receives the main L1's genesis allocation. There is no built-in funded account
+or fallback private key.
 
 ## Commands
 
@@ -144,7 +148,9 @@ constructed at creation time. The committee is not exercised until you first
 call `weight`. Resumable via generated deployment state; re-running never
 double-spends. Needs the funded key selected by `PCHAIN_WALLET_KEY` (default
 `staking/pchain-wallet.key`). Every main and committee validator starts with
-a 0.1 AVAX continuous-fee balance.
+a 0.1 AVAX continuous-fee balance. Before creating the main chain, `create`
+renders its genesis allocation for the funding key's derived EVM address. A
+static pre-funded address is never accepted.
 
 Creation does not freeze the P-chain. The L1 may be pre-created on another
 machine. The client or deployment control machine later syncs past both
