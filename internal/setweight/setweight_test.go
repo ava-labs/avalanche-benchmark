@@ -103,7 +103,8 @@ func TestSignAndAggregateEnforcesProtocolQuorum(t *testing.T) {
 }
 
 func TestGateManagementConversionAllowsVisibleHeight(t *testing.T) {
-	epochs := fakeEpochClient{epoch: proposerblock.Epoch{Number: 8, PChainHeight: 101, StartTime: 1_000}}
+	epochs := &fakeEpochClient{epochs: []proposerblock.Epoch{{Number: 8, PChainHeight: 101, StartTime: 1_000}}}
+	waits := 0
 	nudges := 0
 	err := gateManagementConversion(
 		context.Background(),
@@ -111,14 +112,18 @@ func TestGateManagementConversionAllowsVisibleHeight(t *testing.T) {
 		101,
 		5*time.Minute,
 		time.Unix(1_100, 0),
+		func(context.Context, time.Duration) error {
+			waits++
+			return nil
+		},
 		func() (ids.ID, error) {
 			nudges++
 			return ids.GenerateTestID(), nil
 		},
 		&bytes.Buffer{},
 	)
-	if err != nil || nudges != 0 {
-		t.Fatalf("ready gate: err=%v nudges=%d", err, nudges)
+	if err != nil || waits != 0 || nudges != 0 {
+		t.Fatalf("ready gate: err=%v waits=%d nudges=%d", err, waits, nudges)
 	}
 }
 
@@ -147,34 +152,47 @@ func TestFindConversionHeightUsesTimestampThenTransactionID(t *testing.T) {
 	}
 }
 
-func TestGateManagementConversionReportsWaitBeforeSeal(t *testing.T) {
-	epochs := fakeEpochClient{epoch: proposerblock.Epoch{Number: 8, PChainHeight: 100, StartTime: 1_000}}
+func TestGateManagementConversionWaitsThenContinues(t *testing.T) {
+	epochs := &fakeEpochClient{epochs: []proposerblock.Epoch{
+		{Number: 8, PChainHeight: 100, StartTime: 1_000},
+		{Number: 9, PChainHeight: 101, StartTime: 1_300},
+	}}
+	var waited time.Duration
 	nudges := 0
+	var output bytes.Buffer
 	err := gateManagementConversion(
 		context.Background(),
 		epochs,
 		101,
 		5*time.Minute,
 		time.Unix(1_135, 0),
+		func(_ context.Context, duration time.Duration) error {
+			waited = duration
+			return nil
+		},
 		func() (ids.ID, error) {
 			nudges++
 			return ids.GenerateTestID(), nil
 		},
-		&bytes.Buffer{},
+		&output,
 	)
-	if err == nil || nudges != 0 {
-		t.Fatalf("waiting gate: err=%v nudges=%d", err, nudges)
+	if err != nil || waited != 2*time.Minute+45*time.Second || nudges != 1 {
+		t.Fatalf("waiting gate: err=%v waited=%s nudges=%d", err, waited, nudges)
 	}
-	for _, expected := range []string{"height 101", "epoch 8 pinned at height 100", "2m45s remaining", "1970-01-01 09:21:40 JST"} {
-		if !strings.Contains(err.Error(), expected) {
-			t.Errorf("error %q does not contain %q", err, expected)
+	for _, expected := range []string{"sleeping for 2m45s", "1970-01-01 09:21:40 JST", "issued P-chain Warp context nudge"} {
+		if !strings.Contains(output.String(), expected) {
+			t.Errorf("output %q does not contain %q", output.String(), expected)
 		}
 	}
 }
 
-func TestGateManagementConversionNudgesOnceAfterSeal(t *testing.T) {
-	nudgeID := ids.GenerateTestID()
-	epochs := fakeEpochClient{epoch: proposerblock.Epoch{Number: 8, PChainHeight: 100, StartTime: 1_000}}
+func TestGateManagementConversionUsesSecondChildBlockWhenNeeded(t *testing.T) {
+	epochs := &fakeEpochClient{epochs: []proposerblock.Epoch{
+		{Number: 8, PChainHeight: 100, StartTime: 1_000},
+		{Number: 8, PChainHeight: 100, StartTime: 1_000},
+		{Number: 9, PChainHeight: 101, StartTime: 1_300},
+	}}
+	waits := 0
 	nudges := 0
 	var output bytes.Buffer
 	err := gateManagementConversion(
@@ -183,22 +201,45 @@ func TestGateManagementConversionNudgesOnceAfterSeal(t *testing.T) {
 		101,
 		5*time.Minute,
 		time.Unix(1_301, 0),
+		func(context.Context, time.Duration) error {
+			waits++
+			return nil
+		},
 		func() (ids.ID, error) {
 			nudges++
-			return nudgeID, nil
+			return ids.GenerateTestID(), nil
 		},
 		&output,
 	)
-	if err == nil || nudges != 1 {
-		t.Fatalf("sealable gate: err=%v nudges=%d", err, nudges)
+	if err != nil || waits != 0 || nudges != 2 {
+		t.Fatalf("sealable gate: err=%v waits=%d nudges=%d", err, waits, nudges)
 	}
-	for _, expected := range []string{"height 101", "epoch 8 pinned at height 100", "rerun set-weight", nudgeID.String()} {
-		if !strings.Contains(err.Error(), expected) {
-			t.Errorf("error %q does not contain %q", err, expected)
-		}
+	if strings.Count(output.String(), "issued P-chain Warp context nudge") != 2 {
+		t.Fatalf("expected two visible nudges, got %q", output.String())
 	}
-	if !strings.Contains(output.String(), nudgeID.String()) {
-		t.Fatalf("nudge transaction is not printed: %q", output.String())
+}
+
+func TestGateManagementConversionStopsAfterTwoNudges(t *testing.T) {
+	epochs := &fakeEpochClient{epochs: []proposerblock.Epoch{{Number: 8, PChainHeight: 100, StartTime: 1_000}}}
+	nudges := 0
+	err := gateManagementConversion(
+		context.Background(),
+		epochs,
+		101,
+		5*time.Minute,
+		time.Unix(1_301, 0),
+		func(context.Context, time.Duration) error { return nil },
+		func() (ids.ID, error) {
+			nudges++
+			return ids.GenerateTestID(), nil
+		},
+		&bytes.Buffer{},
+	)
+	if err == nil || nudges != 2 {
+		t.Fatalf("stale gate: err=%v nudges=%d", err, nudges)
+	}
+	if !strings.Contains(err.Error(), "after two P-chain context nudges") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -243,8 +284,9 @@ func (f *fakeWallet) IssueSetL1ValidatorWeightTx([]byte, ...commonopts.Option) (
 }
 
 type fakeEpochClient struct {
-	epoch proposerblock.Epoch
-	err   error
+	epochs []proposerblock.Epoch
+	err    error
+	reads  int
 }
 
 type fakeBlock struct {
@@ -261,8 +303,16 @@ func (f fakeBlockReader) Block(_ context.Context, height uint64) (time.Time, []i
 	return block.timestamp, block.txIDs, nil
 }
 
-func (f fakeEpochClient) GetCurrentEpoch(context.Context, ...rpc.Option) (proposerblock.Epoch, error) {
-	return f.epoch, f.err
+func (f *fakeEpochClient) GetCurrentEpoch(context.Context, ...rpc.Option) (proposerblock.Epoch, error) {
+	if f.err != nil {
+		return proposerblock.Epoch{}, f.err
+	}
+	index := f.reads
+	if index >= len(f.epochs) {
+		index = len(f.epochs) - 1
+	}
+	f.reads++
+	return f.epochs[index], nil
 }
 
 type fakeClient struct{}

@@ -301,16 +301,17 @@ ACP-181 epoch, not the latest state returned by `weights`. Before constructing
 or submitting a weight transaction, `set-weight` derives the management
 conversion's exact block height from its already-recorded transaction ID,
 without storing another field. It then makes one `proposervm.getCurrentEpoch`
-call and requires
+preflight and requires
 `currentEpoch.pChainHeight >= managementConversionHeight`.
 
-If the pinned height is older, no weight transaction is attempted. Before the
-epoch can seal, the command reports its earliest seal time in JST and the
-remaining wait. Once it is sealable, the command visibly submits one no-op
-P-chain `BaseTx` from the same wallet, prints its transaction ID, exits, and
-tells the operator to rerun. A quiet P-chain may need a second visible nudge
-because epoch advancement tests the new block's parent timestamp. There is no
-polling or automatic weight retry.
+If the pinned height is older, no weight transaction is attempted yet. Before
+the epoch can seal, the command prints the exact JST boundary and sleeps until
+it. It then submits a visible no-op P-chain `BaseTx` from the same wallet and
+rechecks the epoch. A quiet P-chain may need a second visible no-op because
+epoch advancement tests the new block's parent timestamp. As soon as the epoch
+pins the conversion height, `set-weight` continues normally. The readiness gate
+is automatic; the weight transaction itself is constructed and submitted only
+once, and any weight-transaction failure remains an immediate error.
 
 In frozen mode the transaction would confirm on the P-chain but never reach your
 fleet, so `set-weight` refuses to run when the relay is down.

@@ -162,6 +162,7 @@ func Run(
 		conversionHeight,
 		upgrade.GetConfig(networkID).GraniteEpochDuration,
 		time.Now(),
+		wait,
 		func() (ids.ID, error) {
 			pWallet, err := makeFundingWallet(ctx, cfg)
 			if err != nil {
@@ -321,6 +322,7 @@ func gateManagementConversion(
 	conversionHeight uint64,
 	epochDuration time.Duration,
 	now time.Time,
+	wait func(context.Context, time.Duration) error,
 	nudge func() (ids.ID, error),
 	output io.Writer,
 ) error {
@@ -342,39 +344,63 @@ func gateManagementConversion(
 	sealTime := time.Unix(epoch.StartTime, 0).Add(epochDuration)
 	if now.Before(sealTime) {
 		remaining := sealTime.Sub(now)
-		remaining = ((remaining + time.Second - 1) / time.Second) * time.Second
-		return fmt.Errorf(
-			"management conversion at P-chain height %d is not visible to Warp epoch %d pinned at height %d; epoch can seal at %s (%s remaining); rerun set-weight after that time",
-			conversionHeight,
-			epoch.Number,
-			epoch.PChainHeight,
+		displayRemaining := ((remaining + time.Second - 1) / time.Second) * time.Second
+		fmt.Fprintf(
+			output,
+			"management conversion is not visible to Warp yet; sleeping for %s until %s\n",
+			displayRemaining,
 			sealTime.In(jst).Format("2006-01-02 15:04:05 MST"),
-			remaining,
 		)
+		if err := wait(ctx, remaining); err != nil {
+			return fmt.Errorf("wait for Warp epoch %d to become sealable: %w", epoch.Number, err)
+		}
 	}
 
-	// A quiet P-chain needs a block after the epoch boundary, and sometimes one
-	// more child block, before the pinned height advances. Each command issues at
-	// most one visible nudge and exits. The operator controls every rerun.
-	nudgeID, err := nudge()
-	if err != nil {
-		return fmt.Errorf(
-			"management conversion at P-chain height %d is not visible to Warp epoch %d pinned at height %d; epoch has been sealable since %s; issue P-chain context nudge: %w",
-			conversionHeight,
-			epoch.Number,
-			epoch.PChainHeight,
-			sealTime.In(jst).Format("2006-01-02 15:04:05 MST"),
-			err,
-		)
+	// A block whose parent predates the boundary cannot seal the epoch. A quiet
+	// P-chain can therefore need two blocks after the wait: one to establish a
+	// post-boundary parent and its child to start the new epoch. Recheck after
+	// each visible no-op transaction and stop as soon as the conversion height
+	// is pinned. This is a readiness wait, not a retry of the weight transaction,
+	// which has not been constructed or submitted yet.
+	for range 2 {
+		nudgeID, err := nudge()
+		if err != nil {
+			return fmt.Errorf(
+				"management conversion at P-chain height %d is not visible to Warp epoch %d pinned at height %d; issue P-chain context nudge: %w",
+				conversionHeight,
+				epoch.Number,
+				epoch.PChainHeight,
+				err,
+			)
+		}
+		fmt.Fprintf(output, "issued P-chain Warp context nudge, tx %s\n", nudgeID)
+
+		epoch, err = epochs.GetCurrentEpoch(ctx)
+		if err != nil {
+			return fmt.Errorf("read current P-chain Warp epoch after nudge %s: %w", nudgeID, err)
+		}
+		if epoch.PChainHeight >= conversionHeight {
+			return nil
+		}
 	}
-	fmt.Fprintf(output, "issued P-chain Warp context nudge, tx %s\n", nudgeID)
+
 	return fmt.Errorf(
-		"management conversion at P-chain height %d is not visible to Warp epoch %d pinned at height %d; issued no-op tx %s; rerun set-weight",
+		"management conversion at P-chain height %d is still not visible to Warp epoch %d pinned at height %d after two P-chain context nudges",
 		conversionHeight,
 		epoch.Number,
 		epoch.PChainHeight,
-		nudgeID,
 	)
+}
+
+func wait(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 var jst = time.FixedZone("JST", 9*60*60)
