@@ -99,6 +99,12 @@ func setWeight(root, rawIdentity, rawWeight string) error {
 }
 
 func create(root string) error {
+	deploymentPath := filepath.Join(root, "deployment")
+	if _, err := os.Stat(deploymentPath); err == nil {
+		return fmt.Errorf("chain already exists in ./deployment; delete ./deployment only if you want a new chain")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect ./deployment: %w", err)
+	}
 	cfg, err := config.Load(root)
 	if err != nil {
 		return err
@@ -113,7 +119,7 @@ func create(root string) error {
 	_, err = creation.Create(
 		context.Background(),
 		cfg,
-		filepath.Join(root, "deployment"),
+		deploymentPath,
 		filepath.Join(root, "genesis-template.json"),
 	)
 	return err
@@ -196,6 +202,7 @@ func showWeights(root string) error {
 	fmt.Printf("management chain ID: %s\n", report.ManagementChainID)
 	fmt.Printf("main chain ID: %s\n", report.MainChainID)
 	fmt.Printf("validator fee price: %d nAVAX/second\n", report.FeePrice)
+	fmt.Printf("validator fee cost: %.6f AVAX/30 days per validator\n", float64(report.FeePrice)*30*24*60*60/float64(units.Avax))
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "L1\tNODE ID\tWEIGHT\tDAYS LEFT")
 	for _, validator := range report.Validators {

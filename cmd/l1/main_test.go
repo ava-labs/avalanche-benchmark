@@ -43,6 +43,17 @@ func TestPreCreationCommandsDoNotInventLifecycleState(t *testing.T) {
 	}
 }
 
+func TestCreateRejectsExistingDeploymentBeforeLoadingConfiguration(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "deployment"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err := create(root)
+	if err == nil || err.Error() != "chain already exists in ./deployment; delete ./deployment only if you want a new chain" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestSetWeightRejectsUnsupportedWeightBeforeLoadingFiles(t *testing.T) {
 	err := setWeight(t.TempDir(), "4", "500")
 	if err == nil || !strings.Contains(err.Error(), "must be 1, 1000, or 100000") {
