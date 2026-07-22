@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
@@ -88,24 +87,24 @@ func Run(
 	cfg config.Config,
 	deployment weights.Deployment,
 	deploymentDirectory string,
-	identityNumber int,
+	identityName string,
 	targetWeight uint64,
 	output io.Writer,
 ) error {
 	if err := ValidateWeight(targetWeight); err != nil {
 		return err
 	}
-	if err := validateIdentity(cfg.Nodes, identityNumber); err != nil {
+	if err := validateIdentity(cfg.Nodes, identityName); err != nil {
 		return err
 	}
 	targetNodeID, err := identity.LoadNodeID(filepath.Join(
 		deploymentDirectory,
-		"nodes",
-		strconv.Itoa(identityNumber),
+		"identities",
+		identityName,
 		"staker.crt",
 	))
 	if err != nil {
-		return fmt.Errorf("load validator identity %d: %w", identityNumber, err)
+		return fmt.Errorf("load validator identity %s: %w", identityName, err)
 	}
 	pChain := platformvm.NewClient(cfg.Environment.PChainAPI)
 	height, err := pChain.GetHeight(ctx)
@@ -118,13 +117,13 @@ func Run(
 	}
 	target, err := findTarget(mainValidators, targetNodeID)
 	if err != nil {
-		return fmt.Errorf("identity %d: %w", identityNumber, err)
+		return fmt.Errorf("identity %s: %w", identityName, err)
 	}
 	if target.Balance == 0 {
-		return fmt.Errorf("identity %d validator %s is inactive", identityNumber, target.NodeID)
+		return fmt.Errorf("identity %s validator %s is inactive", identityName, target.NodeID)
 	}
 	if target.Weight == targetWeight {
-		fmt.Fprintf(output, "identity %d %s: already weight %d\n", identityNumber, target.NodeID, targetWeight)
+		fmt.Fprintf(output, "identity %s %s: already weight %d\n", identityName, target.NodeID, targetWeight)
 		return nil
 	}
 
@@ -209,7 +208,7 @@ func Run(
 		pChain,
 		pWallet,
 		signed,
-		identityNumber,
+		identityName,
 		target,
 		targetWeight,
 		output,
@@ -389,17 +388,18 @@ func ValidateWeight(weight uint64) error {
 	}
 }
 
-func validateIdentity(nodes []config.Node, number int) error {
-	for _, node := range nodes {
-		if node.Number != number {
-			continue
-		}
-		if node.Role != config.RoleValidator {
-			return fmt.Errorf("identity %d is an rpc identity; set-weight accepts validators only", number)
-		}
-		return nil
+func validateIdentity(nodes []config.Node, name string) error {
+	index, err := identity.Index(name)
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("validator identity %d is not declared in nodes.ini", number)
+	if index >= len(nodes) {
+		return fmt.Errorf("identity %s was not generated from nodes.ini", name)
+	}
+	if nodes[index].Role != config.RoleValidator {
+		return fmt.Errorf("identity %s is an rpc identity; set-weight accepts validators only", name)
+	}
+	return nil
 }
 
 func fetchValidatorsAt(ctx context.Context, pChain client, subnetID ids.ID, minimumHeight uint64) ([]registeredValidator, error) {
@@ -484,8 +484,8 @@ func loadManagerSigners(directory string) ([]bls.Signer, error) {
 		if !entry.IsDir() {
 			return nil, fmt.Errorf("unexpected file in management identities: %s", filepath.Join(directory, entry.Name()))
 		}
-		if number, err := strconv.Atoi(entry.Name()); err != nil || number <= 0 {
-			return nil, fmt.Errorf("management identity directory must be a positive number, got %q", entry.Name())
+		if _, err := identity.Index(entry.Name()); err != nil {
+			return nil, fmt.Errorf("management identity directory: %w", err)
 		}
 		path := filepath.Join(directory, entry.Name(), "signer.key")
 		contents, err := os.ReadFile(path)
@@ -548,7 +548,7 @@ func submitAndVerify(
 	pChain client,
 	pWallet wallet,
 	message *warp.Message,
-	identityNumber int,
+	identityName string,
 	validator registeredValidator,
 	targetWeight uint64,
 	output io.Writer,
@@ -558,22 +558,22 @@ func submitAndVerify(
 		commonopts.WithPollFrequency(time.Second),
 	)
 	if err != nil {
-		return fmt.Errorf("set identity %d validator %s weight %d -> %d: %w", identityNumber, validator.NodeID, validator.Weight, targetWeight, err)
+		return fmt.Errorf("set identity %s validator %s weight %d -> %d: %w", identityName, validator.NodeID, validator.Weight, targetWeight, err)
 	}
-	fmt.Fprintf(output, "identity %d %s: weight %d -> %d, tx %s\n", identityNumber, validator.NodeID, validator.Weight, targetWeight, tx.ID())
+	fmt.Fprintf(output, "identity %s %s: weight %d -> %d, tx %s\n", identityName, validator.NodeID, validator.Weight, targetWeight, tx.ID())
 
 	deadline := time.Now().Add(verifyTimeout)
 	for {
 		state, _, readErr := pChain.GetL1Validator(ctx, validator.ValidationID)
 		if readErr == nil && state.Weight == targetWeight {
-			fmt.Fprintf(output, "identity %d %s: verified weight %d\n", identityNumber, validator.NodeID, targetWeight)
+			fmt.Fprintf(output, "identity %s %s: verified weight %d\n", identityName, validator.NodeID, targetWeight)
 			return nil
 		}
 		if time.Now().After(deadline) {
 			if readErr != nil {
-				return fmt.Errorf("verify identity %d weight: %w", identityNumber, readErr)
+				return fmt.Errorf("verify identity %s weight: %w", identityName, readErr)
 			}
-			return fmt.Errorf("verify identity %d weight: still %d, expected %d after %s", identityNumber, state.Weight, targetWeight, verifyTimeout)
+			return fmt.Errorf("verify identity %s weight: still %d, expected %d after %s", identityName, state.Weight, targetWeight, verifyTimeout)
 		}
 		select {
 		case <-ctx.Done():

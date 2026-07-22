@@ -66,8 +66,11 @@ relay = feed.
 12 host=10.1.0.16 role=rpc       dc=B
 ```
 
-- Node numbers are the primary key everywhere: data roots (`data/<n>`),
-  identity dirs (`deployment/nodes/<n>`), command arguments.
+- Machines and nodes are numbers: inventory keys and data roots use `<n>`.
+  Identities are immutable lowercase letters stored under
+  `deployment/identities/<letter>`. At creation, `a` starts on the first node
+  in ascending numeric order, `b` on the second, and so on. Key swaps change
+  placement, never the identity name.
 - Validators are registered in ascending node-number order. The first three
   validators in that order start at weight 100000; the rest start at 1000.
 - Inventory requires at least four validators and at least one RPC.
@@ -155,13 +158,13 @@ transaction is reported explicitly.
 l1 create [1|4]        one-time, on-chain: committee L1 + main L1; default 1
 l1 address             show funding addresses and spendable P-chain balance
 l1 keygen              generate FUNDING_PRIVATE_KEY directly into an empty .env field
-l1 weights             show live identity numbers, NodeIDs, weights, and fee days left
+l1 weights             show identity letters, NodeIDs, weights, and fee days left
 l1 topup <days>        fund every registered validator to <days> of runway
 l1 destroy             disable every converted L1 validator and reclaim its balance
 l1 reset               provision (unconditional rsync) + seed P-chain + start
-                       everything at canonical placement (identity i on node i)
-l1 place <id> <node>   SWAP identity <id> with whatever identity node <node> runs
-l1 set-weight <id> <w> set main identity <id> to 1 (dead), 1000 (spare), or 100000 (active)
+                       everything at initial letter-to-number placement
+l1 place <letter> <node>   SWAP identity <letter> with whatever identity node <node> runs
+l1 set-weight <letter> <w> set main identity <letter> to 1 (dead), 1000 (spare), or 100000 (active)
 l1 down <n|dc=X>       kill node(s), wipe ONLY the L1 chain data (P-chain kept)
 l1 up <n|dc=X>         start node(s); state-sync the L1, wait until at tip
 l1 relay start|stop    the P-chain proxy on control = the mode switch
@@ -180,7 +183,7 @@ BLS signer keys for RPC nodes, and fresh TLS+BLS identities for the manager
 committee. It never loads or reuses an existing identity. Before any P-chain
 transaction, `create` requires an empty creation-output directory and names the
 blocking path if old artifacts are present. That directory is `deployment/`.
-It contains `nodes/<n>/`, `manager/<n>/`, the rendered `genesis.json`, and
+It contains `identities/<letter>/`, `manager/<letter>/`, the rendered `genesis.json`, and
 `network.env` with accepted IDs and transaction IDs. It then issues, in order:
 `CreateSubnetTx` + `CreateChainTx` + `ConvertSubnetToL1Tx` for the committee L1
 (1 or 4 members, default 1, weight 1000), then the
@@ -227,7 +230,7 @@ prints the management and main chain IDs, reads both L1s' current validator
 sets from the selected P-chain API, and labels every management and main NodeID
 with its live weight and remaining fee balance in days at the current validator
 fee price. Management and main validators are printed in separate tables, each
-ordered by local identity number. The report shows the price in nAVAX per second
+ordered by identity letter. The report shows the price in nAVAX per second
 and its equivalent 30-day cost in AVAX per validator. It submits no transaction
 and does not treat generated artifacts as weight truth.
 
@@ -255,8 +258,8 @@ lifecycle truth, and zero active validators means the chain is destroyed.
 
 ### place: key-swap failover
 
-`place 1 5` puts identity 1 on node 5 **and identity-previously-on-5 on
-identity 1's old node**. Placement is always a transposition, so the
+`place a 5` puts identity `a` on node 5 **and the identity previously on node
+5 on identity `a`'s old node**. Placement is always a transposition, so the
 identity↔node bijection is preserved by construction. An identity can never
 be live on two nodes (that's equivocation, and it is structurally
 inexpressible, not merely checked). Execution is two-pass: stop both nodes,
@@ -275,8 +278,8 @@ ships mechanisms, not failover policy.
 
 ### set-weight: weight-change failover
 
-The `IDENTITY` column from `weights` is the numeric argument to `set-weight`.
-`set-weight 4 100000` fetches identity 4's main L1 validator (validationID,
+The `IDENTITY` column from `weights` is the lowercase-letter argument to
+`set-weight`. `set-weight d 100000` fetches identity `d`'s main L1 validator (validationID,
 nonce) from
 the P-chain, builds the `L1ValidatorWeight` Warp payload, wraps it in an
 `AddressedCall` from the committee chain, signs with the committee BLS keys
@@ -368,14 +371,14 @@ Prometheus + Grafana on control, scraping every node's `/ext/metrics`).
 ```bash
 # Frozen mode: DC-B dies; move its high identities onto DC-A spares.
 ./bin/l1 down dc=B
-./bin/l1 place 1 5        # dead high identity -> live low node (repeat per identity)
+./bin/l1 place a 5        # dead high identity -> live low node (repeat per identity)
 ./bin/l1 up dc=B          # later: nodes rejoin, state-sync, wear the ridden-back identities
 
 # Proxied mode: same failure, no identity moves at all.
 ./bin/l1 relay start      # once; this is the mode transition
 ./bin/l1 down dc=B
-./bin/l1 set-weight 5 100000  # promote a spare validator to active
-./bin/l1 set-weight 1 1       # demote the failed validator to dead
+./bin/l1 set-weight e 100000  # promote a spare validator to active
+./bin/l1 set-weight a 1       # demote the failed validator to dead
 ```
 
 Both drills run under load. The two mechanisms coexist on one deployment and
@@ -400,7 +403,8 @@ go run ./cmd/l1 create   # fresh on-chain committee + main L1, one manager
 
 `reset` provisions unconditionally (rsync, idempotent, near-instant when
 unchanged; there is deliberately no "already provisioned" check to go stale)
-and restores canonical placement: identity `i` on node `i`.
+and restores initial placement: identity `a` on the first numbered node,
+identity `b` on the second, and so on.
 
 ## Operational notes
 

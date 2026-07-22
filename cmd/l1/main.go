@@ -63,7 +63,7 @@ func run() error {
 
 func usage(program string) string {
 	return fmt.Sprintf(
-		"  %s create [1|4]\n  %s address\n  %s keygen\n  %s weights\n  %s topup <days>\n  %s set-weight <main-identity> <1|1000|100000>\n  %s destroy",
+		"  %s create [1|4]\n  %s address\n  %s keygen\n  %s weights\n  %s topup <days>\n  %s set-weight <identity-letter> <1|1000|100000>\n  %s destroy",
 		program,
 		program,
 		program,
@@ -75,9 +75,8 @@ func usage(program string) string {
 }
 
 func setWeight(root, rawIdentity, rawWeight string) error {
-	identityNumber, err := strconv.Atoi(rawIdentity)
-	if err != nil || identityNumber <= 0 {
-		return fmt.Errorf("set-weight identity must be a positive node number, got %q", rawIdentity)
+	if _, err := identity.Index(rawIdentity); err != nil {
+		return fmt.Errorf("set-weight %w", err)
 	}
 	targetWeight, err := strconv.ParseUint(rawWeight, 10, 64)
 	if err != nil {
@@ -102,7 +101,7 @@ func setWeight(root, rawIdentity, rawWeight string) error {
 		cfg,
 		deployment,
 		filepath.Join(root, "deployment"),
-		identityNumber,
+		rawIdentity,
 		targetWeight,
 		os.Stdout,
 	)
@@ -208,7 +207,7 @@ func showWeights(root string) error {
 	if err != nil {
 		return err
 	}
-	identityNumbers, err := loadIdentityNumbers(filepath.Join(root, "deployment"), cfg)
+	identityNames, err := loadIdentityNames(filepath.Join(root, "deployment"), cfg)
 	if err != nil {
 		return err
 	}
@@ -217,17 +216,17 @@ func showWeights(root string) error {
 		return err
 	}
 	for _, validator := range report.Validators {
-		if _, ok := identityNumbers[identityKey{L1: validator.L1, NodeID: validator.NodeID}]; !ok {
+		if _, ok := identityNames[identityKey{L1: validator.L1, NodeID: validator.NodeID}]; !ok {
 			return fmt.Errorf("%s validator %s has no local identity", validator.L1, validator.NodeID)
 		}
 	}
 	sort.Slice(report.Validators, func(i, j int) bool {
-		left := identityNumbers[identityKey{L1: report.Validators[i].L1, NodeID: report.Validators[i].NodeID}]
-		right := identityNumbers[identityKey{L1: report.Validators[j].L1, NodeID: report.Validators[j].NodeID}]
+		left := identityNames[identityKey{L1: report.Validators[i].L1, NodeID: report.Validators[i].NodeID}]
+		right := identityNames[identityKey{L1: report.Validators[j].L1, NodeID: report.Validators[j].NodeID}]
 		if report.Validators[i].L1 != report.Validators[j].L1 {
 			return report.Validators[i].L1 == "management"
 		}
-		return left < right
+		return left.Index < right.Index
 	})
 	fmt.Printf("management chain ID: %s\n", report.ManagementChainID)
 	fmt.Printf("main chain ID: %s\n", report.MainChainID)
@@ -241,8 +240,8 @@ func showWeights(root string) error {
 			if validator.L1 != l1 {
 				continue
 			}
-			identityNumber := identityNumbers[identityKey{L1: validator.L1, NodeID: validator.NodeID}]
-			fmt.Fprintf(w, "%d\t%s\t%d\t%.2f\n", identityNumber, validator.NodeID, validator.Weight, validator.DaysLeft)
+			identityName := identityNames[identityKey{L1: validator.L1, NodeID: validator.NodeID}]
+			fmt.Fprintf(w, "%s\t%s\t%d\t%.2f\n", identityName.Name, validator.NodeID, validator.Weight, validator.DaysLeft)
 		}
 		return w.Flush()
 	}
@@ -257,22 +256,32 @@ type identityKey struct {
 	NodeID ids.NodeID
 }
 
-func loadIdentityNumbers(deploymentDirectory string, cfg config.Config) (map[identityKey]int, error) {
-	numbers := make(map[identityKey]int, len(cfg.Nodes))
-	load := func(l1 string, number int, path string) error {
+type identityName struct {
+	Name  string
+	Index int
+}
+
+func loadIdentityNames(deploymentDirectory string, cfg config.Config) (map[identityKey]identityName, error) {
+	names := make(map[identityKey]identityName, len(cfg.Nodes))
+	load := func(l1, name, path string) error {
 		nodeID, err := identity.LoadNodeID(path)
 		if err != nil {
 			return err
 		}
-		numbers[identityKey{L1: l1, NodeID: nodeID}] = number
+		index, err := identity.Index(name)
+		if err != nil {
+			return err
+		}
+		names[identityKey{L1: l1, NodeID: nodeID}] = identityName{Name: name, Index: index}
 		return nil
 	}
-	for _, node := range cfg.Nodes {
+	for i, node := range cfg.Nodes {
 		if node.Role != config.RoleValidator {
 			continue
 		}
-		if err := load("main", node.Number, filepath.Join(deploymentDirectory, "nodes", strconv.Itoa(node.Number), "staker.crt")); err != nil {
-			return nil, fmt.Errorf("load main identity %d: %w", node.Number, err)
+		name := identity.Name(i)
+		if err := load("main", name, filepath.Join(deploymentDirectory, "identities", name, "staker.crt")); err != nil {
+			return nil, fmt.Errorf("load main identity %s: %w", name, err)
 		}
 	}
 	managerDirectory := filepath.Join(deploymentDirectory, "manager")
@@ -284,18 +293,17 @@ func loadIdentityNumbers(deploymentDirectory string, cfg config.Config) (map[ide
 		if !entry.IsDir() {
 			return nil, fmt.Errorf("unexpected file in management identities: %s", filepath.Join(managerDirectory, entry.Name()))
 		}
-		number, err := strconv.Atoi(entry.Name())
-		if err != nil || number <= 0 {
-			return nil, fmt.Errorf("management identity directory must be a positive number, got %q", entry.Name())
+		if _, err := identity.Index(entry.Name()); err != nil {
+			return nil, fmt.Errorf("management identity directory: %w", err)
 		}
-		if err := load("management", number, filepath.Join(managerDirectory, entry.Name(), "staker.crt")); err != nil {
-			return nil, fmt.Errorf("load management identity %d: %w", number, err)
+		if err := load("management", entry.Name(), filepath.Join(managerDirectory, entry.Name(), "staker.crt")); err != nil {
+			return nil, fmt.Errorf("load management identity %s: %w", entry.Name(), err)
 		}
 	}
 	if len(entries) == 0 {
 		return nil, fmt.Errorf("no management identities found in %s", managerDirectory)
 	}
-	return numbers, nil
+	return names, nil
 }
 
 func topUp(root, rawDays string) error {

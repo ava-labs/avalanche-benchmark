@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanchego/ids"
@@ -29,7 +28,7 @@ type Set struct {
 }
 
 func Generate(root string, nodes []config.Node, committeeSize int) (Set, error) {
-	if err := os.Mkdir(filepath.Join(root, "nodes"), 0o700); err != nil {
+	if err := os.Mkdir(filepath.Join(root, "identities"), 0o700); err != nil {
 		return Set{}, fmt.Errorf("create node identity directory: %w", err)
 	}
 	if err := os.Mkdir(filepath.Join(root, "manager"), 0o700); err != nil {
@@ -40,24 +39,58 @@ func Generate(root string, nodes []config.Node, committeeSize int) (Set, error) 
 		Nodes:   make([]Identity, 0, len(nodes)),
 		Manager: make([]Identity, 0, committeeSize),
 	}
-	for _, node := range nodes {
-		dir := filepath.Join(root, "nodes", strconv.Itoa(node.Number))
+	for i, node := range nodes {
+		name := Name(i)
+		dir := filepath.Join(root, "identities", name)
 		withBLS := node.Role == config.RoleValidator
-		generated, err := generateOne(dir, fmt.Sprintf("node-%d", node.Number), node.Number, node.Role, withBLS)
+		generated, err := generateOne(dir, name, node.Number, node.Role, withBLS)
 		if err != nil {
 			return Set{}, err
 		}
 		set.Nodes = append(set.Nodes, generated)
 	}
-	for i := 1; i <= committeeSize; i++ {
-		dir := filepath.Join(root, "manager", strconv.Itoa(i))
-		generated, err := generateOne(dir, fmt.Sprintf("manager-%d", i), 0, config.RoleValidator, true)
+	for i := 0; i < committeeSize; i++ {
+		name := Name(i)
+		dir := filepath.Join(root, "manager", name)
+		generated, err := generateOne(dir, name, 0, config.RoleValidator, true)
 		if err != nil {
 			return Set{}, err
 		}
 		set.Manager = append(set.Manager, generated)
 	}
 	return set, nil
+}
+
+// Name gives identities a namespace that cannot be confused with numbered
+// machines. Placement changes during key swaps, but an identity's name does not.
+func Name(index int) string {
+	name := ""
+	for {
+		name = string(rune('a'+index%26)) + name
+		index = index/26 - 1
+		if index < 0 {
+			return name
+		}
+	}
+}
+
+func Index(name string) (int, error) {
+	if name == "" {
+		return 0, fmt.Errorf("identity must be lowercase letters, got %q", name)
+	}
+	index := 0
+	for _, character := range name {
+		if character < 'a' || character > 'z' {
+			return 0, fmt.Errorf("identity must be lowercase letters, got %q", name)
+		}
+		value := int(character - 'a' + 1)
+		maxInt := int(^uint(0) >> 1)
+		if index > (maxInt-value)/26 {
+			return 0, fmt.Errorf("identity is too long, got %q", name)
+		}
+		index = index*26 + value
+	}
+	return index - 1, nil
 }
 
 func generateOne(dir, name string, nodeNumber int, role config.Role, withBLS bool) (Identity, error) {

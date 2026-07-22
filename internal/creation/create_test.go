@@ -146,7 +146,7 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	if highCount != 3 || lowCount != 1 {
 		t.Fatalf("unexpected weight split: high=%d low=%d", highCount, lowCount)
 	}
-	if _, err := os.Stat(filepath.Join(output, "nodes", "5", "signer.key")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(output, "identities", "e", "signer.key")); !os.IsNotExist(err) {
 		t.Fatalf("RPC signer key must not exist, got %v", err)
 	}
 	if result.State.ManagerConvertTxID == ids.Empty || result.State.ConvertTxID == ids.Empty {

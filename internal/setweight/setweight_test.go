@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/snow/validators"
 	"github.com/ava-labs/avalanchego/utils/crypto/bls"
@@ -29,6 +30,21 @@ func TestValidateWeight(t *testing.T) {
 	for _, weight := range []uint64{0, 2, 999, 1001, 99999, 100001} {
 		if err := ValidateWeight(weight); err == nil {
 			t.Errorf("ValidateWeight(%d) succeeded", weight)
+		}
+	}
+}
+
+func TestValidateIdentityUsesLettersNotNodeNumbers(t *testing.T) {
+	nodes := []config.Node{
+		{Number: 10, Role: config.RoleValidator},
+		{Number: 20, Role: config.RoleRPC},
+	}
+	if err := validateIdentity(nodes, "a"); err != nil {
+		t.Fatalf("validator identity a: %v", err)
+	}
+	for _, name := range []string{"b", "c", "10"} {
+		if err := validateIdentity(nodes, name); err == nil {
+			t.Errorf("validateIdentity(%q) succeeded", name)
 		}
 	}
 }
@@ -193,7 +209,7 @@ func TestSubmitOtherFailureDoesNotNudge(t *testing.T) {
 		fakeClient{},
 		wallet,
 		testMessage(t),
-		1,
+		"a",
 		registeredValidator{NodeID: ids.GenerateTestNodeID(), Weight: ActiveWeight},
 		DeadWeight,
 		&bytes.Buffer{},
