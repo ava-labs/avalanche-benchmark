@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
@@ -36,11 +37,12 @@ const (
 	SpareWeight  uint64 = 1000
 	ActiveWeight uint64 = 100000
 
-	quorumNumerator   = 67
-	quorumDenominator = 100
-	readAttempts      = 10
-	readDelay         = time.Second
-	verifyTimeout     = 90 * time.Second
+	quorumNumerator               = 67
+	quorumDenominator             = 100
+	readAttempts                  = 10
+	readDelay                     = time.Second
+	verifyTimeout                 = 90 * time.Second
+	managementSetVisibilityWindow = 30 * time.Second
 )
 
 type client interface {
@@ -59,6 +61,7 @@ type registeredValidator struct {
 	Weight       uint64
 	Balance      uint64
 	MinNonce     uint64
+	StartTime    uint64
 	PublicKey    *bls.PublicKey
 }
 
@@ -157,7 +160,17 @@ func Run(
 	if err != nil {
 		return fmt.Errorf("connect P-chain wallet to %s: %w", cfg.Environment.PChainAPI, err)
 	}
-	return submitAndVerify(ctx, pChain, pWallet, signed, identityNumber, target, targetWeight, output)
+	return submitAndVerify(
+		ctx,
+		pChain,
+		pWallet,
+		signed,
+		identityNumber,
+		target,
+		targetWeight,
+		managementConversionTime(managementValidators),
+		output,
+	)
 }
 
 func ValidateWeight(weight uint64) error {
@@ -218,6 +231,7 @@ func fetchValidatorsAt(ctx context.Context, pChain client, subnetID ids.ID, mini
 			Weight:       state.Weight,
 			Balance:      state.Balance,
 			MinNonce:     state.MinNonce,
+			StartTime:    state.StartTime,
 			PublicKey:    state.PublicKey,
 		})
 	}
@@ -333,6 +347,7 @@ func submitAndVerify(
 	identityNumber int,
 	validator registeredValidator,
 	targetWeight uint64,
+	managementConvertedAt time.Time,
 	output io.Writer,
 ) error {
 	tx, err := pWallet.IssueSetL1ValidatorWeightTx(
@@ -340,6 +355,7 @@ func submitAndVerify(
 		commonopts.WithPollFrequency(time.Second),
 	)
 	if err != nil {
+		err = explainEmptyManagementSet(err, managementConvertedAt, time.Now())
 		return fmt.Errorf("set identity %d validator %s weight %d -> %d: %w", identityNumber, validator.NodeID, validator.Weight, targetWeight, err)
 	}
 	fmt.Fprintf(output, "identity %d %s: weight %d -> %d, tx %s\n", identityNumber, validator.NodeID, validator.Weight, targetWeight, tx.ID())
@@ -363,4 +379,58 @@ func submitAndVerify(
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+func managementConversionTime(managementValidators []registeredValidator) time.Time {
+	var earliest uint64
+	for _, validator := range managementValidators {
+		if validator.StartTime != 0 && (earliest == 0 || validator.StartTime < earliest) {
+			earliest = validator.StartTime
+		}
+	}
+	if earliest == 0 {
+		return time.Time{}
+	}
+	return time.Unix(int64(earliest), 0)
+}
+
+func explainEmptyManagementSet(err error, managementConvertedAt, now time.Time) error {
+	message := err.Error()
+	if !strings.Contains(message, "unknown validator") || !strings.Contains(message, "NumFilteredValidators (0)") {
+		return err
+	}
+
+	const explanation = "P-Chain checked the Warp message at a height where the management validator set was empty; no transaction was accepted"
+	if managementConvertedAt.IsZero() {
+		return fmt.Errorf("%s; retry after the P-Chain safe height advances: %w", explanation, err)
+	}
+
+	convertedAtJST := managementConvertedAt.In(time.FixedZone("JST", 9*60*60))
+	age := now.Sub(managementConvertedAt)
+	if age < 0 {
+		age = 0
+	}
+	if age < managementSetVisibilityWindow {
+		wait := (managementSetVisibilityWindow - age).Round(time.Second)
+		if wait < time.Second {
+			wait = time.Second
+		}
+		return fmt.Errorf(
+			"%s; management L1 was converted at %s (%s ago) and can take up to %s to become visible; retry in about %s: %w",
+			explanation,
+			convertedAtJST.Format("2006-01-02 15:04:05 MST"),
+			age.Round(time.Second),
+			managementSetVisibilityWindow,
+			wait,
+			err,
+		)
+	}
+	return fmt.Errorf(
+		"%s; management L1 was converted at %s (%s ago), outside the normal %s conversion window; retry after the P-Chain safe height advances: %w",
+		explanation,
+		convertedAtJST.Format("2006-01-02 15:04:05 MST"),
+		age.Round(time.Second),
+		managementSetVisibilityWindow,
+		err,
+	)
 }

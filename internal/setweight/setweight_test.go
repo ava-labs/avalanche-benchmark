@@ -2,7 +2,9 @@ package setweight
 
 import (
 	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/snow/validators"
@@ -74,5 +76,58 @@ func TestSignAndAggregateEnforcesProtocolQuorum(t *testing.T) {
 	}
 	if _, err := signAndAggregate(unsigned, canonical, signers[:2]); !errors.Is(err, warp.ErrInsufficientWeight) {
 		t.Fatalf("2 of 4 must fail with insufficient weight, got %v", err)
+	}
+}
+
+func TestManagementConversionTimeUsesEarliestValidator(t *testing.T) {
+	convertedAt := managementConversionTime([]registeredValidator{
+		{StartTime: 200},
+		{StartTime: 100},
+		{StartTime: 0},
+	})
+	if got, want := convertedAt.Unix(), int64(100); got != want {
+		t.Fatalf("creation time = %d, want %d", got, want)
+	}
+}
+
+func TestExplainEmptyManagementSetFresh(t *testing.T) {
+	original := errors.New("unknown validator: NumIndices (0) >= NumFilteredValidators (0)")
+	convertedAt := time.Date(2026, time.July, 22, 9, 0, 0, 0, time.UTC)
+	err := explainEmptyManagementSet(original, convertedAt, convertedAt.Add(10*time.Second))
+	for _, expected := range []string{
+		"management validator set was empty",
+		"2026-07-22 18:00:00 JST",
+		"10s ago",
+		"retry in about 20s",
+		"no transaction was accepted",
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Errorf("error %q does not contain %q", err, expected)
+		}
+	}
+	if !errors.Is(err, original) {
+		t.Fatalf("error does not wrap original: %v", err)
+	}
+}
+
+func TestExplainEmptyManagementSetOutsideCreationWindow(t *testing.T) {
+	original := errors.New("unknown validator: NumIndices (0) >= NumFilteredValidators (0)")
+	convertedAt := time.Date(2026, time.July, 22, 9, 0, 0, 0, time.UTC)
+	err := explainEmptyManagementSet(original, convertedAt, convertedAt.Add(time.Hour))
+	for _, expected := range []string{
+		"2026-07-22 18:00:00 JST",
+		"outside the normal 30s conversion window",
+		"retry after the P-Chain safe height advances",
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Errorf("error %q does not contain %q", err, expected)
+		}
+	}
+}
+
+func TestExplainEmptyManagementSetLeavesOtherErrorsAlone(t *testing.T) {
+	original := errors.New("insufficient funds")
+	if got := explainEmptyManagementSet(original, time.Now(), time.Now()); got != original {
+		t.Fatalf("unexpected replacement: %v", got)
 	}
 }
