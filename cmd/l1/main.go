@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"text/tabwriter"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/funding"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/weights"
 	"github.com/ava-labs/avalanchego/utils/units"
 )
 
@@ -31,8 +33,10 @@ func run() error {
 		return showAddress(root)
 	case len(os.Args) == 2 && os.Args[1] == "keygen":
 		return generateKey(root)
+	case len(os.Args) == 2 && os.Args[1] == "weights":
+		return showWeights(root)
 	default:
-		return fmt.Errorf("usage:\n  go run ./cmd/l1 create\n  go run ./cmd/l1 address\n  go run ./cmd/l1 keygen")
+		return fmt.Errorf("usage:\n  go run ./cmd/l1 create\n  go run ./cmd/l1 address\n  go run ./cmd/l1 keygen\n  go run ./cmd/l1 weights")
 	}
 }
 
@@ -81,4 +85,29 @@ func generateKey(root string) error {
 	}
 	fmt.Printf("generated FUNDING_PRIVATE_KEY in %s\n", envPath)
 	return showAddress(root)
+}
+
+func showWeights(root string) error {
+	envPath := filepath.Join(root, ".env")
+	environment, err := config.LoadEnvironment(envPath)
+	if err != nil {
+		return err
+	}
+	statePath := filepath.Join(root, "deployment", "network.env")
+	deployment, err := weights.LoadDeployment(statePath, environment.Network)
+	if err != nil {
+		return err
+	}
+	report, err := weights.Fetch(context.Background(), environment.PChainAPI, deployment)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("management chain ID: %s\n", report.ManagementChainID)
+	fmt.Printf("validator fee price: %d nAVAX/second\n", report.FeePrice)
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "NODE ID\tWEIGHT\tDAYS LEFT")
+	for _, validator := range report.Validators {
+		fmt.Fprintf(w, "%s\t%d\t%.2f\n", validator.NodeID, validator.Weight, validator.DaysLeft)
+	}
+	return w.Flush()
 }

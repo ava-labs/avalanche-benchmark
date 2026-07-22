@@ -150,6 +150,7 @@ transaction is reported explicitly.
 l1 create              one-time, on-chain: committee L1 + main L1 (see below)
 l1 address             show funding addresses and spendable P-chain balance
 l1 keygen              generate FUNDING_PRIVATE_KEY directly into an empty .env field
+l1 weights             show live NodeIDs, weights, and days of fee balance left
 l1 topup <days>        fund every registered validator to <days> of runway
 l1 reset               provision (unconditional rsync) + seed P-chain + start
                        everything at canonical placement (identity i on node i)
@@ -205,6 +206,14 @@ frozen seed shipped to the isolated fleet.
 and makes sure every registered main and committee validator has at least 20
 days of runway. It adds only the shortfall and leaves balances already above
 the target unchanged.
+
+### weights
+
+`l1 weights` is read-only. It requires a completed `deployment/network.env`,
+prints the management chain ID, reads the main L1's current validator set from
+the selected P-chain API, and shows each NodeID's live weight and remaining fee
+balance in days at the current validator fee price. It submits no transaction
+and does not treat generated artifacts as weight truth.
 
 ### place: key-swap failover
 

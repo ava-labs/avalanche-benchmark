@@ -1,6 +1,7 @@
 # Local operator config and generated run metadata
 /.env
 **/.env
+/nodes.ini
 /network.env
 /network-info.env
 /registry.json
