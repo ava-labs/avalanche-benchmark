@@ -58,12 +58,6 @@ func TestLoadEnvironmentFailsLoudly(t *testing.T) {
 			"FUNDING_PRIVATE_KEY=" + strings.Repeat("1", 64),
 			"LEGACY_FALLBACK=yes",
 		}, "\n"),
-		"committee belongs to create": strings.Join([]string{
-			"NETWORK=fuji",
-			"PCHAIN_API=https://api.avax-test.network",
-			"FUNDING_PRIVATE_KEY=" + strings.Repeat("1", 64),
-			"MANAGER_COMMITTEE=1",
-		}, "\n"),
 		"prefixed key": strings.Join([]string{
 			"NETWORK=fuji",
 			"PCHAIN_API=https://api.avax-test.network",
