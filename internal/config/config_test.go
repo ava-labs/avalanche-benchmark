@@ -1,0 +1,112 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestLoadFiles(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	nodesPath := filepath.Join(dir, "nodes.ini")
+	writeFile(t, envPath, strings.Join([]string{
+		"NETWORK=fuji",
+		"PCHAIN_API=https://api.avax-test.network",
+		"FUNDING_PRIVATE_KEY=" + strings.Repeat("1", 64),
+		"MANAGER_COMMITTEE=1",
+		"SSH_USER=ubuntu",
+		"SSH_KEY_PATH=/tmp/fleet-key",
+	}, "\n"))
+	writeFile(t, nodesPath, strings.Join([]string{
+		"5 host=rpc.example role=rpc",
+		"4 host=v4.example role=validator dc=B",
+		"2 host=v2.example role=validator dc=A",
+		"1 host=v1.example role=validator dc=A",
+		"3 host=v3.example role=validator dc=B",
+	}, "\n"))
+
+	cfg, err := LoadFiles(envPath, nodesPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Environment.Network != "fuji" || cfg.Environment.ManagerCommittee != 1 {
+		t.Fatalf("unexpected environment: %+v", cfg.Environment)
+	}
+	if len(cfg.Nodes) != 5 {
+		t.Fatalf("expected 5 nodes, got %d", len(cfg.Nodes))
+	}
+	for i, node := range cfg.Nodes {
+		if node.Number != i+1 {
+			t.Fatalf("nodes not sorted: %+v", cfg.Nodes)
+		}
+	}
+	if cfg.Nodes[4].DC != "" {
+		t.Fatalf("omitted dc must remain empty, got %q", cfg.Nodes[4].DC)
+	}
+}
+
+func TestLoadEnvironmentFailsLoudly(t *testing.T) {
+	tests := map[string]string{
+		"missing key": strings.Join([]string{
+			"NETWORK=fuji",
+			"PCHAIN_API=https://api.avax-test.network",
+			"MANAGER_COMMITTEE=1",
+		}, "\n"),
+		"unknown field": strings.Join([]string{
+			"NETWORK=fuji",
+			"PCHAIN_API=https://api.avax-test.network",
+			"FUNDING_PRIVATE_KEY=" + strings.Repeat("1", 64),
+			"MANAGER_COMMITTEE=1",
+			"LEGACY_FALLBACK=yes",
+		}, "\n"),
+		"prefixed key": strings.Join([]string{
+			"NETWORK=fuji",
+			"PCHAIN_API=https://api.avax-test.network",
+			"FUNDING_PRIVATE_KEY=0x" + strings.Repeat("1", 64),
+			"MANAGER_COMMITTEE=1",
+		}, "\n"),
+	}
+	for name, contents := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), ".env")
+			writeFile(t, path, contents)
+			if _, err := LoadEnvironment(path); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func TestLoadNodesFailsLoudly(t *testing.T) {
+	base := []string{
+		"1 host=v1 role=validator",
+		"2 host=v2 role=validator",
+		"3 host=v3 role=validator",
+		"4 host=v4 role=validator",
+		"5 host=r1 role=rpc",
+	}
+	tests := map[string][]string{
+		"duplicate number": append(append([]string{}, base...), "5 host=r2 role=rpc"),
+		"unknown field":    append(append([]string{}, base...), "6 host=r2 role=rpc site=A"),
+		"invalid role":     []string{"1 host=v1 role=validator", "2 host=v2 role=validator", "3 host=v3 role=validator", "4 host=v4 role=validator", "5 host=r1 role=spare"},
+		"missing rpc":      base[:4],
+	}
+	for name, lines := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "nodes.ini")
+			writeFile(t, path, strings.Join(lines, "\n"))
+			if _, err := LoadNodes(path); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+func writeFile(t *testing.T, path, contents string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(contents+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
