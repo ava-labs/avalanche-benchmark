@@ -12,6 +12,7 @@ import (
 	"github.com/ava-labs/avalanchego/vms/components/gas"
 	"github.com/ava-labs/avalanchego/vms/platformvm"
 	"github.com/ava-labs/avalanchego/vms/secp256k1fx"
+	ethcommon "github.com/ava-labs/libevm/common"
 	"github.com/joho/godotenv"
 )
 
@@ -27,6 +28,7 @@ type Deployment struct {
 	ManagementChainID  ids.ID
 	MainSubnetID       ids.ID
 	MainChainID        ids.ID
+	ManagerAddress     ethcommon.Address
 }
 
 type Validator struct {
@@ -84,11 +86,16 @@ func LoadDeployment(path, network string) (Deployment, error) {
 	if err != nil {
 		return Deployment{}, err
 	}
+	managerAddressRaw := strings.TrimSpace(values["MANAGER_ADDRESS"])
+	if !ethcommon.IsHexAddress(managerAddressRaw) {
+		return Deployment{}, fmt.Errorf("%s: required field MANAGER_ADDRESS must be a hex address, got %q", path, managerAddressRaw)
+	}
 	return Deployment{
 		ManagementSubnetID: managementSubnetID,
 		ManagementChainID:  managementChainID,
 		MainSubnetID:       mainSubnetID,
 		MainChainID:        mainChainID,
+		ManagerAddress:     ethcommon.HexToAddress(managerAddressRaw),
 	}, nil
 }
 

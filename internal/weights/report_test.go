@@ -52,6 +52,7 @@ func TestLoadDeploymentRequiresCompletedMatchingCreation(t *testing.T) {
 		"SUBNET_ID=" + mainSubnetID.String(),
 		"CHAIN_ID=" + mainChainID.String(),
 		"CONVERT_TX_ID=" + convertTxID.String(),
+		"MANAGER_ADDRESS=0x0000000000000000000000000000000000000001",
 	}, "\n")
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)

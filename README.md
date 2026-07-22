@@ -34,7 +34,7 @@ Two L1s, one fleet, one relay:
 | Mode | Relay | P-chain | Failover mechanism |
 |---|---|---|---|
 | **Frozen P-chain** | down / absent | last delivered snapshot, served as a frozen frontier | key swap (`place`) |
-| **Proxied P-chain** | up | live, streamed through the relay | weight change (`weight`) |
+| **Proxied P-chain** | up | live, streamed through the relay | weight change (`set-weight`) |
 
 There is no per-node configuration difference between the modes. Validators
 bootstrap from the fleet's RPC nodes; RPC nodes bootstrap from the relay's
@@ -162,7 +162,7 @@ l1 destroy             disable both L1 validator sets and reclaim their balances
 l1 reset               provision (unconditional rsync) + seed P-chain + start
                        everything at canonical placement (identity i on node i)
 l1 place <id> <node>   SWAP identity <id> with whatever identity node <node> runs
-l1 weight <id> <w>     committee-signed SetL1ValidatorWeightTx (proxied mode)
+l1 set-weight <id> <w> set one validator to 1 (dead), 1000 (spare), or 100000 (active)
 l1 down <n|dc=X>       kill node(s), wipe ONLY the L1 chain data (P-chain kept)
 l1 up <n|dc=X>         start node(s); state-sync the L1, wait until at tip
 l1 relay start|stop    the P-chain proxy on control = the mode switch
@@ -189,7 +189,7 @@ same for the main L1 with the committee chain recorded as validator manager.
 **Initial weights are written directly into the main L1's conversion: the
 first 3 validators at 100000, the rest at 1000.** No Warp message is
 constructed at creation time. The committee is not exercised until you first
-call `weight`. A failed partial creation is abandoned. The operator explicitly
+call `set-weight`. A failed partial creation is abandoned. The operator explicitly
 removes its output before starting another clean attempt with new identities
 and new L1s. It requires `FUNDING_PRIVATE_KEY` from `.env`. Every main and
 committee validator starts with a 0.1 AVAX continuous-fee balance. Before creating the main chain, `create`
@@ -267,22 +267,24 @@ Two refusals, both correctness rather than policy:
 Everything else, including which identity goes where, when, and why, is yours. The tool
 ships mechanisms, not failover policy.
 
-### weight: weight-change failover
+### set-weight: weight-change failover
 
-`weight 4 100000` fetches the main L1's validator (validationID, nonce) from
+`set-weight 4 100000` fetches identity 4's main L1 validator (validationID,
+nonce) from
 the P-chain, builds the `L1ValidatorWeight` Warp payload, wraps it in an
 `AddressedCall` from the committee chain, signs with the committee BLS keys
 held on control, aggregates to a `BitSetSignature`, verifies locally at the
 67/100 protocol quorum, and submits the `SetL1ValidatorWeightTx`. It polls
 until the weight reads back from the P-chain.
 
-Constraints: weight `0` is refused (zero removes the validator from the set);
-there is no add/remove-validator functionality at all. This is a
-performance/failover benchmark with fixed membership, not a membership
-manager.
+It accepts exactly three weights: `1` means dead, `1000` means spare, and
+`100000` means active. Weight `1` is the minimum. Weight `0` and every other
+value are refused, so the tool cannot remove membership or create unexplained
+intermediate states. This is a performance/failover benchmark with fixed
+membership, not a membership manager.
 
 In frozen mode the transaction would confirm on the P-chain but never reach your
-fleet, so `weight` refuses to run when the relay is down.
+fleet, so `set-weight` refuses to run when the relay is down.
 
 ### down / up: recovery primitive
 
@@ -349,8 +351,8 @@ Prometheus + Grafana on control, scraping every node's `/ext/metrics`).
 # Proxied mode: same failure, no identity moves at all.
 ./bin/l1 relay start      # once; this is the mode transition
 ./bin/l1 down dc=B
-./bin/l1 weight 5 100000  # promote a surviving low validator
-./bin/l1 weight 1 1000    # demote the dead high one (never 0)
+./bin/l1 set-weight 5 100000  # promote a spare validator to active
+./bin/l1 set-weight 1 1       # demote the failed validator to dead
 ```
 
 Both drills run under load. The two mechanisms coexist on one deployment and

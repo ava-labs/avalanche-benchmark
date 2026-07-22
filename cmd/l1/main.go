@@ -13,6 +13,7 @@ import (
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/destroy"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/funding"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/setweight"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/topup"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/weights"
 	"github.com/ava-labs/avalanchego/utils/units"
@@ -43,6 +44,8 @@ func run() error {
 		return destroyL1s(root)
 	case len(os.Args) == 3 && os.Args[1] == "topup":
 		return topUp(root, os.Args[2])
+	case len(os.Args) == 4 && os.Args[1] == "set-weight":
+		return setWeight(root, os.Args[2], os.Args[3])
 	default:
 		return fmt.Errorf("usage:\n%s", usage(filepath.Base(os.Args[0])))
 	}
@@ -50,13 +53,48 @@ func run() error {
 
 func usage(program string) string {
 	return fmt.Sprintf(
-		"  %s create\n  %s address\n  %s keygen\n  %s weights\n  %s topup <days>\n  %s destroy",
+		"  %s create\n  %s address\n  %s keygen\n  %s weights\n  %s topup <days>\n  %s set-weight <identity> <weight>\n  %s destroy",
 		program,
 		program,
 		program,
 		program,
 		program,
 		program,
+		program,
+	)
+}
+
+func setWeight(root, rawIdentity, rawWeight string) error {
+	identityNumber, err := strconv.Atoi(rawIdentity)
+	if err != nil || identityNumber <= 0 {
+		return fmt.Errorf("set-weight identity must be a positive node number, got %q", rawIdentity)
+	}
+	targetWeight, err := strconv.ParseUint(rawWeight, 10, 64)
+	if err != nil {
+		return fmt.Errorf("set-weight weight must be 1, 1000, or 100000, got %q", rawWeight)
+	}
+	if err := setweight.ValidateWeight(targetWeight); err != nil {
+		return err
+	}
+	cfg, err := config.Load(root)
+	if err != nil {
+		return err
+	}
+	deployment, err := weights.LoadDeployment(
+		filepath.Join(root, "deployment", "network.env"),
+		cfg.Environment.Network,
+	)
+	if err != nil {
+		return err
+	}
+	return setweight.Run(
+		context.Background(),
+		cfg,
+		deployment,
+		filepath.Join(root, "deployment"),
+		identityNumber,
+		targetWeight,
+		os.Stdout,
 	)
 }
 

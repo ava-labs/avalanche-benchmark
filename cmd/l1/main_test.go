@@ -14,8 +14,8 @@ func TestUsageRepeatsProgramName(t *testing.T) {
 	for _, program := range []string{"l1", "avalanche-benchmark"} {
 		output := usage(program)
 		lines := strings.Split(output, "\n")
-		if len(lines) != 6 {
-			t.Fatalf("expected six usage lines, got %q", output)
+		if len(lines) != 7 {
+			t.Fatalf("expected seven usage lines, got %q", output)
 		}
 		for _, line := range lines {
 			if !strings.HasPrefix(line, "  "+program+" ") {
@@ -40,5 +40,12 @@ func TestPreCreationCommandsDoNotInventLifecycleState(t *testing.T) {
 	}
 	if err := generateKey(root); err == nil || !strings.Contains(err.Error(), "keygen is only valid before creation") {
 		t.Fatalf("keygen must reject existing deployment state before mutation, got %v", err)
+	}
+}
+
+func TestSetWeightRejectsUnsupportedWeightBeforeLoadingFiles(t *testing.T) {
+	err := setWeight(t.TempDir(), "4", "500")
+	if err == nil || !strings.Contains(err.Error(), "must be 1, 1000, or 100000") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
