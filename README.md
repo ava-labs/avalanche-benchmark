@@ -74,9 +74,9 @@ relay = feed.
   carries stake, swappable. `rpc` = never registered, no BLS signer key
   (runs `--staking-ephemeral-signer-enabled`), pinned identity, serves
   ingress and anchors bootstrap.
-- `dc` is a freeform display/selector tag (default `dc1`). Fleet verbs accept
-  `dc=<tag>` selectors and `status` groups by it. Nothing functional depends
-  on it.
+- `dc` is an optional freeform display/selector tag. If omitted, it remains
+  visibly unset. Fleet verbs accept `dc=<tag>` selectors and `status` groups by
+  it. Nothing functional depends on it.
 - Weights are **not** inventory. On-chain weight is the sole truth; `status`
   reads it from the P-chain.
 - There is no generated registry or NodeID manifest. NodeIDs are derived from
@@ -101,6 +101,7 @@ The creation settings are deliberately small:
 
 ```dotenv
 NETWORK=fuji
+PCHAIN_API=https://api.avax-test.network
 FUNDING_PRIVATE_KEY=
 MANAGER_COMMITTEE=1
 SSH_USER=ubuntu
@@ -108,13 +109,20 @@ SSH_KEY_PATH=/path/to/fleet-key
 ```
 
 `NETWORK` is `fuji` or `mainnet`. Fuji is always called Fuji, never
-"testnet". `PCHAIN_API` may override the selected network's default endpoint.
-`MANAGER_COMMITTEE` accepts only `1` or `4` and defaults to `1`.
+"testnet". `PCHAIN_API` is required. `MANAGER_COMMITTEE` accepts only `1` or
+`4`; the example explicitly selects `1`.
 `FUNDING_PRIVATE_KEY` contains the raw 32-byte secp256k1 private key as 64 hex
 characters with no `0x` prefix. The same key pays P-chain creation and
 validator fees, and its derived EVM address receives the main L1's genesis
 allocation. There is no key-file setting, second key, built-in funded account,
 or fallback private key.
+
+Configuration is strict. Missing required fields, unknown fields, duplicate
+node numbers, malformed values, and missing prior-step artifacts stop the
+command before it performs work. Errors name the exact field, path, or required
+prior command. There are no legacy variable aliases, guessed paths,
+auto-discovery, or silent repairs. Every generated artifact and submitted
+transaction is reported explicitly.
 
 ## Commands
 
@@ -138,16 +146,20 @@ bombard                load generator (drives the RPC nodes)
 Run from any designated creation machine with P-chain access. This does not
 have to be the client's deployment control machine. It explicitly loads `.env` and
 reads validators from `nodes.ini` in ascending node-number order. It generates
-fresh TLS and BLS staking keys for validators, stable TLS identities for RPC
-nodes, and no BLS signer keys for RPC nodes. It then issues, in order:
+fresh TLS and BLS staking keys for validators, stable TLS identities without
+BLS signer keys for RPC nodes, and fresh TLS+BLS identities for the manager
+committee. It never loads or reuses an existing identity. Before any P-chain
+transaction, `create` requires an empty creation-output directory and names the
+blocking path if old artifacts are present. It then issues, in order:
 `CreateSubnetTx` + `CreateChainTx` + `ConvertSubnetToL1Tx` for the committee L1
 (1 or 4 members, default 1, weight 1000), then the
 same for the main L1 with the committee chain recorded as validator manager.
 **Initial weights are written directly into the main L1's conversion: the
 first 3 validators at 100000, the rest at 1000.** No Warp message is
 constructed at creation time. The committee is not exercised until you first
-call `weight`. Resumable via generated deployment state; re-running never
-double-spends. It requires `FUNDING_PRIVATE_KEY` from `.env`. Every main and
+call `weight`. A failed partial creation is abandoned. The operator explicitly
+removes its output before starting another clean attempt with new identities
+and new L1s. It requires `FUNDING_PRIVATE_KEY` from `.env`. Every main and
 committee validator starts with a 0.1 AVAX continuous-fee balance. Before creating the main chain, `create`
 renders its genesis allocation for the funding key's derived EVM address. A
 static pre-funded address is never accepted.
@@ -303,8 +315,8 @@ and restores canonical placement: identity `i` on node `i`.
   Transfer the populated `.env`, committee keys, validator staking keys, and
   generated deployment state separately as a private handover bundle. Nodes
   hold only their active identity.
-- Networks: `NETWORK=fuji` by default; `NETWORK=mainnet` uses mainnet.
-  `PCHAIN_API` is an optional endpoint override.
+- Networks: set `NETWORK=fuji` or `NETWORK=mainnet` explicitly and provide the
+  matching `PCHAIN_API` explicitly.
 - Cleanup: registered L1 validators pay a continuous fee forever. When
   abandoning an L1, disable its validators (`DisableL1ValidatorTx`) to
   stop the burn.
