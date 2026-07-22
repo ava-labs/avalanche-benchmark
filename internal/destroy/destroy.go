@@ -25,9 +25,6 @@ func Run(
 	deployment weights.Deployment,
 	output io.Writer,
 ) error {
-	if err := deployment.RequireActive(); err != nil {
-		return err
-	}
 	fundingKey, err := funding.ParsePrivateKey(environment.FundingPrivateKey)
 	if err != nil {
 		return err

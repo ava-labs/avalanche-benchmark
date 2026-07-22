@@ -115,17 +115,11 @@ func rejectDestroyedDeployment(ctx context.Context, root string, environment con
 	if err != nil {
 		return err
 	}
-	if err := deployment.RequireActive(); err != nil {
-		return err
-	}
-	report, err := weights.FetchActive(ctx, environment.PChainAPI, deployment)
-	if err != nil {
-		return err
-	}
-	if len(report.Validators) == 0 {
-		return fmt.Errorf("deployment has no active validators; it is destroyed")
-	}
-	return nil
+	// Do not mirror lifecycle state in a local flag. Height-consistent P-Chain
+	// validator balances are the source of truth: zero active validators means
+	// this chain is destroyed.
+	_, err = weights.Fetch(ctx, environment.PChainAPI, deployment)
+	return err
 }
 
 func generateKey(root string) error {
@@ -204,12 +198,5 @@ func destroyL1s(root string) error {
 	if err != nil {
 		return err
 	}
-	if err := destroy.Run(context.Background(), environment, deployment, os.Stdout); err != nil {
-		return err
-	}
-	if err := weights.MarkDestroyed(statePath); err != nil {
-		return err
-	}
-	fmt.Printf("recorded terminal state in %s\n", statePath)
-	return nil
+	return destroy.Run(context.Background(), environment, deployment, os.Stdout)
 }

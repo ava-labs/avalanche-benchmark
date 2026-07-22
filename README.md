@@ -238,13 +238,14 @@ that validator's continuous fee and returns its remaining balance to the
 funding key's P-Chain address. The command prints one accepted transaction ID
 per validator and can be rerun after a partial failure. Height-consistent
 zero-balance records are treated as already disabled even if a stale membership
-response still lists them. The command keeps
-`deployment/network.env` as the record of what was destroyed and writes
-`DESTROYED=true` only after every disable transaction succeeds.
+response still lists them. The command keeps `deployment/network.env` as the
+record of which chain was destroyed.
 
 Destruction is terminal. Repeating `destroy`, or running `address`, `weights`,
 or `topup` against the destroyed deployment, fails with `deployment has no
 active validators` rather than reporting a successful no-op or stale state.
+There is no local destroyed flag. Height-consistent P-Chain state is the only
+lifecycle truth, and zero active validators means the chain is destroyed.
 
 ### place: key-swap failover
 

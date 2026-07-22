@@ -63,22 +63,6 @@ func TestLoadDeploymentRequiresCompletedMatchingCreation(t *testing.T) {
 	if deployment.ManagementSubnetID != managementSubnetID || deployment.ManagementChainID != managementChainID || deployment.MainSubnetID != mainSubnetID || deployment.MainChainID != mainChainID {
 		t.Fatalf("unexpected deployment: %+v", deployment)
 	}
-	if err := MarkDestroyed(path); err != nil {
-		t.Fatal(err)
-	}
-	destroyedDeployment, err := LoadDeployment(path, "fuji")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !destroyedDeployment.Destroyed {
-		t.Fatal("destroyed marker was not loaded")
-	}
-	if err := destroyedDeployment.RequireActive(); err == nil || !strings.Contains(err.Error(), "deployment has no active validators") {
-		t.Fatalf("expected terminal deployment error, got %v", err)
-	}
-	if err := MarkDestroyed(path); err == nil {
-		t.Fatal("duplicate destroyed marker must fail")
-	}
 	if _, err := LoadDeployment(path, "mainnet"); err == nil {
 		t.Fatal("network mismatch must fail")
 	}
