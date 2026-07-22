@@ -77,6 +77,42 @@ func TestLoadDeploymentRequiresCompletedMatchingCreation(t *testing.T) {
 	}
 }
 
+func TestLoadDeploymentForDestroyAcceptsManagementOnlyCreation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "network.env")
+	managementChainID := ids.GenerateTestID()
+	managementSubnetID := ids.GenerateTestID()
+	managerConvertTxID := ids.GenerateTestID()
+	contents := strings.Join([]string{
+		"NETWORK=fuji",
+		"MANAGER_SUBNET_ID=" + managementSubnetID.String(),
+		"MANAGER_CHAIN_ID=" + managementChainID.String(),
+		"MANAGER_CONVERT_TX_ID=" + managerConvertTxID.String(),
+	}, "\n")
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := LoadDeploymentForDestroy(path, "fuji")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deployment.ManagementSubnetID != managementSubnetID || deployment.ManagementChainID != managementChainID || deployment.ManagementConvertTxID != managerConvertTxID {
+		t.Fatalf("unexpected management deployment: %+v", deployment)
+	}
+	if deployment.MainSubnetID != ids.Empty || deployment.MainChainID != ids.Empty {
+		t.Fatalf("unexpected main deployment: %+v", deployment)
+	}
+	if _, err := LoadDeployment(path, "fuji"); err == nil || !strings.Contains(err.Error(), "creation is incomplete") {
+		t.Fatalf("normal loader must reject partial creation, got %v", err)
+	}
+	if err := os.WriteFile(path, []byte("NETWORK=fuji\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadDeploymentForDestroy(path, "fuji"); err == nil || !strings.Contains(err.Error(), "no validator balances to reclaim") {
+		t.Fatalf("expected no converted L1 error, got %v", err)
+	}
+}
+
 func TestFetchSortsValidatorsAndCalculatesDaysAtCurrentPrice(t *testing.T) {
 	firstNodeID := ids.GenerateTestNodeID()
 	secondNodeID := ids.GenerateTestNodeID()

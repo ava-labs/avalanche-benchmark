@@ -323,7 +323,7 @@ func destroyL1s(root string) error {
 		return err
 	}
 	statePath := filepath.Join(root, "deployment", "network.env")
-	deployment, err := weights.LoadDeployment(
+	deployment, err := weights.LoadDeploymentForDestroy(
 		statePath,
 		environment.Network,
 	)

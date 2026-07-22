@@ -58,6 +58,17 @@ type client interface {
 }
 
 func LoadDeployment(path, network string) (Deployment, error) {
+	return loadDeployment(path, network, true)
+}
+
+// LoadDeploymentForDestroy accepts creation state as soon as either L1 was
+// converted. Destroy is the cleanup path for a failed create, so requiring the
+// later main conversion here would strand the earlier management deposit.
+func LoadDeploymentForDestroy(path, network string) (Deployment, error) {
+	return loadDeployment(path, network, false)
+}
+
+func loadDeployment(path, network string, requireComplete bool) (Deployment, error) {
 	values, err := godotenv.Read(path)
 	if err != nil {
 		return Deployment{}, fmt.Errorf("read required creation state %s: %w", path, err)
@@ -65,44 +76,51 @@ func LoadDeployment(path, network string) (Deployment, error) {
 	if got := strings.TrimSpace(values["NETWORK"]); got != network {
 		return Deployment{}, fmt.Errorf("%s: NETWORK must match .env (%q), got %q", path, network, got)
 	}
-	if strings.TrimSpace(values["CONVERT_TX_ID"]) == "" {
+	managerConverted := strings.TrimSpace(values["MANAGER_CONVERT_TX_ID"]) != ""
+	mainConverted := strings.TrimSpace(values["CONVERT_TX_ID"]) != ""
+	if requireComplete && !mainConverted {
 		return Deployment{}, fmt.Errorf("%s: required field CONVERT_TX_ID is not provided; creation is incomplete", path)
 	}
-	if _, err := requiredID(path, values, "CONVERT_TX_ID"); err != nil {
-		return Deployment{}, err
+	if !requireComplete && !managerConverted && !mainConverted {
+		return Deployment{}, fmt.Errorf("%s: creation stopped before either L1 was converted; there are no validator balances to reclaim", path)
 	}
-	managementConvertTxID, err := requiredID(path, values, "MANAGER_CONVERT_TX_ID")
-	if err != nil {
-		return Deployment{}, err
+
+	deployment := Deployment{}
+	if managerConverted || requireComplete {
+		deployment.ManagementConvertTxID, err = requiredID(path, values, "MANAGER_CONVERT_TX_ID")
+		if err != nil {
+			return Deployment{}, err
+		}
+		deployment.ManagementChainID, err = requiredID(path, values, "MANAGER_CHAIN_ID")
+		if err != nil {
+			return Deployment{}, err
+		}
+		deployment.ManagementSubnetID, err = requiredID(path, values, "MANAGER_SUBNET_ID")
+		if err != nil {
+			return Deployment{}, err
+		}
 	}
-	managementChainID, err := requiredID(path, values, "MANAGER_CHAIN_ID")
-	if err != nil {
-		return Deployment{}, err
+	if mainConverted || requireComplete {
+		if _, err := requiredID(path, values, "CONVERT_TX_ID"); err != nil {
+			return Deployment{}, err
+		}
+		deployment.MainChainID, err = requiredID(path, values, "CHAIN_ID")
+		if err != nil {
+			return Deployment{}, err
+		}
+		deployment.MainSubnetID, err = requiredID(path, values, "SUBNET_ID")
+		if err != nil {
+			return Deployment{}, err
+		}
 	}
-	managementSubnetID, err := requiredID(path, values, "MANAGER_SUBNET_ID")
-	if err != nil {
-		return Deployment{}, err
+	if requireComplete {
+		managerAddressRaw := strings.TrimSpace(values["MANAGER_ADDRESS"])
+		if !ethcommon.IsHexAddress(managerAddressRaw) {
+			return Deployment{}, fmt.Errorf("%s: required field MANAGER_ADDRESS must be a hex address, got %q", path, managerAddressRaw)
+		}
+		deployment.ManagerAddress = ethcommon.HexToAddress(managerAddressRaw)
 	}
-	mainChainID, err := requiredID(path, values, "CHAIN_ID")
-	if err != nil {
-		return Deployment{}, err
-	}
-	mainSubnetID, err := requiredID(path, values, "SUBNET_ID")
-	if err != nil {
-		return Deployment{}, err
-	}
-	managerAddressRaw := strings.TrimSpace(values["MANAGER_ADDRESS"])
-	if !ethcommon.IsHexAddress(managerAddressRaw) {
-		return Deployment{}, fmt.Errorf("%s: required field MANAGER_ADDRESS must be a hex address, got %q", path, managerAddressRaw)
-	}
-	return Deployment{
-		ManagementSubnetID:    managementSubnetID,
-		ManagementChainID:     managementChainID,
-		ManagementConvertTxID: managementConvertTxID,
-		MainSubnetID:          mainSubnetID,
-		MainChainID:           mainChainID,
-		ManagerAddress:        ethcommon.HexToAddress(managerAddressRaw),
-	}, nil
+	return deployment, nil
 }
 
 func Fetch(ctx context.Context, api string, deployment Deployment) (Report, error) {
@@ -128,15 +146,21 @@ func fetch(ctx context.Context, pChain client, deployment Deployment, requireVal
 		return Report{}, fmt.Errorf("current validator fee price is zero")
 	}
 
-	management, err := fetchValidators(ctx, pChain, "management", deployment.ManagementSubnetID, height, feePrice)
-	if err != nil {
-		return Report{}, err
+	rows := make([]Validator, 0)
+	if deployment.ManagementSubnetID != ids.Empty {
+		management, err := fetchValidators(ctx, pChain, "management", deployment.ManagementSubnetID, height, feePrice)
+		if err != nil {
+			return Report{}, err
+		}
+		rows = append(rows, management...)
 	}
-	main, err := fetchValidators(ctx, pChain, "main", deployment.MainSubnetID, height, feePrice)
-	if err != nil {
-		return Report{}, err
+	if deployment.MainSubnetID != ids.Empty {
+		main, err := fetchValidators(ctx, pChain, "main", deployment.MainSubnetID, height, feePrice)
+		if err != nil {
+			return Report{}, err
+		}
+		rows = append(rows, main...)
 	}
-	rows := append(management, main...)
 	if requireValidators && len(rows) == 0 {
 		return Report{}, fmt.Errorf("deployment has no active validators; it is destroyed")
 	}

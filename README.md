@@ -157,7 +157,7 @@ l1 address             show funding addresses and spendable P-chain balance
 l1 keygen              generate FUNDING_PRIVATE_KEY directly into an empty .env field
 l1 weights             show live identity numbers, NodeIDs, weights, and fee days left
 l1 topup <days>        fund every registered validator to <days> of runway
-l1 destroy             disable both L1 validator sets and reclaim their balances
+l1 destroy             disable every converted L1 validator and reclaim its balance
 l1 reset               provision (unconditional rsync) + seed P-chain + start
                        everything at canonical placement (identity i on node i)
 l1 place <id> <node>   SWAP identity <id> with whatever identity node <node> runs
@@ -188,9 +188,11 @@ same for the main L1 with the committee chain recorded as validator manager.
 **Initial weights are written directly into the main L1's conversion: the
 first 3 validators at 100000, the rest at 1000.** No Warp message is
 constructed at creation time. The committee is not exercised until you first
-call `set-weight`. A failed partial creation is abandoned. The operator explicitly
-removes its output before starting another clean attempt with new identities
-and new L1s. It requires `FUNDING_PRIVATE_KEY` from `.env`. Every main and
+call `set-weight`. A failed partial creation is abandoned. The operator runs
+`l1 destroy` to reclaim any validator balances whose conversion already
+succeeded, then explicitly removes its output before starting another clean
+attempt with new identities and new L1s. It requires `FUNDING_PRIVATE_KEY` from
+`.env`. Every main and
 committee validator starts with a 0.1 AVAX continuous-fee balance. Before creating the main chain, `create`
 renders its genesis allocation for the funding key's derived EVM address. A
 static pre-funded address is never accepted.
@@ -232,7 +234,10 @@ and does not treat generated artifacts as weight truth.
 ### destroy
 
 `l1 destroy` permanently disables every active main validator, then every
-active management validator. Before submitting the first transaction it
+active management validator. It accepts partial creation state and reclaims
+whichever converted L1s exist, including a management-only creation that failed
+before the main conversion. Every other lifecycle command still requires a
+completed creation. Before submitting the first transaction it
 verifies that `FUNDING_PRIVATE_KEY` is both the deactivation owner and the
 remaining-balance owner of every validator. Each `DisableL1ValidatorTx` stops
 that validator's continuous fee and returns its remaining balance to the
