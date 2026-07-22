@@ -17,11 +17,14 @@ import (
 const secondsPerDay = 24 * 60 * 60
 
 type Deployment struct {
-	ManagementChainID ids.ID
-	SubnetID          ids.ID
+	ManagementSubnetID ids.ID
+	ManagementChainID  ids.ID
+	MainSubnetID       ids.ID
+	MainChainID        ids.ID
 }
 
 type Validator struct {
+	L1       string
 	NodeID   ids.NodeID
 	Weight   uint64
 	Balance  uint64
@@ -30,6 +33,7 @@ type Validator struct {
 
 type Report struct {
 	ManagementChainID ids.ID
+	MainChainID       ids.ID
 	FeePrice          gas.Price
 	Validators        []Validator
 }
@@ -57,13 +61,23 @@ func LoadDeployment(path, network string) (Deployment, error) {
 	if err != nil {
 		return Deployment{}, err
 	}
-	subnetID, err := requiredID(path, values, "SUBNET_ID")
+	managementSubnetID, err := requiredID(path, values, "MANAGER_SUBNET_ID")
+	if err != nil {
+		return Deployment{}, err
+	}
+	mainChainID, err := requiredID(path, values, "CHAIN_ID")
+	if err != nil {
+		return Deployment{}, err
+	}
+	mainSubnetID, err := requiredID(path, values, "SUBNET_ID")
 	if err != nil {
 		return Deployment{}, err
 	}
 	return Deployment{
-		ManagementChainID: managementChainID,
-		SubnetID:          subnetID,
+		ManagementSubnetID: managementSubnetID,
+		ManagementChainID:  managementChainID,
+		MainSubnetID:       mainSubnetID,
+		MainChainID:        mainChainID,
 	}, nil
 }
 
@@ -72,13 +86,6 @@ func Fetch(ctx context.Context, api string, deployment Deployment) (Report, erro
 }
 
 func fetch(ctx context.Context, pChain client, deployment Deployment) (Report, error) {
-	validators, err := pChain.GetCurrentValidators(ctx, deployment.SubnetID, nil)
-	if err != nil {
-		return Report{}, fmt.Errorf("read current validators for %s: %w", deployment.SubnetID, err)
-	}
-	if len(validators) == 0 {
-		return Report{}, fmt.Errorf("read current validators for %s: no validators returned", deployment.SubnetID)
-	}
 	_, feePrice, _, err := pChain.GetValidatorFeeState(ctx)
 	if err != nil {
 		return Report{}, fmt.Errorf("read current validator fee price: %w", err)
@@ -87,28 +94,53 @@ func fetch(ctx context.Context, pChain client, deployment Deployment) (Report, e
 		return Report{}, fmt.Errorf("current validator fee price is zero")
 	}
 
+	management, err := fetchValidators(ctx, pChain, "management", deployment.ManagementSubnetID, feePrice)
+	if err != nil {
+		return Report{}, err
+	}
+	main, err := fetchValidators(ctx, pChain, "main", deployment.MainSubnetID, feePrice)
+	if err != nil {
+		return Report{}, err
+	}
+	rows := append(management, main...)
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].L1 != rows[j].L1 {
+			return rows[i].L1 == "management"
+		}
+		return rows[i].NodeID.String() < rows[j].NodeID.String()
+	})
+	return Report{
+		ManagementChainID: deployment.ManagementChainID,
+		MainChainID:       deployment.MainChainID,
+		FeePrice:          feePrice,
+		Validators:        rows,
+	}, nil
+}
+
+func fetchValidators(ctx context.Context, pChain client, l1 string, subnetID ids.ID, feePrice gas.Price) ([]Validator, error) {
+	validators, err := pChain.GetCurrentValidators(ctx, subnetID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("read %s validators for %s: %w", l1, subnetID, err)
+	}
+	if len(validators) == 0 {
+		return nil, fmt.Errorf("read %s validators for %s: no validators returned", l1, subnetID)
+	}
 	rows := make([]Validator, 0, len(validators))
 	for _, validator := range validators {
 		if validator.ValidationID == nil || validator.Balance == nil {
-			return Report{}, fmt.Errorf("validator %s is missing L1 validation state", validator.NodeID)
+			return nil, fmt.Errorf("%s validator %s is missing L1 validation state", l1, validator.NodeID)
 		}
 		balance := *validator.Balance
 		secondsLeft := balance / uint64(feePrice)
 		rows = append(rows, Validator{
+			L1:       l1,
 			NodeID:   validator.NodeID,
 			Weight:   validator.Weight,
 			Balance:  balance,
 			DaysLeft: float64(secondsLeft) / secondsPerDay,
 		})
 	}
-	sort.Slice(rows, func(i, j int) bool {
-		return rows[i].NodeID.String() < rows[j].NodeID.String()
-	})
-	return Report{
-		ManagementChainID: deployment.ManagementChainID,
-		FeePrice:          feePrice,
-		Validators:        rows,
-	}, nil
+	return rows, nil
 }
 
 func requiredID(path string, values map[string]string, field string) (ids.ID, error) {

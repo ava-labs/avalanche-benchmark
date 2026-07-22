@@ -103,11 +103,12 @@ func showWeights(root string) error {
 		return err
 	}
 	fmt.Printf("management chain ID: %s\n", report.ManagementChainID)
+	fmt.Printf("main chain ID: %s\n", report.MainChainID)
 	fmt.Printf("validator fee price: %d nAVAX/second\n", report.FeePrice)
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NODE ID\tWEIGHT\tDAYS LEFT")
+	fmt.Fprintln(w, "L1\tNODE ID\tWEIGHT\tDAYS LEFT")
 	for _, validator := range report.Validators {
-		fmt.Fprintf(w, "%s\t%d\t%.2f\n", validator.NodeID, validator.Weight, validator.DaysLeft)
+		fmt.Fprintf(w, "%s\t%s\t%d\t%.2f\n", validator.L1, validator.NodeID, validator.Weight, validator.DaysLeft)
 	}
 	return w.Flush()
 }

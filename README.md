@@ -210,10 +210,11 @@ the target unchanged.
 ### weights
 
 `l1 weights` is read-only. It requires a completed `deployment/network.env`,
-prints the management chain ID, reads the main L1's current validator set from
-the selected P-chain API, and shows each NodeID's live weight and remaining fee
-balance in days at the current validator fee price. It submits no transaction
-and does not treat generated artifacts as weight truth.
+prints the management and main chain IDs, reads both L1s' current validator
+sets from the selected P-chain API, and labels every management and main NodeID
+with its live weight and remaining fee balance in days at the current validator
+fee price. It submits no transaction and does not treat generated artifacts as
+weight truth.
 
 ### place: key-swap failover
 

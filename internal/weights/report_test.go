@@ -15,12 +15,12 @@ import (
 )
 
 type fakeClient struct {
-	validators []platformvm.ClientPermissionlessValidator
+	validators map[ids.ID][]platformvm.ClientPermissionlessValidator
 	feePrice   gas.Price
 }
 
-func (f fakeClient) GetCurrentValidators(context.Context, ids.ID, []ids.NodeID, ...rpc.Option) ([]platformvm.ClientPermissionlessValidator, error) {
-	return f.validators, nil
+func (f fakeClient) GetCurrentValidators(_ context.Context, subnetID ids.ID, _ []ids.NodeID, _ ...rpc.Option) ([]platformvm.ClientPermissionlessValidator, error) {
+	return f.validators[subnetID], nil
 }
 
 func (f fakeClient) GetValidatorFeeState(context.Context, ...rpc.Option) (gas.Gas, gas.Price, time.Time, error) {
@@ -31,12 +31,16 @@ func TestLoadDeploymentRequiresCompletedMatchingCreation(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "network.env")
 	managementChainID := ids.GenerateTestID()
-	subnetID := ids.GenerateTestID()
+	managementSubnetID := ids.GenerateTestID()
+	mainChainID := ids.GenerateTestID()
+	mainSubnetID := ids.GenerateTestID()
 	convertTxID := ids.GenerateTestID()
 	contents := strings.Join([]string{
 		"NETWORK=fuji",
+		"MANAGER_SUBNET_ID=" + managementSubnetID.String(),
 		"MANAGER_CHAIN_ID=" + managementChainID.String(),
-		"SUBNET_ID=" + subnetID.String(),
+		"SUBNET_ID=" + mainSubnetID.String(),
+		"CHAIN_ID=" + mainChainID.String(),
 		"CONVERT_TX_ID=" + convertTxID.String(),
 	}, "\n")
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
@@ -46,7 +50,7 @@ func TestLoadDeploymentRequiresCompletedMatchingCreation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if deployment.ManagementChainID != managementChainID || deployment.SubnetID != subnetID {
+	if deployment.ManagementSubnetID != managementSubnetID || deployment.ManagementChainID != managementChainID || deployment.MainSubnetID != mainSubnetID || deployment.MainChainID != mainChainID {
 		t.Fatalf("unexpected deployment: %+v", deployment)
 	}
 	if _, err := LoadDeployment(path, "mainnet"); err == nil {
@@ -70,34 +74,50 @@ func TestFetchSortsValidatorsAndCalculatesDaysAtCurrentPrice(t *testing.T) {
 	secondValidationID := ids.GenerateTestID()
 	firstBalance := uint64(2 * secondsPerDay * 10)
 	secondBalance := uint64(secondsPerDay * 10)
+	managementSubnetID := ids.GenerateTestID()
+	mainSubnetID := ids.GenerateTestID()
+	managementValidationID := ids.GenerateTestID()
+	managementBalance := uint64(3 * secondsPerDay * 10)
+	managementNodeID := ids.GenerateTestNodeID()
 	pChain := fakeClient{
 		feePrice: 10,
-		validators: []platformvm.ClientPermissionlessValidator{
-			{
-				ClientStaker:      platformvm.ClientStaker{NodeID: secondNodeID, Weight: 1000},
-				ClientL1Validator: platformvm.ClientL1Validator{ValidationID: &secondValidationID, Balance: &secondBalance},
+		validators: map[ids.ID][]platformvm.ClientPermissionlessValidator{
+			managementSubnetID: {
+				{
+					ClientStaker:      platformvm.ClientStaker{NodeID: managementNodeID, Weight: 1000},
+					ClientL1Validator: platformvm.ClientL1Validator{ValidationID: &managementValidationID, Balance: &managementBalance},
+				},
 			},
-			{
-				ClientStaker:      platformvm.ClientStaker{NodeID: firstNodeID, Weight: 100000},
-				ClientL1Validator: platformvm.ClientL1Validator{ValidationID: &firstValidationID, Balance: &firstBalance},
+			mainSubnetID: {
+				{
+					ClientStaker:      platformvm.ClientStaker{NodeID: secondNodeID, Weight: 1000},
+					ClientL1Validator: platformvm.ClientL1Validator{ValidationID: &secondValidationID, Balance: &secondBalance},
+				},
+				{
+					ClientStaker:      platformvm.ClientStaker{NodeID: firstNodeID, Weight: 100000},
+					ClientL1Validator: platformvm.ClientL1Validator{ValidationID: &firstValidationID, Balance: &firstBalance},
+				},
 			},
 		},
 	}
 	managementChainID := ids.GenerateTestID()
+	mainChainID := ids.GenerateTestID()
 	report, err := fetch(context.Background(), pChain, Deployment{
-		ManagementChainID: managementChainID,
-		SubnetID:          ids.GenerateTestID(),
+		ManagementSubnetID: managementSubnetID,
+		ManagementChainID:  managementChainID,
+		MainSubnetID:       mainSubnetID,
+		MainChainID:        mainChainID,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.ManagementChainID != managementChainID || report.FeePrice != 10 {
+	if report.ManagementChainID != managementChainID || report.MainChainID != mainChainID || report.FeePrice != 10 {
 		t.Fatalf("unexpected report metadata: %+v", report)
 	}
-	if len(report.Validators) != 2 || report.Validators[0].NodeID != firstNodeID {
-		t.Fatalf("validators not sorted: %+v", report.Validators)
+	if len(report.Validators) != 3 || report.Validators[0].L1 != "management" || report.Validators[0].NodeID != managementNodeID || report.Validators[1].NodeID != firstNodeID {
+		t.Fatalf("validator sets not grouped and sorted: %+v", report.Validators)
 	}
-	if report.Validators[0].DaysLeft != 2 || report.Validators[1].DaysLeft != 1 {
+	if report.Validators[0].DaysLeft != 3 || report.Validators[1].DaysLeft != 2 || report.Validators[2].DaysLeft != 1 {
 		t.Fatalf("unexpected days left: %+v", report.Validators)
 	}
 }
