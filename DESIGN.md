@@ -11,23 +11,24 @@ A performance-under-failover benchmark toolset for Avalanche L1s in ISOLATED net
 - This release's whole point is BOTH P-chain modes in one toolset with an in-place transition. Motivation: releases already exist for the frozen mode (key-swap failover) and the live mode (weight-change failover) SEPARATELY; a third single-mode release would be redundant. The novel deliverable is the frozen-to-proxied transition.
 - Deliverable form: primitives + a runbook + dashboards. NO formal per-run report artifact (decided against a scores file): the dashboards and the drills ARE the deliverable; this is a validation/demo kit. We ship what to trigger, the operator owns automation and triggers.
 
-## The two P-chain modes and the relay (the central idea)
+## The two P-chain modes and the source (the central idea)
 
-There is NO deployment knob for the mode. The architecture is always identical; the mode is purely RELAY STATE:
+There is no separate deployment-mode variable. One P-chain source process always runs on control, and its bootstrap configuration is the mode:
 
-- **Frozen P-chain** (relay down or absent): nodes serve their last-known P-chain frontier; weight changes cannot propagate in, so failover = key-swap.
-- **Proxied P-chain** (relay up): live P-chain flows in through the one DMZ conduit; weight changes propagate, so weight-change failover works.
+- **Frozen P-chain**: both source bootstrap lists are explicitly empty. The source serves its preserved frontier but accepts no newer P-chain blocks.
+- **Following P-chain**: the source runs `--p-chain-follow-only=true` against exactly one approved `(IP, NodeID)` upstream.
 
 Always true in both modes:
-- Every node bootstraps its P-chain from a delivered snapshot (the frozen seed) and runs `--partial-sync-primary-network`. C and X chains are NEVER synced, forever.
-- The relay (follow-only P-chain proxy) is the ONLY path to the outside world.
-- The mode transition is literally "turn the relay on". Zero per-node config change: validators always bootstrap from the fleet's RPCs, RPCs always point at the relay's (IP, NodeID); a down relay is just an unreachable peer.
+- The source process stays running with the same database and NodeID.
+- The source and fleet nodes run `--partial-sync-primary-network`; C and X are never synced.
+- Validators point at the fleet's RPC nodes. RPC nodes point at the source's stable `(IP, NodeID)`.
+- `fleet pchain follow`, `fleet pchain freeze`, and `fleet pchain status` are the entire source interface.
 
 Motivations:
-- Isolated networks never get plain internet egress; the only outside connection is a DMZ conduit. So "live mode = open egress" would contradict the product's own premise. The relay IS the product's live mode.
-- Snapshot delivery stays mandatory even for relay users: seeding a fleet's P-chain from genesis through one relay is not viable for everybody. Snapshot = initial seed; relay = ongoing feed. This is why frozen delivery is not a "mode" but the universal bootstrap mechanism.
-- The production client path: start airgapped (frozen P-chain), connect the DMZ machine to the internet only after their security approves (proxied P-chain). Expected order is key-swap FIRST, then weight-change, as an in-place transition on ONE deployment: same L1, same validators, same committee, no re-creation (unacceptable for a bank to rebuild the chain to go live).
-- Benchmark topology: EXACTLY ONE relay, on the control host (the machine that starts the benchmark). Production would run a relay per site; the benchmark is deliberately the quick-test shape. Control models the third site that survives either DC dying, so the benchmark relay placement is even failover-correct.
+- The client control host already has internet. Therefore initial snapshot shipment, archive import, USB tooling, reset tooling, and a second P-chain process do not need to exist.
+- Initial installation and every later refresh use the same sequence: follow until the required state is accepted, then freeze.
+- Omitted bootstrap flags are not frozen because AvalancheGo loads built-in network bootstrappers. Freeze must render both lists explicitly empty.
+- The benchmark uses exactly one source on control. Its stable identity lets every downstream node keep the same bootstrap configuration through every follow/freeze transition.
 
 ## Creation
 
@@ -50,7 +51,7 @@ Decisions and motivations:
 - Fail-fast is a feature. Commands validate all required configuration and prior-step artifacts before performing work. A failure names the missing field, file, or prerequisite step. The tool never guesses paths, falls back to legacy variables, auto-discovers omitted configuration, silently repairs state, or continues with partial input. A command may generate only the artifacts that its documented step owns, and it reports each generated path and on-chain transaction.
 - Every registered main and committee validator starts with a 0.1 AVAX continuous-fee balance. `l1 topup <days>` reads the current P-chain fee rate and raises every registered balance to at least that many days of runway. Validators already above the target are left unchanged.
 - `l1 destroy` accepts complete or partial creation state, disables every converted main validator first and management validator last, and reclaims whichever balances exist. It verifies the funding key controls deactivation and receives remaining balances before submitting anything. If any operation fails, `deployment/` remains intact for an explicit rerun. Only after every balance is reclaimed does `destroy` remove `deployment/`, including its obsolete private keys and transaction state. An already-destroyed leftover directory is removed too. Creation never resumes. There is no local destroyed flag: height-consistent P-Chain state determines whether more balances remain, while presence of `deployment/` determines whether local creation state exists. Other lifecycle commands remain strict and fail on incomplete creation. `l1 address` remains available before creation because an imported key must be funded first.
-- Creation is not freezing. A chain may be pre-created anywhere with P-chain access. The deployment control machine later syncs beyond both conversions, snapshots its local P-chain state, and ships that snapshot to the isolated fleet.
+- Creation is not freezing. A chain may be pre-created anywhere with P-chain access. The deployment control source later follows beyond both conversions and freezes that accepted state in place.
 
 ## Inventory and naming
 
@@ -92,7 +93,7 @@ An RPC node is: a PINNED (IP, NodeID) that tracks the chain, serves ingress, and
 ## Bootstrap topology (two-hop, from the mainnet-committee release)
 
 - Validators bootstrap from the fleet's own RPC nodes.
-- RPC nodes bootstrap from the relay upstream: the fleet's ONE allowed external TCP.
+- RPC nodes bootstrap from the P-chain source: the fleet's one controlled P-chain path.
 - state-sync lists = bootstrap lists (one anchor list; two lists that always contain the same nodes is pointless).
 - GOTCHA (proven live): empty bootstrap lists do NOT auto-discover peers from P-chain records; lists must be explicit. And every key swap invalidates any (IP, NodeID) bootstrap entry pointing at a swapped VALIDATOR, which is exactly why anchors are RPCs only. (The interim fleet listed all 12 nodes as bootstrap anchors; it survived swaps only because enough unswapped entries remained. Do not copy that.)
 
@@ -108,10 +109,6 @@ An RPC node is: a PINNED (IP, NodeID) that tracks the chain, serves ingress, and
 - Fork recovery for a node that never went down is the same tool: `down` + `up` on any node whose accepted hash diverges from the majority of high validators. Runbook procedure, not automated.
 - subnet-config k fix: k (sample size) must be <= validator count. k=20 with 8 validators never finalized (errInsufficientWeight, blocks built but not accepted). Use k=5, alpha=4 for the flat 8-validator topology. Alpha sits just below max so losing ONE high validator (~66%) still finalizes at speed: a single high failover does not halt the chain.
 - Isolated-fleet peering needs SG ingress AND egress for the staking port from/to both the intra-region private CIDR and the fleet public IPs (cross-region uses public IPs, same-VPC traffic arrives from private IPs, so public-IP-only rules silently fail intra-region).
-
-## Open items (dev, on the critical path for the proxied mode)
-
-- **Relay (follow-only P-chain proxy) must be built** for the proxied mode: one instance, on control, --p-chain-follow-only pattern (upstream PR #5613).
 
 ## Constraints (standing)
 

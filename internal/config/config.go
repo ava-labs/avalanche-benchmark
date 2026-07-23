@@ -36,6 +36,11 @@ type Environment struct {
 	SSHKeyPath        string
 }
 
+type NetworkEnvironment struct {
+	Network   string
+	PChainAPI string
+}
+
 type Config struct {
 	Environment Environment
 	Nodes       []Node
@@ -66,6 +71,11 @@ func LoadEnvironment(path string) (Environment, error) {
 		return Environment{}, fmt.Errorf("read required configuration %s: %w", path, err)
 	}
 
+	networkEnvironment, err := parseNetworkEnvironment(path, values)
+	if err != nil {
+		return Environment{}, err
+	}
+
 	allowed := map[string]struct{}{
 		"NETWORK":             {},
 		"PCHAIN_API":          {},
@@ -92,23 +102,6 @@ func LoadEnvironment(path string) (Environment, error) {
 		return value, nil
 	}
 
-	network, err := required("NETWORK")
-	if err != nil {
-		return Environment{}, err
-	}
-	if network != "fuji" && network != "mainnet" {
-		return Environment{}, fmt.Errorf("%s: NETWORK must be fuji or mainnet, got %q", path, network)
-	}
-
-	pChainAPI, err := required("PCHAIN_API")
-	if err != nil {
-		return Environment{}, err
-	}
-	parsedAPI, err := url.Parse(pChainAPI)
-	if err != nil || parsedAPI.Host == "" || (parsedAPI.Scheme != "http" && parsedAPI.Scheme != "https") {
-		return Environment{}, fmt.Errorf("%s: PCHAIN_API must be an explicit http or https URL, got %q", path, pChainAPI)
-	}
-
 	fundingPrivateKey, err := required("FUNDING_PRIVATE_KEY")
 	if err != nil {
 		return Environment{}, err
@@ -129,12 +122,42 @@ func LoadEnvironment(path string) (Environment, error) {
 	}
 
 	return Environment{
-		Network:           network,
-		PChainAPI:         pChainAPI,
+		Network:           networkEnvironment.Network,
+		PChainAPI:         networkEnvironment.PChainAPI,
 		FundingPrivateKey: fundingPrivateKey,
 		SSHUser:           strings.TrimSpace(values["SSH_USER"]),
 		SSHKeyPath:        strings.TrimSpace(values["SSH_KEY_PATH"]),
 	}, nil
+}
+
+// LoadNetworkEnvironment reads only the fields needed by fleet operations.
+// Fleet lifecycle must not require the funding private key used by l1.
+func LoadNetworkEnvironment(path string) (NetworkEnvironment, error) {
+	values, err := godotenv.Read(path)
+	if err != nil {
+		return NetworkEnvironment{}, fmt.Errorf("read required configuration %s: %w", path, err)
+	}
+	return parseNetworkEnvironment(path, values)
+}
+
+func parseNetworkEnvironment(path string, values map[string]string) (NetworkEnvironment, error) {
+	network := strings.TrimSpace(values["NETWORK"])
+	if network == "" {
+		return NetworkEnvironment{}, fmt.Errorf("%s: required field NETWORK is not provided", path)
+	}
+	if network != "fuji" && network != "mainnet" {
+		return NetworkEnvironment{}, fmt.Errorf("%s: NETWORK must be fuji or mainnet, got %q", path, network)
+	}
+
+	pChainAPI := strings.TrimSpace(values["PCHAIN_API"])
+	if pChainAPI == "" {
+		return NetworkEnvironment{}, fmt.Errorf("%s: required field PCHAIN_API is not provided", path)
+	}
+	parsedAPI, err := url.Parse(pChainAPI)
+	if err != nil || parsedAPI.Host == "" || (parsedAPI.Scheme != "http" && parsedAPI.Scheme != "https") {
+		return NetworkEnvironment{}, fmt.Errorf("%s: PCHAIN_API must be an explicit http or https URL, got %q", path, pChainAPI)
+	}
+	return NetworkEnvironment{Network: network, PChainAPI: pChainAPI}, nil
 }
 
 func LoadNodes(path string) ([]Node, error) {

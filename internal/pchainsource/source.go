@@ -1,0 +1,434 @@
+package pchainsource
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/netip"
+	"os"
+	"os/exec"
+	"os/user"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/ava-labs/avalanchego/ids"
+)
+
+const (
+	serviceName = "avalanche-benchmark-pchain-source.service"
+	localAPI    = "http://127.0.0.1:9650"
+)
+
+type nodeConfig struct {
+	NetworkID                 string `json:"network-id"`
+	DataDir                   string `json:"data-dir"`
+	HTTPHost                  string `json:"http-host"`
+	HTTPPort                  uint16 `json:"http-port"`
+	StakingPort               uint16 `json:"staking-port"`
+	PartialSyncPrimaryNetwork bool   `json:"partial-sync-primary-network"`
+	PChainFollowOnly          bool   `json:"p-chain-follow-only"`
+	BootstrapIPs              string `json:"bootstrap-ips"`
+	BootstrapIDs              string `json:"bootstrap-ids"`
+}
+
+type Runner interface {
+	Run(context.Context, string, ...string) ([]byte, error)
+}
+
+type commandRunner struct{}
+
+func (commandRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
+type Manager struct {
+	root       string
+	network    string
+	publicAPI  string
+	out        io.Writer
+	runner     Runner
+	httpClient *http.Client
+	sleep      func(time.Duration)
+}
+
+func New(root, network, publicAPI string, out io.Writer) *Manager {
+	return &Manager{
+		root:      root,
+		network:   network,
+		publicAPI: strings.TrimRight(publicAPI, "/"),
+		out:       out,
+		runner:    commandRunner{},
+		httpClient: &http.Client{
+			Timeout: 10 * time.Second,
+		},
+		sleep: time.Sleep,
+	}
+}
+
+func (m *Manager) Follow(ctx context.Context, upstreamAddress, upstreamNodeID string) error {
+	if _, err := netip.ParseAddrPort(upstreamAddress); err != nil {
+		return fmt.Errorf("upstream must be an explicit IP:port, got %q: %w", upstreamAddress, err)
+	}
+	nodeID, err := ids.NodeIDFromString(upstreamNodeID)
+	if err != nil {
+		return fmt.Errorf("upstream NodeID %q is invalid: %w", upstreamNodeID, err)
+	}
+	if err := m.install(ctx, upstreamAddress, nodeID.String()); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(m.out, "following %s (%s); waiting up to 30s for the peer\n", upstreamAddress, nodeID)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		status, err := m.fetchLocalStatus(ctx)
+		if err == nil && contains(status.PeerNodeIDs, nodeID.String()) {
+			return m.printStatus(ctx)
+		}
+		if time.Now().After(deadline) {
+			if err != nil {
+				return fmt.Errorf("source restarted but its API did not become ready: %w", err)
+			}
+			return fmt.Errorf("source restarted but did not connect to upstream %s (%s) within 30s", upstreamAddress, nodeID)
+		}
+		m.sleep(time.Second)
+	}
+}
+
+func (m *Manager) Freeze(ctx context.Context) error {
+	cfg, err := m.loadConfig()
+	if err != nil {
+		return fmt.Errorf("freeze requires an existing P-chain source: %w", err)
+	}
+	if cfg.BootstrapIPs == "" && cfg.BootstrapIDs == "" {
+		return fmt.Errorf("P-chain source is already frozen")
+	}
+	if err := m.install(ctx, "", ""); err != nil {
+		return err
+	}
+	fmt.Fprintln(m.out, "frozen with explicit empty bootstrap IP and NodeID lists")
+	return m.waitForAPIAndPrint(ctx)
+}
+
+func (m *Manager) Status(ctx context.Context) error {
+	if _, err := m.loadConfig(); err != nil {
+		return fmt.Errorf("status requires an existing P-chain source: %w", err)
+	}
+	active, err := m.run(ctx, "systemctl", "is-active", serviceName)
+	if err != nil {
+		return fmt.Errorf("%s is not active: %w", serviceName, err)
+	}
+	if strings.TrimSpace(string(active)) != "active" {
+		return fmt.Errorf("%s is not active: %s", serviceName, strings.TrimSpace(string(active)))
+	}
+	return m.printStatus(ctx)
+}
+
+func (m *Manager) install(ctx context.Context, upstreamAddress, upstreamNodeID string) error {
+	binaryPath := filepath.Join(m.root, "bin", "avalanchego")
+	info, err := os.Stat(binaryPath)
+	if err != nil {
+		return fmt.Errorf("required packaged binary %s is unavailable: %w", binaryPath, err)
+	}
+	if info.Mode()&0o111 == 0 {
+		return fmt.Errorf("required packaged binary %s is not executable", binaryPath)
+	}
+
+	sourceDir := filepath.Join(m.root, "data", "pchain-source")
+	if err := os.MkdirAll(sourceDir, 0o700); err != nil {
+		return fmt.Errorf("create P-chain source directory %s: %w", sourceDir, err)
+	}
+	cfg := nodeConfig{
+		NetworkID:                 m.network,
+		DataDir:                   sourceDir,
+		HTTPHost:                  "127.0.0.1",
+		HTTPPort:                  9650,
+		StakingPort:               9651,
+		PartialSyncPrimaryNetwork: true,
+		PChainFollowOnly:          true,
+		BootstrapIPs:              upstreamAddress,
+		BootstrapIDs:              upstreamNodeID,
+	}
+	configPath := filepath.Join(sourceDir, "config.json")
+	if err := writeJSON(configPath, cfg); err != nil {
+		return err
+	}
+
+	currentUser, err := user.Current()
+	if err != nil {
+		return fmt.Errorf("determine service user: %w", err)
+	}
+	unitPath := filepath.Join(sourceDir, serviceName)
+	unit := renderUnit(currentUser.Username, binaryPath, configPath)
+	if err := os.WriteFile(unitPath, []byte(unit), 0o600); err != nil {
+		return fmt.Errorf("write systemd unit %s: %w", unitPath, err)
+	}
+	if _, err := m.run(ctx, "sudo", "install", "-m", "0644", unitPath, filepath.Join("/etc/systemd/system", serviceName)); err != nil {
+		return err
+	}
+	if _, err := m.run(ctx, "sudo", "systemctl", "daemon-reload"); err != nil {
+		return err
+	}
+	if _, err := m.run(ctx, "sudo", "systemctl", "enable", serviceName); err != nil {
+		return err
+	}
+	_, err = m.run(ctx, "sudo", "systemctl", "restart", serviceName)
+	return err
+}
+
+func (m *Manager) waitForAPIAndPrint(ctx context.Context) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := m.fetchLocalStatus(ctx); err == nil {
+			return m.printStatus(ctx)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("source restarted but its API did not become ready within 30s")
+		}
+		m.sleep(time.Second)
+	}
+}
+
+type localStatus struct {
+	NodeID      string
+	Height      uint64
+	PeerNodeIDs []string
+}
+
+func (m *Manager) printStatus(ctx context.Context) error {
+	cfg, err := m.loadConfig()
+	if err != nil {
+		return err
+	}
+	local, err := m.fetchLocalStatus(ctx)
+	if err != nil {
+		return err
+	}
+	publicHeight, err := m.fetchPublicHeight(ctx)
+	if err != nil {
+		return err
+	}
+	mode := "frozen"
+	if cfg.BootstrapIPs != "" || cfg.BootstrapIDs != "" {
+		mode = "following"
+	}
+	fmt.Fprintf(m.out, "mode: %s\n", mode)
+	fmt.Fprintf(m.out, "source NodeID: %s\n", local.NodeID)
+	if mode == "following" {
+		connected := contains(local.PeerNodeIDs, cfg.BootstrapIDs)
+		fmt.Fprintf(m.out, "upstream: %s (%s), connected=%t\n", cfg.BootstrapIPs, cfg.BootstrapIDs, connected)
+	}
+	fmt.Fprintf(m.out, "P-chain height: %d\n", local.Height)
+	if publicHeight >= local.Height {
+		fmt.Fprintf(m.out, "public P-chain height: %d, lag=%d\n", publicHeight, publicHeight-local.Height)
+	} else {
+		fmt.Fprintf(m.out, "public P-chain height: %d, source ahead by %d\n", publicHeight, local.Height-publicHeight)
+	}
+	fmt.Fprintf(m.out, "peers: %d\n", len(local.PeerNodeIDs))
+	return nil
+}
+
+func (m *Manager) loadConfig() (nodeConfig, error) {
+	path := filepath.Join(m.root, "data", "pchain-source", "config.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nodeConfig{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	var cfg nodeConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nodeConfig{}, fmt.Errorf("decode %s: %w", path, err)
+	}
+	if cfg.NetworkID != m.network {
+		return nodeConfig{}, fmt.Errorf("%s network is %q, .env NETWORK is %q", path, cfg.NetworkID, m.network)
+	}
+	if (cfg.BootstrapIPs == "") != (cfg.BootstrapIDs == "") {
+		return nodeConfig{}, fmt.Errorf("%s has only one bootstrap list populated", path)
+	}
+	return cfg, nil
+}
+
+func (m *Manager) fetchLocalStatus(ctx context.Context) (localStatus, error) {
+	var nodeResult struct {
+		NodeID string `json:"nodeID"`
+	}
+	if err := m.rpc(ctx, localAPI, "info.getNodeID", map[string]any{}, &nodeResult); err != nil {
+		return localStatus{}, fmt.Errorf("read source NodeID: %w", err)
+	}
+	var peersResult struct {
+		Peers []struct {
+			NodeID string `json:"nodeID"`
+		} `json:"peers"`
+	}
+	if err := m.rpc(ctx, localAPI, "info.peers", map[string]any{}, &peersResult); err != nil {
+		return localStatus{}, fmt.Errorf("read source peers: %w", err)
+	}
+	height, err := m.fetchMetric(ctx, localAPI+"/ext/metrics", `avalanche_snowman_last_accepted_height{chain="P"}`)
+	if err != nil {
+		return localStatus{}, err
+	}
+	status := localStatus{NodeID: nodeResult.NodeID, Height: uint64(height)}
+	for _, peer := range peersResult.Peers {
+		status.PeerNodeIDs = append(status.PeerNodeIDs, peer.NodeID)
+	}
+	return status, nil
+}
+
+func (m *Manager) fetchPublicHeight(ctx context.Context) (uint64, error) {
+	var result struct {
+		Height string `json:"height"`
+	}
+	if err := m.rpc(ctx, m.publicAPI, "platform.getHeight", map[string]any{}, &result); err != nil {
+		return 0, fmt.Errorf("read public P-chain height from %s: %w", m.publicAPI, err)
+	}
+	height, err := strconv.ParseUint(result.Height, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("decode public P-chain height %q: %w", result.Height, err)
+	}
+	return height, nil
+}
+
+func (m *Manager) fetchMetric(ctx context.Context, endpoint, name string) (float64, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return 0, err
+	}
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("read source metrics: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("read source metrics: HTTP %s", resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("read source metrics body: %w", err)
+	}
+	for line := range strings.SplitSeq(string(body), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == name {
+			return strconv.ParseFloat(fields[1], 64)
+		}
+	}
+	return 0, fmt.Errorf("source metrics do not contain %s", name)
+}
+
+func (m *Manager) rpc(ctx context.Context, baseURL, method string, params any, result any) error {
+	body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  method,
+		"params":  params,
+	})
+	if err != nil {
+		return err
+	}
+	endpoint := strings.TrimRight(baseURL, "/") + "/ext/info"
+	if strings.HasPrefix(method, "platform.") {
+		endpoint = strings.TrimRight(baseURL, "/") + "/ext/bc/P"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %s", resp.Status)
+	}
+	var envelope struct {
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return err
+	}
+	if envelope.Error != nil {
+		return fmt.Errorf("RPC %d: %s", envelope.Error.Code, envelope.Error.Message)
+	}
+	if len(envelope.Result) == 0 {
+		return errors.New("RPC response has no result")
+	}
+	return json.Unmarshal(envelope.Result, result)
+}
+
+func (m *Manager) run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	output, err := m.runner.Run(ctx, name, args...)
+	if err != nil {
+		return output, fmt.Errorf("%s %s: %w: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+	return output, nil
+}
+
+func renderUnit(username, binaryPath, configPath string) string {
+	return fmt.Sprintf(`[Unit]
+Description=Avalanche benchmark P-chain source
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%s
+ExecStart=%s --config-file=%s
+Restart=on-failure
+RestartSec=2
+LimitNOFILE=32768
+
+[Install]
+WantedBy=multi-user.target
+`, username, systemdQuote(binaryPath), systemdQuote(configPath))
+}
+
+func systemdQuote(value string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value) + `"`
+}
+
+func writeJSON(path string, value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	temp, err := os.CreateTemp(filepath.Dir(path), ".config-")
+	if err != nil {
+		return fmt.Errorf("create temporary P-chain config: %w", err)
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		temp.Close()
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("install P-chain config %s: %w", path, err)
+	}
+	return nil
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}

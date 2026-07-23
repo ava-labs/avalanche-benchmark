@@ -12,7 +12,7 @@ Design rationale: **[DESIGN.md](DESIGN.md)**. This README is the operator manual
 
 ## Architecture
 
-Two L1s, one fleet, one relay:
+Two L1s, one fleet, one P-chain source:
 
 - **Main L1**: the benchmarked chain (subnet-evm). Its validators are your
   fleet. Registered once via `ConvertSubnetToL1Tx` with the management chain set
@@ -27,26 +27,27 @@ Two L1s, one fleet, one relay:
   the 67% quorum. The committee's keys live on the control host; **nodes never
   sign management messages**. During a DC outage the dead validators' stake
   must still be movable.
-- **The relay**: a follow-only P-chain proxy on the control host, the fleet's
-  single allowed external TCP. The fleet's P-chain state has exactly two
-  regimes, distinguished only by relay state:
+- **The P-chain source**: one always-running follow-only AvalancheGo process on
+  the control host. Its database and NodeID never change. In following mode it
+  has exactly one approved upstream. In frozen mode the same process restarts
+  with both bootstrap lists explicitly empty and serves its preserved frontier
+  to the fleet.
 
-| Mode | Relay | P-chain | Failover mechanism |
-|---|---|---|---|
-| **Frozen P-chain** | down / absent | last delivered snapshot, served as a frozen frontier | key swap (`place`) |
-| **Proxied P-chain** | up | live, streamed through the relay | weight change (`set-weight`) |
+| Mode | Source bootstrap lists | P-chain |
+|---|---|---|
+| **Following** | one explicit `(IP, NodeID)` upstream | advances from the approved upstream |
+| **Frozen** | IPs and NodeIDs explicitly empty | remains at the last accepted height |
 
-There is no per-node configuration difference between the modes. Validators
-bootstrap from the fleet's RPC nodes; RPC nodes bootstrap from the relay's
-`(IP, NodeID)`. A down relay is just an unreachable peer. **Going live is
-starting one process on control.** Nothing is re-registered, re-keyed, or
-redeployed.
+The source stays up in both modes. Omitted bootstrap flags are not frozen:
+AvalancheGo would load its built-in network bootstrappers. The transition
+changes only the source configuration and restarts that one process. Validators
+bootstrap from the fleet's RPC nodes, and RPC nodes bootstrap from the stable
+source `(IP, NodeID)`.
 
-Every node runs `--partial-sync-primary-network`: the C and X chains are never
-synced, in either mode. Each node's P-chain database is seeded from a snapshot
-taken on control. This is mandatory in both modes, since bootstrapping a fleet's
-P-chain from genesis through one relay is not practical. Snapshot = seed;
-relay = feed.
+The client control host has internet access, so the supported workflow is
+follow, create or update the desired P-chain state, then freeze. There is no
+snapshot shipment, archive import, USB workflow, reset command, or second
+P-chain process.
 
 ## Inventory: nodes.ini
 
@@ -161,17 +162,11 @@ l1 address             show funding addresses and spendable P-chain balance
 l1 keygen              generate FUNDING_PRIVATE_KEY directly into an empty .env field
 l1 weights             show identity letters, NodeIDs, weights, and fee days left
 l1 topup <days>        fund every registered validator to <days> of runway
+l1 set-weight <letter> <w> set main identity to 1, 1000, or 100000
 l1 destroy             disable every converted L1 validator and reclaim its balance
-l1 reset               provision (unconditional rsync) + seed P-chain + start
-                       everything at initial letter-to-number placement
-l1 place <letter> <node>   SWAP identity <letter> with whatever identity node <node> runs
-l1 set-weight <letter> <w> set main identity <letter> to 1 (dead), 1000 (spare), or 100000 (active)
-l1 down <n|dc=X>       kill node(s), wipe ONLY the L1 chain data (P-chain kept)
-l1 up <n|dc=X>         start node(s); state-sync the L1, wait until at tip
-l1 relay start|stop    the P-chain proxy on control = the mode switch
-l1 snapshot            sync the selected P-chain on control, produce the seed
-l1 status | verify | endpoints        read-only
-bombard                load generator (drives the RPC nodes)
+fleet pchain follow <upstream-ip:port> <upstream-node-id>
+fleet pchain freeze
+fleet pchain status
 ```
 
 ### create
@@ -208,9 +203,9 @@ fail-fast safety margin, not an additional transfer. An insufficient wallet
 fails before creating `deployment/` or mutating the P-chain.
 
 Creation does not freeze the P-chain. The L1 may be pre-created on another
-machine. The client or deployment control machine later syncs past both
-conversions and runs `snapshot`; the resulting local P-chain frontier is the
-frozen seed shipped to the isolated fleet.
+machine. On the deployment control host, run `fleet pchain follow` until
+`fleet pchain status` shows the source has reached the public height and
+includes both conversion transactions. Then run `fleet pchain freeze`.
 
 ### topup
 
@@ -313,8 +308,9 @@ pins the conversion height, `set-weight` continues normally. The readiness gate
 is automatic; the weight transaction itself is constructed and submitted only
 once, and any weight-transaction failure remains an immediate error.
 
-In frozen mode the transaction would confirm on the P-chain but never reach your
-fleet, so `set-weight` refuses to run when the relay is down.
+Run weight changes while the P-chain source is following. A transaction
+submitted while the source is frozen can confirm publicly without reaching the
+fleet until the source follows again.
 
 ### down / up: recovery primitive
 
@@ -334,7 +330,7 @@ Two-hop, and the reason RPC identities are pinned:
 
 - Validators' `--bootstrap-ips/ids` (and state-sync lists, which are the same list) point
   at the fleet's **RPC nodes**.
-- RPC nodes point at the **relay** upstream.
+- RPC nodes point at the **P-chain source**.
 
 Bootstrap entries are `(IP, NodeID)` pairs verified by TLS at dial time, so
 anchors must never change identity. This is exactly why `place` refuses RPC
@@ -370,24 +366,23 @@ dashboards: run `bombard`, run a drill, watch throughput, finalized height per
 node, and stake placement move in Grafana (`04_monitoring.sh` runs
 Prometheus + Grafana on control, scraping every node's `/ext/metrics`).
 
-### Drills
+### P-chain source lifecycle
 
 ```bash
-# Frozen mode: DC-B dies; move its high identities onto DC-A spares.
-./bin/l1 down dc=B
-./bin/l1 place a 5        # dead high identity -> live low node (repeat per identity)
-./bin/l1 up dc=B          # later: nodes rejoin, state-sync, wear the ridden-back identities
-
-# Proxied mode: same failure, no identity moves at all.
-./bin/l1 relay start      # once; this is the mode transition
-./bin/l1 down dc=B
-./bin/l1 set-weight e 100000  # promote a spare validator to active
-./bin/l1 set-weight a 1       # demote the failed validator to dead
+./bin/fleet pchain follow 18.192.93.241:9651 \
+  NodeID-2m38qc95mhHXtrhjyGbe7r2NhniqHHJRB
+./bin/fleet pchain status
+./bin/fleet pchain freeze
+./bin/fleet pchain status
 ```
 
-Both drills run under load. The two mechanisms coexist on one deployment and
-cannot corrupt each other: weight attaches to the identity wherever it sits,
-and `place` preserves the identity↔node bijection.
+`follow` creates or updates one systemd service, restarts it, and waits up to
+30 seconds for the requested upstream peer. It does not hide a failed
+connection. `freeze` requires an existing source, writes both bootstrap lists
+as explicit empty strings, and restarts the same service. `status` derives the
+mode from that configuration and reports the service's NodeID, accepted
+P-chain height, public height and lag, upstream connection, and peer count.
+There is no separate mode file.
 
 ## Quick start
 
@@ -398,17 +393,16 @@ cp .env.example .env              # choose fuji or mainnet and set key paths
 
 go run ./cmd/l1 create   # fresh on-chain committee + main L1, one manager
 # go run ./cmd/l1 create 4  # four-manager alternative
-./bin/l1 snapshot      # client/control syncs the P-chain and builds the seed
-./bin/l1 reset         # rsync artifacts + seed P-chain + start all nodes
-./04_monitoring.sh     # Prometheus + Grafana on control
-./bin/l1 status        # all nodes SERVING, weights read from the P-chain
-./05_benchmark.sh      # bombard at the RPC nodes
+make pack
+# copy remote-benchmark.tar.gz to the control host and extract it
+./bin/fleet pchain follow <upstream-ip:port> <upstream-node-id>
+./bin/fleet pchain status
+./bin/fleet pchain freeze
 ```
 
-`reset` provisions unconditionally (rsync, idempotent, near-instant when
-unchanged; there is deliberately no "already provisioned" check to go stale)
-and restores initial placement: identity `a` on the first numbered node,
-identity `b` on the second, and so on.
+The P-chain source data lives under `data/pchain-source/`. Do not delete that
+directory during mode changes or package updates. It contains the preserved
+P-chain database and staking identity.
 
 ## Operational notes
 

@@ -75,6 +75,26 @@ func TestLoadEnvironmentFailsLoudly(t *testing.T) {
 	}
 }
 
+func TestLoadNetworkEnvironmentDoesNotRequireFundingKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	writeFile(t, path, strings.Join([]string{
+		"NETWORK=fuji",
+		"PCHAIN_API=https://api.avax-test.network",
+		"FUNDING_PRIVATE_KEY=",
+	}, "\n"))
+
+	environment, err := LoadNetworkEnvironment(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if environment.Network != "fuji" {
+		t.Fatalf("network = %q, want fuji", environment.Network)
+	}
+	if environment.PChainAPI != "https://api.avax-test.network" {
+		t.Fatalf("PChainAPI = %q", environment.PChainAPI)
+	}
+}
+
 func TestLoadNodesFailsLoudly(t *testing.T) {
 	base := []string{
 		"1 host=v1 role=validator",

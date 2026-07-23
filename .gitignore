@@ -19,6 +19,7 @@
 
 # Build/dependency artifacts
 /bin/
+/.build/
 /avalanchego
 /benchmark
 /bombard
