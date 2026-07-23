@@ -276,6 +276,10 @@ func (m *Manager) fetchLocalStatus(ctx context.Context) (localStatus, error) {
 	if err != nil {
 		return localStatus{}, err
 	}
+	// Follow-only intentionally remains in bootstrap and rejects platform.getHeight.
+	// AvalancheGo logs the database height at process start and exposes every block
+	// accepted afterward as this process's bootstrap counter. Their sum is the
+	// current height without inventing another persisted height that can drift.
 	startHeight, startFound, err := m.fetchStartHeight(ctx)
 	if err != nil {
 		return localStatus{}, err

@@ -382,7 +382,11 @@ connection. `freeze` requires an existing source, writes both bootstrap lists
 as explicit empty strings, and restarts the same service. `status` derives the
 mode from that configuration and reports the service's NodeID, accepted
 P-chain height, public height and lag, upstream connection, and peer count.
-There is no separate mode file.
+There is no separate mode file or height file. Follow-only deliberately keeps
+the PlatformVM API gated, so `status` derives the accepted height from
+AvalancheGo's logged database height at process start plus its accepted-block
+counter for that process. During the few seconds before both are available it
+prints `P-chain height: initializing`.
 
 ## Quick start
 

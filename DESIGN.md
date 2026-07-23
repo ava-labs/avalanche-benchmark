@@ -29,6 +29,7 @@ Motivations:
 - Initial installation and every later refresh use the same sequence: follow until the required state is accepted, then freeze.
 - Omitted bootstrap flags are not frozen because AvalancheGo loads built-in network bootstrappers. Freeze must render both lists explicitly empty.
 - The benchmark uses exactly one source on control. Its stable identity lets every downstream node keep the same bootstrap configuration through every follow/freeze transition.
+- Follow-only intentionally keeps `platform.getHeight` gated. Source status derives its current P-chain height from AvalancheGo's logged database height at process start plus the process's `avalanche_snowman_bs_accepted{chain="P"}` counter. It does not persist a second height that could drift.
 
 ## Creation
 
