@@ -27,22 +27,20 @@ Two L1s, one fleet, one P-chain source:
   the 67% quorum. The committee's keys live on the control host; **nodes never
   sign management messages**. During a DC outage the dead validators' stake
   must still be movable.
-- **The P-chain source**: one always-running follow-only AvalancheGo process on
-  the control host. Its database and NodeID never change. In following mode it
-  uses the packaged AvalancheGo binary's built-in network bootstrappers. In
-  frozen mode the same process restarts with both bootstrap lists explicitly
-  empty and serves its preserved frontier to the fleet.
+- **The P-chain source**: one foreground AvalancheGo process on the control
+  host. Its database and NodeID never change. The required start argument
+  selects following or frozen configuration before AvalancheGo starts.
 
 | Mode | Source bootstrap lists | P-chain |
 |---|---|---|
 | **Following** | fields omitted; packaged AvalancheGo defaults | advances from the public network |
 | **Frozen** | IPs and NodeIDs explicitly empty | remains at the last accepted height |
 
-The source stays up in both modes. Omitted bootstrap flags are not frozen:
-AvalancheGo would load its built-in network bootstrappers. The transition
-changes only the source configuration and restarts that one process. Validators
-bootstrap from the fleet's RPC nodes, and RPC nodes bootstrap from the stable
-source `(IP, NodeID)`.
+`fleet` does not daemonize, restart, or supervise the source. Stop the
+foreground process and start it with the other mode to transition. Omitted
+bootstrap flags are not frozen: AvalancheGo loads its built-in network
+bootstrappers. Validators bootstrap from the fleet's RPC nodes, and RPC nodes
+bootstrap from the stable source `(IP, NodeID)`.
 
 The client control host has internet access, so the supported workflow is
 follow, create or update the desired P-chain state, then freeze. There is no
@@ -164,9 +162,7 @@ l1 weights             show identity letters, NodeIDs, weights, and fee days lef
 l1 topup <days>        fund every registered validator to <days> of runway
 l1 set-weight <letter> <w> set main identity to 1, 1000, or 100000
 l1 destroy             disable every converted L1 validator and reclaim its balance
-fleet pchain follow
-fleet pchain freeze
-fleet pchain status
+fleet pchain start <following|frozen>
 ```
 
 ### create
@@ -203,9 +199,9 @@ fail-fast safety margin, not an additional transfer. An insufficient wallet
 fails before creating `deployment/` or mutating the P-chain.
 
 Creation does not freeze the P-chain. The L1 may be pre-created on another
-machine. On the deployment control host, run `fleet pchain follow` until
-`fleet pchain status` shows the source has reached the public height and
-includes both conversion transactions. Then run `fleet pchain freeze`.
+machine. On the deployment control host, run `fleet pchain start following`
+until the source accepts through both conversion transactions. Stop it, then
+run `fleet pchain start frozen`.
 
 ### topup
 
@@ -369,25 +365,25 @@ Prometheus + Grafana on control, scraping every node's `/ext/metrics`).
 ### P-chain source lifecycle
 
 ```bash
-./bin/fleet pchain follow
-./bin/fleet pchain status
-./bin/fleet pchain freeze
-./bin/fleet pchain status
+./bin/fleet pchain start following
+# Ctrl-C after the required P-chain state is accepted
+./bin/fleet pchain start frozen
 ```
 
-`follow` creates or updates one systemd service, restarts it, and waits up to
-30 seconds for a peer. It omits both bootstrap fields, so the packaged
-AvalancheGo binary reads its own embedded `genesis/bootstrappers.json`. Updating
-AvalancheGo therefore updates the defaults without copying them into this
-tool. `freeze` requires an existing source, writes both bootstrap lists as
-explicit empty strings, and restarts the same service. `status` derives the
-mode from that configuration and reports the service's NodeID, accepted
-P-chain height, public height and lag, bootstrap source, and peer count.
-There is no separate mode file or height file. Follow-only deliberately keeps
-the PlatformVM API gated, so `status` derives the accepted height from
-AvalancheGo's logged database height at process start plus its accepted-block
-counter for that process. During the few seconds before both are available it
-prints `P-chain height: initializing`.
+`start` writes the selected configuration and replaces `fleet` with the
+packaged AvalancheGo binary. AvalancheGo owns the foreground terminal, logs,
+signals, and exit status. There is no systemd unit, background process,
+automatic restart, separate mode file, or status command.
+
+`following` omits both bootstrap fields, so AvalancheGo reads its own embedded
+`genesis/bootstrappers.json`. Updating AvalancheGo updates the defaults without
+copying them into this tool. `frozen` writes both bootstrap fields as explicit
+empty strings. Both modes reuse `data/pchain-source/`, including its database
+and staking identity.
+
+While the source is stopped, already-running fleet nodes continue. A fleet
+node that starts while its configured source is unavailable cannot pass its
+bootstrap-beacon gate, even if it has an existing local P-chain database.
 
 ## Quick start
 
@@ -400,9 +396,7 @@ go run ./cmd/l1 create   # fresh on-chain committee + main L1, one manager
 # go run ./cmd/l1 create 4  # four-manager alternative
 make pack
 # copy remote-benchmark.tar.gz to the control host and extract it
-./bin/fleet pchain follow
-./bin/fleet pchain status
-./bin/fleet pchain freeze
+./bin/fleet pchain start following
 ```
 
 The P-chain source data lives under `data/pchain-source/`. Do not delete that

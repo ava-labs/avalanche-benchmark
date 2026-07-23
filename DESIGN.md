@@ -13,23 +13,24 @@ A performance-under-failover benchmark toolset for Avalanche L1s in ISOLATED net
 
 ## The two P-chain modes and the source (the central idea)
 
-There is no separate deployment-mode variable. One P-chain source process always runs on control, and its bootstrap configuration is the mode:
+There is no separate deployment-mode variable or lifecycle manager. One P-chain source process runs in the foreground on control, and its required start argument selects the bootstrap configuration:
 
 - **Frozen P-chain**: both source bootstrap lists are explicitly empty. The source serves its preserved frontier but accepts no newer P-chain blocks.
 - **Following P-chain**: the source runs `--p-chain-follow-only=true` using the packaged AvalancheGo binary's built-in network bootstrappers.
 
 Always true in both modes:
-- The source process stays running with the same database and NodeID.
+- Every start reuses the same database and NodeID.
 - The source and fleet nodes run `--partial-sync-primary-network`; C and X are never synced.
 - Validators point at the fleet's RPC nodes. RPC nodes point at the source's stable `(IP, NodeID)`.
-- `fleet pchain follow`, `fleet pchain freeze`, and `fleet pchain status` are the entire source interface.
+- `fleet pchain start <following|frozen>` is the entire source interface. It replaces itself with AvalancheGo and remains in the foreground.
 
 Motivations:
 - The client control host already has internet. Therefore initial snapshot shipment, archive import, USB tooling, reset tooling, and a second P-chain process do not need to exist.
-- Initial installation and every later refresh use the same sequence: follow until the required state is accepted, then freeze.
+- Initial installation and every later refresh use the same sequence: start following until the required state is accepted, stop it, then start frozen.
 - Following omits both bootstrap fields so AvalancheGo reads its embedded `genesis/bootstrappers.json`. The benchmark never copies or pins that list, so updating the packaged AvalancheGo binary also updates the defaults. Freeze must instead render both lists explicitly empty.
-- The benchmark uses exactly one source on control. Its stable identity lets every downstream node keep the same bootstrap configuration through every follow/freeze transition.
-- Follow-only intentionally keeps `platform.getHeight` gated. Source status derives its current P-chain height from AvalancheGo's logged database height at process start plus the process's `avalanche_snowman_bs_accepted{chain="P"}` counter. It does not persist a second height that could drift.
+- The benchmark uses exactly one source on control. Its stable identity lets every downstream node keep the same bootstrap configuration through every following/frozen transition.
+- `fleet` does not daemonize, supervise, restart, or report status. Foreground AvalancheGo owns logs, signals, and exit status.
+- Already-running fleet nodes continue while the source is stopped. A fleet node starting during that gap cannot pass its configured bootstrap-beacon gate until the source returns, even with an existing local P-chain database.
 
 ## Creation
 

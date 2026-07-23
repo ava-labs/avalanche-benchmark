@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,37 +23,17 @@ func run() error {
 	}
 	program := filepath.Base(os.Args[0])
 	switch {
-	case len(os.Args) == 3 && os.Args[1] == "pchain" && os.Args[2] == "follow":
+	case len(os.Args) == 4 && os.Args[1] == "pchain" && os.Args[2] == "start":
 		environment, err := config.LoadNetworkEnvironment(filepath.Join(root, ".env"))
 		if err != nil {
 			return err
 		}
-		return pchainsource.New(root, environment.Network, environment.PChainAPI, os.Stdout).
-			Follow(context.Background())
-	case len(os.Args) == 3 && os.Args[1] == "pchain" && os.Args[2] == "freeze":
-		environment, err := config.LoadNetworkEnvironment(filepath.Join(root, ".env"))
-		if err != nil {
-			return err
-		}
-		return pchainsource.New(root, environment.Network, environment.PChainAPI, os.Stdout).
-			Freeze(context.Background())
-	case len(os.Args) == 3 && os.Args[1] == "pchain" && os.Args[2] == "status":
-		environment, err := config.LoadNetworkEnvironment(filepath.Join(root, ".env"))
-		if err != nil {
-			return err
-		}
-		return pchainsource.New(root, environment.Network, environment.PChainAPI, os.Stdout).
-			Status(context.Background())
+		return pchainsource.New(root, environment.Network, os.Stdout).Start(os.Args[3])
 	default:
 		return fmt.Errorf("usage:\n%s", usage(program))
 	}
 }
 
 func usage(program string) string {
-	return fmt.Sprintf(
-		"  %s pchain follow\n  %s pchain freeze\n  %s pchain status",
-		program,
-		program,
-		program,
-	)
+	return fmt.Sprintf("  %s pchain start <following|frozen>", program)
 }

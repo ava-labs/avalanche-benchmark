@@ -1,112 +1,80 @@
 package pchainsource
 
 import (
-	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func TestMissingAcceptedMetricMeansInitializing(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("# no P-chain metric yet\n"))
-	}))
-	t.Cleanup(server.Close)
+func TestStartFollowingOmitsBootstrapFields(t *testing.T) {
+	root := testRoot(t)
+	manager := New(root, "fuji", os.Stdout)
+	manager.exec = func(string, []string, []string) error {
+		return nil
+	}
 
-	manager := New(t.TempDir(), "fuji", "https://api.avax-test.network", os.Stdout)
-	value, found, err := manager.fetchMetric(
-		context.Background(),
-		server.URL,
-		`avalanche_snowman_bs_accepted{chain="P"}`,
-	)
-	if err != nil {
+	if err := manager.Start("following"); err != nil {
 		t.Fatal(err)
 	}
-	if found || value != 0 {
-		t.Fatalf("missing metric returned value=%f found=%t", value, found)
+	cfg := readConfig(t, root)
+	if _, exists := cfg["bootstrap-ips"]; exists {
+		t.Fatal("following config contains bootstrap-ips")
+	}
+	if _, exists := cfg["bootstrap-ids"]; exists {
+		t.Fatal("following config contains bootstrap-ids")
 	}
 }
 
-func TestFetchStartHeightUsesLatestBootstrapLog(t *testing.T) {
-	manager := New(t.TempDir(), "fuji", "https://api.avax-test.network", os.Stdout)
-	manager.runner = staticRunner{
-		output: []byte(`[07-23|08:45:39.683] INFO <P Chain> bootstrap/bootstrapper.go:212 starting bootstrapper {"lastAcceptedID":"id","lastAcceptedHeight":289529}`),
+func TestStartFrozenWritesExplicitEmptyBootstrapFields(t *testing.T) {
+	root := testRoot(t)
+	manager := New(root, "fuji", os.Stdout)
+	manager.exec = func(string, []string, []string) error {
+		return nil
 	}
-	height, found, err := manager.fetchStartHeight(context.Background())
-	if err != nil {
+
+	if err := manager.Start("frozen"); err != nil {
 		t.Fatal(err)
 	}
-	if !found || height != 289529 {
-		t.Fatalf("startup height=%d found=%t", height, found)
-	}
-}
-
-type staticRunner struct {
-	output []byte
-	err    error
-}
-
-func (r staticRunner) Run(context.Context, string, ...string) ([]byte, error) {
-	return r.output, r.err
-}
-
-func TestRenderUnitPreservesOneProcessAndOneConfig(t *testing.T) {
-	unit := renderUnit("ubuntu", "/opt/benchmark/bin/avalanchego", "/opt/benchmark/data/pchain-source/config.json")
-	for _, expected := range []string{
-		"User=ubuntu",
-		`ExecStart="/opt/benchmark/bin/avalanchego" --config-file="/opt/benchmark/data/pchain-source/config.json"`,
-		"Restart=on-failure",
-	} {
-		if !strings.Contains(unit, expected) {
-			t.Fatalf("unit does not contain %q:\n%s", expected, unit)
+	cfg := readConfig(t, root)
+	for _, field := range []string{"bootstrap-ips", "bootstrap-ids"} {
+		value, exists := cfg[field]
+		if !exists || value != "" {
+			t.Fatalf("%s=%v, exists=%t", field, value, exists)
 		}
 	}
 }
 
-func TestLoadConfigPreservesOmittedBootstrapFields(t *testing.T) {
-	root := t.TempDir()
-	dir := filepath.Join(root, "data", "pchain-source")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	cfg := nodeConfig{NetworkID: "fuji"}
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	manager := New(root, "fuji", "https://api.avax-test.network", os.Stdout)
-	loaded, err := manager.loadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.BootstrapIPs != nil || loaded.BootstrapIDs != nil {
-		t.Fatalf("expected following config, got %+v", loaded)
+func TestStartRejectsUnknownMode(t *testing.T) {
+	manager := New(t.TempDir(), "fuji", os.Stdout)
+	if err := manager.Start("freeze"); err == nil {
+		t.Fatal("expected invalid mode error")
 	}
 }
 
-func TestLoadConfigPreservesExplicitEmptyBootstrapFields(t *testing.T) {
+func testRoot(t *testing.T) string {
+	t.Helper()
 	root := t.TempDir()
-	dir := filepath.Join(root, "data", "pchain-source")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	binDir := filepath.Join(root, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	data := []byte(`{"network-id":"fuji","bootstrap-ips":"","bootstrap-ids":""}`)
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(binDir, "avalanchego"), []byte("test"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	manager := New(root, "fuji", "https://api.avax-test.network", os.Stdout)
-	loaded, err := manager.loadConfig()
+	return root
+}
+
+func readConfig(t *testing.T, root string) map[string]any {
+	t.Helper()
+	path := filepath.Join(root, "data", "pchain-source", "config.json")
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.BootstrapIPs == nil || loaded.BootstrapIDs == nil {
-		t.Fatalf("expected frozen config, got %+v", loaded)
+	var cfg map[string]any
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
 	}
+	return cfg
 }
