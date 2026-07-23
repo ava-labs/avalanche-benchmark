@@ -272,19 +272,51 @@ func (m *Manager) fetchLocalStatus(ctx context.Context) (localStatus, error) {
 	if err := m.rpc(ctx, localAPI, "info.peers", map[string]any{}, &peersResult); err != nil {
 		return localStatus{}, fmt.Errorf("read source peers: %w", err)
 	}
-	height, found, err := m.fetchMetric(ctx, localAPI+"/ext/metrics", `avalanche_snowman_last_accepted_height{chain="P"}`)
+	accepted, found, err := m.fetchMetric(ctx, localAPI+"/ext/metrics", `avalanche_snowman_bs_accepted{chain="P"}`)
+	if err != nil {
+		return localStatus{}, err
+	}
+	startHeight, startFound, err := m.fetchStartHeight(ctx)
 	if err != nil {
 		return localStatus{}, err
 	}
 	status := localStatus{
 		NodeID:      nodeResult.NodeID,
-		Height:      uint64(height),
-		HeightReady: found,
+		Height:      startHeight + uint64(accepted),
+		HeightReady: found && startFound,
 	}
 	for _, peer := range peersResult.Peers {
 		status.PeerNodeIDs = append(status.PeerNodeIDs, peer.NodeID)
 	}
 	return status, nil
+}
+
+func (m *Manager) fetchStartHeight(ctx context.Context) (uint64, bool, error) {
+	output, err := m.run(
+		ctx,
+		"journalctl",
+		"--unit", serviceName,
+		"--boot",
+		"--output", "cat",
+		"--no-pager",
+		"--grep", "starting bootstrapper",
+		"--lines", "1",
+	)
+	if err != nil {
+		return 0, false, err
+	}
+	line := strings.TrimSpace(string(output))
+	objectStart := strings.LastIndexByte(line, '{')
+	if objectStart < 0 {
+		return 0, false, nil
+	}
+	var fields struct {
+		LastAcceptedHeight uint64 `json:"lastAcceptedHeight"`
+	}
+	if err := json.Unmarshal([]byte(line[objectStart:]), &fields); err != nil {
+		return 0, false, fmt.Errorf("decode P-chain startup height from journal: %w", err)
+	}
+	return fields.LastAcceptedHeight, true, nil
 }
 
 func (m *Manager) fetchPublicHeight(ctx context.Context) (uint64, error) {

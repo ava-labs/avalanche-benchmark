@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-func TestMissingHeightMetricMeansInitializing(t *testing.T) {
+func TestMissingAcceptedMetricMeansInitializing(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("# no P-chain metric yet\n"))
 	}))
@@ -21,7 +21,7 @@ func TestMissingHeightMetricMeansInitializing(t *testing.T) {
 	value, found, err := manager.fetchMetric(
 		context.Background(),
 		server.URL,
-		`avalanche_snowman_last_accepted_height{chain="P"}`,
+		`avalanche_snowman_bs_accepted{chain="P"}`,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -29,6 +29,29 @@ func TestMissingHeightMetricMeansInitializing(t *testing.T) {
 	if found || value != 0 {
 		t.Fatalf("missing metric returned value=%f found=%t", value, found)
 	}
+}
+
+func TestFetchStartHeightUsesLatestBootstrapLog(t *testing.T) {
+	manager := New(t.TempDir(), "fuji", "https://api.avax-test.network", os.Stdout)
+	manager.runner = staticRunner{
+		output: []byte(`[07-23|08:45:39.683] INFO <P Chain> bootstrap/bootstrapper.go:212 starting bootstrapper {"lastAcceptedID":"id","lastAcceptedHeight":289529}`),
+	}
+	height, found, err := manager.fetchStartHeight(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || height != 289529 {
+		t.Fatalf("startup height=%d found=%t", height, found)
+	}
+}
+
+type staticRunner struct {
+	output []byte
+	err    error
+}
+
+func (r staticRunner) Run(context.Context, string, ...string) ([]byte, error) {
+	return r.output, r.err
 }
 
 func TestRenderUnitPreservesOneProcessAndOneConfig(t *testing.T) {
