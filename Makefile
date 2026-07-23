@@ -31,7 +31,9 @@ bin/avalanchego:
 	git -C $(AVALANCHEGO_BUILD_DIR) checkout --detach FETCH_HEAD
 	test "$$(git -C $(AVALANCHEGO_BUILD_DIR) rev-parse HEAD)" = "$(AVALANCHEGO_COMMIT)"
 	cd $(AVALANCHEGO_BUILD_DIR) && GOTOOLCHAIN=$(GO_TOOLCHAIN) ./scripts/build.sh
-	cd $(AVALANCHEGO_BUILD_DIR) && GOTOOLCHAIN=$(GO_TOOLCHAIN) ./graft/subnet-evm/scripts/build.sh
+	cd $(AVALANCHEGO_BUILD_DIR)/graft/subnet-evm && GOTOOLCHAIN=$(GO_TOOLCHAIN) go build \
+		-ldflags "-X github.com/ava-labs/avalanchego/version.GitCommit=$(AVALANCHEGO_COMMIT)" \
+		-o $(AVALANCHEGO_BUILD_DIR)/build/subnet-evm plugin/*.go
 	mkdir -p bin
 	cp $(AVALANCHEGO_BUILD_DIR)/build/avalanchego bin/avalanchego
 	cp $(AVALANCHEGO_BUILD_DIR)/build/subnet-evm bin/$(SUBNET_EVM_ID)
