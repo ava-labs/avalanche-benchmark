@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
 	"os"
 	"os/exec"
 	"os/user"
@@ -16,8 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/ava-labs/avalanchego/ids"
 )
 
 const (
@@ -26,15 +23,15 @@ const (
 )
 
 type nodeConfig struct {
-	NetworkID                 string `json:"network-id"`
-	DataDir                   string `json:"data-dir"`
-	HTTPHost                  string `json:"http-host"`
-	HTTPPort                  uint16 `json:"http-port"`
-	StakingPort               uint16 `json:"staking-port"`
-	PartialSyncPrimaryNetwork bool   `json:"partial-sync-primary-network"`
-	PChainFollowOnly          bool   `json:"p-chain-follow-only"`
-	BootstrapIPs              string `json:"bootstrap-ips"`
-	BootstrapIDs              string `json:"bootstrap-ids"`
+	NetworkID                 string  `json:"network-id"`
+	DataDir                   string  `json:"data-dir"`
+	HTTPHost                  string  `json:"http-host"`
+	HTTPPort                  uint16  `json:"http-port"`
+	StakingPort               uint16  `json:"staking-port"`
+	PartialSyncPrimaryNetwork bool    `json:"partial-sync-primary-network"`
+	PChainFollowOnly          bool    `json:"p-chain-follow-only"`
+	BootstrapIPs              *string `json:"bootstrap-ips,omitempty"`
+	BootstrapIDs              *string `json:"bootstrap-ids,omitempty"`
 }
 
 type Runner interface {
@@ -71,30 +68,23 @@ func New(root, network, publicAPI string, out io.Writer) *Manager {
 	}
 }
 
-func (m *Manager) Follow(ctx context.Context, upstreamAddress, upstreamNodeID string) error {
-	if _, err := netip.ParseAddrPort(upstreamAddress); err != nil {
-		return fmt.Errorf("upstream must be an explicit IP:port, got %q: %w", upstreamAddress, err)
-	}
-	nodeID, err := ids.NodeIDFromString(upstreamNodeID)
-	if err != nil {
-		return fmt.Errorf("upstream NodeID %q is invalid: %w", upstreamNodeID, err)
-	}
-	if err := m.install(ctx, upstreamAddress, nodeID.String()); err != nil {
+func (m *Manager) Follow(ctx context.Context) error {
+	if err := m.install(ctx, nil, nil); err != nil {
 		return err
 	}
 
-	fmt.Fprintf(m.out, "following %s (%s); waiting up to 30s for the peer\n", upstreamAddress, nodeID)
+	fmt.Fprintf(m.out, "following AvalancheGo's built-in %s bootstrap peers; waiting up to 30s for a peer\n", m.network)
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		status, err := m.fetchLocalStatus(ctx)
-		if err == nil && contains(status.PeerNodeIDs, nodeID.String()) {
+		if err == nil && len(status.PeerNodeIDs) > 0 {
 			return m.printStatus(ctx)
 		}
 		if time.Now().After(deadline) {
 			if err != nil {
 				return fmt.Errorf("source restarted but its API did not become ready: %w", err)
 			}
-			return fmt.Errorf("source restarted but did not connect to upstream %s (%s) within 30s", upstreamAddress, nodeID)
+			return fmt.Errorf("source restarted but did not connect to an AvalancheGo default bootstrap peer within 30s")
 		}
 		m.sleep(time.Second)
 	}
@@ -105,10 +95,11 @@ func (m *Manager) Freeze(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("freeze requires an existing P-chain source: %w", err)
 	}
-	if cfg.BootstrapIPs == "" && cfg.BootstrapIDs == "" {
+	if cfg.BootstrapIPs != nil {
 		return fmt.Errorf("P-chain source is already frozen")
 	}
-	if err := m.install(ctx, "", ""); err != nil {
+	empty := ""
+	if err := m.install(ctx, &empty, &empty); err != nil {
 		return err
 	}
 	fmt.Fprintln(m.out, "frozen with explicit empty bootstrap IP and NodeID lists")
@@ -129,7 +120,7 @@ func (m *Manager) Status(ctx context.Context) error {
 	return m.printStatus(ctx)
 }
 
-func (m *Manager) install(ctx context.Context, upstreamAddress, upstreamNodeID string) error {
+func (m *Manager) install(ctx context.Context, bootstrapIPs, bootstrapIDs *string) error {
 	binaryPath := filepath.Join(m.root, "bin", "avalanchego")
 	info, err := os.Stat(binaryPath)
 	if err != nil {
@@ -151,8 +142,8 @@ func (m *Manager) install(ctx context.Context, upstreamAddress, upstreamNodeID s
 		StakingPort:               9651,
 		PartialSyncPrimaryNetwork: true,
 		PChainFollowOnly:          true,
-		BootstrapIPs:              upstreamAddress,
-		BootstrapIDs:              upstreamNodeID,
+		BootstrapIPs:              bootstrapIPs,
+		BootstrapIDs:              bootstrapIDs,
 	}
 	configPath := filepath.Join(sourceDir, "config.json")
 	if err := writeJSON(configPath, cfg); err != nil {
@@ -215,14 +206,13 @@ func (m *Manager) printStatus(ctx context.Context) error {
 		return err
 	}
 	mode := "frozen"
-	if cfg.BootstrapIPs != "" || cfg.BootstrapIDs != "" {
+	if cfg.BootstrapIPs == nil {
 		mode = "following"
 	}
 	fmt.Fprintf(m.out, "mode: %s\n", mode)
 	fmt.Fprintf(m.out, "source NodeID: %s\n", local.NodeID)
 	if mode == "following" {
-		connected := contains(local.PeerNodeIDs, cfg.BootstrapIDs)
-		fmt.Fprintf(m.out, "upstream: %s (%s), connected=%t\n", cfg.BootstrapIPs, cfg.BootstrapIDs, connected)
+		fmt.Fprintf(m.out, "upstream: AvalancheGo's built-in %s bootstrap peers\n", m.network)
 	}
 	if !local.HeightReady {
 		fmt.Fprintln(m.out, "P-chain height: initializing")
@@ -251,8 +241,11 @@ func (m *Manager) loadConfig() (nodeConfig, error) {
 	if cfg.NetworkID != m.network {
 		return nodeConfig{}, fmt.Errorf("%s network is %q, .env NETWORK is %q", path, cfg.NetworkID, m.network)
 	}
-	if (cfg.BootstrapIPs == "") != (cfg.BootstrapIDs == "") {
-		return nodeConfig{}, fmt.Errorf("%s has only one bootstrap list populated", path)
+	if (cfg.BootstrapIPs == nil) != (cfg.BootstrapIDs == nil) {
+		return nodeConfig{}, fmt.Errorf("%s has only one bootstrap field", path)
+	}
+	if cfg.BootstrapIPs != nil && (*cfg.BootstrapIPs != "" || *cfg.BootstrapIDs != "") {
+		return nodeConfig{}, fmt.Errorf("%s has unsupported explicit bootstrap peers; rerun fleet pchain follow to use AvalancheGo defaults", path)
 	}
 	return cfg, nil
 }
@@ -468,13 +461,4 @@ func writeJSON(path string, value any) error {
 		return fmt.Errorf("install P-chain config %s: %w", path, err)
 	}
 	return nil
-}
-
-func contains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }

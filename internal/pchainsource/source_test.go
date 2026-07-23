@@ -67,17 +67,13 @@ func TestRenderUnitPreservesOneProcessAndOneConfig(t *testing.T) {
 	}
 }
 
-func TestLoadConfigDerivesModeFromBootstrapLists(t *testing.T) {
+func TestLoadConfigPreservesOmittedBootstrapFields(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "data", "pchain-source")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cfg := nodeConfig{
-		NetworkID:    "fuji",
-		BootstrapIPs: "1.2.3.4:9651",
-		BootstrapIDs: "NodeID-7Xhw2mDxuDS44j42TCB6U5579esbSt3Lg",
-	}
+	cfg := nodeConfig{NetworkID: "fuji"}
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -90,23 +86,27 @@ func TestLoadConfigDerivesModeFromBootstrapLists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.BootstrapIPs == "" || loaded.BootstrapIDs == "" {
+	if loaded.BootstrapIPs != nil || loaded.BootstrapIDs != nil {
 		t.Fatalf("expected following config, got %+v", loaded)
 	}
 }
 
-func TestLoadConfigRejectsHalfConfiguredBootstrap(t *testing.T) {
+func TestLoadConfigPreservesExplicitEmptyBootstrapFields(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "data", "pchain-source")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	data := []byte(`{"network-id":"fuji","bootstrap-ips":"1.2.3.4:9651"}`)
+	data := []byte(`{"network-id":"fuji","bootstrap-ips":"","bootstrap-ids":""}`)
 	if err := os.WriteFile(filepath.Join(dir, "config.json"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	manager := New(root, "fuji", "https://api.avax-test.network", os.Stdout)
-	if _, err := manager.loadConfig(); err == nil || !strings.Contains(err.Error(), "only one bootstrap list") {
-		t.Fatalf("expected half-configured bootstrap error, got %v", err)
+	loaded, err := manager.loadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.BootstrapIPs == nil || loaded.BootstrapIDs == nil {
+		t.Fatalf("expected frozen config, got %+v", loaded)
 	}
 }

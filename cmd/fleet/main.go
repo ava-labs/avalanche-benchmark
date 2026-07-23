@@ -24,13 +24,13 @@ func run() error {
 	}
 	program := filepath.Base(os.Args[0])
 	switch {
-	case len(os.Args) == 5 && os.Args[1] == "pchain" && os.Args[2] == "follow":
+	case len(os.Args) == 3 && os.Args[1] == "pchain" && os.Args[2] == "follow":
 		environment, err := config.LoadNetworkEnvironment(filepath.Join(root, ".env"))
 		if err != nil {
 			return err
 		}
 		return pchainsource.New(root, environment.Network, environment.PChainAPI, os.Stdout).
-			Follow(context.Background(), os.Args[3], os.Args[4])
+			Follow(context.Background())
 	case len(os.Args) == 3 && os.Args[1] == "pchain" && os.Args[2] == "freeze":
 		environment, err := config.LoadNetworkEnvironment(filepath.Join(root, ".env"))
 		if err != nil {
@@ -52,7 +52,7 @@ func run() error {
 
 func usage(program string) string {
 	return fmt.Sprintf(
-		"  %s pchain follow <upstream-ip:port> <upstream-node-id>\n  %s pchain freeze\n  %s pchain status",
+		"  %s pchain follow\n  %s pchain freeze\n  %s pchain status",
 		program,
 		program,
 		program,

@@ -29,13 +29,13 @@ Two L1s, one fleet, one P-chain source:
   must still be movable.
 - **The P-chain source**: one always-running follow-only AvalancheGo process on
   the control host. Its database and NodeID never change. In following mode it
-  has exactly one approved upstream. In frozen mode the same process restarts
-  with both bootstrap lists explicitly empty and serves its preserved frontier
-  to the fleet.
+  uses the packaged AvalancheGo binary's built-in network bootstrappers. In
+  frozen mode the same process restarts with both bootstrap lists explicitly
+  empty and serves its preserved frontier to the fleet.
 
 | Mode | Source bootstrap lists | P-chain |
 |---|---|---|
-| **Following** | one explicit `(IP, NodeID)` upstream | advances from the approved upstream |
+| **Following** | fields omitted; packaged AvalancheGo defaults | advances from the public network |
 | **Frozen** | IPs and NodeIDs explicitly empty | remains at the last accepted height |
 
 The source stays up in both modes. Omitted bootstrap flags are not frozen:
@@ -164,7 +164,7 @@ l1 weights             show identity letters, NodeIDs, weights, and fee days lef
 l1 topup <days>        fund every registered validator to <days> of runway
 l1 set-weight <letter> <w> set main identity to 1, 1000, or 100000
 l1 destroy             disable every converted L1 validator and reclaim its balance
-fleet pchain follow <upstream-ip:port> <upstream-node-id>
+fleet pchain follow
 fleet pchain freeze
 fleet pchain status
 ```
@@ -369,19 +369,20 @@ Prometheus + Grafana on control, scraping every node's `/ext/metrics`).
 ### P-chain source lifecycle
 
 ```bash
-./bin/fleet pchain follow 18.192.93.241:9651 \
-  NodeID-2m38qc95mhHXtrhjyGbe7r2NhniqHHJRB
+./bin/fleet pchain follow
 ./bin/fleet pchain status
 ./bin/fleet pchain freeze
 ./bin/fleet pchain status
 ```
 
 `follow` creates or updates one systemd service, restarts it, and waits up to
-30 seconds for the requested upstream peer. It does not hide a failed
-connection. `freeze` requires an existing source, writes both bootstrap lists
-as explicit empty strings, and restarts the same service. `status` derives the
+30 seconds for a peer. It omits both bootstrap fields, so the packaged
+AvalancheGo binary reads its own embedded `genesis/bootstrappers.json`. Updating
+AvalancheGo therefore updates the defaults without copying them into this
+tool. `freeze` requires an existing source, writes both bootstrap lists as
+explicit empty strings, and restarts the same service. `status` derives the
 mode from that configuration and reports the service's NodeID, accepted
-P-chain height, public height and lag, upstream connection, and peer count.
+P-chain height, public height and lag, bootstrap source, and peer count.
 There is no separate mode file or height file. Follow-only deliberately keeps
 the PlatformVM API gated, so `status` derives the accepted height from
 AvalancheGo's logged database height at process start plus its accepted-block
@@ -399,7 +400,7 @@ go run ./cmd/l1 create   # fresh on-chain committee + main L1, one manager
 # go run ./cmd/l1 create 4  # four-manager alternative
 make pack
 # copy remote-benchmark.tar.gz to the control host and extract it
-./bin/fleet pchain follow <upstream-ip:port> <upstream-node-id>
+./bin/fleet pchain follow
 ./bin/fleet pchain status
 ./bin/fleet pchain freeze
 ```

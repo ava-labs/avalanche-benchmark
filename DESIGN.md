@@ -16,7 +16,7 @@ A performance-under-failover benchmark toolset for Avalanche L1s in ISOLATED net
 There is no separate deployment-mode variable. One P-chain source process always runs on control, and its bootstrap configuration is the mode:
 
 - **Frozen P-chain**: both source bootstrap lists are explicitly empty. The source serves its preserved frontier but accepts no newer P-chain blocks.
-- **Following P-chain**: the source runs `--p-chain-follow-only=true` against exactly one approved `(IP, NodeID)` upstream.
+- **Following P-chain**: the source runs `--p-chain-follow-only=true` using the packaged AvalancheGo binary's built-in network bootstrappers.
 
 Always true in both modes:
 - The source process stays running with the same database and NodeID.
@@ -27,7 +27,7 @@ Always true in both modes:
 Motivations:
 - The client control host already has internet. Therefore initial snapshot shipment, archive import, USB tooling, reset tooling, and a second P-chain process do not need to exist.
 - Initial installation and every later refresh use the same sequence: follow until the required state is accepted, then freeze.
-- Omitted bootstrap flags are not frozen because AvalancheGo loads built-in network bootstrappers. Freeze must render both lists explicitly empty.
+- Following omits both bootstrap fields so AvalancheGo reads its embedded `genesis/bootstrappers.json`. The benchmark never copies or pins that list, so updating the packaged AvalancheGo binary also updates the defaults. Freeze must instead render both lists explicitly empty.
 - The benchmark uses exactly one source on control. Its stable identity lets every downstream node keep the same bootstrap configuration through every follow/freeze transition.
 - Follow-only intentionally keeps `platform.getHeight` gated. Source status derives its current P-chain height from AvalancheGo's logged database height at process start plus the process's `avalanche_snowman_bs_accepted{chain="P"}` counter. It does not persist a second height that could drift.
 
