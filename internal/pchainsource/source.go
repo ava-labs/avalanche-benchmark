@@ -197,6 +197,7 @@ func (m *Manager) waitForAPIAndPrint(ctx context.Context) error {
 type localStatus struct {
 	NodeID      string
 	Height      uint64
+	HeightReady bool
 	PeerNodeIDs []string
 }
 
@@ -223,10 +224,14 @@ func (m *Manager) printStatus(ctx context.Context) error {
 		connected := contains(local.PeerNodeIDs, cfg.BootstrapIDs)
 		fmt.Fprintf(m.out, "upstream: %s (%s), connected=%t\n", cfg.BootstrapIPs, cfg.BootstrapIDs, connected)
 	}
-	fmt.Fprintf(m.out, "P-chain height: %d\n", local.Height)
-	if publicHeight >= local.Height {
+	if !local.HeightReady {
+		fmt.Fprintln(m.out, "P-chain height: initializing")
+		fmt.Fprintf(m.out, "public P-chain height: %d\n", publicHeight)
+	} else if publicHeight >= local.Height {
+		fmt.Fprintf(m.out, "P-chain height: %d\n", local.Height)
 		fmt.Fprintf(m.out, "public P-chain height: %d, lag=%d\n", publicHeight, publicHeight-local.Height)
 	} else {
+		fmt.Fprintf(m.out, "P-chain height: %d\n", local.Height)
 		fmt.Fprintf(m.out, "public P-chain height: %d, source ahead by %d\n", publicHeight, local.Height-publicHeight)
 	}
 	fmt.Fprintf(m.out, "peers: %d\n", len(local.PeerNodeIDs))
@@ -267,11 +272,15 @@ func (m *Manager) fetchLocalStatus(ctx context.Context) (localStatus, error) {
 	if err := m.rpc(ctx, localAPI, "info.peers", map[string]any{}, &peersResult); err != nil {
 		return localStatus{}, fmt.Errorf("read source peers: %w", err)
 	}
-	height, err := m.fetchMetric(ctx, localAPI+"/ext/metrics", `avalanche_snowman_last_accepted_height{chain="P"}`)
+	height, found, err := m.fetchMetric(ctx, localAPI+"/ext/metrics", `avalanche_snowman_last_accepted_height{chain="P"}`)
 	if err != nil {
 		return localStatus{}, err
 	}
-	status := localStatus{NodeID: nodeResult.NodeID, Height: uint64(height)}
+	status := localStatus{
+		NodeID:      nodeResult.NodeID,
+		Height:      uint64(height),
+		HeightReady: found,
+	}
 	for _, peer := range peersResult.Peers {
 		status.PeerNodeIDs = append(status.PeerNodeIDs, peer.NodeID)
 	}
@@ -292,30 +301,31 @@ func (m *Manager) fetchPublicHeight(ctx context.Context) (uint64, error) {
 	return height, nil
 }
 
-func (m *Manager) fetchMetric(ctx context.Context, endpoint, name string) (float64, error) {
+func (m *Manager) fetchMetric(ctx context.Context, endpoint, name string) (float64, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 	resp, err := m.httpClient.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("read source metrics: %w", err)
+		return 0, false, fmt.Errorf("read source metrics: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("read source metrics: HTTP %s", resp.Status)
+		return 0, false, fmt.Errorf("read source metrics: HTTP %s", resp.Status)
 	}
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, fmt.Errorf("read source metrics body: %w", err)
+		return 0, false, fmt.Errorf("read source metrics body: %w", err)
 	}
 	for line := range strings.SplitSeq(string(body), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) == 2 && fields[0] == name {
-			return strconv.ParseFloat(fields[1], 64)
+			value, err := strconv.ParseFloat(fields[1], 64)
+			return value, true, err
 		}
 	}
-	return 0, fmt.Errorf("source metrics do not contain %s", name)
+	return 0, false, nil
 }
 
 func (m *Manager) rpc(ctx context.Context, baseURL, method string, params any, result any) error {

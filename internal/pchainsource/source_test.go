@@ -1,12 +1,35 @@
 package pchainsource
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestMissingHeightMetricMeansInitializing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("# no P-chain metric yet\n"))
+	}))
+	t.Cleanup(server.Close)
+
+	manager := New(t.TempDir(), "fuji", "https://api.avax-test.network", os.Stdout)
+	value, found, err := manager.fetchMetric(
+		context.Background(),
+		server.URL,
+		`avalanche_snowman_last_accepted_height{chain="P"}`,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found || value != 0 {
+		t.Fatalf("missing metric returned value=%f found=%t", value, found)
+	}
+}
 
 func TestRenderUnitPreservesOneProcessAndOneConfig(t *testing.T) {
 	unit := renderUnit("ubuntu", "/opt/benchmark/bin/avalanchego", "/opt/benchmark/data/pchain-source/config.json")
