@@ -27,9 +27,9 @@ data "http" "my_ip" {
 }
 
 locals {
-  config      = yamldecode(file("${path.module}/config.yaml"))
-  prefix      = local.config.prefix
-  owner       = local.config.owner # required by org SCP: instances must carry an Owner tag
+  config   = yamldecode(file("${path.module}/config.yaml"))
+  prefix   = local.config.prefix
+  owner    = local.config.owner # required by org SCP: instances must carry an Owner tag
   app_name = "benchmark"
   # Per-DC machine counts (first-class config). Terraform only provisions N boxes
   # per region; roles (validator/spare/RPC) are assigned later in the reconcile/.env
@@ -39,7 +39,7 @@ locals {
   site_a_count = try(local.config.site_a_count, 6)
   site_b_count = try(local.config.site_b_count, 0)
   public_key   = file(pathexpand(local.config.public_key_path))
-  operator_ip = "${chomp(data.http.my_ip.response_body)}/32"
+  operator_ip  = "${chomp(data.http.my_ip.response_body)}/32"
 }
 
 # No IAM instance profile: the benchmark nodes need no AWS API access, and the org
