@@ -8,15 +8,17 @@ import (
 	"testing"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
+	ethcommon "github.com/ava-labs/libevm/common"
 )
 
 func TestUsageRepeatsProgramName(t *testing.T) {
 	for _, program := range []string{"l1", "avalanche-benchmark"} {
 		output := usage(program)
 		lines := strings.Split(output, "\n")
-		if len(lines) != 7 {
-			t.Fatalf("expected seven usage lines, got %q", output)
+		if len(lines) != 8 {
+			t.Fatalf("expected eight usage lines, got %q", output)
 		}
 		for _, line := range lines {
 			if !strings.HasPrefix(line, "  "+program+" ") {
@@ -26,8 +28,11 @@ func TestUsageRepeatsProgramName(t *testing.T) {
 		if !strings.Contains(output, "set-weight <identity-letter> <1|1000|100000>") {
 			t.Fatalf("usage does not explain set-weight arguments: %q", output)
 		}
-		if !strings.Contains(output, "create [1|4]") {
-			t.Fatalf("usage does not explain create committee argument: %q", output)
+		if !strings.Contains(output, "keygen [1|4]") {
+			t.Fatalf("usage does not explain keygen committee argument: %q", output)
+		}
+		if !strings.Contains(output, "keygen-funding") {
+			t.Fatalf("usage does not explain funding key generation: %q", output)
 		}
 	}
 }
@@ -45,18 +50,22 @@ func TestPreCreationCommandsDoNotInventLifecycleState(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(deploymentDirectory, "network.env"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := generateKey(root); err == nil || !strings.Contains(err.Error(), "keygen is only valid before creation") {
-		t.Fatalf("keygen must reject existing deployment state before mutation, got %v", err)
+	if err := generateFundingKey(root); err == nil || !strings.Contains(err.Error(), "keygen-funding is only valid before creation") {
+		t.Fatalf("keygen-funding must reject existing deployment state before mutation, got %v", err)
 	}
 }
 
 func TestCreateRejectsExistingDeploymentBeforeLoadingConfiguration(t *testing.T) {
 	root := t.TempDir()
-	if err := os.Mkdir(filepath.Join(root, "deployment"), 0o700); err != nil {
+	deployment := filepath.Join(root, "deployment")
+	if err := os.Mkdir(deployment, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	err := create(root, 1)
-	if err == nil || err.Error() != "chain already exists in ./deployment; delete ./deployment only if you want a new chain" {
+	if err := os.WriteFile(filepath.Join(deployment, "network.env"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := create(root)
+	if err == nil || err.Error() != "chain already exists at ./deployment/network.env; run destroy only if you want to remove it" {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -79,18 +88,25 @@ func TestWeightsLoadLetteredIdentities(t *testing.T) {
 	root := t.TempDir()
 	nodes := []config.Node{
 		{Number: 10, Role: config.RoleValidator},
-		{Number: 20, Role: config.RoleRPC},
+		{Number: 20, Role: config.RoleValidator},
+		{Number: 30, Role: config.RoleValidator},
+		{Number: 40, Role: config.RoleValidator},
+		{Number: 50, Role: config.RoleRPC},
 	}
 	generated, err := identity.Generate(root, nodes, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	names, err := loadIdentityNames(root, config.Config{Nodes: nodes})
+	public := creation.NewPublic(generated, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"))
+	if _, err := creation.SavePublic(filepath.Join(root, "public.json"), public); err != nil {
+		t.Fatal(err)
+	}
+	names, err := loadIdentityNames(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(names) != 2 {
-		t.Fatalf("got %d weight identities, want main validator plus manager", len(names))
+	if len(names) != 5 {
+		t.Fatalf("got %d weight identities, want four main validators plus manager", len(names))
 	}
 	for _, generatedIdentity := range []struct {
 		L1       string

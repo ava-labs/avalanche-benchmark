@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/snow/validators"
 	"github.com/ava-labs/avalanchego/utils/crypto/bls"
@@ -35,15 +36,15 @@ func TestValidateWeight(t *testing.T) {
 }
 
 func TestValidateIdentityUsesLettersNotNodeNumbers(t *testing.T) {
-	nodes := []config.Node{
-		{Number: 10, Role: config.RoleValidator},
-		{Number: 20, Role: config.RoleRPC},
+	nodes := []creation.PublicNode{
+		{Identity: "a", Node: 10, Role: config.RoleValidator},
+		{Identity: "b", Node: 20, Role: config.RoleRPC},
 	}
-	if err := validateIdentity(nodes, "a"); err != nil {
+	if _, err := validateIdentity(nodes, "a"); err != nil {
 		t.Fatalf("validator identity a: %v", err)
 	}
 	for _, name := range []string{"b", "c", "10"} {
-		if err := validateIdentity(nodes, name); err == nil {
+		if _, err := validateIdentity(nodes, name); err == nil {
 			t.Errorf("validateIdentity(%q) succeeded", name)
 		}
 	}

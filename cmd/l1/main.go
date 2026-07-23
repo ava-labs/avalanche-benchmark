@@ -15,6 +15,7 @@ import (
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/destroy"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/funding"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/keygen"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/setweight"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/topup"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/weights"
@@ -35,19 +36,21 @@ func run() error {
 		return fmt.Errorf("get working directory: %w", err)
 	}
 	switch {
-	case (len(os.Args) == 2 || len(os.Args) == 3) && os.Args[1] == "create":
+	case (len(os.Args) == 2 || len(os.Args) == 3) && os.Args[1] == "keygen":
 		managerCommittee := 1
 		if len(os.Args) == 3 {
 			managerCommittee, err = strconv.Atoi(os.Args[2])
 			if err != nil {
-				return fmt.Errorf("create manager committee must be 1 or 4, got %q", os.Args[2])
+				return fmt.Errorf("keygen manager committee must be 1 or 4, got %q", os.Args[2])
 			}
 		}
-		return create(root, managerCommittee)
+		return generateKeys(root, managerCommittee)
+	case len(os.Args) == 2 && os.Args[1] == "create":
+		return create(root)
 	case len(os.Args) == 2 && os.Args[1] == "address":
 		return showAddress(root)
-	case len(os.Args) == 2 && os.Args[1] == "keygen":
-		return generateKey(root)
+	case len(os.Args) == 2 && os.Args[1] == "keygen-funding":
+		return generateFundingKey(root)
 	case len(os.Args) == 2 && os.Args[1] == "weights":
 		return showWeights(root)
 	case len(os.Args) == 2 && os.Args[1] == "destroy":
@@ -63,7 +66,8 @@ func run() error {
 
 func usage(program string) string {
 	return fmt.Sprintf(
-		"  %s create [1|4]\n  %s address\n  %s keygen\n  %s weights\n  %s topup <days>\n  %s set-weight <identity-letter> <1|1000|100000>\n  %s destroy",
+		"  %s keygen [1|4]\n  %s create\n  %s address\n  %s keygen-funding\n  %s weights\n  %s topup <days>\n  %s set-weight <identity-letter> <1|1000|100000>\n  %s destroy",
+		program,
 		program,
 		program,
 		program,
@@ -85,20 +89,20 @@ func setWeight(root, rawIdentity, rawWeight string) error {
 	if err := setweight.ValidateWeight(targetWeight); err != nil {
 		return err
 	}
-	cfg, err := config.Load(root)
+	environment, err := config.LoadEnvironment(filepath.Join(root, ".env"))
 	if err != nil {
 		return err
 	}
 	deployment, err := weights.LoadDeployment(
 		filepath.Join(root, "deployment", "network.env"),
-		cfg.Environment.Network,
+		environment.Network,
 	)
 	if err != nil {
 		return err
 	}
 	return setweight.Run(
 		context.Background(),
-		cfg,
+		environment,
 		deployment,
 		filepath.Join(root, "deployment"),
 		rawIdentity,
@@ -107,35 +111,66 @@ func setWeight(root, rawIdentity, rawWeight string) error {
 	)
 }
 
-func create(root string, managerCommittee int) error {
-	if err := creation.ValidateManagerCommittee(managerCommittee); err != nil {
-		return err
-	}
+func create(root string) error {
 	deploymentPath := filepath.Join(root, "deployment")
-	if _, err := os.Stat(deploymentPath); err == nil {
-		return fmt.Errorf("chain already exists in ./deployment; delete ./deployment only if you want a new chain")
+	statePath := filepath.Join(deploymentPath, "network.env")
+	if _, err := os.Stat(statePath); err == nil {
+		return fmt.Errorf("chain already exists at ./deployment/network.env; run destroy only if you want to remove it")
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect ./deployment: %w", err)
+		return fmt.Errorf("inspect ./deployment/network.env: %w", err)
 	}
-	cfg, err := config.Load(root)
+	envPath := filepath.Join(root, ".env")
+	environment, err := config.LoadEnvironment(envPath)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("loaded %s and %s\n", filepath.Join(root, ".env"), filepath.Join(root, "nodes.ini"))
-	fmt.Printf("network %s, P-chain API %s, %d nodes, %d manager identities\n",
-		cfg.Environment.Network,
-		cfg.Environment.PChainAPI,
-		len(cfg.Nodes),
-		managerCommittee,
-	)
+	publicPath := filepath.Join(deploymentPath, "public.json")
+	fmt.Printf("loaded %s and %s\n", envPath, publicPath)
+	fmt.Printf("network %s, P-chain API %s\n", environment.Network, environment.PChainAPI)
 	_, err = creation.Create(
 		context.Background(),
-		cfg,
+		environment,
 		deploymentPath,
 		filepath.Join(root, "genesis-template.json"),
-		managerCommittee,
 	)
 	return err
+}
+
+func generateKeys(root string, managerCommittee int) error {
+	if err := creation.ValidateManagerCommittee(managerCommittee); err != nil {
+		return err
+	}
+	nodesPath := filepath.Join(root, "nodes.ini")
+	nodes, err := config.LoadNodes(nodesPath)
+	if err != nil {
+		return err
+	}
+	deploymentPath := filepath.Join(root, "deployment")
+	result, err := keygen.Generate(deploymentPath, nodes, managerCommittee)
+	if err != nil {
+		return err
+	}
+	validatorCount := 0
+	rpcCount := 0
+	for _, node := range result.Public.Nodes {
+		switch node.Role {
+		case config.RoleValidator:
+			validatorCount++
+		case config.RoleRPC:
+			rpcCount++
+		}
+	}
+	fmt.Printf("loaded %s\n", nodesPath)
+	fmt.Printf(
+		"generated keys: validators=%d rpc=%d managers=%d root=%s\n",
+		validatorCount,
+		rpcCount,
+		len(result.Public.Managers),
+		deploymentPath,
+	)
+	fmt.Printf("public chain inputs: %s sha256:%s\n", filepath.Join(deploymentPath, "public.json"), result.Digest)
+	fmt.Printf("Genesis EVM address: %s\n", result.Public.GenesisAddress)
+	return nil
 }
 
 func showAddress(root string) error {
@@ -153,7 +188,7 @@ func showAddress(root string) error {
 	}
 	fmt.Printf("loaded %s\n", envPath)
 	fmt.Printf("P-chain funding address: %s\n", info.Addresses.PChain)
-	fmt.Printf("EVM genesis address: %s\n", info.Addresses.EVM)
+	fmt.Printf("funding-key EVM address: %s\n", info.Addresses.EVM)
 	fmt.Printf("P-chain balance: %d.%09d AVAX\n", info.Balance/units.Avax, info.Balance%units.Avax)
 	return nil
 }
@@ -179,13 +214,13 @@ func rejectDestroyedDeployment(ctx context.Context, root string, environment con
 	return err
 }
 
-func generateKey(root string) error {
+func generateFundingKey(root string) error {
 	statePath := filepath.Join(root, "deployment", "network.env")
 	if _, err := os.Stat(statePath); err == nil {
 		// Replacing the funding identity after creation would disconnect local
 		// configuration from every on-chain owner. Key generation is therefore
 		// strictly a pre-creation operation, regardless of validator activity.
-		return fmt.Errorf("keygen is only valid before creation; deployment state already exists at %s", statePath)
+		return fmt.Errorf("keygen-funding is only valid before creation; deployment state already exists at %s", statePath)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect creation state %s: %w", statePath, err)
 	}
@@ -198,20 +233,20 @@ func generateKey(root string) error {
 }
 
 func showWeights(root string) error {
-	cfg, err := config.Load(root)
+	environment, err := config.LoadEnvironment(filepath.Join(root, ".env"))
 	if err != nil {
 		return err
 	}
 	statePath := filepath.Join(root, "deployment", "network.env")
-	deployment, err := weights.LoadDeployment(statePath, cfg.Environment.Network)
+	deployment, err := weights.LoadDeployment(statePath, environment.Network)
 	if err != nil {
 		return err
 	}
-	identityNames, err := loadIdentityNames(filepath.Join(root, "deployment"), cfg)
+	identityNames, err := loadIdentityNames(filepath.Join(root, "deployment"))
 	if err != nil {
 		return err
 	}
-	report, err := weights.Fetch(context.Background(), cfg.Environment.PChainAPI, deployment)
+	report, err := weights.Fetch(context.Background(), environment.PChainAPI, deployment)
 	if err != nil {
 		return err
 	}
@@ -261,10 +296,14 @@ type identityName struct {
 	Index int
 }
 
-func loadIdentityNames(deploymentDirectory string, cfg config.Config) (map[identityKey]identityName, error) {
-	names := make(map[identityKey]identityName, len(cfg.Nodes))
-	load := func(l1, name, path string) error {
-		nodeID, err := identity.LoadNodeID(path)
+func loadIdentityNames(deploymentDirectory string) (map[identityKey]identityName, error) {
+	public, _, err := creation.LoadPublic(filepath.Join(deploymentDirectory, "public.json"))
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[identityKey]identityName, len(public.Nodes)+len(public.Managers))
+	load := func(l1, name, rawNodeID string) error {
+		nodeID, err := ids.NodeIDFromString(rawNodeID)
 		if err != nil {
 			return err
 		}
@@ -275,33 +314,18 @@ func loadIdentityNames(deploymentDirectory string, cfg config.Config) (map[ident
 		names[identityKey{L1: l1, NodeID: nodeID}] = identityName{Name: name, Index: index}
 		return nil
 	}
-	for i, node := range cfg.Nodes {
+	for _, node := range public.Nodes {
 		if node.Role != config.RoleValidator {
 			continue
 		}
-		name := identity.Name(i)
-		if err := load("main", name, filepath.Join(deploymentDirectory, "identities", name, "staker.crt")); err != nil {
-			return nil, fmt.Errorf("load main identity %s: %w", name, err)
+		if err := load("main", node.Identity, node.NodeID); err != nil {
+			return nil, fmt.Errorf("load main identity %s: %w", node.Identity, err)
 		}
 	}
-	managerDirectory := filepath.Join(deploymentDirectory, "manager")
-	entries, err := os.ReadDir(managerDirectory)
-	if err != nil {
-		return nil, fmt.Errorf("read management identities %s: %w", managerDirectory, err)
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			return nil, fmt.Errorf("unexpected file in management identities: %s", filepath.Join(managerDirectory, entry.Name()))
+	for _, manager := range public.Managers {
+		if err := load("management", manager.Identity, manager.NodeID); err != nil {
+			return nil, fmt.Errorf("load management identity %s: %w", manager.Identity, err)
 		}
-		if _, err := identity.Index(entry.Name()); err != nil {
-			return nil, fmt.Errorf("management identity directory: %w", err)
-		}
-		if err := load("management", entry.Name(), filepath.Join(managerDirectory, entry.Name(), "staker.crt")); err != nil {
-			return nil, fmt.Errorf("load management identity %s: %w", entry.Name(), err)
-		}
-	}
-	if len(entries) == 0 {
-		return nil, fmt.Errorf("no management identities found in %s", managerDirectory)
 	}
 	return names, nil
 }

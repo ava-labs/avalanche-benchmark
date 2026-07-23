@@ -30,17 +30,17 @@ func TestConversionValidatorsSortByNodeIDAndKeepWeight(t *testing.T) {
 	}
 	validators, err := conversionValidators(identities, func(generated identity.Identity) uint64 {
 		if generated.Name == "high" {
-			return highWeight
+			return HighWeight
 		}
-		return lowWeight
+		return LowWeight
 	}, warpmessage.PChainOwner{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(validators[0].NodeID) != string(lowID.Bytes()) || validators[0].Weight != lowWeight {
+	if string(validators[0].NodeID) != string(lowID.Bytes()) || validators[0].Weight != LowWeight {
 		t.Fatalf("unexpected first validator: %+v", validators[0])
 	}
-	if string(validators[1].NodeID) != string(highID.Bytes()) || validators[1].Weight != highWeight {
+	if string(validators[1].NodeID) != string(highID.Bytes()) || validators[1].Weight != HighWeight {
 		t.Fatalf("unexpected second validator: %+v", validators[1])
 	}
 }

@@ -19,7 +19,7 @@ type State struct {
 	ChainID            ids.ID
 	ConvertTxID        ids.ID
 	ManagerAddress     string
-	FundingEVMAddress  string
+	GenesisEVMAddress  string
 }
 
 func (s State) Save() error {
@@ -35,7 +35,7 @@ func (s State) Save() error {
 		{"CHAIN_ID", idString(s.ChainID)},
 		{"CONVERT_TX_ID", idString(s.ConvertTxID)},
 		{"MANAGER_ADDRESS", s.ManagerAddress},
-		{"FUNDING_EVM_ADDRESS", s.FundingEVMAddress},
+		{"GENESIS_EVM_ADDRESS", s.GenesisEVMAddress},
 	}
 	var contents strings.Builder
 	for _, field := range fields {

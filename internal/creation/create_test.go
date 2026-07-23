@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/utils/constants"
 	"github.com/ava-labs/avalanchego/utils/crypto/keychain"
@@ -17,6 +18,7 @@ import (
 	pwallet "github.com/ava-labs/avalanchego/wallet/chain/p/wallet"
 	"github.com/ava-labs/avalanchego/wallet/subnet/primary"
 	commonopts "github.com/ava-labs/avalanchego/wallet/subnet/primary/common"
+	ethcommon "github.com/ava-labs/libevm/common"
 )
 
 type conversionCall struct {
@@ -103,7 +105,26 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	}
 
 	output := filepath.Join(dir, "deployment")
-	result, err := create(context.Background(), cfg, output, templatePath, 1, factory)
+	if err := os.Mkdir(output, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	privateOutput := filepath.Join(dir, "private")
+	if err := os.Mkdir(privateOutput, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	generated, err := identity.Generate(privateOutput, cfg.Nodes, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public := NewPublic(generated, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"))
+	if _, err := SavePublic(filepath.Join(output, "public.json"), public); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, err := LoadPublic(filepath.Join(output, "public.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := create(context.Background(), cfg.Environment, output, templatePath, loaded, factory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +142,7 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	if manager.subnetID != result.State.ManagerSubnetID || manager.managerID != result.State.ManagerChainID || len(manager.values) != 1 {
 		t.Fatalf("unexpected manager conversion: %+v", manager)
 	}
-	if manager.values[0].Weight != managerWeight || manager.values[0].Balance != initialBalance {
+	if manager.values[0].Weight != ManagerWeight || manager.values[0].Balance != initialBalance {
 		t.Fatalf("unexpected manager validator: %+v", manager.values[0])
 	}
 	main := wallet.conversions[1]
@@ -135,9 +156,9 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 			t.Fatalf("unexpected initial balance: %d", validator.Balance)
 		}
 		switch validator.Weight {
-		case highWeight:
+		case HighWeight:
 			highCount++
-		case lowWeight:
+		case LowWeight:
 			lowCount++
 		default:
 			t.Fatalf("unexpected weight: %d", validator.Weight)
@@ -146,8 +167,8 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	if highCount != 3 || lowCount != 1 {
 		t.Fatalf("unexpected weight split: high=%d low=%d", highCount, lowCount)
 	}
-	if _, err := os.Stat(filepath.Join(output, "identities", "e", "signer.key")); !os.IsNotExist(err) {
-		t.Fatalf("RPC signer key must not exist, got %v", err)
+	if _, err := os.Stat(filepath.Join(output, "identities")); !os.IsNotExist(err) {
+		t.Fatalf("creation output must not need private identities, got %v", err)
 	}
 	if result.State.ManagerConvertTxID == ids.Empty || result.State.ConvertTxID == ids.Empty {
 		t.Fatalf("conversion transaction IDs not recorded: %+v", result.State)
@@ -155,23 +176,24 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	if constants.SubnetEVMID == ids.Empty {
 		t.Fatal("unexpected empty Subnet-EVM VM ID")
 	}
-	if _, err := create(context.Background(), cfg, output, templatePath, 1, factory); err == nil {
-		t.Fatal("create must refuse existing output")
+	if _, err := create(context.Background(), cfg.Environment, output, templatePath, loaded, factory); err == nil {
+		t.Fatal("create must refuse existing genesis")
 	}
 }
 
 func TestRequiredFreshCreateBalanceIncludesAllRegistrationsAndFeeReserve(t *testing.T) {
-	cfg := config.Config{
-		Nodes: []config.Node{
+	public := Public{
+		Nodes: []PublicNode{
 			{Role: config.RoleValidator},
 			{Role: config.RoleValidator},
 			{Role: config.RoleValidator},
 			{Role: config.RoleValidator},
 			{Role: config.RoleRPC},
 		},
+		Managers: make([]PublicManager, 4),
 	}
 	want := uint64(9) * initialBalance
-	if got := requiredFreshCreateBalance(cfg, 4); got != want {
+	if got := requiredFreshCreateBalance(public); got != want {
 		t.Fatalf("unexpected required balance: got %d, want %d", got, want)
 	}
 }

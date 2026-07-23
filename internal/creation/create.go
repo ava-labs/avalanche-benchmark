@@ -26,10 +26,6 @@ import (
 )
 
 const (
-	highValidatorCount = 3
-	highWeight         = 100000
-	lowWeight          = 1000
-	managerWeight      = 1000
 	initialBalance     = units.Avax / 10
 	creationFeeReserve = units.Avax / 10
 )
@@ -48,18 +44,27 @@ type walletFactory func(
 	primary.WalletConfig,
 ) (pwallet.Wallet, error)
 
-func Create(ctx context.Context, cfg config.Config, outputDirectory, genesisTemplatePath string, managerCommittee int) (Result, error) {
-	if err := ValidateManagerCommittee(managerCommittee); err != nil {
+func Create(ctx context.Context, environment config.Environment, outputDirectory, genesisTemplatePath string) (Result, error) {
+	statePath := filepath.Join(outputDirectory, "network.env")
+	if err := requireMissing(statePath); err != nil {
 		return Result{}, err
 	}
-	if err := requireMissing(outputDirectory); err != nil {
+	publicPath := filepath.Join(outputDirectory, "public.json")
+	// Key generation already held these values in memory. Loading the published
+	// file anyway is deliberate: every run exercises the same public-only
+	// handover used when keygen and create execute in different trust domains.
+	public, publicDigest, err := LoadPublic(publicPath)
+	if err != nil {
 		return Result{}, err
 	}
-	fundingInfo, err := funding.Inspect(ctx, cfg.Environment)
+	if err := requireMissing(filepath.Join(outputDirectory, "genesis.json")); err != nil {
+		return Result{}, err
+	}
+	fundingInfo, err := funding.Inspect(ctx, environment)
 	if err != nil {
 		return Result{}, fmt.Errorf("funding preflight: %w", err)
 	}
-	requiredBalance := requiredFreshCreateBalance(cfg, managerCommittee)
+	requiredBalance := requiredFreshCreateBalance(public)
 	if fundingInfo.Balance < requiredBalance {
 		return Result{}, fmt.Errorf(
 			"funding preflight: P-chain address %s has %s, fresh creation requires at least %s; add AVAX and run `go run ./cmd/l1 address` before retrying",
@@ -74,7 +79,8 @@ func Create(ctx context.Context, cfg config.Config, outputDirectory, genesisTemp
 		formatAVAX(fundingInfo.Balance),
 		formatAVAX(requiredBalance),
 	)
-	return create(ctx, cfg, outputDirectory, genesisTemplatePath, managerCommittee, primary.MakePWallet)
+	printPublic(public, publicPath, publicDigest)
+	return create(ctx, environment, outputDirectory, genesisTemplatePath, public, primary.MakePWallet)
 }
 
 func ValidateManagerCommittee(size int) error {
@@ -84,14 +90,14 @@ func ValidateManagerCommittee(size int) error {
 	return nil
 }
 
-func requiredFreshCreateBalance(cfg config.Config, managerCommittee int) uint64 {
+func requiredFreshCreateBalance(public Public) uint64 {
 	validatorCount := 0
-	for _, node := range cfg.Nodes {
+	for _, node := range public.Nodes {
 		if node.Role == config.RoleValidator {
 			validatorCount++
 		}
 	}
-	registrations := validatorCount + managerCommittee
+	registrations := validatorCount + len(public.Managers)
 	return uint64(registrations)*initialBalance + creationFeeReserve
 }
 
@@ -99,15 +105,28 @@ func formatAVAX(amount uint64) string {
 	return fmt.Sprintf("%d.%09d AVAX", amount/units.Avax, amount%units.Avax)
 }
 
+func printPublic(public Public, path, digest string) {
+	fmt.Printf("public chain inputs: %s sha256:%s\n", path, digest)
+	fmt.Printf("Genesis EVM address: %s\n", public.GenesisAddress)
+	for _, manager := range public.Managers {
+		fmt.Printf("management identity %s: %s weight %d\n", manager.Identity, manager.NodeID, manager.Weight)
+	}
+	for _, node := range public.Nodes {
+		if node.Role == config.RoleValidator {
+			fmt.Printf("main identity %s: %s weight %d\n", node.Identity, node.NodeID, node.Weight)
+		}
+	}
+}
+
 func create(
 	ctx context.Context,
-	cfg config.Config,
+	environment config.Environment,
 	outputDirectory string,
 	genesisTemplatePath string,
-	managerCommittee int,
+	public Public,
 	newWallet walletFactory,
 ) (Result, error) {
-	keyBytes, err := hex.DecodeString(cfg.Environment.FundingPrivateKey)
+	keyBytes, err := hex.DecodeString(environment.FundingPrivateKey)
 	if err != nil {
 		return Result{}, fmt.Errorf("decode FUNDING_PRIVATE_KEY: %w", err)
 	}
@@ -119,58 +138,37 @@ func create(
 	if err != nil {
 		return Result{}, fmt.Errorf("read required genesis template %s: %w", genesisTemplatePath, err)
 	}
-	genesis, err := RenderGenesis(template, fundingKey)
+	genesis, err := RenderGenesis(template, ethcommon.HexToAddress(public.GenesisAddress))
 	if err != nil {
 		return Result{}, err
 	}
-	if err := requireMissing(outputDirectory); err != nil {
-		return Result{}, err
-	}
-	if err := os.Mkdir(outputDirectory, 0o700); err != nil {
-		return Result{}, fmt.Errorf("create fresh output directory %s: %w", outputDirectory, err)
+	identities, err := public.IdentitySet()
+	if err != nil {
+		return Result{}, fmt.Errorf("load public identities: %w", err)
 	}
 	genesisPath := filepath.Join(outputDirectory, "genesis.json")
+	if err := requireMissing(genesisPath); err != nil {
+		return Result{}, err
+	}
 	if err := os.WriteFile(genesisPath, genesis, 0o644); err != nil {
 		return Result{}, fmt.Errorf("write generated genesis %s: %w", genesisPath, err)
 	}
 	fmt.Printf("generated %s\n", genesisPath)
 
-	identities, err := identity.Generate(outputDirectory, cfg.Nodes, managerCommittee)
-	if err != nil {
-		return Result{}, err
-	}
-	validatorCount := 0
-	rpcCount := 0
-	for _, generated := range identities.Nodes {
-		switch generated.Role {
-		case config.RoleValidator:
-			validatorCount++
-		case config.RoleRPC:
-			rpcCount++
-		}
-	}
-	fmt.Printf(
-		"generated identities: validators=%d rpc=%d managers=%d root=%s\n",
-		validatorCount,
-		rpcCount,
-		len(identities.Manager),
-		outputDirectory,
-	)
-
 	state := State{
 		Path:              filepath.Join(outputDirectory, "network.env"),
-		Network:           cfg.Environment.Network,
+		Network:           environment.Network,
 		ManagerAddress:    managerAddress.Hex(),
-		FundingEVMAddress: fundingKey.EthAddress().Hex(),
+		GenesisEVMAddress: public.GenesisAddress,
 	}
 	if err := state.Save(); err != nil {
 		return Result{}, err
 	}
 
 	keychain := secp256k1fx.NewKeychain(fundingKey)
-	wallet, err := newWallet(ctx, cfg.Environment.PChainAPI, keychain, primary.WalletConfig{})
+	wallet, err := newWallet(ctx, environment.PChainAPI, keychain, primary.WalletConfig{})
 	if err != nil {
-		return Result{}, fmt.Errorf("connect P-chain wallet to %s: %w", cfg.Environment.PChainAPI, err)
+		return Result{}, fmt.Errorf("connect P-chain wallet to %s: %w", environment.PChainAPI, err)
 	}
 	subnetOwner := &secp256k1fx.OutputOwners{Threshold: 1, Addrs: []ids.ShortID{fundingKey.Address()}}
 	validatorOwner := warpmessage.PChainOwner{Threshold: 1, Addresses: []ids.ShortID{fundingKey.Address()}}
@@ -186,7 +184,7 @@ func create(
 		return Result{}, err
 	}
 
-	wallet, err = makeWallet(ctx, cfg.Environment.PChainAPI, keychain, state, newWallet)
+	wallet, err = makeWallet(ctx, environment.PChainAPI, keychain, state, newWallet)
 	if err != nil {
 		return Result{}, err
 	}
@@ -201,7 +199,13 @@ func create(
 		return Result{}, err
 	}
 
-	managerValidators, err := conversionValidators(identities.Manager, func(identity.Identity) uint64 { return managerWeight }, validatorOwner)
+	managerWeights := make(map[string]uint64, len(public.Managers))
+	for _, manager := range public.Managers {
+		managerWeights[manager.Identity] = manager.Weight
+	}
+	managerValidators, err := conversionValidators(identities.Manager, func(generated identity.Identity) uint64 {
+		return managerWeights[generated.Name]
+	}, validatorOwner)
 	if err != nil {
 		return Result{}, err
 	}
@@ -231,7 +235,7 @@ func create(
 		return Result{}, err
 	}
 
-	wallet, err = makeWallet(ctx, cfg.Environment.PChainAPI, keychain, state, newWallet)
+	wallet, err = makeWallet(ctx, environment.PChainAPI, keychain, state, newWallet)
 	if err != nil {
 		return Result{}, err
 	}
@@ -252,15 +256,14 @@ func create(
 			validators = append(validators, generated)
 		}
 	}
-	weightByNode := make(map[int]uint64, len(validators))
-	for i, validator := range validators {
-		weightByNode[validator.NodeNumber] = lowWeight
-		if i < highValidatorCount {
-			weightByNode[validator.NodeNumber] = highWeight
+	weightByIdentity := make(map[string]uint64, len(validators))
+	for _, node := range public.Nodes {
+		if node.Role == config.RoleValidator {
+			weightByIdentity[node.Identity] = node.Weight
 		}
 	}
 	mainValidators, err := conversionValidators(validators, func(generated identity.Identity) uint64 {
-		return weightByNode[generated.NodeNumber]
+		return weightByIdentity[generated.Name]
 	}, validatorOwner)
 	if err != nil {
 		return Result{}, err

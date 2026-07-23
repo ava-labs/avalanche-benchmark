@@ -1,23 +1,15 @@
 package creation
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"testing"
 
-	"github.com/ava-labs/avalanchego/utils/crypto/secp256k1"
+	ethcommon "github.com/ava-labs/libevm/common"
 )
 
 func TestRenderGenesisFundsOnlyDerivedAddress(t *testing.T) {
-	keyBytes, err := hex.DecodeString(strings.Repeat("1", 64))
-	if err != nil {
-		t.Fatal(err)
-	}
-	key, err := secp256k1.ToPrivateKey(keyBytes)
-	if err != nil {
-		t.Fatal(err)
-	}
+	address := ethcommon.HexToAddress("0x1234567890123456789012345678901234567890")
 	template := []byte(`{
 		"config":{"chainId":99999},
 		"alloc":{},
@@ -33,7 +25,7 @@ func TestRenderGenesisFundsOnlyDerivedAddress(t *testing.T) {
 		"parentHash":"0x0"
 	}`)
 
-	rendered, err := RenderGenesis(template, key)
+	rendered, err := RenderGenesis(template, address)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,19 +36,15 @@ func TestRenderGenesisFundsOnlyDerivedAddress(t *testing.T) {
 	if len(document.Alloc) != 1 {
 		t.Fatalf("expected one funded address, got %d", len(document.Alloc))
 	}
-	address := strings.TrimPrefix(key.EthAddress().Hex(), "0x")
-	if document.Alloc[address].Balance != genesisBalance {
-		t.Fatalf("derived address %s was not funded", address)
+	addressWithoutPrefix := strings.TrimPrefix(address.Hex(), "0x")
+	if document.Alloc[addressWithoutPrefix].Balance != genesisBalance {
+		t.Fatalf("address %s was not funded", addressWithoutPrefix)
 	}
 }
 
 func TestRenderGenesisRejectsStaticAllocation(t *testing.T) {
-	key, err := secp256k1.NewPrivateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
 	template := []byte(`{"config":{},"alloc":{"static":{"balance":"1"}}}`)
-	if _, err := RenderGenesis(template, key); err == nil {
+	if _, err := RenderGenesis(template, ethcommon.Address{}); err == nil {
 		t.Fatal("expected static allocation to be rejected")
 	}
 }

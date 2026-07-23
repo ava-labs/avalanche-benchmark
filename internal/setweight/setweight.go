@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/funding"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/weights"
@@ -84,7 +85,7 @@ type registeredValidator struct {
 
 func Run(
 	ctx context.Context,
-	cfg config.Config,
+	environment config.Environment,
 	deployment weights.Deployment,
 	deploymentDirectory string,
 	identityName string,
@@ -94,19 +95,19 @@ func Run(
 	if err := ValidateWeight(targetWeight); err != nil {
 		return err
 	}
-	if err := validateIdentity(cfg.Nodes, identityName); err != nil {
+	public, _, err := creation.LoadPublic(filepath.Join(deploymentDirectory, "public.json"))
+	if err != nil {
 		return err
 	}
-	targetNodeID, err := identity.LoadNodeID(filepath.Join(
-		deploymentDirectory,
-		"identities",
-		identityName,
-		"staker.crt",
-	))
+	targetPublic, err := validateIdentity(public.Nodes, identityName)
 	if err != nil {
-		return fmt.Errorf("load validator identity %s: %w", identityName, err)
+		return err
 	}
-	pChain := platformvm.NewClient(cfg.Environment.PChainAPI)
+	targetNodeID, err := ids.NodeIDFromString(targetPublic.NodeID)
+	if err != nil {
+		return fmt.Errorf("identity %s nodeID: %w", identityName, err)
+	}
+	pChain := platformvm.NewClient(environment.PChainAPI)
 	height, err := pChain.GetHeight(ctx)
 	if err != nil {
 		return fmt.Errorf("read P-chain height: %w", err)
@@ -127,9 +128,9 @@ func Run(
 		return nil
 	}
 
-	networkID, err := constants.NetworkID(cfg.Environment.Network)
+	networkID, err := constants.NetworkID(environment.Network)
 	if err != nil {
-		return fmt.Errorf("resolve network %q: %w", cfg.Environment.Network, err)
+		return fmt.Errorf("resolve network %q: %w", environment.Network, err)
 	}
 	managementValidators, err := fetchValidatorsAt(ctx, pChain, deployment.ManagementSubnetID, height)
 	if err != nil {
@@ -158,13 +159,13 @@ func Run(
 	}
 	if err := gateManagementConversion(
 		ctx,
-		proposervm.NewJSONRPCClient(cfg.Environment.PChainAPI, "P"),
+		proposervm.NewJSONRPCClient(environment.PChainAPI, "P"),
 		conversionHeight,
 		upgrade.GetConfig(networkID).GraniteEpochDuration,
 		time.Now(),
 		wait,
 		func() (ids.ID, error) {
-			pWallet, err := makeFundingWallet(ctx, cfg)
+			pWallet, err := makeFundingWallet(ctx, environment)
 			if err != nil {
 				return ids.Empty, err
 			}
@@ -200,7 +201,7 @@ func Run(
 		return err
 	}
 
-	pWallet, err := makeFundingWallet(ctx, cfg)
+	pWallet, err := makeFundingWallet(ctx, environment)
 	if err != nil {
 		return err
 	}
@@ -299,19 +300,19 @@ func findConversionHeight(
 	return 0, fmt.Errorf("transaction was not found in P-chain blocks stamped %s", conversionTime.In(jst).Format("2006-01-02 15:04:05 MST"))
 }
 
-func makeFundingWallet(ctx context.Context, cfg config.Config) (pwallet.Wallet, error) {
-	fundingKey, err := funding.ParsePrivateKey(cfg.Environment.FundingPrivateKey)
+func makeFundingWallet(ctx context.Context, environment config.Environment) (pwallet.Wallet, error) {
+	fundingKey, err := funding.ParsePrivateKey(environment.FundingPrivateKey)
 	if err != nil {
 		return nil, err
 	}
 	pWallet, err := primary.MakePWallet(
 		ctx,
-		cfg.Environment.PChainAPI,
+		environment.PChainAPI,
 		secp256k1fx.NewKeychain(fundingKey),
 		primary.WalletConfig{},
 	)
 	if err != nil {
-		return nil, fmt.Errorf("connect P-chain wallet to %s: %w", cfg.Environment.PChainAPI, err)
+		return nil, fmt.Errorf("connect P-chain wallet to %s: %w", environment.PChainAPI, err)
 	}
 	return pWallet, nil
 }
@@ -414,18 +415,18 @@ func ValidateWeight(weight uint64) error {
 	}
 }
 
-func validateIdentity(nodes []config.Node, name string) error {
+func validateIdentity(nodes []creation.PublicNode, name string) (creation.PublicNode, error) {
 	index, err := identity.Index(name)
 	if err != nil {
-		return err
+		return creation.PublicNode{}, err
 	}
 	if index >= len(nodes) {
-		return fmt.Errorf("identity %s was not generated from nodes.ini", name)
+		return creation.PublicNode{}, fmt.Errorf("identity %s is not present in public.json", name)
 	}
 	if nodes[index].Role != config.RoleValidator {
-		return fmt.Errorf("identity %s is an rpc identity; set-weight accepts validators only", name)
+		return creation.PublicNode{}, fmt.Errorf("identity %s is an rpc identity; set-weight accepts validators only", name)
 	}
-	return nil
+	return nodes[index], nil
 }
 
 func fetchValidatorsAt(ctx context.Context, pChain client, subnetID ids.ID, minimumHeight uint64) ([]registeredValidator, error) {

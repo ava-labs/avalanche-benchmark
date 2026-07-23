@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/ava-labs/avalanchego/utils/crypto/secp256k1"
+	ethcommon "github.com/ava-labs/libevm/common"
 )
 
 const genesisBalance = "0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
@@ -29,7 +29,7 @@ type genesisAllocation struct {
 	Balance string `json:"balance"`
 }
 
-func RenderGenesis(template []byte, fundingKey *secp256k1.PrivateKey) ([]byte, error) {
+func RenderGenesis(template []byte, genesisAddress ethcommon.Address) ([]byte, error) {
 	var document genesisDocument
 	if err := json.Unmarshal(template, &document); err != nil {
 		return nil, fmt.Errorf("parse genesis template: %w", err)
@@ -40,7 +40,7 @@ func RenderGenesis(template []byte, fundingKey *secp256k1.PrivateKey) ([]byte, e
 	if len(document.Alloc) != 0 {
 		return nil, fmt.Errorf("genesis template: alloc must be empty before funding-key injection")
 	}
-	address := strings.TrimPrefix(fundingKey.EthAddress().Hex(), "0x")
+	address := strings.TrimPrefix(genesisAddress.Hex(), "0x")
 	document.Alloc = map[string]genesisAllocation{
 		address: {Balance: genesisBalance},
 	}
