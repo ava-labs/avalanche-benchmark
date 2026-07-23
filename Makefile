@@ -5,6 +5,10 @@
 export GOFLAGS := -trimpath
 
 GO_TOOLCHAIN := go1.26.5
+PACKAGE_GO_ENV := GOTOOLCHAIN=$(GO_TOOLCHAIN) \
+	GOPATH=/tmp/avalanche-benchmark-gopath \
+	GOMODCACHE=/tmp/avalanche-benchmark-gomodcache \
+	GOCACHE=/tmp/avalanche-benchmark-gocache
 AVALANCHEGO_REPO := https://github.com/ava-labs/avalanchego.git
 AVALANCHEGO_COMMIT := a067df1192c95d4755f76a631ef3c6ed772e977c
 AVALANCHEGO_BUILD_DIR := $(CURDIR)/.build/avalanchego-$(AVALANCHEGO_COMMIT)
@@ -16,11 +20,11 @@ build: bin/l1 bin/fleet
 
 bin/l1:
 	mkdir -p bin
-	GOTOOLCHAIN=$(GO_TOOLCHAIN) go build -o bin/l1 ./cmd/l1
+	$(PACKAGE_GO_ENV) go build -o bin/l1 ./cmd/l1
 
 bin/fleet:
 	mkdir -p bin
-	GOTOOLCHAIN=$(GO_TOOLCHAIN) go build -o bin/fleet ./cmd/fleet
+	$(PACKAGE_GO_ENV) go build -o bin/fleet ./cmd/fleet
 
 bin/avalanchego:
 	rm -rf $(AVALANCHEGO_BUILD_DIR)
@@ -30,8 +34,8 @@ bin/avalanchego:
 	git -C $(AVALANCHEGO_BUILD_DIR) fetch --depth=1 origin $(AVALANCHEGO_COMMIT)
 	git -C $(AVALANCHEGO_BUILD_DIR) checkout --detach FETCH_HEAD
 	test "$$(git -C $(AVALANCHEGO_BUILD_DIR) rev-parse HEAD)" = "$(AVALANCHEGO_COMMIT)"
-	cd $(AVALANCHEGO_BUILD_DIR) && GOTOOLCHAIN=$(GO_TOOLCHAIN) ./scripts/build.sh
-	cd $(AVALANCHEGO_BUILD_DIR)/graft/subnet-evm && GOTOOLCHAIN=$(GO_TOOLCHAIN) go build \
+	cd $(AVALANCHEGO_BUILD_DIR) && $(PACKAGE_GO_ENV) ./scripts/build.sh
+	cd $(AVALANCHEGO_BUILD_DIR)/graft/subnet-evm && $(PACKAGE_GO_ENV) go build \
 		-ldflags "-X github.com/ava-labs/avalanchego/version.GitCommit=$(AVALANCHEGO_COMMIT)" \
 		-o $(AVALANCHEGO_BUILD_DIR)/build/subnet-evm plugin/*.go
 	mkdir -p bin
