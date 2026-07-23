@@ -12,13 +12,13 @@ terraform {
 
 provider "aws" {
   region = "us-west-1" # site A + control
-  default_tags { tags = { Project = "avalanche-benchmark", Owner = local.owner } }
+  default_tags { tags = local.common_tags }
 }
 
 provider "aws" {
   alias  = "usw2"
   region = "us-west-2" # site B
-  default_tags { tags = { Project = "avalanche-benchmark", Owner = local.owner } }
+  default_tags { tags = local.common_tags }
 }
 
 # Public IP of the machine running Terraform (the operator), for SSH ingress.
@@ -29,8 +29,12 @@ data "http" "my_ip" {
 locals {
   config   = yamldecode(file("${path.module}/config.yaml"))
   prefix   = local.config.prefix
-  owner    = local.config.owner # required by org SCP: instances must carry an Owner tag
+  owner    = local.config.owner
   app_name = "benchmark"
+  common_tags = {
+    Owner   = local.owner
+    Project = "avalanche-benchmark"
+  }
   # Per-DC machine counts (first-class config). Terraform only provisions N boxes
   # per region; roles (validator/spare/RPC) are assigned later in the reconcile/.env
   # layer. site_b_count = 0 => no EC2 spend in us-west-2 (the us-west-2 SG + key pair
@@ -41,6 +45,10 @@ locals {
   public_key   = file(pathexpand(local.config.public_key_path))
   operator_ip  = "${chomp(data.http.my_ip.response_body)}/32"
 }
+
+# The org SCP evaluates every resource created by RunInstances. volume_tags must
+# carry common_tags explicitly or the root EBS volume causes the whole launch to
+# be denied even though the instance itself has the provider default tags.
 
 # No IAM instance profile: the benchmark nodes need no AWS API access, and the org
 # SCP denies iam:CreateRole for this role anyway. (The previous role had no policies
@@ -134,7 +142,8 @@ resource "aws_instance" "control" {
     iops        = 6000
     throughput  = 500
   }
-  tags = { Name = "${local.prefix}-control" }
+  tags        = { Name = "${local.prefix}-control" }
+  volume_tags = merge(local.common_tags, { Name = "${local.prefix}-control-root" })
 }
 
 # ---- Per-site security groups -----------------------------------------------
@@ -233,7 +242,8 @@ resource "aws_instance" "site_a" {
     iops        = 6000
     throughput  = 500
   }
-  tags = { Name = "${local.prefix}-a${count.index + 1}" }
+  tags        = { Name = "${local.prefix}-a${count.index + 1}" }
+  volume_tags = merge(local.common_tags, { Name = "${local.prefix}-a${count.index + 1}-root" })
 }
 
 resource "aws_instance" "site_b" {
@@ -255,7 +265,8 @@ resource "aws_instance" "site_b" {
     iops        = 6000
     throughput  = 500
   }
-  tags = { Name = "${local.prefix}-b${count.index + 1}" }
+  tags        = { Name = "${local.prefix}-b${count.index + 1}" }
+  volume_tags = merge(local.common_tags, { Name = "${local.prefix}-b${count.index + 1}-root" })
 }
 
 # ---- Outputs (formatted for _common.sh / .env) ------------------------------
