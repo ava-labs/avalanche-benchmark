@@ -104,10 +104,13 @@ func TestLoadNodesFailsLoudly(t *testing.T) {
 		"5 host=r1 role=rpc",
 	}
 	tests := map[string][]string{
-		"duplicate number": append(append([]string{}, base...), "5 host=r2 role=rpc"),
-		"unknown field":    append(append([]string{}, base...), "6 host=r2 role=rpc site=A"),
-		"invalid role":     []string{"1 host=v1 role=validator", "2 host=v2 role=validator", "3 host=v3 role=validator", "4 host=v4 role=validator", "5 host=r1 role=spare"},
-		"missing rpc":      base[:4],
+		"duplicate number":             append(append([]string{}, base...), "5 host=r2 role=rpc"),
+		"unknown field":                append(append([]string{}, base...), "6 host=r2 role=rpc site=A"),
+		"invalid role":                 []string{"1 host=v1 role=validator", "2 host=v2 role=validator", "3 host=v3 role=validator", "4 host=v4 role=validator", "5 host=r1 role=spare"},
+		"missing rpc":                  base[:4],
+		"single archive":               append(append([]string{}, base...), "6 host=a1 role=archive"),
+		"oracle validator without rpc": append(append([]string{}, base...), "6 host=o1 role=oracle-validator"),
+		"oracle rpc without validator": append(append([]string{}, base...), "6 host=o1 role=oracle-rpc"),
 	}
 	for name, lines := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -117,6 +120,37 @@ func TestLoadNodesFailsLoudly(t *testing.T) {
 				t.Fatal("expected error")
 			}
 		})
+	}
+}
+
+func TestLoadNodesOracleAndArchiveRoles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nodes.ini")
+	writeFile(t, path, strings.Join([]string{
+		"1 host=v1 role=validator",
+		"2 host=v2 role=validator",
+		"3 host=v3 role=validator",
+		"4 host=v4 role=validator",
+		"5 host=r1 role=rpc",
+		"6 host=a1 role=archive",
+		"7 host=a2 role=archive",
+		"8 host=o1 role=oracle-validator",
+		"9 host=o2 role=oracle-validator",
+		"10 host=r1 role=oracle-rpc", // co-hosted with the main rpc
+	}, "\n"))
+
+	nodes, err := LoadNodes(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 10 {
+		t.Fatalf("expected 10 nodes, got %d", len(nodes))
+	}
+	roles := map[Role]int{}
+	for _, node := range nodes {
+		roles[node.Role]++
+	}
+	if roles[RoleArchive] != 2 || roles[RoleOracleValidator] != 2 || roles[RoleOracleRPC] != 1 {
+		t.Fatalf("unexpected role counts: %v", roles)
 	}
 }
 

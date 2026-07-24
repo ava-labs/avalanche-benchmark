@@ -17,8 +17,11 @@ import (
 type Role string
 
 const (
-	RoleValidator Role = "validator"
-	RoleRPC       Role = "rpc"
+	RoleValidator       Role = "validator"
+	RoleRPC             Role = "rpc"
+	RoleArchive         Role = "archive"
+	RoleOracleValidator Role = "oracle-validator"
+	RoleOracleRPC       Role = "oracle-rpc"
 )
 
 type Node struct {
@@ -181,7 +184,7 @@ func LoadNodes(path string) ([]Node, error) {
 			continue
 		}
 		if len(fields) < 3 {
-			return nil, fmt.Errorf("%s:%d: expected <node-number> host=<address> role=validator|rpc [dc=<tag>]", path, lineNumber)
+			return nil, fmt.Errorf("%s:%d: expected <node-number> host=<address> role=validator|rpc|archive|oracle-validator|oracle-rpc [dc=<tag>]", path, lineNumber)
 		}
 
 		number, err := strconv.Atoi(fields[0])
@@ -213,8 +216,10 @@ func LoadNodes(path string) ([]Node, error) {
 			return nil, fmt.Errorf("%s:%d: required node field host is not provided", path, lineNumber)
 		}
 		role := Role(values["role"])
-		if role != RoleValidator && role != RoleRPC {
-			return nil, fmt.Errorf("%s:%d: role must be validator or rpc, got %q", path, lineNumber, values["role"])
+		switch role {
+		case RoleValidator, RoleRPC, RoleArchive, RoleOracleValidator, RoleOracleRPC:
+		default:
+			return nil, fmt.Errorf("%s:%d: role must be validator, rpc, archive, oracle-validator, or oracle-rpc, got %q", path, lineNumber, values["role"])
 		}
 		nodes = append(nodes, Node{Number: number, Host: host, Role: role, DC: values["dc"]})
 	}
@@ -224,12 +229,21 @@ func LoadNodes(path string) ([]Node, error) {
 
 	validatorCount := 0
 	rpcCount := 0
+	archiveCount := 0
+	oracleValidatorCount := 0
+	oracleRPCCount := 0
 	for _, node := range nodes {
 		switch node.Role {
 		case RoleValidator:
 			validatorCount++
 		case RoleRPC:
 			rpcCount++
+		case RoleArchive:
+			archiveCount++
+		case RoleOracleValidator:
+			oracleValidatorCount++
+		case RoleOracleRPC:
+			oracleRPCCount++
 		}
 	}
 	if validatorCount < 4 {
@@ -237,6 +251,19 @@ func LoadNodes(path string) ([]Node, error) {
 	}
 	if rpcCount < 1 {
 		return nil, fmt.Errorf("%s: expected at least 1 rpc node, found %d", path, rpcCount)
+	}
+	// A single archive cannot cross-check its own answers and leaves no
+	// replica while it re-executes from genesis after a loss.
+	if archiveCount == 1 {
+		return nil, fmt.Errorf("%s: expected 0 or at least 2 archive nodes, found 1", path)
+	}
+	// The oracle L1 is opt-in: no oracle nodes means no oracle chain. When it
+	// exists, its feed ingress must stay off its validators, same as main.
+	if oracleValidatorCount > 0 && oracleRPCCount < 1 {
+		return nil, fmt.Errorf("%s: oracle validators require at least 1 oracle-rpc node, found 0", path)
+	}
+	if oracleRPCCount > 0 && oracleValidatorCount == 0 {
+		return nil, fmt.Errorf("%s: oracle-rpc nodes require at least 1 oracle-validator, found 0", path)
 	}
 
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Number < nodes[j].Number })

@@ -10,16 +10,22 @@ import (
 )
 
 type State struct {
-	Path               string
-	Network            string
-	ManagerSubnetID    ids.ID
-	ManagerChainID     ids.ID
-	ManagerConvertTxID ids.ID
-	SubnetID           ids.ID
-	ChainID            ids.ID
-	ConvertTxID        ids.ID
-	ManagerAddress     string
-	GenesisEVMAddress  string
+	Path                    string
+	Network                 string
+	ManagerSubnetID         ids.ID
+	ManagerChainID          ids.ID
+	ManagerConvertTxID      ids.ID
+	OracleSubnetID          ids.ID
+	OracleChainID           ids.ID
+	OracleConvertTxID       ids.ID
+	SubnetID                ids.ID
+	ChainID                 ids.ID
+	ConvertTxID             ids.ID
+	ManagerAddress          string
+	GenesisEVMAddress       string
+	FeederEVMAddress        string
+	OracleAggregatorAddress string
+	OracleReceiverAddress   string
 }
 
 func (s State) Save() error {
@@ -31,11 +37,17 @@ func (s State) Save() error {
 		{"MANAGER_SUBNET_ID", idString(s.ManagerSubnetID)},
 		{"MANAGER_CHAIN_ID", idString(s.ManagerChainID)},
 		{"MANAGER_CONVERT_TX_ID", idString(s.ManagerConvertTxID)},
+		{"ORACLE_SUBNET_ID", idString(s.OracleSubnetID)},
+		{"ORACLE_CHAIN_ID", idString(s.OracleChainID)},
+		{"ORACLE_CONVERT_TX_ID", idString(s.OracleConvertTxID)},
 		{"SUBNET_ID", idString(s.SubnetID)},
 		{"CHAIN_ID", idString(s.ChainID)},
 		{"CONVERT_TX_ID", idString(s.ConvertTxID)},
 		{"MANAGER_ADDRESS", s.ManagerAddress},
 		{"GENESIS_EVM_ADDRESS", s.GenesisEVMAddress},
+		{"FEEDER_EVM_ADDRESS", s.FeederEVMAddress},
+		{"ORACLE_AGGREGATOR_ADDRESS", s.OracleAggregatorAddress},
+		{"ORACLE_RECEIVER_ADDRESS", s.OracleReceiverAddress},
 	}
 	var contents strings.Builder
 	for _, field := range fields {

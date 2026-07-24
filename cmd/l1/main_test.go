@@ -97,7 +97,7 @@ func TestWeightsLoadLetteredIdentities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	public := creation.NewPublic(generated, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"))
+	public := creation.NewPublic(generated, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"), nil)
 	if _, err := creation.SavePublic(filepath.Join(root, "public.json"), public); err != nil {
 		t.Fatal(err)
 	}

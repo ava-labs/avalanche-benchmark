@@ -132,6 +132,7 @@ func create(root string) error {
 		environment,
 		deploymentPath,
 		filepath.Join(root, "genesis-template.json"),
+		filepath.Join(root, "oracle-genesis-template.json"),
 	)
 	return err
 }
@@ -150,21 +151,18 @@ func generateKeys(root string, managerCommittee int) error {
 	if err != nil {
 		return err
 	}
-	validatorCount := 0
-	rpcCount := 0
+	roleCounts := make(map[config.Role]int, 5)
 	for _, node := range result.Public.Nodes {
-		switch node.Role {
-		case config.RoleValidator:
-			validatorCount++
-		case config.RoleRPC:
-			rpcCount++
-		}
+		roleCounts[node.Role]++
 	}
 	fmt.Printf("loaded %s\n", nodesPath)
 	fmt.Printf(
-		"generated keys: validators=%d rpc=%d managers=%d root=%s\n",
-		validatorCount,
-		rpcCount,
+		"generated keys: validators=%d rpc=%d archive=%d oracle-validators=%d oracle-rpc=%d managers=%d root=%s\n",
+		roleCounts[config.RoleValidator],
+		roleCounts[config.RoleRPC],
+		roleCounts[config.RoleArchive],
+		roleCounts[config.RoleOracleValidator],
+		roleCounts[config.RoleOracleRPC],
 		len(result.Public.Managers),
 		deploymentPath,
 	)
@@ -255,16 +253,20 @@ func showWeights(root string) error {
 			return fmt.Errorf("%s validator %s has no local identity", validator.L1, validator.NodeID)
 		}
 	}
+	l1Rank := map[string]int{"management": 0, "main": 1, "oracle": 2}
 	sort.Slice(report.Validators, func(i, j int) bool {
 		left := identityNames[identityKey{L1: report.Validators[i].L1, NodeID: report.Validators[i].NodeID}]
 		right := identityNames[identityKey{L1: report.Validators[j].L1, NodeID: report.Validators[j].NodeID}]
 		if report.Validators[i].L1 != report.Validators[j].L1 {
-			return report.Validators[i].L1 == "management"
+			return l1Rank[report.Validators[i].L1] < l1Rank[report.Validators[j].L1]
 		}
 		return left.Index < right.Index
 	})
 	fmt.Printf("management chain ID: %s\n", report.ManagementChainID)
 	fmt.Printf("main chain ID: %s\n", report.MainChainID)
+	if report.OracleChainID != ids.Empty {
+		fmt.Printf("oracle chain ID: %s\n", report.OracleChainID)
+	}
 	fmt.Printf("validator fee price: %d nAVAX/second\n", report.FeePrice)
 	fmt.Printf("validator fee cost: %.6f AVAX/30 days per validator\n", float64(report.FeePrice)*30*24*60*60/float64(units.Avax))
 	printTable := func(l1 string) error {
@@ -283,7 +285,13 @@ func showWeights(root string) error {
 	if err := printTable("management"); err != nil {
 		return err
 	}
-	return printTable("main")
+	if err := printTable("main"); err != nil {
+		return err
+	}
+	if report.OracleChainID != ids.Empty {
+		return printTable("oracle")
+	}
+	return nil
 }
 
 type identityKey struct {
@@ -315,11 +323,15 @@ func loadIdentityNames(deploymentDirectory string) (map[identityKey]identityName
 		return nil
 	}
 	for _, node := range public.Nodes {
-		if node.Role != config.RoleValidator {
-			continue
-		}
-		if err := load("main", node.Identity, node.NodeID); err != nil {
-			return nil, fmt.Errorf("load main identity %s: %w", node.Identity, err)
+		switch node.Role {
+		case config.RoleValidator:
+			if err := load("main", node.Identity, node.NodeID); err != nil {
+				return nil, fmt.Errorf("load main identity %s: %w", node.Identity, err)
+			}
+		case config.RoleOracleValidator:
+			if err := load("oracle", node.Identity, node.NodeID); err != nil {
+				return nil, fmt.Errorf("load oracle identity %s: %w", node.Identity, err)
+			}
 		}
 	}
 	for _, manager := range public.Managers {

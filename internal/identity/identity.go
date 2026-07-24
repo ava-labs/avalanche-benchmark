@@ -42,7 +42,7 @@ func Generate(root string, nodes []config.Node, committeeSize int) (Set, error) 
 	for i, node := range nodes {
 		name := Name(i)
 		dir := filepath.Join(root, "identities", name)
-		withBLS := node.Role == config.RoleValidator
+		withBLS := node.Role == config.RoleValidator || node.Role == config.RoleOracleValidator
 		generated, err := generateOne(dir, name, node.Number, node.Role, withBLS)
 		if err != nil {
 			return Set{}, err

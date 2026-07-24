@@ -2,6 +2,7 @@ package creation
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -78,6 +79,8 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	if err := os.WriteFile(templatePath, []byte(template), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// Without oracle nodes the oracle template must never be read.
+	oracleTemplatePath := filepath.Join(dir, "oracle-genesis-template.json")
 	cfg := config.Config{
 		Environment: config.Environment{
 			Network:           "fuji",
@@ -116,7 +119,7 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	public := NewPublic(generated, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"))
+	public := NewPublic(generated, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"), nil)
 	if _, err := SavePublic(filepath.Join(output, "public.json"), public); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +127,7 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := create(context.Background(), cfg.Environment, output, templatePath, loaded, factory)
+	result, err := create(context.Background(), cfg.Environment, output, templatePath, oracleTemplatePath, loaded, factory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,8 +179,140 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	if constants.SubnetEVMID == ids.Empty {
 		t.Fatal("unexpected empty Subnet-EVM VM ID")
 	}
-	if _, err := create(context.Background(), cfg.Environment, output, templatePath, loaded, factory); err == nil {
+	if _, err := create(context.Background(), cfg.Environment, output, templatePath, oracleTemplatePath, loaded, factory); err == nil {
 		t.Fatal("create must refuse existing genesis")
+	}
+}
+
+func TestCreateWithOracleRunsManagerOracleMain(t *testing.T) {
+	dir := t.TempDir()
+	template := `{
+		"config":{"chainId":99999},"alloc":{},"nonce":"0x0",
+		"timestamp":"0x0","extraData":"0x00","gasLimit":"0x1",
+		"difficulty":"0x0","mixHash":"0x0","coinbase":"0x0",
+		"number":"0x0","gasUsed":"0x0","parentHash":"0x0"
+	}`
+	templatePath := filepath.Join(dir, "genesis-template.json")
+	if err := os.WriteFile(templatePath, []byte(template), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oracleTemplate := strings.Replace(template, `"config":{"chainId":99999}`, `"config":{"chainId":99998,"feeManagerConfig":{"blockTimestamp":0}}`, 1)
+	oracleTemplatePath := filepath.Join(dir, "oracle-genesis-template.json")
+	if err := os.WriteFile(oracleTemplatePath, []byte(oracleTemplate), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		Environment: config.Environment{
+			Network:           "fuji",
+			PChainAPI:         "https://example.invalid",
+			FundingPrivateKey: strings.Repeat("1", 64),
+		},
+		Nodes: []config.Node{
+			{Number: 1, Host: "v1", Role: config.RoleValidator},
+			{Number: 2, Host: "v2", Role: config.RoleValidator},
+			{Number: 3, Host: "v3", Role: config.RoleValidator},
+			{Number: 4, Host: "v4", Role: config.RoleValidator},
+			{Number: 5, Host: "rpc", Role: config.RoleRPC},
+			{Number: 6, Host: "o1", Role: config.RoleOracleValidator},
+			{Number: 7, Host: "o2", Role: config.RoleOracleValidator},
+			{Number: 8, Host: "rpc", Role: config.RoleOracleRPC},
+		},
+	}
+	wallet := &fakeWallet{}
+	factory := func(
+		_ context.Context,
+		_ string,
+		_ keychain.Keychain,
+		_ primary.WalletConfig,
+	) (pwallet.Wallet, error) {
+		return wallet, nil
+	}
+
+	output := filepath.Join(dir, "deployment")
+	if err := os.Mkdir(output, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	privateOutput := filepath.Join(dir, "private")
+	if err := os.Mkdir(privateOutput, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	generated, err := identity.Generate(privateOutput, cfg.Nodes, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feeder := ethcommon.HexToAddress("0xAbcDef0123456789abCDef0123456789ABcdEF01")
+	public := NewPublic(generated, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"), &feeder)
+	if _, err := SavePublic(filepath.Join(output, "public.json"), public); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, err := LoadPublic(filepath.Join(output, "public.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := create(context.Background(), cfg.Environment, output, templatePath, oracleTemplatePath, loaded, factory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEvents := []string{
+		"create-subnet", "create-chain", "convert",
+		"create-subnet", "create-chain", "convert",
+		"create-subnet", "create-chain", "convert",
+	}
+	if !reflect.DeepEqual(wallet.events, wantEvents) {
+		t.Fatalf("unexpected transaction order: got %v, want %v", wallet.events, wantEvents)
+	}
+	if len(wallet.conversions) != 3 {
+		t.Fatalf("expected three conversions, got %d", len(wallet.conversions))
+	}
+	oracle := wallet.conversions[1]
+	if oracle.subnetID != result.State.OracleSubnetID || oracle.managerID != result.State.ManagerChainID || len(oracle.values) != 2 {
+		t.Fatalf("unexpected oracle conversion: %+v", oracle)
+	}
+	for _, validator := range oracle.values {
+		if validator.Weight != OracleWeight || validator.Balance != initialBalance {
+			t.Fatalf("unexpected oracle validator: %+v", validator)
+		}
+	}
+	if result.State.OracleConvertTxID == ids.Empty {
+		t.Fatalf("oracle conversion transaction ID not recorded: %+v", result.State)
+	}
+
+	oracleGenesis, err := os.ReadFile(filepath.Join(output, "genesis-oracle.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var oracleDocument genesisDocument
+	if err := json.Unmarshal(oracleGenesis, &oracleDocument); err != nil {
+		t.Fatal(err)
+	}
+	aggregator := oracleDocument.Alloc[allocKey(AggregatorAddress)]
+	if aggregator.Code == "" || aggregator.Storage[ethcommon.Hash{}.Hex()] != ethcommon.BytesToHash(feeder.Bytes()).Hex() {
+		t.Fatalf("aggregator not baked into oracle genesis: %+v", aggregator)
+	}
+	if oracleDocument.Alloc[allocKey(feeder)].Balance != genesisBalance {
+		t.Fatal("feeder not funded on the oracle chain")
+	}
+
+	mainGenesis, err := os.ReadFile(filepath.Join(output, "genesis.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mainDocument genesisDocument
+	if err := json.Unmarshal(mainGenesis, &mainDocument); err != nil {
+		t.Fatal(err)
+	}
+	receiver := mainDocument.Alloc[allocKey(ReceiverAddress)]
+	if receiver.Code == "" {
+		t.Fatalf("receiver not baked into main genesis: %+v", receiver)
+	}
+	if receiver.Storage[ethcommon.Hash{}.Hex()] != ethcommon.Hash(result.State.OracleChainID).Hex() {
+		t.Fatalf("receiver source chain must be the oracle chain: %+v", receiver.Storage)
+	}
+	if receiver.Storage[ethcommon.BigToHash(ethcommon.Big1).Hex()] != ethcommon.BytesToHash(AggregatorAddress.Bytes()).Hex() {
+		t.Fatalf("receiver origin sender must be the aggregator: %+v", receiver.Storage)
+	}
+	if mainDocument.Alloc[allocKey(feeder)].Balance != genesisBalance {
+		t.Fatal("feeder not funded on the main chain")
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/funding"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/oraclecontracts"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/utils/constants"
 	"github.com/ava-labs/avalanchego/utils/crypto/keychain"
@@ -30,7 +31,14 @@ const (
 	creationFeeReserve = units.Avax / 10
 )
 
-var managerAddress = ethcommon.HexToAddress("0x0000000000000000000000000000000000000001")
+var (
+	managerAddress = ethcommon.HexToAddress("0x0000000000000000000000000000000000000001")
+	// The oracle contracts have no constructors; their deployed bytecode sits
+	// at these fixed addresses in the respective Genesis allocs, configured
+	// entirely through explicit storage slots.
+	AggregatorAddress = ethcommon.HexToAddress("0x000000000000000000000000000000000000FEED")
+	ReceiverAddress   = ethcommon.HexToAddress("0x0000000000000000000000000000000000FeedED")
+)
 
 type Result struct {
 	OutputDirectory string
@@ -44,7 +52,7 @@ type walletFactory func(
 	primary.WalletConfig,
 ) (pwallet.Wallet, error)
 
-func Create(ctx context.Context, environment config.Environment, outputDirectory, genesisTemplatePath string) (Result, error) {
+func Create(ctx context.Context, environment config.Environment, outputDirectory, genesisTemplatePath, oracleGenesisTemplatePath string) (Result, error) {
 	statePath := filepath.Join(outputDirectory, "network.env")
 	if err := requireMissing(statePath); err != nil {
 		return Result{}, err
@@ -59,6 +67,11 @@ func Create(ctx context.Context, environment config.Environment, outputDirectory
 	}
 	if err := requireMissing(filepath.Join(outputDirectory, "genesis.json")); err != nil {
 		return Result{}, err
+	}
+	if public.FeederAddress != "" {
+		if err := requireMissing(filepath.Join(outputDirectory, "genesis-oracle.json")); err != nil {
+			return Result{}, err
+		}
 	}
 	fundingInfo, err := funding.Inspect(ctx, environment)
 	if err != nil {
@@ -80,7 +93,7 @@ func Create(ctx context.Context, environment config.Environment, outputDirectory
 		formatAVAX(requiredBalance),
 	)
 	printPublic(public, publicPath, publicDigest)
-	return create(ctx, environment, outputDirectory, genesisTemplatePath, public, primary.MakePWallet)
+	return create(ctx, environment, outputDirectory, genesisTemplatePath, oracleGenesisTemplatePath, public, primary.MakePWallet)
 }
 
 func ValidateManagerCommittee(size int) error {
@@ -93,7 +106,7 @@ func ValidateManagerCommittee(size int) error {
 func requiredFreshCreateBalance(public Public) uint64 {
 	validatorCount := 0
 	for _, node := range public.Nodes {
-		if node.Role == config.RoleValidator {
+		if node.Role == config.RoleValidator || node.Role == config.RoleOracleValidator {
 			validatorCount++
 		}
 	}
@@ -112,9 +125,15 @@ func printPublic(public Public, path, digest string) {
 		fmt.Printf("management identity %s: %s weight %d\n", manager.Identity, manager.NodeID, manager.Weight)
 	}
 	for _, node := range public.Nodes {
-		if node.Role == config.RoleValidator {
+		switch node.Role {
+		case config.RoleValidator:
 			fmt.Printf("main identity %s: %s weight %d\n", node.Identity, node.NodeID, node.Weight)
+		case config.RoleOracleValidator:
+			fmt.Printf("oracle identity %s: %s weight %d\n", node.Identity, node.NodeID, node.Weight)
 		}
+	}
+	if public.FeederAddress != "" {
+		fmt.Printf("oracle feeder EVM address: %s\n", public.FeederAddress)
 	}
 }
 
@@ -123,6 +142,7 @@ func create(
 	environment config.Environment,
 	outputDirectory string,
 	genesisTemplatePath string,
+	oracleGenesisTemplatePath string,
 	public Public,
 	newWallet walletFactory,
 ) (Result, error) {
@@ -138,9 +158,38 @@ func create(
 	if err != nil {
 		return Result{}, fmt.Errorf("read required genesis template %s: %w", genesisTemplatePath, err)
 	}
-	genesis, err := RenderGenesis(template, ethcommon.HexToAddress(public.GenesisAddress))
+	genesisAddress := ethcommon.HexToAddress(public.GenesisAddress)
+	// The management chain never runs, so its genesis stays contract-free even
+	// when the main chain's genesis later embeds the oracle receiver.
+	managementGenesis, err := RenderGenesis(template, []ethcommon.Address{genesisAddress}, nil, nil)
 	if err != nil {
 		return Result{}, err
+	}
+	hasOracle := public.FeederAddress != ""
+	feederAddress := ethcommon.HexToAddress(public.FeederAddress)
+	var oracleGenesis []byte
+	if hasOracle {
+		oracleTemplate, err := os.ReadFile(oracleGenesisTemplatePath)
+		if err != nil {
+			return Result{}, fmt.Errorf("read required oracle genesis template %s: %w", oracleGenesisTemplatePath, err)
+		}
+		// The feeder also administers the oracle chain's FeeManager precompile,
+		// so fee/delay parameters are tunable live without a chain recreation.
+		oracleGenesis, err = RenderGenesis(
+			oracleTemplate,
+			[]ethcommon.Address{genesisAddress, feederAddress},
+			[]ContractAllocation{{
+				Address:     AggregatorAddress,
+				RuntimeCode: oraclecontracts.AggregatorRuntime,
+				Storage: map[ethcommon.Hash]ethcommon.Hash{
+					{}: ethcommon.BytesToHash(feederAddress.Bytes()),
+				},
+			}},
+			&feederAddress,
+		)
+		if err != nil {
+			return Result{}, err
+		}
 	}
 	identities, err := public.IdentitySet()
 	if err != nil {
@@ -150,16 +199,29 @@ func create(
 	if err := requireMissing(genesisPath); err != nil {
 		return Result{}, err
 	}
-	if err := os.WriteFile(genesisPath, genesis, 0o644); err != nil {
-		return Result{}, fmt.Errorf("write generated genesis %s: %w", genesisPath, err)
+	oracleGenesisPath := filepath.Join(outputDirectory, "genesis-oracle.json")
+	if err := requireMissing(oracleGenesisPath); err != nil {
+		return Result{}, err
 	}
-	fmt.Printf("generated %s\n", genesisPath)
+	if !hasOracle {
+		// Without an oracle the main genesis has no chain-dependent content,
+		// so it is published before the first transaction, exactly as before.
+		if err := os.WriteFile(genesisPath, managementGenesis, 0o644); err != nil {
+			return Result{}, fmt.Errorf("write generated genesis %s: %w", genesisPath, err)
+		}
+		fmt.Printf("generated %s\n", genesisPath)
+	}
 
 	state := State{
 		Path:              filepath.Join(outputDirectory, "network.env"),
 		Network:           environment.Network,
 		ManagerAddress:    managerAddress.Hex(),
 		GenesisEVMAddress: public.GenesisAddress,
+	}
+	if hasOracle {
+		state.FeederEVMAddress = public.FeederAddress
+		state.OracleAggregatorAddress = AggregatorAddress.Hex()
+		state.OracleReceiverAddress = ReceiverAddress.Hex()
 	}
 	if err := state.Save(); err != nil {
 		return Result{}, err
@@ -189,7 +251,7 @@ func create(
 		return Result{}, err
 	}
 	fmt.Println("creating management chain")
-	managerChainTx, err := wallet.IssueCreateChainTx(state.ManagerSubnetID, genesis, constants.SubnetEVMID, nil, "management")
+	managerChainTx, err := wallet.IssueCreateChainTx(state.ManagerSubnetID, managementGenesis, constants.SubnetEVMID, nil, "management")
 	if err != nil {
 		return Result{}, fmt.Errorf("manager CreateChainTx: %w", err)
 	}
@@ -224,6 +286,100 @@ func create(
 	if err := state.Save(); err != nil {
 		return Result{}, err
 	}
+
+	if hasOracle {
+		if err := os.WriteFile(oracleGenesisPath, oracleGenesis, 0o644); err != nil {
+			return Result{}, fmt.Errorf("write generated oracle genesis %s: %w", oracleGenesisPath, err)
+		}
+		fmt.Printf("generated %s\n", oracleGenesisPath)
+		fmt.Println("creating oracle subnet")
+		oracleSubnetTx, err := wallet.IssueCreateSubnetTx(subnetOwner)
+		if err != nil {
+			return Result{}, fmt.Errorf("oracle CreateSubnetTx: %w", err)
+		}
+		state.OracleSubnetID = oracleSubnetTx.ID()
+		fmt.Printf("accepted oracle CreateSubnetTx %s\n", oracleSubnetTx.ID())
+		if err := state.Save(); err != nil {
+			return Result{}, err
+		}
+
+		wallet, err = makeWallet(ctx, environment.PChainAPI, keychain, state, newWallet)
+		if err != nil {
+			return Result{}, err
+		}
+		fmt.Println("creating oracle chain")
+		oracleChainTx, err := wallet.IssueCreateChainTx(state.OracleSubnetID, oracleGenesis, constants.SubnetEVMID, nil, "oracle")
+		if err != nil {
+			return Result{}, fmt.Errorf("oracle CreateChainTx: %w", err)
+		}
+		state.OracleChainID = oracleChainTx.ID()
+		fmt.Printf("accepted oracle CreateChainTx %s\n", oracleChainTx.ID())
+		if err := state.Save(); err != nil {
+			return Result{}, err
+		}
+
+		oracleValidatorIdentities := make([]identity.Identity, 0, len(identities.Nodes))
+		for _, generated := range identities.Nodes {
+			if generated.Role == config.RoleOracleValidator {
+				oracleValidatorIdentities = append(oracleValidatorIdentities, generated)
+			}
+		}
+		oracleWeights := make(map[string]uint64, len(oracleValidatorIdentities))
+		for _, node := range public.Nodes {
+			if node.Role == config.RoleOracleValidator {
+				oracleWeights[node.Identity] = node.Weight
+			}
+		}
+		oracleValidators, err := conversionValidators(oracleValidatorIdentities, func(generated identity.Identity) uint64 {
+			return oracleWeights[generated.Name]
+		}, validatorOwner)
+		if err != nil {
+			return Result{}, err
+		}
+		fmt.Println("converting oracle subnet to an L1 managed by the management chain")
+		oracleConvertTx, err := wallet.IssueConvertSubnetToL1Tx(
+			state.OracleSubnetID,
+			state.ManagerChainID,
+			managerAddress.Bytes(),
+			oracleValidators,
+		)
+		if err != nil {
+			return Result{}, fmt.Errorf("oracle ConvertSubnetToL1Tx: %w", err)
+		}
+		state.OracleConvertTxID = oracleConvertTx.ID()
+		fmt.Printf("accepted oracle ConvertSubnetToL1Tx %s\n", oracleConvertTx.ID())
+		if err := state.Save(); err != nil {
+			return Result{}, err
+		}
+	}
+
+	mainGenesis := managementGenesis
+	if hasOracle {
+		// The receiver contract only trusts Warp messages whose source is the
+		// oracle chain, so the main genesis can be rendered only after the
+		// oracle CreateChainTx is accepted and its blockchain ID is known.
+		mainGenesis, err = RenderGenesis(
+			template,
+			[]ethcommon.Address{genesisAddress, feederAddress},
+			[]ContractAllocation{{
+				Address:     ReceiverAddress,
+				RuntimeCode: oraclecontracts.ReceiverRuntime,
+				Storage: map[ethcommon.Hash]ethcommon.Hash{
+					{}:                                  ethcommon.Hash(state.OracleChainID),
+					ethcommon.BigToHash(ethcommon.Big1): ethcommon.BytesToHash(AggregatorAddress.Bytes()),
+				},
+			}},
+			nil,
+		)
+		if err != nil {
+			return Result{}, err
+		}
+		if err := os.WriteFile(genesisPath, mainGenesis, 0o644); err != nil {
+			return Result{}, fmt.Errorf("write generated genesis %s: %w", genesisPath, err)
+		}
+		fmt.Printf("generated %s\n", genesisPath)
+	}
+
 	fmt.Println("creating main subnet")
 	mainSubnetTx, err := wallet.IssueCreateSubnetTx(subnetOwner)
 	if err != nil {
@@ -240,7 +396,7 @@ func create(
 		return Result{}, err
 	}
 	fmt.Println("creating main chain")
-	mainChainTx, err := wallet.IssueCreateChainTx(state.SubnetID, genesis, constants.SubnetEVMID, nil, "benchmark")
+	mainChainTx, err := wallet.IssueCreateChainTx(state.SubnetID, mainGenesis, constants.SubnetEVMID, nil, "benchmark")
 	if err != nil {
 		return Result{}, fmt.Errorf("main CreateChainTx: %w", err)
 	}
@@ -307,9 +463,12 @@ func makeWallet(
 	state State,
 	newWallet walletFactory,
 ) (pwallet.Wallet, error) {
-	subnetIDs := make([]ids.ID, 0, 2)
+	subnetIDs := make([]ids.ID, 0, 3)
 	if state.ManagerSubnetID != ids.Empty {
 		subnetIDs = append(subnetIDs, state.ManagerSubnetID)
+	}
+	if state.OracleSubnetID != ids.Empty {
+		subnetIDs = append(subnetIDs, state.OracleSubnetID)
 	}
 	if state.SubnetID != ids.Empty {
 		subnetIDs = append(subnetIDs, state.SubnetID)

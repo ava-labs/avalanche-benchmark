@@ -70,4 +70,72 @@ func TestGenerateWritesPrivateBundleAndPublicHandover(t *testing.T) {
 	if _, err := Generate(output, nodes, 1); err == nil {
 		t.Fatal("key generation must reject existing output")
 	}
+	if loaded.FeederAddress != "" {
+		t.Fatalf("feeder address must be empty without oracle nodes, got %q", loaded.FeederAddress)
+	}
+	if _, err := os.Stat(filepath.Join(output, "oracle-feeder.key")); !os.IsNotExist(err) {
+		t.Fatalf("oracle feeder key must not exist without oracle nodes, got %v", err)
+	}
+}
+
+func TestGenerateOracleIdentitiesAndFeederKey(t *testing.T) {
+	nodes := []config.Node{
+		{Number: 1, Role: config.RoleValidator},
+		{Number: 2, Role: config.RoleValidator},
+		{Number: 3, Role: config.RoleValidator},
+		{Number: 4, Role: config.RoleValidator},
+		{Number: 5, Role: config.RoleRPC},
+		{Number: 6, Role: config.RoleArchive},
+		{Number: 7, Role: config.RoleArchive},
+		{Number: 8, Role: config.RoleOracleValidator},
+		{Number: 9, Role: config.RoleOracleValidator},
+		{Number: 10, Role: config.RoleOracleRPC},
+	}
+	output := filepath.Join(t.TempDir(), "deployment")
+	if _, err := Generate(output, nodes, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, _, err := creation.LoadPublic(filepath.Join(output, "public.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Identity letters follow inventory order: h and i are the oracle
+	// validators, f and g the archives, j the oracle rpc.
+	oracleValidator := loaded.Nodes[7]
+	if oracleValidator.Role != config.RoleOracleValidator || oracleValidator.Signer == nil || oracleValidator.Weight != creation.OracleWeight {
+		t.Fatalf("unexpected oracle validator: %+v", oracleValidator)
+	}
+	for _, index := range []int{5, 6, 9} {
+		if loaded.Nodes[index].Signer != nil || loaded.Nodes[index].Weight != 0 {
+			t.Fatalf("node %s must have neither signer nor weight", loaded.Nodes[index].Identity)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(output, "identities", "h", "signer.key")); err != nil {
+		t.Fatalf("oracle validator BLS key must exist: %v", err)
+	}
+
+	feederKeyPath := filepath.Join(output, "oracle-feeder.key")
+	keyHex, err := os.ReadFile(feederKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyBytes, err := hex.DecodeString(strings.TrimSpace(string(keyHex)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := secp256k1.ToPrivateKey(keyBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.EthAddress().Hex() != loaded.FeederAddress {
+		t.Fatalf("feeder address %s does not match private key %s", loaded.FeederAddress, key.EthAddress())
+	}
+	info, err := os.Stat(feederKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("feeder key mode = %o, want 600", info.Mode().Perm())
+	}
 }

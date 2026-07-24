@@ -27,6 +27,8 @@ type Deployment struct {
 	ManagementSubnetID    ids.ID
 	ManagementChainID     ids.ID
 	ManagementConvertTxID ids.ID
+	OracleSubnetID        ids.ID
+	OracleChainID         ids.ID
 	MainSubnetID          ids.ID
 	MainChainID           ids.ID
 	ManagerAddress        ethcommon.Address
@@ -45,6 +47,7 @@ type Validator struct {
 
 type Report struct {
 	ManagementChainID ids.ID
+	OracleChainID     ids.ID
 	MainChainID       ids.ID
 	FeePrice          gas.Price
 	Validators        []Validator
@@ -92,6 +95,21 @@ func loadDeployment(path, network string, requireComplete bool) (Deployment, err
 			return Deployment{}, err
 		}
 		deployment.ManagementSubnetID, err = requiredID(path, values, "MANAGER_SUBNET_ID")
+		if err != nil {
+			return Deployment{}, err
+		}
+	}
+	// The oracle L1 is opt-in, so its fields are read exactly when its
+	// conversion was recorded rather than required on every deployment.
+	if strings.TrimSpace(values["ORACLE_CONVERT_TX_ID"]) != "" {
+		if _, err := requiredID(path, values, "ORACLE_CONVERT_TX_ID"); err != nil {
+			return Deployment{}, err
+		}
+		deployment.OracleChainID, err = requiredID(path, values, "ORACLE_CHAIN_ID")
+		if err != nil {
+			return Deployment{}, err
+		}
+		deployment.OracleSubnetID, err = requiredID(path, values, "ORACLE_SUBNET_ID")
 		if err != nil {
 			return Deployment{}, err
 		}
@@ -150,6 +168,13 @@ func fetch(ctx context.Context, pChain client, deployment Deployment, requireVal
 		}
 		rows = append(rows, management...)
 	}
+	if deployment.OracleSubnetID != ids.Empty {
+		oracle, err := fetchValidators(ctx, pChain, "oracle", deployment.OracleSubnetID, height, feePrice)
+		if err != nil {
+			return Report{}, err
+		}
+		rows = append(rows, oracle...)
+	}
 	if deployment.MainSubnetID != ids.Empty {
 		main, err := fetchValidators(ctx, pChain, "main", deployment.MainSubnetID, height, feePrice)
 		if err != nil {
@@ -168,6 +193,7 @@ func fetch(ctx context.Context, pChain client, deployment Deployment, requireVal
 	})
 	return Report{
 		ManagementChainID: deployment.ManagementChainID,
+		OracleChainID:     deployment.OracleChainID,
 		MainChainID:       deployment.MainChainID,
 		FeePrice:          feePrice,
 		Validators:        rows,

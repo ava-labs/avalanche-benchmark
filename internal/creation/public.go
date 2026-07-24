@@ -20,12 +20,16 @@ const (
 	HighWeight         = 100000
 	LowWeight          = 1000
 	ManagerWeight      = 1000
+	OracleWeight       = 1000
 )
 
 type Public struct {
-	GenesisAddress string          `json:"genesisAddress"`
-	Nodes          []PublicNode    `json:"nodes"`
-	Managers       []PublicManager `json:"managers"`
+	GenesisAddress string `json:"genesisAddress"`
+	// FeederAddress is the EVM address of the oracle feed key. It is present
+	// exactly when the inventory declares an oracle L1.
+	FeederAddress string          `json:"feederAddress,omitempty"`
+	Nodes         []PublicNode    `json:"nodes"`
+	Managers      []PublicManager `json:"managers"`
 }
 
 type PublicNode struct {
@@ -44,11 +48,14 @@ type PublicManager struct {
 	Signer   *platformsigner.ProofOfPossession `json:"signer"`
 }
 
-func NewPublic(generated identity.Set, genesisAddress ethcommon.Address) Public {
+func NewPublic(generated identity.Set, genesisAddress ethcommon.Address, feederAddress *ethcommon.Address) Public {
 	public := Public{
 		GenesisAddress: genesisAddress.Hex(),
 		Nodes:          make([]PublicNode, 0, len(generated.Nodes)),
 		Managers:       make([]PublicManager, 0, len(generated.Manager)),
+	}
+	if feederAddress != nil {
+		public.FeederAddress = feederAddress.Hex()
 	}
 	validatorIndex := 0
 	for _, generated := range generated.Nodes {
@@ -59,12 +66,15 @@ func NewPublic(generated identity.Set, genesisAddress ethcommon.Address) Public 
 			NodeID:   generated.NodeID.String(),
 			Signer:   generated.Proof,
 		}
-		if generated.Role == config.RoleValidator {
+		switch generated.Role {
+		case config.RoleValidator:
 			node.Weight = LowWeight
 			if validatorIndex < HighValidatorCount {
 				node.Weight = HighWeight
 			}
 			validatorIndex++
+		case config.RoleOracleValidator:
+			node.Weight = OracleWeight
 		}
 		public.Nodes = append(public.Nodes, node)
 	}
@@ -128,6 +138,9 @@ func (p Public) Validate() error {
 	seenNodeIDs := make(map[ids.NodeID]struct{}, len(p.Nodes)+len(p.Managers))
 	validatorCount := 0
 	rpcCount := 0
+	archiveCount := 0
+	oracleValidatorCount := 0
+	oracleRPCCount := 0
 	previousNode := 0
 	for i, node := range p.Nodes {
 		expectedIdentity := identity.Name(i)
@@ -163,16 +176,34 @@ func (p Public) Validate() error {
 				return fmt.Errorf("validator %s signer: %w", node.Identity, err)
 			}
 			validatorCount++
-		case config.RoleRPC:
+		case config.RoleOracleValidator:
+			if node.Weight != OracleWeight {
+				return fmt.Errorf("oracle validator %s weight must be %d, got %d", node.Identity, OracleWeight, node.Weight)
+			}
+			if node.Signer == nil {
+				return fmt.Errorf("oracle validator %s signer is required", node.Identity)
+			}
+			if err := node.Signer.Verify(); err != nil {
+				return fmt.Errorf("oracle validator %s signer: %w", node.Identity, err)
+			}
+			oracleValidatorCount++
+		case config.RoleRPC, config.RoleArchive, config.RoleOracleRPC:
 			if node.Weight != 0 {
-				return fmt.Errorf("rpc %s weight must be 0, got %d", node.Identity, node.Weight)
+				return fmt.Errorf("%s %s weight must be 0, got %d", node.Role, node.Identity, node.Weight)
 			}
 			if node.Signer != nil {
-				return fmt.Errorf("rpc %s signer must not be provided", node.Identity)
+				return fmt.Errorf("%s %s signer must not be provided", node.Role, node.Identity)
 			}
-			rpcCount++
+			switch node.Role {
+			case config.RoleRPC:
+				rpcCount++
+			case config.RoleArchive:
+				archiveCount++
+			case config.RoleOracleRPC:
+				oracleRPCCount++
+			}
 		default:
-			return fmt.Errorf("node %s role must be validator or rpc, got %q", node.Identity, node.Role)
+			return fmt.Errorf("node %s role must be validator, rpc, archive, oracle-validator, or oracle-rpc, got %q", node.Identity, node.Role)
 		}
 	}
 	if validatorCount < 4 {
@@ -180,6 +211,21 @@ func (p Public) Validate() error {
 	}
 	if rpcCount < 1 {
 		return fmt.Errorf("at least 1 rpc is required")
+	}
+	if archiveCount == 1 {
+		return fmt.Errorf("0 or at least 2 archive nodes are required, got 1")
+	}
+	if oracleValidatorCount > 0 && oracleRPCCount < 1 {
+		return fmt.Errorf("oracle validators require at least 1 oracle-rpc")
+	}
+	if oracleRPCCount > 0 && oracleValidatorCount == 0 {
+		return fmt.Errorf("oracle-rpc nodes require at least 1 oracle-validator")
+	}
+	if oracleValidatorCount > 0 && !ethcommon.IsHexAddress(p.FeederAddress) {
+		return fmt.Errorf("feederAddress must be an EVM address when oracle validators exist, got %q", p.FeederAddress)
+	}
+	if oracleValidatorCount == 0 && p.FeederAddress != "" {
+		return fmt.Errorf("feederAddress must be empty without oracle validators, got %q", p.FeederAddress)
 	}
 	if len(p.Managers) != 1 && len(p.Managers) != 4 {
 		return fmt.Errorf("manager count must be 1 or 4, got %d", len(p.Managers))

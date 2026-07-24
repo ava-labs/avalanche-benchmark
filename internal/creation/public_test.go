@@ -32,6 +32,7 @@ func TestLoadPublicRejectsPolicyDriftAndUnknownFields(t *testing.T) {
 	if _, err := SavePublic(publicPath, NewPublic(
 		generated,
 		ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"),
+		nil,
 	)); err != nil {
 		t.Fatal(err)
 	}
