@@ -19,7 +19,7 @@ type Role string
 const (
 	RoleValidator Role = "validator"
 	RoleRPC       Role = "rpc"
-	RoleBeacon    Role = "beacon"
+	RolePChain    Role = "pchain"
 )
 
 type Node struct {
@@ -236,7 +236,7 @@ func LoadNodes(path string) ([]Node, error) {
 			continue
 		}
 		if len(fields) < 3 {
-			return nil, fmt.Errorf("%s:%d: expected <node-number> host=<address> role=validator|rpc|beacon [dc=<tag>]", path, lineNumber)
+			return nil, fmt.Errorf("%s:%d: expected <node-number> host=<address> role=validator|rpc|pchain [dc=<tag>]", path, lineNumber)
 		}
 
 		number, err := strconv.Atoi(fields[0])
@@ -268,8 +268,8 @@ func LoadNodes(path string) ([]Node, error) {
 			return nil, fmt.Errorf("%s:%d: required node field host is not provided", path, lineNumber)
 		}
 		role := Role(values["role"])
-		if role != RoleValidator && role != RoleRPC && role != RoleBeacon {
-			return nil, fmt.Errorf("%s:%d: role must be validator, rpc, or beacon, got %q", path, lineNumber, values["role"])
+		if role != RoleValidator && role != RoleRPC && role != RolePChain {
+			return nil, fmt.Errorf("%s:%d: role must be validator, rpc, or pchain, got %q", path, lineNumber, values["role"])
 		}
 		nodes = append(nodes, Node{Number: number, Host: host, Role: role, DC: values["dc"]})
 	}
@@ -279,15 +279,15 @@ func LoadNodes(path string) ([]Node, error) {
 
 	validatorCount := 0
 	rpcCount := 0
-	beaconCount := 0
+	pchainCount := 0
 	for _, node := range nodes {
 		switch node.Role {
 		case RoleValidator:
 			validatorCount++
 		case RoleRPC:
 			rpcCount++
-		case RoleBeacon:
-			beaconCount++
+		case RolePChain:
+			pchainCount++
 		}
 	}
 	if validatorCount < 4 {
@@ -296,8 +296,8 @@ func LoadNodes(path string) ([]Node, error) {
 	if rpcCount < 1 {
 		return nil, fmt.Errorf("%s: expected at least 1 rpc node, found %d", path, rpcCount)
 	}
-	if beaconCount != 1 {
-		return nil, fmt.Errorf("%s: expected exactly 1 P-chain beacon, found %d", path, beaconCount)
+	if pchainCount != 1 {
+		return nil, fmt.Errorf("%s: expected exactly 1 P-chain node, found %d", path, pchainCount)
 	}
 
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Number < nodes[j].Number })

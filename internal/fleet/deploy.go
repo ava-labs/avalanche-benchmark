@@ -1,9 +1,12 @@
 package fleet
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -79,14 +82,14 @@ func NewDeployer(root string, out io.Writer) *Deployer {
 
 type deployment struct {
 	environment     config.FleetEnvironment
-	beacon          nodeDeployment
+	pchain          nodeDeployment
 	selected        []nodeDeployment
 	chainID         ids.ID
 	subnetID        ids.ID
 	managerSubnetID ids.ID
 	expectedMain    map[ids.NodeID]struct{}
 	expectedManager map[ids.NodeID]struct{}
-	beaconMode      string
+	pchainMode      string
 }
 
 type nodeDeployment struct {
@@ -96,40 +99,40 @@ type nodeDeployment struct {
 	renderDir string
 }
 
-func (d *Deployer) Deploy(ctx context.Context, beaconMode string) error {
-	prepared, cleanup, err := d.prepare(beaconMode)
+func (d *Deployer) Deploy(ctx context.Context, pchainMode string) error {
+	prepared, cleanup, err := d.prepare(pchainMode)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 
-	// The P-chain beacon is brought fully current before any L1 node is
+	// The P-chain node is brought fully current before any L1 node is
 	// touched. This is a phase barrier, not a best-effort bootstrap hint.
-	beaconOnly := prepared
-	beaconOnly.selected = []nodeDeployment{prepared.beacon}
+	pchainOnly := prepared
+	pchainOnly.selected = []nodeDeployment{prepared.pchain}
 	for _, phase := range []struct {
 		name   string
 		action func(context.Context, deployment, nodeDeployment) error
 	}{
-		{"beacon stop", d.stop},
-		{"beacon package", d.installPackage},
-		{"beacon systemd", d.installUnit},
-		{"beacon identity", d.installIdentity},
+		{"P-chain stop", d.stop},
+		{"P-chain package", d.installPackage},
+		{"P-chain systemd", d.installUnit},
+		{"P-chain identity", d.installIdentity},
 	} {
-		if err := d.phase(ctx, beaconOnly, phase.name, phase.action); err != nil {
+		if err := d.phase(ctx, pchainOnly, phase.name, phase.action); err != nil {
 			return err
 		}
 	}
-	if prepared.beaconMode == frozenMode {
-		if err := d.phase(ctx, beaconOnly, "beacon P-chain seed", d.seedBeacon); err != nil {
+	if prepared.pchainMode == frozenMode {
+		if err := d.phase(ctx, pchainOnly, "P-chain seed", d.seedPChain); err != nil {
 			return err
 		}
 	}
-	if err := d.phase(ctx, beaconOnly, "beacon start", d.start); err != nil {
+	if err := d.phase(ctx, pchainOnly, "P-chain start", d.start); err != nil {
 		return err
 	}
-	if err := d.waitBeaconReady(ctx, prepared); err != nil {
-		return fmt.Errorf("beacon readiness phase node %d (%s): %w", prepared.beacon.node.Number, prepared.beacon.node.Host, err)
+	if err := d.waitPChainReady(ctx, prepared); err != nil {
+		return fmt.Errorf("P-chain readiness phase node %d (%s): %w", prepared.pchain.node.Number, prepared.pchain.node.Host, err)
 	}
 
 	for _, phase := range []struct {
@@ -147,8 +150,142 @@ func (d *Deployer) Deploy(ctx context.Context, beaconMode string) error {
 			return err
 		}
 	}
-	fmt.Fprintf(d.out, "deployed P-chain beacon and %d L1 node(s)\n", len(prepared.selected))
+	fmt.Fprintf(d.out, "deployed P-chain node and %d L1 node(s)\n", len(prepared.selected))
 	return nil
+}
+
+func (d *Deployer) ArchivePChain(ctx context.Context) error {
+	target := filepath.Join(d.root, pchainArchive)
+	if _, err := os.Stat(target); err == nil {
+		return fmt.Errorf("./%s already exists; move or delete it explicitly", pchainArchive)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect ./%s: %w", pchainArchive, err)
+	}
+
+	environment, nodes, err := d.loadFleet()
+	if err != nil {
+		return err
+	}
+	var pchainNode config.Node
+	for _, node := range nodes {
+		if node.Role == config.RolePChain {
+			pchainNode = node
+			break
+		}
+	}
+	pchain := nodeDeployment{node: pchainNode}
+	state := deployment{environment: environment}
+	unit := serviceName(pchain)
+	if err := d.runSSH(ctx, state, pchain, "sudo systemctl is-active --quiet "+unit); err != nil {
+		return fmt.Errorf("P-chain node service %s must be running: %w", unit, err)
+	}
+	stopErr := d.runSSH(
+		ctx,
+		state,
+		pchain,
+		fmt.Sprintf(
+			"sudo systemctl stop %[1]s && test \"$(sudo systemctl is-active %[1]s)\" = inactive",
+			unit,
+		),
+	)
+	if stopErr != nil {
+		recoveryCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		restartErr := d.runSSH(
+			recoveryCtx,
+			state,
+			pchain,
+			fmt.Sprintf(
+				"sudo systemctl start %[1]s && sudo systemctl is-active --quiet %[1]s",
+				unit,
+			),
+		)
+		return errors.Join(
+			fmt.Errorf("stop P-chain node: %w", stopErr),
+			wrapIfError("restore P-chain node after uncertain stop", restartErr),
+		)
+	}
+
+	dataDir := fmt.Sprintf("%s/%d", remoteDataDir, pchainNode.Number)
+	remoteArchive := dataDir + "/.pchain-export.tar.gz"
+	archiveErr := d.runSSH(
+		ctx,
+		state,
+		pchain,
+		fmt.Sprintf(
+			"test -n \"$(find %[1]s/db -mindepth 1 -print -quit 2>/dev/null)\" && "+
+				"rm -f %[2]s && tar -C %[1]s -czf %[2]s db/",
+			dataDir,
+			remoteArchive,
+		),
+	)
+	recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), time.Minute)
+	restartErr := d.runSSH(
+		recoveryCtx,
+		state,
+		pchain,
+		fmt.Sprintf(
+			"sudo systemctl start %[1]s && sudo systemctl is-active --quiet %[1]s",
+			unit,
+		),
+	)
+	cancelRecovery()
+	if archiveErr != nil || restartErr != nil {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), time.Minute)
+		cleanupErr := d.runSSH(cleanupCtx, state, pchain, "rm -f "+remoteArchive)
+		cancelCleanup()
+		return errors.Join(
+			wrapIfError("archive P-chain database", archiveErr),
+			wrapIfError("restart P-chain node", restartErr),
+			wrapIfError("remove remote partial archive", cleanupErr),
+		)
+	}
+	fmt.Fprintln(d.out, "P-chain node restarted; downloading archive")
+
+	partial := target + ".partial"
+	if err := os.Remove(partial); err != nil && !os.IsNotExist(err) {
+		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), time.Minute)
+		cleanupErr := d.runSSH(cleanupCtx, state, pchain, "rm -f "+remoteArchive)
+		cancelCleanup()
+		return errors.Join(
+			fmt.Errorf("remove stale ./%s.partial: %w", pchainArchive, err),
+			wrapIfError("remove remote archive", cleanupErr),
+		)
+	}
+	defer os.Remove(partial)
+	downloadErr := d.downloadFile(ctx, state, pchain, remoteArchive, partial)
+	var validateErr error
+	if downloadErr == nil {
+		validateErr = validatePChainArchive(partial)
+	}
+	cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), time.Minute)
+	cleanupErr := d.runSSH(cleanupCtx, state, pchain, "rm -f "+remoteArchive)
+	cancelCleanup()
+	if downloadErr != nil || validateErr != nil {
+		return errors.Join(
+			wrapIfError("download P-chain archive", downloadErr),
+			wrapIfError("validate P-chain archive", validateErr),
+			wrapIfError("remove remote archive", cleanupErr),
+		)
+	}
+	if err := os.Rename(partial, target); err != nil {
+		return errors.Join(
+			fmt.Errorf("publish ./%s: %w", pchainArchive, err),
+			wrapIfError("remove remote archive", cleanupErr),
+		)
+	}
+	fmt.Fprintf(d.out, "created ./%s\n", pchainArchive)
+	if cleanupErr != nil {
+		return fmt.Errorf("archive created, but remove remote archive: %w", cleanupErr)
+	}
+	return nil
+}
+
+func wrapIfError(action string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", action, err)
 }
 
 func (d *Deployer) phase(
@@ -169,12 +306,12 @@ func (d *Deployer) phase(
 	return nil
 }
 
-func (d *Deployer) prepare(beaconMode string) (deployment, func(), error) {
+func (d *Deployer) prepare(pchainMode string) (deployment, func(), error) {
 	noCleanup := func() {}
-	if beaconMode != frozenMode && beaconMode != followMode {
-		return deployment{}, noCleanup, fmt.Errorf("deploy mode must be %q or %q, got %q", frozenMode, followMode, beaconMode)
+	if pchainMode != frozenMode && pchainMode != followMode {
+		return deployment{}, noCleanup, fmt.Errorf("deploy mode must be %q or %q, got %q", frozenMode, followMode, pchainMode)
 	}
-	if beaconMode == frozenMode {
+	if pchainMode == frozenMode {
 		archivePath := filepath.Join(d.root, pchainArchive)
 		if info, err := os.Stat(archivePath); err != nil {
 			if os.IsNotExist(err) {
@@ -185,21 +322,9 @@ func (d *Deployer) prepare(beaconMode string) (deployment, func(), error) {
 			return deployment{}, noCleanup, fmt.Errorf("frozen deploy requires ./%s to be a regular file", pchainArchive)
 		}
 	}
-	environment, err := config.LoadFleetEnvironment(filepath.Join(d.root, ".env"))
+	environment, nodes, err := d.loadFleet()
 	if err != nil {
 		return deployment{}, noCleanup, err
-	}
-	if !sshUserPattern.MatchString(environment.SSHUser) {
-		return deployment{}, noCleanup, fmt.Errorf(".env: SSH_USER must be a Linux user name, got %q", environment.SSHUser)
-	}
-	nodes, err := config.LoadNodes(filepath.Join(d.root, "nodes.ini"))
-	if err != nil {
-		return deployment{}, noCleanup, err
-	}
-	for _, node := range nodes {
-		if strings.ContainsAny(node.Host, " \t\r\n,") {
-			return deployment{}, noCleanup, fmt.Errorf("node %d host must not contain whitespace or a comma, got %q", node.Number, node.Host)
-		}
 	}
 
 	public, _, err := creation.LoadPublic(filepath.Join(d.root, "deployment", "public.json"))
@@ -281,7 +406,7 @@ func (d *Deployer) prepare(beaconMode string) (deployment, func(), error) {
 		managerSubnetID: managerSubnetID,
 		expectedMain:    make(map[ids.NodeID]struct{}),
 		expectedManager: make(map[ids.NodeID]struct{}),
-		beaconMode:      beaconMode,
+		pchainMode:      pchainMode,
 	}
 	for _, node := range public.Nodes {
 		if node.Role == config.RoleValidator {
@@ -294,32 +419,32 @@ func (d *Deployer) prepare(beaconMode string) (deployment, func(), error) {
 		result.expectedManager[nodeID] = struct{}{}
 	}
 
-	var beacon config.Node
+	var pchain config.Node
 	for _, node := range nodes {
-		if node.Role == config.RoleBeacon {
-			beacon = node
+		if node.Role == config.RolePChain {
+			pchain = node
 			break
 		}
 	}
-	beaconIdentity := publicByNode[beacon.Number]
-	if err := validateIdentityFiles(d.root, beaconIdentity); err != nil {
+	pchainIdentity := publicByNode[pchain.Number]
+	if err := validateIdentityFiles(d.root, pchainIdentity); err != nil {
 		cleanup()
 		return deployment{}, noCleanup, err
 	}
-	beaconRender := filepath.Join(renderRoot, strconv.Itoa(beacon.Number))
-	if err := renderNode(beaconRender, d.root, environment, beacon, beaconIdentity, chainID, subnetID, ports[beacon.Number], beaconMode, "", "", "", ""); err != nil {
+	pchainRender := filepath.Join(renderRoot, strconv.Itoa(pchain.Number))
+	if err := renderNode(pchainRender, d.root, environment, pchain, pchainIdentity, chainID, subnetID, ports[pchain.Number], pchainMode, "", "", "", ""); err != nil {
 		cleanup()
 		return deployment{}, noCleanup, err
 	}
-	result.beacon = nodeDeployment{
-		node:      beacon,
-		identity:  beaconIdentity,
-		httpPort:  ports[beacon.Number][0],
-		renderDir: beaconRender,
+	result.pchain = nodeDeployment{
+		node:      pchain,
+		identity:  pchainIdentity,
+		httpPort:  ports[pchain.Number][0],
+		renderDir: pchainRender,
 	}
 
 	for _, node := range nodes {
-		if node.Role == config.RoleBeacon {
+		if node.Role == config.RolePChain {
 			continue
 		}
 		generated := publicByNode[node.Number]
@@ -328,7 +453,7 @@ func (d *Deployer) prepare(beaconMode string) (deployment, func(), error) {
 			return deployment{}, noCleanup, err
 		}
 		renderDir := filepath.Join(renderRoot, strconv.Itoa(node.Number))
-		bootstrapIP := fmt.Sprintf("%s:%d", beacon.Host, ports[beacon.Number][1])
+		bootstrapIP := fmt.Sprintf("%s:%d", pchain.Host, ports[pchain.Number][1])
 		stateSyncIPs, stateSyncIDs := stateSyncPeers(node, nodes, publicByNode, ports)
 		if err := renderNode(
 			renderDir,
@@ -339,9 +464,9 @@ func (d *Deployer) prepare(beaconMode string) (deployment, func(), error) {
 			chainID,
 			subnetID,
 			ports[node.Number],
-			beaconMode,
+			pchainMode,
 			bootstrapIP,
-			beaconIdentity.NodeID,
+			pchainIdentity.NodeID,
 			stateSyncIPs,
 			stateSyncIDs,
 		); err != nil {
@@ -358,6 +483,26 @@ func (d *Deployer) prepare(beaconMode string) (deployment, func(), error) {
 	return result, cleanup, nil
 }
 
+func (d *Deployer) loadFleet() (config.FleetEnvironment, []config.Node, error) {
+	environment, err := config.LoadFleetEnvironment(filepath.Join(d.root, ".env"))
+	if err != nil {
+		return config.FleetEnvironment{}, nil, err
+	}
+	if !sshUserPattern.MatchString(environment.SSHUser) {
+		return config.FleetEnvironment{}, nil, fmt.Errorf(".env: SSH_USER must be a Linux user name, got %q", environment.SSHUser)
+	}
+	nodes, err := config.LoadNodes(filepath.Join(d.root, "nodes.ini"))
+	if err != nil {
+		return config.FleetEnvironment{}, nil, err
+	}
+	for _, node := range nodes {
+		if strings.ContainsAny(node.Host, " \t\r\n,") {
+			return config.FleetEnvironment{}, nil, fmt.Errorf("node %d host must not contain whitespace or a comma, got %q", node.Number, node.Host)
+		}
+	}
+	return environment, nodes, nil
+}
+
 func stateSyncPeers(
 	node config.Node,
 	nodes []config.Node,
@@ -367,7 +512,7 @@ func stateSyncPeers(
 	var peerIPs []string
 	var peerIDs []string
 	for _, peer := range nodes {
-		if peer.Number == node.Number || peer.Role == config.RoleBeacon {
+		if peer.Number == node.Number || peer.Role == config.RolePChain {
 			continue
 		}
 		peerIPs = append(peerIPs, fmt.Sprintf("%s:%d", peer.Host, ports[peer.Number][1]))
@@ -406,7 +551,7 @@ func renderNode(
 	generated creation.PublicNode,
 	chainID, subnetID ids.ID,
 	ports [2]int,
-	beaconMode string,
+	pchainMode string,
 	bootstrapIP, bootstrapID string,
 	stateSyncIPs, stateSyncIDs string,
 ) error {
@@ -435,10 +580,10 @@ func renderNode(
 	cfg["partial-sync-primary-network"] = true
 	cfg["staking-tls-cert-file"] = filepath.Join(stakingDir, "staker.crt")
 	cfg["staking-tls-key-file"] = filepath.Join(stakingDir, "staker.key")
-	if node.Role == config.RoleBeacon {
+	if node.Role == config.RolePChain {
 		cfg["p-chain-follow-only"] = true
 		cfg["staking-ephemeral-signer-enabled"] = true
-		if beaconMode == frozenMode {
+		if pchainMode == frozenMode {
 			cfg["bootstrap-ips"] = ""
 			cfg["bootstrap-ids"] = ""
 		} else {
@@ -465,7 +610,7 @@ func renderNode(
 	if err := writeJSON(filepath.Join(renderDir, "node.json"), cfg); err != nil {
 		return err
 	}
-	if node.Role != config.RoleBeacon {
+	if node.Role != config.RolePChain {
 		chainConfig := "chain-config.json"
 		if node.Role == config.RoleRPC {
 			chainConfig = "chain-config-rpc.json"
@@ -626,6 +771,62 @@ func (d *Deployer) rsyncFile(ctx context.Context, deployment deployment, node no
 	return nil
 }
 
+func (d *Deployer) downloadFile(ctx context.Context, deployment deployment, node nodeDeployment, remote, local string) error {
+	sshCommand := append([]string{"ssh"}, sshOptions(deployment.environment.SSHKeyPath)...)
+	args := []string{
+		"-rt",
+		"-e", strings.Join(sshCommand, " "),
+		fmt.Sprintf("%s@%s:%s", deployment.environment.SSHUser, node.node.Host, remote),
+		local,
+	}
+	if err := d.runner.Run(ctx, "rsync", args...); err != nil {
+		return fmt.Errorf("rsync %s: %w", remote, err)
+	}
+	return nil
+}
+
+func validatePChainArchive(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	compressed, err := gzip.NewReader(file)
+	if err != nil {
+		return err
+	}
+	defer compressed.Close()
+
+	reader := tar.NewReader(compressed)
+	hasDatabaseFile := false
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return err
+		}
+		name := filepath.ToSlash(filepath.Clean(header.Name))
+		if name != "db" && !strings.HasPrefix(name, "db/") {
+			return fmt.Errorf("unexpected archive path %q; only db/ is allowed", header.Name)
+		}
+		switch header.Typeflag {
+		case tar.TypeDir:
+		case tar.TypeReg, tar.TypeRegA:
+			if strings.HasPrefix(name, "db/") {
+				hasDatabaseFile = true
+			}
+		default:
+			return fmt.Errorf("unsupported archive entry %q", header.Name)
+		}
+	}
+	if !hasDatabaseFile {
+		return fmt.Errorf("archive has no files under db/")
+	}
+	return nil
+}
+
 func serviceName(node nodeDeployment) string {
 	return servicePrefix + strconv.Itoa(node.node.Number) + ".service"
 }
@@ -666,7 +867,7 @@ func (d *Deployer) installPackage(ctx context.Context, deployment deployment, no
 			"sudo chown -R %[8]s:%[8]s %[4]s/%[3]d %[2]s/%[3]d",
 		remotePackageDir, remoteConfigDir, node.node.Number, remoteDataDir,
 		binaryStage, pluginID, packageStage, deployment.environment.SSHUser)
-	if node.node.Role != config.RoleBeacon {
+	if node.node.Role != config.RolePChain {
 		install += fmt.Sprintf(
 			" && sudo install -d -m 0755 %[1]s/%[2]d/chains/%[3]s %[1]s/%[2]d/subnets && "+
 				"sudo install -m 0644 %[4]s/chain.json %[1]s/%[2]d/chains/%[3]s/config.json && "+
@@ -707,7 +908,7 @@ func (d *Deployer) installIdentity(ctx context.Context, deployment deployment, n
 	return d.runSSH(ctx, deployment, node, command)
 }
 
-func (d *Deployer) seedBeacon(ctx context.Context, deployment deployment, node nodeDeployment) error {
+func (d *Deployer) seedPChain(ctx context.Context, deployment deployment, node nodeDeployment) error {
 	dataDir := fmt.Sprintf("%s/%d", remoteDataDir, node.node.Number)
 	databaseDir := dataDir + "/db"
 	output, err := d.runSSHOutput(
@@ -721,7 +922,7 @@ func (d *Deployer) seedBeacon(ctx context.Context, deployment deployment, node n
 	}
 	switch strings.TrimSpace(string(output)) {
 	case "present":
-		fmt.Fprintf(d.out, "P-chain beacon database already exists; preserving %s\n", databaseDir)
+		fmt.Fprintf(d.out, "P-chain database already exists; preserving %s\n", databaseDir)
 		return nil
 	case "missing":
 	default:
@@ -760,7 +961,7 @@ func (d *Deployer) seedBeacon(ctx context.Context, deployment deployment, node n
 	if err := d.runSSH(ctx, deployment, node, command); err != nil {
 		return fmt.Errorf("%s must contain a non-empty db/ directory: %w", pchainArchive, err)
 	}
-	fmt.Fprintf(d.out, "restored P-chain beacon database from %s\n", pchainArchive)
+	fmt.Fprintf(d.out, "restored P-chain database from %s\n", pchainArchive)
 	return nil
 }
 
@@ -768,9 +969,9 @@ func (d *Deployer) start(ctx context.Context, deployment deployment, node nodeDe
 	return d.runSSH(ctx, deployment, node, "sudo systemctl start "+serviceName(node))
 }
 
-func (d *Deployer) waitBeaconReady(ctx context.Context, deployment deployment) error {
+func (d *Deployer) waitPChainReady(ctx context.Context, deployment deployment) error {
 	deadline := time.Now().Add(d.waitLimit)
-	uri := fmt.Sprintf("http://%s:%d", deployment.beacon.node.Host, deployment.beacon.httpPort)
+	uri := fmt.Sprintf("http://%s:%d", deployment.pchain.node.Host, deployment.pchain.httpPort)
 	client := platformvm.NewClient(uri)
 	var lastError error
 	for time.Now().Before(deadline) {
@@ -779,7 +980,7 @@ func (d *Deployer) waitBeaconReady(ctx context.Context, deployment deployment) e
 		if managerErr == nil && mainErr == nil &&
 			containsValidators(manager, deployment.expectedManager) &&
 			containsValidators(main, deployment.expectedMain) {
-			fmt.Fprintf(d.out, "P-chain beacon contains management and main L1 validator state\n")
+			fmt.Fprintf(d.out, "P-chain node contains management and main L1 validator state\n")
 			return nil
 		}
 		lastError = fmt.Errorf("management=%v main=%v", managerErr, mainErr)

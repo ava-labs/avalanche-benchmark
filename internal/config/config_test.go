@@ -20,7 +20,7 @@ func TestLoadFiles(t *testing.T) {
 	}, "\n"))
 	writeFile(t, nodesPath, strings.Join([]string{
 		"5 host=rpc.example role=rpc",
-		"6 host=beacon.example role=beacon",
+		"6 host=pchain.example role=pchain",
 		"4 host=v4.example role=validator dc=B",
 		"2 host=v2.example role=validator dc=A",
 		"1 host=v1.example role=validator dc=A",
@@ -125,14 +125,14 @@ func TestLoadNodesFailsLoudly(t *testing.T) {
 		"3 host=v3 role=validator",
 		"4 host=v4 role=validator",
 		"5 host=r1 role=rpc",
-		"6 host=p1 role=beacon",
+		"6 host=p1 role=pchain",
 	}
 	tests := map[string][]string{
 		"duplicate number": append(append([]string{}, base...), "5 host=r2 role=rpc"),
 		"unknown field":    append(append([]string{}, base...), "7 host=r2 role=rpc site=A"),
-		"invalid role":     []string{"1 host=v1 role=validator", "2 host=v2 role=validator", "3 host=v3 role=validator", "4 host=v4 role=validator", "5 host=r1 role=spare", "6 host=p1 role=beacon"},
-		"missing rpc":      append(append([]string{}, base[:4]...), "6 host=p1 role=beacon"),
-		"missing beacon":   base[:5],
+		"invalid role":     []string{"1 host=v1 role=validator", "2 host=v2 role=validator", "3 host=v3 role=validator", "4 host=v4 role=validator", "5 host=r1 role=spare", "6 host=p1 role=pchain"},
+		"missing rpc":      append(append([]string{}, base[:4]...), "6 host=p1 role=pchain"),
+		"missing pchain":   base[:5],
 	}
 	for name, lines := range tests {
 		t.Run(name, func(t *testing.T) {

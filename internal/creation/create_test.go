@@ -90,7 +90,7 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 			{Number: 3, Host: "v3", Role: config.RoleValidator},
 			{Number: 4, Host: "v4", Role: config.RoleValidator},
 			{Number: 5, Host: "rpc", Role: config.RoleRPC},
-			{Number: 6, Host: "beacon", Role: config.RoleBeacon},
+			{Number: 6, Host: "pchain", Role: config.RolePChain},
 		},
 	}
 	wallet := &fakeWallet{}
@@ -190,7 +190,7 @@ func TestRequiredFreshCreateBalanceIncludesAllRegistrationsAndFeeReserve(t *test
 			{Role: config.RoleValidator},
 			{Role: config.RoleValidator},
 			{Role: config.RoleRPC},
-			{Role: config.RoleBeacon},
+			{Role: config.RolePChain},
 		},
 		Managers: make([]PublicManager, 4),
 	}

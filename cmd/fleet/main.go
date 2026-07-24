@@ -25,11 +25,17 @@ func run() error {
 	switch {
 	case len(os.Args) == 3 && os.Args[1] == "deploy":
 		return fleet.NewDeployer(root, os.Stdout).Deploy(context.Background(), os.Args[2])
+	case len(os.Args) == 3 && os.Args[1] == "pchain" && os.Args[2] == "archive":
+		return fleet.NewDeployer(root, os.Stdout).ArchivePChain(context.Background())
 	default:
 		return fmt.Errorf("usage:\n%s", usage(program))
 	}
 }
 
 func usage(program string) string {
-	return fmt.Sprintf("  %s deploy <frozen|follow>", program)
+	return fmt.Sprintf(
+		"  %s deploy <frozen|follow>\n  %s pchain archive",
+		program,
+		program,
+	)
 }

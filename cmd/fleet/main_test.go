@@ -18,6 +18,7 @@ func TestUsageUsesExecutableName(t *testing.T) {
 	message := err.Error()
 	for _, expected := range []string{
 		"benchmark-fleet deploy <frozen|follow>",
+		"benchmark-fleet pchain archive",
 	} {
 		if !strings.Contains(message, expected) {
 			t.Fatalf("usage %q does not contain %q", message, expected)

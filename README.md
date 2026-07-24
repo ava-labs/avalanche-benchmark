@@ -12,7 +12,7 @@ Design rationale: **[DESIGN.md](DESIGN.md)**. This README is the operator manual
 
 ## Architecture
 
-Two L1s, one fleet, one P-chain beacon:
+Two L1s, one fleet, one P-chain node:
 
 - **Main L1**: the benchmarked chain (subnet-evm). Its validators are your
   fleet. Registered once via `ConvertSubnetToL1Tx` with the management chain set
@@ -27,21 +27,21 @@ Two L1s, one fleet, one P-chain beacon:
   the 67% quorum. The committee's keys live on the control host; **nodes never
   sign management messages**. During a DC outage the dead validators' stake
   must still be movable.
-- **The P-chain beacon**: exactly one inventory node running AvalancheGo as a
+- **The P-chain node**: exactly one inventory node running AvalancheGo as a
   systemd service. It has a fresh stable TLS identity, owns the fleet's P-chain
   state, and is not registered on either L1. Initial `fleet deploy` requires an
-  explicit `frozen` or `follow` mode. Deploy waits until the beacon sees both
-  converted L1 validator sets before touching any validator or RPC service.
-  Every validator and RPC then uses the beacon's inventory address and
-  generated NodeID as its sole P-chain bootstrap.
+  explicit `frozen` or `follow` mode. Deploy waits until the P-chain node sees
+  both converted L1 validator sets before touching any validator or RPC
+  service. Every validator and RPC then uses the P-chain node's inventory
+  address and generated NodeID as its sole P-chain bootstrap.
 
-Switching the deployed beacon between following and frozen is a separate
+Switching the deployed P-chain node between following and frozen is a separate
 lifecycle step after initial deployment.
 
 ## Inventory: nodes.ini
 
 ```ini
-# <node-number> host=<address> role=validator|rpc|beacon [dc=<tag>]
+# <node-number> host=<address> role=validator|rpc|pchain [dc=<tag>]
 1  host=10.0.0.11 role=validator dc=A
 2  host=10.0.0.12 role=validator dc=A
 3  host=10.0.0.13 role=validator dc=A
@@ -54,7 +54,7 @@ lifecycle step after initial deployment.
 10 host=10.0.0.16 role=rpc       dc=A
 11 host=10.1.0.15 role=rpc       dc=B
 12 host=10.1.0.16 role=rpc       dc=B
-13 host=10.2.0.10 role=beacon
+13 host=10.2.0.10 role=pchain
 ```
 
 - Machines and nodes are numbers: inventory keys and data roots use `<n>`.
@@ -74,7 +74,7 @@ lifecycle step after initial deployment.
 - `role` is the only functional field. `validator` = registered on-chain,
   carries stake, swappable. `rpc` = never registered, no BLS signer key
   (runs `--staking-ephemeral-signer-enabled`), pinned identity, serves
-  ingress and anchors L1 access. `beacon` = exactly one unregistered P-chain
+  ingress and anchors L1 access. `pchain` = exactly one unregistered P-chain
   follow-only node with a stable TLS identity and no BLS signer.
 - `dc` is an optional freeform display/selector tag. If omitted, it remains
   visibly unset. Maintenance verbs accept `dc=<tag>` selectors and `status`
@@ -84,7 +84,7 @@ lifecycle step after initial deployment.
 - `deployment/public.json` is generated from the private identities and is the
   public NodeID, PoP, and initial-weight handover. Validation IDs, current
   weights, and active state come from the P-chain.
-- Several logical nodes, including the P-chain beacon, may share one host and
+- Several logical nodes, including the P-chain node, may share one host and
   IP. Nodes on that host are ordered by node number. The first uses HTTP 9650
   and staking 9651, the second 9652/9653, the third 9654/9655, and so on.
   Every node has its own data directory, logs, configuration, identity, and
@@ -164,6 +164,7 @@ l1 topup <days>        fund every registered validator to <days> of runway
 l1 set-weight <letter> <w> set main identity to 1, 1000, or 100000
 l1 destroy             disable every converted L1 validator and reclaim its balance
 fleet deploy <frozen|follow>
+fleet pchain archive
 fleet start [<node>|dc=<tag> ...]
 fleet stop [<node>|dc=<tag> ...]
 fleet destroy [<node>|dc=<tag> ...]
@@ -183,12 +184,12 @@ go run ./cmd/l1 keygen
 
 It reads only `nodes.ini`, requires `deployment/` to be absent, and generates
 fresh TLS+BLS identities for validators, TLS-only identities for RPCs and the
-P-chain beacon,
+P-chain node,
 TLS+BLS identities for managers, and `genesis-funds.key`. It writes
 `deployment/public.json` with the Genesis EVM address and every public identity,
 NodeID, initial weight, and required PoP, plus `deployment/placement.json`
 with the initial machine-to-identity bijection. RPCs have no signer or PoP
-because they are never registered. The beacon also has no signer or PoP. Up to
+because they are never registered. The P-chain node also has no signer or PoP. Up to
 the first three validators by ascending node number receive weight 100000,
 remaining validators receive 1000, and managers receive 1000.
 
@@ -231,7 +232,7 @@ the file's SHA-256 so the operator can verify the copy.
 Creation does not freeze the P-chain. The L1 may be pre-created on another
 machine. `fleet deploy frozen` restores the certified P-chain archive, while
 `fleet deploy follow` obtains the conversion results from the public network.
-Both wait until the beacon sees both results before starting the L1 nodes.
+Both wait until the P-chain node sees both results before starting the L1 nodes.
 
 ### topup
 
@@ -283,32 +284,32 @@ is ready for a new `create`. There is no local destroyed flag.
 ### deploy, start, stop, and status
 
 `fleet deploy` always targets the complete inventory. Its one required argument
-chooses the beacon's initial P-chain source: `frozen` or `follow`. There is no
+chooses the P-chain node's initial source: `frozen` or `follow`. There is no
 default. Deployment is not a node-maintenance interface.
 For `start`, `stop`, `destroy`, and `status`, a selector is a node number or
 `dc=<tag>`; multiple selectors form a union, and no selector targets every node.
 
-`fleet deploy` first deploys the sole P-chain beacon through strict stop,
+`fleet deploy` first deploys the sole P-chain node through strict stop,
 package, systemd-unit, identity, optional archive restore, and start phases.
 Both modes set `--p-chain-follow-only=true`. `follow` omits bootstrap fields so
 AvalancheGo uses its embedded network peers. `frozen` explicitly sets both
 bootstrap lists empty. A frozen deploy requires `pchain.tar.gz` in the working
 directory. The archive must contain one non-empty top-level `db/` directory.
-Deploy restores it only when the remote beacon database is empty; rerunning
-deploy preserves an existing beacon database and does not transfer the archive.
-Before any L1 service is touched, deploy queries the beacon and requires the
-complete management and main validator sets recorded by `public.json` and
+Deploy restores it only when the remote P-chain database is empty; rerunning
+deploy preserves an existing database and does not transfer the archive.
+Before any L1 service is touched, deploy queries the P-chain node and requires
+the complete management and main validator sets recorded by `public.json` and
 `network.env`.
 
 It then runs fleet-wide phases for every validator and RPC node: stop every
 service, rsync the current binaries and rendered configuration, install and
 enable every systemd unit, push each node's initial generated identity, start
 every service, then wait for all nodes to serve the L1. Every validator and RPC
-uses the beacon's inventory host and
-generated NodeID as its sole P-chain bootstrap, while its state-sync list
-contains the other validator and RPC nodes only. Phasing lets all members of a
-cold fleet start before the readiness wait requires quorum. Deploy includes
-start. There is no provisioned check or local deploy-state flag.
+uses the P-chain node's inventory host and generated NodeID as its sole P-chain
+bootstrap, while its state-sync list contains the other validator and RPC nodes
+only. Phasing lets all members of a cold fleet start before the readiness wait
+requires quorum. Deploy includes start. There is no provisioned check or local
+deploy-state flag.
 
 When logical nodes share a host, node number order assigns HTTP/staking ports
 `9650/9651`, then `9652/9653`, and so on. Each logical node has a separate
@@ -338,7 +339,7 @@ logs, configuration, binaries, and systemd unit remain. The next
 command changes only local node data. It is unrelated to `l1 destroy`, which
 disables validators on the P-chain and reclaims their balances.
 
-Every inventory node, including the P-chain beacon, uses systemd because it
+Every inventory node, including the P-chain node, uses systemd because it
 must survive a terminal disconnect and machine restart.
 
 ### place: key-swap failover
@@ -402,22 +403,22 @@ pins the conversion height, `set-weight` continues normally. The readiness gate
 is automatic; the weight transaction itself is constructed and submitted only
 once, and any weight-transaction failure remains an immediate error.
 
-Run weight changes while the P-chain beacon is following. A transaction
-submitted while the beacon is frozen can confirm publicly without reaching the
-fleet until the beacon follows again.
+Run weight changes while the P-chain node is following. A transaction
+submitted while the P-chain node is frozen can confirm publicly without
+reaching the fleet until the P-chain node follows again.
 
 ## Bootstrap topology
 
-The P-chain beacon is the sole primary-network bootstrap for every validator
+The P-chain node is the sole primary-network bootstrap for every validator
 and RPC node. Its `(host:staking-port, NodeID)` comes from `nodes.ini` and the
 generated public identity manifest. Bootstrap entries are verified by TLS at
-dial time, so the beacon identity is stable and cannot participate in key
+dial time, so the P-chain node identity is stable and cannot participate in key
 placement.
 
 Each validator and RPC receives every other validator and RPC inventory node
-as its L1 state-sync peers. The list excludes itself and the P-chain beacon.
-The beacon does not track or serve the L1 and therefore must never appear in a
-downstream state-sync list.
+as its L1 state-sync peers. The list excludes itself and the P-chain node.
+The P-chain node does not track or serve the L1 and therefore must never appear
+in a downstream state-sync list.
 
 Why RPCs exist at all: serving transaction ingress on a validator measurably
 slows its block production. RPCs take the load (`bombard` fans across all of
@@ -447,7 +448,7 @@ dashboards: run `bombard`, run a drill, watch throughput, finalized height per
 node, and stake placement move in Grafana (`04_monitoring.sh` runs
 Prometheus + Grafana on control, scraping every node's `/ext/metrics`).
 
-### P-chain beacon modes
+### P-chain node modes
 
 Initial deployment is explicit:
 
@@ -456,34 +457,41 @@ fleet deploy frozen
 fleet deploy follow
 ```
 
-`frozen` requires `pchain.tar.gz`, restores it when the beacon has no database,
-and starts with explicit-empty bootstrap lists. The archive is created only
-from a stopped P-chain-only AvalancheGo node and contains its `db/` directory:
+`frozen` requires `pchain.tar.gz`, restores it when the P-chain node has no
+database, and starts with explicit-empty bootstrap lists. Produce the archive
+from any deployed, running P-chain node:
 
 ```bash
-tar -C <stopped-beacon-data-directory> -czf pchain.tar.gz db/
+fleet pchain archive
 ```
+
+The command refuses to overwrite `./pchain.tar.gz`, stops the managed P-chain
+service, creates a consistent archive of its non-empty `db/`, restarts the
+service in its existing mode, downloads and validates the archive, and
+atomically publishes it locally. The service is restarted before the large
+download begins. If remote archive creation fails, restart is still attempted.
 
 `follow` requires no archive. It preserves any existing database and omits
 bootstrap fields so AvalancheGo follows its embedded network peers. The
-systemd service and numbered data directory preserve the beacon identity,
+systemd service and numbered data directory preserve the P-chain node identity,
 mode, and P-chain state.
 
 Two explicit lifecycle commands are planned but not implemented in this
 deploy slice:
 
 ```bash
-fleet beacon freeze
-fleet beacon follow
+fleet pchain freeze
+fleet pchain follow
 ```
 
 `freeze` will render empty upstream bootstrap lists and restart only the
-beacon. `follow` will omit those lists again and restart only the beacon.
-Downstream validator and RPC configurations always point to the same beacon
-and never change. A machine reboot retains the last rendered beacon
-configuration and therefore retains its mode. The transition is needed both
-for frozen-to-following benchmark operation and for making later public
-P-chain state, including ICM-related state, visible to the isolated fleet.
+P-chain node. `follow` will omit those lists again and restart only the P-chain
+node. Downstream validator and RPC configurations always point to the same
+P-chain node and never change. A machine reboot retains the last rendered
+P-chain node configuration and therefore retains its mode. The transition is
+needed both for frozen-to-following benchmark operation and for making later
+public P-chain state, including ICM-related state, visible to the isolated
+fleet.
 
 ## Quick start
 
@@ -499,10 +507,11 @@ make pack
 # copy remote-benchmark.tar.gz to the control host and extract it
 # choose exactly one initial P-chain source:
 ./bin/fleet deploy follow
+./bin/fleet pchain archive  # optional: produce pchain.tar.gz for frozen testing
 # or place pchain.tar.gz here and run: ./bin/fleet deploy frozen
 ```
 
-The deployed P-chain state lives in the beacon node's numbered data directory.
+The deployed P-chain state lives in the P-chain node's numbered data directory.
 `fleet deploy` preserves that directory across package updates.
 
 ## Operational notes
