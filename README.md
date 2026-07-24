@@ -174,6 +174,7 @@ fleet start [<node>|dc=<tag> ...]
 fleet stop [<node>|dc=<tag> ...]
 fleet status [<node>|dc=<tag> ...]
 fleet place <identity-letter> <node>
+fleet restart
 ```
 
 ### keygen and create
@@ -300,7 +301,8 @@ provisioned check or local deploy-state flag.
 wait for all to become inactive, re-push every assigned identity, start all,
 then wait for all to serve the L1. This is intentional convergence, not an
 optimization opportunity: stale keys on a machine must never win over
-control's placement state.
+control's placement state. Every multi-phase fleet command aborts before its
+next phase if any node fails.
 
 `fleet stop` waits for the selected services to become inactive and preserves
 their databases, logs, installed files, and current keys. `fleet status` is
@@ -315,14 +317,19 @@ switching between following and frozen must be an explicit operator action.
 
 `fleet place a 5` puts identity `a` on node 5 **and the validator identity
 previously on node 5 on identity `a`'s old node**. Placement is always a
-transposition, so the identity↔node bijection is preserved by construction. An
-identity can never be live on two nodes (that's equivocation, and it is
-structurally inexpressible, not merely checked). Execution first stops both
-nodes and verifies both are inactive. It then atomically updates
-`deployment/placement.json` and runs the normal start path for both nodes,
-which pushes the newly assigned keys. If either stop fails, nothing changes.
-If a later start fails, the intended assignments remain explicit and rerunning
-`fleet start` converges them. Nodes hold only their currently active identity.
+transposition, so the identity↔node bijection is preserved by construction.
+The command atomically updates `deployment/placement.json`, then rewrites the
+assigned identity files on every inventory node, including unchanged nodes.
+It does not stop or restart any process. Rewriting the complete fleet every
+time makes disk state deterministic and makes a rerun a full reconciliation,
+not a delta.
+
+`fleet restart` reads every running node's NodeID and compares it with the
+NodeID assigned by `deployment/placement.json`. It collects every mismatch,
+stops all mismatched nodes, and starts them all only after every stop succeeds.
+If any stop fails, none are started. Nodes that already run their assigned
+identity are untouched. This explicit command activates keys written by
+`place`.
 
 Two refusals, both correctness rather than policy:
 1. an identity that would end up live twice (cannot be expressed anyway);
