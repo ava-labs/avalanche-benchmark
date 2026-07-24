@@ -107,6 +107,97 @@ An RPC node is: a PINNED (IP, NodeID) that tracks the chain, serves ingress, and
 - state-sync lists = bootstrap lists (one anchor list; two lists that always contain the same nodes is pointless).
 - GOTCHA (proven live): empty bootstrap lists do NOT auto-discover peers from P-chain records; lists must be explicit. And every key swap invalidates any (IP, NodeID) bootstrap entry pointing at a swapped VALIDATOR, which is exactly why anchors are RPCs only. (The interim fleet listed all 12 nodes as bootstrap anchors; it survived swaps only because enough unswapped entries remained. Do not copy that.)
 
+## The oracle L1 (added 2026-07-23)
+
+An optional third L1 that accepts mocked price feeds, aggregates them in a
+genesis-baked contract, and exports each update to the main L1 as a Warp
+message. Opt-in through the inventory: `oracle-validator` / `oracle-rpc`
+roles. A `nodes.ini` without them produces exactly the two-L1 deployment
+above — no oracle chain, no feeder key, no new files.
+
+- Managed by the SAME committee as the main L1 (its `ConvertSubnetToL1Tx`
+  records the management chain at `0x..01`). Motivation: one signing
+  authority; a second committee adds keys without adding loss tolerance, and
+  the committee exists precisely to outlive fleet failures.
+- Creation order is committee → oracle → main. Motivation: the main chain's
+  receiver contract only trusts Warp messages whose source chain ID is the
+  oracle chain, and that ID exists only after the oracle `CreateChainTx` is
+  accepted. Baking it into the main Genesis removes a post-deploy
+  configuration step and the drift class that comes with it.
+- Both contracts are DEPLOYED bytecode in Genesis allocs at fixed addresses
+  (aggregator `0x…FEED` on the oracle chain, receiver `0x…FeedED` on main),
+  written without constructors or immutables so configuration is explicit
+  storage slots (slot 0 feeder / source chain ID, slot 1 aggregator address).
+  Motivation: the creation machine needs no solc; every configured value is
+  visible in `genesis*.json` and recorded in `network.env`. Embedded runtime
+  hex lives in `internal/oraclecontracts/`; sources in `contracts/`.
+- One feeder key (`deployment/oracle-feeder.key`), funded on BOTH chains at
+  Genesis. It signs feed transactions on the oracle chain and delivery
+  transactions on main. Motivation: a single, purpose-named demo key;
+  deliberately not the Genesis funds key so benchmark funds stay separate.
+- The relayer runs on control and signs each Warp message with ALL oracle
+  validator BLS keys, which control already holds. Same motivation as
+  `set-weight`: signing is key-only and off-node, and the demo must run in an
+  isolated network with zero additional binaries. In production this job
+  belongs to icm-relayer; the control-host relayer is the airgap-friendly
+  demo equivalent, not a replacement.
+- Oracle validators all get weight 1000 (flat). Motivation: oracle failover
+  is not the benchmark's subject, and equal weights keep the Warp quorum
+  arithmetic trivial (all keys held → always 100%).
+- Own consensus parameters (`subnet-config-oracle.json`, k=4/alpha=3 for the
+  shipped 4-validator example) and own Genesis template
+  (`oracle-genesis-template.json`, 10ms initial min delay, small gas limit).
+  Motivation: the chain carries tiny price transactions and is tuned for
+  latency; the k<=validator-count rule applies per L1.
+
+## Archive nodes (added 2026-07-23)
+
+- New `archive` role: main-L1 nodes with pruning AND state-sync disabled
+  (`chain-config-archive.json`), pinned identities like RPCs, never
+  registered. Motivation: historical queries need full state; the benchmark
+  RPCs deliberately became light state-sync nodes (2026-07-01) and cannot
+  serve them.
+- Archives must exist from Genesis. Motivation: an archive cannot state-sync
+  by definition; joining later means re-executing the whole chain, which is
+  the same restore failure class that broke recovery in June 2026. Present
+  from block 0, they never need to.
+- 0 or at least 2, enforced at inventory load. Motivation: a single archive
+  is an unverifiable single point of failure for history — while it
+  re-executes after a loss there is no replica to serve or cross-check.
+
+## Oracle live-run findings (proven on Fuji, 2026-07-24)
+
+Full end-to-end validated on a 4-box/9-node Fuji fleet: feed → aggregator →
+Warp → control-host signing → receiver state on main, ~0.5s relay latency at
+2 updates/s per asset. Facts that only the live run could produce:
+
+- subnet-evm COERCES a zero network-upgrade timestamp back to the network's
+  default ("0 is treated as nil", params/extras SetDefaults) to prevent
+  premature activations. Therefore `durangoTimestamp: 0` cannot legalize a
+  warp precompile at timestamp 0; `warpConfig.blockTimestamp` must instead be
+  a real post-Durango time. The templates use 1709740800 (mainnet Durango,
+  past on Fuji and mainnet, so one template serves both).
+- Fuji/mainnet nodes silently refuse to DIAL RFC1918 addresses:
+  `--network-allow-private-ips=true` is required for private-IP bootstrap
+  entries, or the node logs only a generic beacon-connect failure. This is
+  the flip side of the public-IP SG trap already recorded above.
+- A freshly created, idle main chain never rolls its ACP-181 epoch (epochs
+  advance only with blocks), so the FIRST relay after creation stalls at the
+  visibility gate until any transaction mints a block. One nudge suffices.
+- The public Fuji API cannot back the relay: `platform.getValidatorsAt` at
+  historical heights is rejected and the endpoint rate-limits hard. Point
+  `PCHAIN_API` at a synced fleet RPC node once one exists. The P-chain
+  source cannot back it either: follow-only mode never reports bootstrapped
+  and rejects platform API calls (why fleet height derivation reads runtime
+  state).
+- The receiver's staleness check compares `updatedAt` (oracle block
+  timestamp, SECOND resolution), so feeds faster than 1/s per asset produce
+  equal-freshness messages. The relay's freshness gate skips them instead of
+  burning guaranteed on-chain reverts; second resolution is thus the
+  freshness floor. Sub-second freshness would need a monotonic sequence
+  number in the payload instead of block.timestamp — a contract change, so a
+  chain recreation.
+
 ## Deployment simplifications (decided 2026-07-22)
 
 - DELETE the provisioned() existence check; always rsync everything. Motivation: the check treated nodes with STALE keys as provisioned, booting them with wrong NodeIDs (bit us live 2026-07-20); rsync is idempotent and near-instant when unchanged. Deleting the mechanism removes the whole drift-bug class; fixing it would just shrink it.

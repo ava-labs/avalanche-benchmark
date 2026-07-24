@@ -12,7 +12,7 @@ Design rationale: **[DESIGN.md](DESIGN.md)**. This README is the operator manual
 
 ## Architecture
 
-Two L1s, one fleet, one P-chain source:
+Two L1s (three with the optional oracle), one fleet, one P-chain source:
 
 - **Main L1**: the benchmarked chain (subnet-evm). Its validators are your
   fleet. Registered once via `ConvertSubnetToL1Tx` with the management chain set
@@ -27,6 +27,11 @@ Two L1s, one fleet, one P-chain source:
   the 67% quorum. The committee's keys live on the control host; **nodes never
   sign management messages**. During a DC outage the dead validators' stake
   must still be movable.
+- **Oracle L1 (optional)**: a third L1 that ingests mocked price feeds and
+  exports each update to the main L1 as a committee-independent Warp message.
+  Declared through `oracle-validator` / `oracle-rpc` inventory roles; omit
+  them and the deployment is exactly the two L1s above. Its validator manager
+  is the same management chain. See "The oracle L1" below.
 - **The P-chain source**: one foreground AvalancheGo process on the control
   host. Its database and NodeID never change. The required start argument
   selects following or frozen configuration before AvalancheGo starts.
@@ -50,7 +55,7 @@ P-chain process.
 ## Inventory: nodes.ini
 
 ```ini
-# <node-number> host=<address> role=validator|rpc [dc=<tag>]
+# <node-number> host=<address> role=validator|rpc|archive|oracle-validator|oracle-rpc [dc=<tag>]
 1  host=10.0.0.11 role=validator dc=A
 2  host=10.0.0.12 role=validator dc=A
 3  host=10.0.0.13 role=validator dc=A
@@ -72,11 +77,19 @@ P-chain process.
   placement, never the identity name.
 - Validators are registered in ascending node-number order. The first three
   validators in that order start at weight 100000; the rest start at 1000.
-- Inventory requires at least four validators and at least one RPC.
+- Inventory requires at least four validators and at least one RPC. Archive
+  nodes are 0 or at least 2. Oracle roles come together: `oracle-validator`
+  requires at least one `oracle-rpc` and vice versa; omit both for no oracle
+  chain.
 - `role` is the only functional field. `validator` = registered on-chain,
   carries stake, swappable. `rpc` = never registered, no BLS signer key
   (runs `--staking-ephemeral-signer-enabled`), pinned identity, serves
-  ingress and anchors bootstrap.
+  ingress and anchors bootstrap. `archive` = an RPC-shaped main-L1 node with
+  pruning and state-sync disabled (`chain-config-archive.json`) for
+  historical queries; it must exist from Genesis because an archive cannot
+  state-sync, and it is never a bootstrap anchor. `oracle-validator` /
+  `oracle-rpc` = the same validator/rpc split on the optional oracle L1
+  (`subnet-config-oracle.json` consensus, all weights 1000, no key swaps).
 - `dc` is an optional freeform display/selector tag. If omitted, it remains
   visibly unset. Fleet verbs accept `dc=<tag>` selectors and `status` groups by
   it. Nothing functional depends on it.
@@ -162,6 +175,8 @@ l1 topup <days>        fund every registered validator to <days> of runway
 l1 set-weight <letter> <w> set main identity to 1, 1000, or 100000
 l1 destroy             disable every converted L1 validator and reclaim its balance
 fleet pchain start <following|frozen>
+oracle feed <oracle-node-url>                   foreground mock price feeder
+oracle relay <oracle-node-url> <main-node-url>  foreground Warp price relayer
 ```
 
 ### keygen and create
@@ -199,6 +214,14 @@ main L1 with the committee chain recorded as validator manager. Initial weights
 are copied verbatim from `public.json` into the conversions. No Warp message is
 constructed at creation time. The committee is not exercised until the first
 `set-weight`.
+
+With oracle roles in the inventory, the oracle L1 is created between the two:
+`create` renders `genesis-oracle.json` (aggregator contract baked at
+`0x…FEED`, feeder funded), creates and converts the oracle L1 with the same
+management chain as validator manager, and only then renders the main
+`genesis.json` — the receiver contract at `0x…FeedED` needs the accepted
+oracle chain ID as its trusted Warp source. `network.env` records the oracle
+IDs, the feeder EVM address, and both contract addresses.
 
 A failed partial creation is abandoned. The operator runs `l1 destroy` to
 reclaim any validator balances whose conversion already succeeded and remove
@@ -328,6 +351,38 @@ Run weight changes while the P-chain source is following. A transaction
 submitted while the source is frozen can confirm publicly without reaching the
 fleet until the source follows again.
 
+### The oracle L1
+
+The oracle chain's job: accept incoming price feeds, aggregate them in a
+contract, and emit a Warp message that the oracle validator set signs off and
+the main L1 ingests. Both contracts ship pre-deployed in Genesis; there is
+nothing to deploy at runtime.
+
+```bash
+./bin/oracle feed http://<oracle-rpc-host>:9650                       # terminal 1
+./bin/oracle relay http://<oracle-rpc-host>:9650 http://<rpc-host>:9650  # terminal 2
+```
+
+`feed` submits mocked BTC-USD and AVAX-USD prices to the aggregator once per
+second, signed by `deployment/oracle-feeder.key` (funded on both chains at
+Genesis). Every submission makes the aggregator emit a Warp message.
+
+`relay` watches the oracle chain for those messages, signs each one with the
+oracle validators' BLS keys held on control (nodes never sign, same as
+`set-weight`), aggregates to a `BitSetSignature` over the canonical validator
+set, verifies locally, and delivers it to the receiver contract on the main
+L1. The receiver only accepts messages whose source is the oracle chain and
+whose origin is the aggregator, and rejects stale updates. Like `set-weight`,
+delivery gates on the ACP-181 epoch pinning a P-chain height at or beyond the
+oracle conversion, so the first message after creation may wait for an epoch
+boundary; after that the two chains stay in step at feed cadence.
+
+Both commands are foreground processes: stop with Ctrl-C, restart at will —
+the aggregator and receiver keep the latest state on-chain. In a production
+deployment the relay job belongs to
+[icm-relayer](https://github.com/ava-labs/icm-services); the control-host
+relayer is the airgap-friendly demo equivalent.
+
 ### down / up: recovery primitive
 
 `down` wipes only `chainData/<L1-chain-id>` and logs, never the P-chain DB
@@ -430,10 +485,16 @@ P-chain database and staking identity.
   in **both** directions, and from control: ssh + HTTP. Cross-region peering
   uses public IPs, but same-VPC traffic arrives from private IPs. SG rules
   listing only public CIDRs silently break intra-region peering.
+- Private-IP bootstrap entries require `--network-allow-private-ips=true` on
+  every fleet node: on Fuji and mainnet AvalancheGo silently refuses to dial
+  RFC1918 addresses by default, so a node never attempts its beacon and only
+  a generic "failed to connect to bootstrap nodes" appears (proven live
+  2026-07-24). Public-IP entries avoid the flag but need SG rules for the
+  fleet's public IPs — the previous bullet's trap.
 - The public package contains no private keys or generated deployment secrets.
-  Transfer the populated `.env`, committee keys, validator staking keys, and
-  generated deployment state separately as a private handover bundle. Nodes
-  hold only their active identity.
+  Transfer the populated `.env`, committee keys, validator staking keys, the
+  oracle feeder key, and generated deployment state separately as a private
+  handover bundle. Nodes hold only their active identity.
 - Networks: set `NETWORK=fuji` or `NETWORK=mainnet` explicitly and provide the
   matching `PCHAIN_API` explicitly.
 - Cleanup: registered L1 validators pay a continuous fee forever. Run
