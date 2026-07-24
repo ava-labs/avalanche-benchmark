@@ -310,14 +310,16 @@ their databases, logs, installed files, and current keys. `fleet status` is
 read-only and reports the node number, DC, role, assigned identity, NodeID,
 systemd state, L1 serving state, and accepted height.
 
-`fleet destroy` stops every selected node and waits for every stop to succeed
-before deleting anything. It then deletes only
-`chainData/<L1-chain-id>` for the benchmark L1 on those nodes. The P-chain
-database, identity, logs, configuration, binaries, and systemd unit remain.
-The next `fleet start` rebuilds the L1 while reusing the expensive P-chain
-state. This command changes only local node data. It is unrelated to
-`l1 destroy`, which disables validators on the P-chain and reclaims their
-balances.
+`fleet destroy` sends SIGKILL to every selected AvalancheGo process, prevents
+systemd from restarting it, and verifies every selected unit is inactive
+before deleting anything. If any kill or inactivity check fails, it deletes
+nothing. It then deletes only `chainData/<L1-chain-id>` for the benchmark L1
+on those nodes. SIGKILL is intentional: this command simulates abrupt machine
+loss. Normal `fleet stop` remains graceful. The P-chain database, identity,
+logs, configuration, binaries, and systemd unit remain. The next
+`fleet start` rebuilds the L1 while reusing the expensive P-chain state. This
+command changes only local node data. It is unrelated to `l1 destroy`, which
+disables validators on the P-chain and reclaims their balances.
 
 Fleet nodes use systemd because they must survive a terminal disconnect and
 machine restart. The P-chain source remains a foreground process because
