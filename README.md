@@ -172,6 +172,7 @@ fleet pchain start <following|frozen>
 fleet deploy [<node>|dc=<tag> ...]
 fleet start [<node>|dc=<tag> ...]
 fleet stop [<node>|dc=<tag> ...]
+fleet destroy [<node>|dc=<tag> ...]
 fleet status [<node>|dc=<tag> ...]
 fleet place <identity-letter> <node>
 fleet restart
@@ -308,6 +309,15 @@ next phase if any node fails.
 their databases, logs, installed files, and current keys. `fleet status` is
 read-only and reports the node number, DC, role, assigned identity, NodeID,
 systemd state, L1 serving state, and accepted height.
+
+`fleet destroy` stops every selected node and waits for every stop to succeed
+before deleting anything. It then deletes only
+`chainData/<L1-chain-id>` for the benchmark L1 on those nodes. The P-chain
+database, identity, logs, configuration, binaries, and systemd unit remain.
+The next `fleet start` rebuilds the L1 while reusing the expensive P-chain
+state. This command changes only local node data. It is unrelated to
+`l1 destroy`, which disables validators on the P-chain and reclaims their
+balances.
 
 Fleet nodes use systemd because they must survive a terminal disconnect and
 machine restart. The P-chain source remains a foreground process because
