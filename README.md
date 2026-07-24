@@ -292,6 +292,10 @@ until the remote fleet converges. There is no cordon file or hidden node state.
 Systemd is the source of up/down intent: start enables and starts a unit; stop
 disables and stops it.
 
+All managed machines remain reachable from control. Node and DC loss drills
+stop or kill AvalancheGo processes on those reachable machines. A genuinely
+unreachable machine fails the command and is outside the benchmark scope.
+
 `fleet deploy` always targets the complete inventory. Its one required argument
 chooses the P-chain node's initial source: `frozen` or `follow`. There is no
 default. Deployment is not a node-maintenance interface.
@@ -304,11 +308,21 @@ Both modes set `--p-chain-follow-only=true`. `follow` omits bootstrap fields so
 AvalancheGo uses its embedded network peers. `frozen` explicitly sets both
 bootstrap lists empty. A frozen deploy requires `pchain.tar.gz` in the working
 directory. The archive must contain one non-empty top-level `db/` directory.
-Deploy restores it only when the remote P-chain database is empty; rerunning
-deploy preserves an existing database and does not transfer the archive.
+Deploy validates it before any remote mutation. With the P-chain service
+stopped, deploy restores it only when the remote database is empty. It extracts
+and validates `db/` in a temporary sibling location, then atomically renames it
+into place. Rerunning discards interrupted staging. Once a nonempty database
+exists, it is authoritative and preserved without transferring the archive.
 Before any L1 service is touched, deploy queries the P-chain node and requires
 the complete management and main validator sets recorded by `public.json` and
 `network.env`.
+
+A half-synced existing database is still preserved and frozen, then fails the
+validator-set acceptance gate before any L1 node is touched. Resume it with
+`fleet pchain follow`, then wait for `fleet status` to report readiness.
+Alternatively, stop its service and deliberately remove the remote P-chain
+database before rerunning `fleet deploy frozen` to seed it from the archive.
+There is no reset command or local completion marker.
 
 It then runs fleet-wide phases for every validator and RPC node: stop every
 service, rsync the current binaries and rendered configuration, install and
@@ -505,18 +519,25 @@ bootstrap fields so AvalancheGo follows its embedded network peers. The
 systemd service and numbered data directory preserve the P-chain node identity,
 mode, and P-chain state.
 
-Two P-chain lifecycle commands are designed but not implemented yet:
+The following-mode lifecycle command is implemented:
 
 ```bash
-fleet pchain freeze
 fleet pchain follow
 ```
 
-`fleet pchain follow` will also be the first-run initializer. It will reconcile
-and start only the P-chain node in following mode, then wait until both
-converted validator sets are visible. It will never start or change a validator
-or RPC node. On an existing deployment it will omit the upstream lists again
-and restart only the P-chain node.
+`fleet pchain follow` is also the first-run initializer. It stops the P-chain
+service if present, reconciles its AvalancheGo package, systemd unit, stable
+identity, and following configuration, enables and starts it, verifies the
+service is running, then returns. It never starts or changes a validator or RPC
+node. Rerunning it repeats the full P-chain-node reconciliation and preserves
+the existing database. Use `fleet status` to observe catch-up; the future
+`fleet pchain freeze` command owns the readiness check.
+
+The frozen-mode lifecycle command is designed but not implemented yet:
+
+```bash
+fleet pchain freeze
+```
 
 `fleet pchain freeze` will render empty upstream bootstrap lists and restart
 only the P-chain node. Downstream configurations always point to the same

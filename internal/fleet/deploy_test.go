@@ -53,13 +53,41 @@ func TestPortsArePositionalPerHost(t *testing.T) {
 	}
 }
 
-func TestDeployModeIsExplicitAndFrozenRequiresArchive(t *testing.T) {
+func TestDeployModeIsExplicitAndFrozenDeployValidatesArchive(t *testing.T) {
 	deployer := NewDeployer(t.TempDir(), os.Stdout)
-	if _, _, err := deployer.prepare(""); err == nil || !strings.Contains(err.Error(), "deploy mode") {
+	if _, _, err := deployer.prepare("", true); err == nil || !strings.Contains(err.Error(), "deploy mode") {
 		t.Fatalf("missing mode error = %v", err)
 	}
-	if _, _, err := deployer.prepare(frozenMode); err == nil || !strings.Contains(err.Error(), pchainArchive) {
+	if err := deployer.validateFrozenDeployArchive(); err == nil || !strings.Contains(err.Error(), pchainArchive) {
 		t.Fatalf("missing frozen archive error = %v", err)
+	}
+
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, pchainArchive), "not an archive")
+	deployer = NewDeployer(root, os.Stdout)
+	if err := deployer.validateFrozenDeployArchive(); err == nil || !strings.Contains(err.Error(), "valid") {
+		t.Fatalf("malformed frozen archive error = %v", err)
+	}
+
+	root = t.TempDir()
+	writeFleetInputs(t, root)
+	deployer = NewDeployer(root, os.Stdout)
+	_, _, err := deployer.prepare(frozenMode, false)
+	if err == nil || strings.Contains(err.Error(), pchainArchive) {
+		t.Fatalf("generic frozen-mode preparation still requires archive: %v", err)
+	}
+}
+
+func TestFrozenDeployValidatesConfigurationBeforeArchive(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, pchainArchive), "not an archive")
+	deployer := NewDeployer(root, io.Discard)
+	err := deployer.Deploy(context.Background(), frozenMode)
+	if err == nil || !strings.Contains(err.Error(), ".env") {
+		t.Fatalf("frozen deploy did not report configuration first: %v", err)
+	}
+	if strings.Contains(err.Error(), "valid ./"+pchainArchive) {
+		t.Fatalf("frozen deploy scanned archive before configuration: %v", err)
 	}
 }
 
@@ -227,8 +255,131 @@ func TestFrozenDeployRestoresArchiveIntoEmptyPChainDatabase(t *testing.T) {
 	}
 	extract := strings.Join(runner.runs[2], " ")
 	if !strings.Contains(extract, "tar -xzf") ||
+		!strings.Contains(extract, "mv -T") ||
 		!strings.Contains(extract, "/var/lib/avalanche-benchmark/13/db") {
 		t.Fatalf("restore command = %q", extract)
+	}
+	if strings.Contains(extract, "rm -rf /var/lib/avalanche-benchmark/13/db") {
+		t.Fatalf("restore deletes authoritative database instead of atomically replacing an empty one: %q", extract)
+	}
+}
+
+func TestPChainPackageDoesNotTransferL1Plugin(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(root, "bin", "avalanchego"), "binary")
+	renderDir := filepath.Join(root, "render")
+	if err := os.Mkdir(renderDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(renderDir, "node.json"), "{}")
+	runner := &recordingRunner{}
+	deployer := &Deployer{root: root, out: io.Discard, runner: runner}
+	state := deployment{environment: config.FleetEnvironment{SSHUser: "ubuntu"}}
+	node := nodeDeployment{
+		node:      config.Node{Number: 6, Host: "pchain", Role: config.RolePChain},
+		renderDir: renderDir,
+	}
+	if err := deployer.installPackage(context.Background(), state, node); err != nil {
+		t.Fatal(err)
+	}
+	allCommands := make([]string, 0, len(runner.runs))
+	for _, command := range runner.runs {
+		allCommands = append(allCommands, strings.Join(command, " "))
+	}
+	joined := strings.Join(allCommands, "\n")
+	if strings.Contains(joined, pluginID) || strings.Contains(joined, "/plugins") {
+		t.Fatalf("P-chain package included L1 plugin: %s", joined)
+	}
+}
+
+func TestL1PackageTransfersAndInstallsPlugin(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(root, "bin", "avalanchego"), "binary")
+	writeTestFile(t, filepath.Join(root, "bin", pluginID), "plugin")
+	renderDir := filepath.Join(root, "render")
+	if err := os.Mkdir(renderDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"node.json", "chain.json", "subnet.json"} {
+		writeTestFile(t, filepath.Join(renderDir, name), "{}")
+	}
+	runner := &recordingRunner{}
+	deployer := &Deployer{root: root, out: io.Discard, runner: runner}
+	state := deployment{
+		environment: config.FleetEnvironment{SSHUser: "ubuntu"},
+		chainID:     ids.GenerateTestID(),
+		subnetID:    ids.GenerateTestID(),
+	}
+	node := nodeDeployment{
+		node:      config.Node{Number: 1, Host: "validator", Role: config.RoleValidator},
+		renderDir: renderDir,
+	}
+	if err := deployer.installPackage(context.Background(), state, node); err != nil {
+		t.Fatal(err)
+	}
+	var commands []string
+	for _, command := range runner.runs {
+		commands = append(commands, strings.Join(command, " "))
+	}
+	joined := strings.Join(commands, "\n")
+	if !strings.Contains(joined, filepath.Join(root, "bin", pluginID)) ||
+		!strings.Contains(joined, "/plugins/"+pluginID) {
+		t.Fatalf("L1 package did not transfer and install plugin: %s", joined)
+	}
+}
+
+func TestReconcilePChainTouchesOnlyPChainAndVerifiesService(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(root, "bin", "avalanchego"), "binary")
+	renderDir := filepath.Join(root, "render")
+	if err := os.Mkdir(renderDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(renderDir, "node.json"), "{}")
+	writeTestFile(t, filepath.Join(renderDir, "node.service"), "unit")
+	identityDir := filepath.Join(root, "deployment", "identities", "p")
+	if err := os.MkdirAll(identityDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(identityDir, "staker.crt"), "cert")
+	writeTestFile(t, filepath.Join(identityDir, "staker.key"), "key")
+
+	runner := &recordingRunner{}
+	deployer := &Deployer{root: root, out: io.Discard, runner: runner}
+	pchain := nodeDeployment{
+		node:      config.Node{Number: 6, Host: "pchain-host", Role: config.RolePChain},
+		identity:  creation.PublicNode{Identity: "p", Role: config.RolePChain},
+		renderDir: renderDir,
+	}
+	state := deployment{
+		environment: config.FleetEnvironment{SSHUser: "ubuntu"},
+		pchain:      pchain,
+		selected: []nodeDeployment{{
+			node: config.Node{Number: 1, Host: "validator-host", Role: config.RoleValidator},
+		}},
+	}
+	if err := deployer.reconcilePChain(context.Background(), state, false); err != nil {
+		t.Fatal(err)
+	}
+	var commands []string
+	for _, command := range runner.runs {
+		commands = append(commands, strings.Join(command, " "))
+	}
+	joined := strings.Join(commands, "\n")
+	if strings.Contains(joined, "validator-host") {
+		t.Fatalf("P-chain reconciliation touched validator: %s", joined)
+	}
+	if !strings.Contains(commands[len(commands)-1], "systemctl is-active --quiet") {
+		t.Fatalf("P-chain start did not verify service: %s", commands[len(commands)-1])
 	}
 }
 

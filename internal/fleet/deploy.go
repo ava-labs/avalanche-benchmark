@@ -100,35 +100,20 @@ type nodeDeployment struct {
 }
 
 func (d *Deployer) Deploy(ctx context.Context, pchainMode string) error {
-	prepared, cleanup, err := d.prepare(pchainMode)
+	prepared, cleanup, err := d.prepare(pchainMode, true)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
+	if pchainMode == frozenMode {
+		if err := d.validateFrozenDeployArchive(); err != nil {
+			return err
+		}
+	}
 
-	// The P-chain node is brought fully current before any L1 node is
+	// The P-chain node is reconciled and accepted before any L1 node is
 	// touched. This is a phase barrier, not a best-effort bootstrap hint.
-	pchainOnly := prepared
-	pchainOnly.selected = []nodeDeployment{prepared.pchain}
-	for _, phase := range []struct {
-		name   string
-		action func(context.Context, deployment, nodeDeployment) error
-	}{
-		{"P-chain stop", d.stop},
-		{"P-chain package", d.installPackage},
-		{"P-chain systemd", d.installUnit},
-		{"P-chain identity", d.installIdentity},
-	} {
-		if err := d.phase(ctx, pchainOnly, phase.name, phase.action); err != nil {
-			return err
-		}
-	}
-	if prepared.pchainMode == frozenMode {
-		if err := d.phase(ctx, pchainOnly, "P-chain seed", d.seedPChain); err != nil {
-			return err
-		}
-	}
-	if err := d.phase(ctx, pchainOnly, "P-chain start", d.start); err != nil {
+	if err := d.reconcilePChain(ctx, prepared, prepared.pchainMode == frozenMode); err != nil {
 		return err
 	}
 	if err := d.waitPChainReady(ctx, prepared); err != nil {
@@ -151,6 +136,62 @@ func (d *Deployer) Deploy(ctx context.Context, pchainMode string) error {
 		}
 	}
 	fmt.Fprintf(d.out, "deployed P-chain node and %d L1 node(s)\n", len(prepared.selected))
+	return nil
+}
+
+func (d *Deployer) FollowPChain(ctx context.Context) error {
+	prepared, cleanup, err := d.prepare(followMode, false)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	if err := d.reconcilePChain(ctx, prepared, false); err != nil {
+		return err
+	}
+	fmt.Fprintln(d.out, "P-chain node is running in following mode")
+	return nil
+}
+
+func (d *Deployer) reconcilePChain(ctx context.Context, prepared deployment, seed bool) error {
+	pchainOnly := prepared
+	pchainOnly.selected = []nodeDeployment{prepared.pchain}
+	for _, phase := range []struct {
+		name   string
+		action func(context.Context, deployment, nodeDeployment) error
+	}{
+		{"P-chain stop", d.stop},
+		{"P-chain package", d.installPackage},
+		{"P-chain systemd", d.installUnit},
+		{"P-chain identity", d.installIdentity},
+	} {
+		if err := d.phase(ctx, pchainOnly, phase.name, phase.action); err != nil {
+			return err
+		}
+	}
+	if seed {
+		if err := d.phase(ctx, pchainOnly, "P-chain seed", d.seedPChain); err != nil {
+			return err
+		}
+	}
+	return d.phase(ctx, pchainOnly, "P-chain start", d.startAndVerify)
+}
+
+func (d *Deployer) validateFrozenDeployArchive() error {
+	archivePath := filepath.Join(d.root, pchainArchive)
+	info, err := os.Stat(archivePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("frozen deploy requires ./%s; file not found", pchainArchive)
+		}
+		return fmt.Errorf("frozen deploy requires ./%s: %w", pchainArchive, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("frozen deploy requires ./%s to be a regular file", pchainArchive)
+	}
+	if err := validatePChainArchive(archivePath); err != nil {
+		return fmt.Errorf("frozen deploy requires a valid ./%s: %w", pchainArchive, err)
+	}
 	return nil
 }
 
@@ -306,21 +347,10 @@ func (d *Deployer) phase(
 	return nil
 }
 
-func (d *Deployer) prepare(pchainMode string) (deployment, func(), error) {
+func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(), error) {
 	noCleanup := func() {}
 	if pchainMode != frozenMode && pchainMode != followMode {
 		return deployment{}, noCleanup, fmt.Errorf("deploy mode must be %q or %q, got %q", frozenMode, followMode, pchainMode)
-	}
-	if pchainMode == frozenMode {
-		archivePath := filepath.Join(d.root, pchainArchive)
-		if info, err := os.Stat(archivePath); err != nil {
-			if os.IsNotExist(err) {
-				return deployment{}, noCleanup, fmt.Errorf("frozen deploy requires ./%s; file not found", pchainArchive)
-			}
-			return deployment{}, noCleanup, fmt.Errorf("frozen deploy requires ./%s: %w", pchainArchive, err)
-		} else if !info.Mode().IsRegular() {
-			return deployment{}, noCleanup, fmt.Errorf("frozen deploy requires ./%s to be a regular file", pchainArchive)
-		}
 	}
 	environment, nodes, err := d.loadFleet()
 	if err != nil {
@@ -370,11 +400,15 @@ func (d *Deployer) prepare(pchainMode string) (deployment, func(), error) {
 
 	requiredFiles := []string{
 		filepath.Join(d.root, "bin", "avalanchego"),
-		filepath.Join(d.root, "bin", pluginID),
 		filepath.Join(d.root, "node-config.json"),
-		filepath.Join(d.root, "chain-config.json"),
-		filepath.Join(d.root, "chain-config-rpc.json"),
-		filepath.Join(d.root, "subnet-config.json"),
+	}
+	if includeL1 {
+		requiredFiles = append(requiredFiles,
+			filepath.Join(d.root, "bin", pluginID),
+			filepath.Join(d.root, "chain-config.json"),
+			filepath.Join(d.root, "chain-config-rpc.json"),
+			filepath.Join(d.root, "subnet-config.json"),
+		)
 	}
 	for _, path := range requiredFiles {
 		if info, err := os.Stat(path); err != nil {
@@ -383,14 +417,20 @@ func (d *Deployer) prepare(pchainMode string) (deployment, func(), error) {
 			return deployment{}, noCleanup, fmt.Errorf("required deployment artifact %s is a directory", path)
 		}
 	}
-	for _, path := range requiredFiles[:2] {
-		info, _ := os.Stat(path)
-		if info.Mode()&0o111 == 0 {
-			return deployment{}, noCleanup, fmt.Errorf("required deployment binary %s is not executable", path)
-		}
+	avalancheGo := filepath.Join(d.root, "bin", "avalanchego")
+	info, _ := os.Stat(avalancheGo)
+	if info.Mode()&0o111 == 0 {
+		return deployment{}, noCleanup, fmt.Errorf("required deployment binary %s is not executable", avalancheGo)
 	}
-	if err := verifyConsensusConfig(filepath.Join(d.root, "subnet-config.json")); err != nil {
-		return deployment{}, noCleanup, err
+	if includeL1 {
+		plugin := filepath.Join(d.root, "bin", pluginID)
+		info, _ := os.Stat(plugin)
+		if info.Mode()&0o111 == 0 {
+			return deployment{}, noCleanup, fmt.Errorf("required deployment binary %s is not executable", plugin)
+		}
+		if err := verifyConsensusConfig(filepath.Join(d.root, "subnet-config.json")); err != nil {
+			return deployment{}, noCleanup, err
+		}
 	}
 
 	ports := portsByNode(nodes)
@@ -443,6 +483,9 @@ func (d *Deployer) prepare(pchainMode string) (deployment, func(), error) {
 		renderDir: pchainRender,
 	}
 
+	if !includeL1 {
+		return result, cleanup, nil
+	}
 	for _, node := range nodes {
 		if node.Role == config.RolePChain {
 			continue
@@ -856,23 +899,26 @@ func (d *Deployer) installPackage(ctx context.Context, deployment deployment, no
 	if err := d.rsyncFile(ctx, deployment, node, filepath.Join(d.root, "bin", "avalanchego"), binaryStage); err != nil {
 		return err
 	}
-	if err := d.rsyncFile(ctx, deployment, node, filepath.Join(d.root, "bin", pluginID), binaryStage); err != nil {
-		return err
+	if node.node.Role != config.RolePChain {
+		if err := d.rsyncFile(ctx, deployment, node, filepath.Join(d.root, "bin", pluginID), binaryStage); err != nil {
+			return err
+		}
 	}
 	install := fmt.Sprintf(
-		"sudo install -d -m 0755 %[1]s/%[3]d/bin %[1]s/%[3]d/plugins %[2]s/%[3]d %[4]s/%[3]d/db %[4]s/%[3]d/logs && "+
+		"sudo install -d -m 0755 %[1]s/%[3]d/bin %[2]s/%[3]d %[4]s/%[3]d/db %[4]s/%[3]d/logs && "+
 			"sudo install -m 0755 %[5]s/avalanchego %[1]s/%[3]d/bin/avalanchego && "+
-			"sudo install -m 0755 %[5]s/%[6]s %[1]s/%[3]d/plugins/%[6]s && "+
-			"sudo install -m 0644 %[7]s/node.json %[2]s/%[3]d/node.json && "+
-			"sudo chown -R %[8]s:%[8]s %[4]s/%[3]d %[2]s/%[3]d",
+			"sudo install -m 0644 %[6]s/node.json %[2]s/%[3]d/node.json && "+
+			"sudo chown -R %[7]s:%[7]s %[4]s/%[3]d %[2]s/%[3]d",
 		remotePackageDir, remoteConfigDir, node.node.Number, remoteDataDir,
-		binaryStage, pluginID, packageStage, deployment.environment.SSHUser)
+		binaryStage, packageStage, deployment.environment.SSHUser)
 	if node.node.Role != config.RolePChain {
 		install += fmt.Sprintf(
-			" && sudo install -d -m 0755 %[1]s/%[2]d/chains/%[3]s %[1]s/%[2]d/subnets && "+
-				"sudo install -m 0644 %[4]s/chain.json %[1]s/%[2]d/chains/%[3]s/config.json && "+
-				"sudo install -m 0644 %[4]s/subnet.json %[1]s/%[2]d/subnets/%[5]s.json",
-			remoteConfigDir, node.node.Number, deployment.chainID, packageStage, deployment.subnetID)
+			" && sudo install -d -m 0755 %[1]s/%[2]d/plugins %[3]s/%[2]d/chains/%[4]s %[3]s/%[2]d/subnets && "+
+				"sudo install -m 0755 %[5]s/%[6]s %[1]s/%[2]d/plugins/%[6]s && "+
+				"sudo install -m 0644 %[7]s/chain.json %[3]s/%[2]d/chains/%[4]s/config.json && "+
+				"sudo install -m 0644 %[7]s/subnet.json %[3]s/%[2]d/subnets/%[8]s.json",
+			remotePackageDir, node.node.Number, remoteConfigDir, deployment.chainID,
+			binaryStage, pluginID, packageStage, deployment.subnetID)
 	}
 	return d.runSSH(ctx, deployment, node, install)
 }
@@ -949,9 +995,9 @@ func (d *Deployer) seedPChain(ctx context.Context, deployment deployment, node n
 		"mkdir -m 700 %[1]s/unpacked && "+
 			"tar -xzf %[1]s/%[2]s -C %[1]s/unpacked && "+
 			"test -n \"$(find %[1]s/unpacked/db -mindepth 1 -print -quit 2>/dev/null)\" && "+
-			"sudo rm -rf %[3]s && "+
-			"sudo mv %[1]s/unpacked/db %[3]s && "+
-			"sudo chown -R %[4]s:%[4]s %[3]s && "+
+			"test -z \"$(find %[3]s -mindepth 1 -print -quit 2>/dev/null)\" && "+
+			"sudo chown -R %[4]s:%[4]s %[1]s/unpacked/db && "+
+			"sudo mv -T %[1]s/unpacked/db %[3]s && "+
 			"sudo rm -rf %[1]s",
 		stage,
 		pchainArchive,
@@ -969,6 +1015,16 @@ func (d *Deployer) start(ctx context.Context, deployment deployment, node nodeDe
 	return d.runSSH(ctx, deployment, node, "sudo systemctl start "+serviceName(node))
 }
 
+func (d *Deployer) startAndVerify(ctx context.Context, deployment deployment, node nodeDeployment) error {
+	unit := serviceName(node)
+	return d.runSSH(
+		ctx,
+		deployment,
+		node,
+		fmt.Sprintf("sudo systemctl start %[1]s && sudo systemctl is-active --quiet %[1]s", unit),
+	)
+}
+
 func (d *Deployer) waitPChainReady(ctx context.Context, deployment deployment) error {
 	deadline := time.Now().Add(d.waitLimit)
 	uri := fmt.Sprintf("http://%s:%d", deployment.pchain.node.Host, deployment.pchain.httpPort)
@@ -980,7 +1036,7 @@ func (d *Deployer) waitPChainReady(ctx context.Context, deployment deployment) e
 		if managerErr == nil && mainErr == nil &&
 			containsValidators(manager, deployment.expectedManager) &&
 			containsValidators(main, deployment.expectedMain) {
-			fmt.Fprintf(d.out, "P-chain node contains management and main L1 validator state\n")
+			fmt.Fprintln(d.out, "P-chain node contains management and main L1 validator state")
 			return nil
 		}
 		lastError = fmt.Errorf("management=%v main=%v", managerErr, mainErr)
