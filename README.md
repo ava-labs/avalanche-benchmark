@@ -172,7 +172,7 @@ fleet stop [<node>|dc=<tag> ...]
 fleet destroy [<node>|dc=<tag> ...]
 fleet status [<node>|dc=<tag> ...]
 fleet place <identity-letter> <node>
-fleet restart
+fleet apply-placement
 ```
 
 ### keygen and create
@@ -285,6 +285,13 @@ is ready for a new `create`. There is no local destroyed flag.
 
 ### deploy, start, stop, and status
 
+Mutating fleet commands reconcile explicit intent. They never assume a previous
+invocation reached its final step. Control-side state is written atomically
+before remote work, and rerunning the same command repeats all required pushes
+until the remote fleet converges. There is no cordon file or hidden node state.
+Systemd is the source of up/down intent: start enables and starts a unit; stop
+disables and stops it.
+
 `fleet deploy` always targets the complete inventory. Its one required argument
 chooses the P-chain node's initial source: `frozen` or `follow`. There is no
 default. Deployment is not a node-maintenance interface.
@@ -325,10 +332,27 @@ optimization opportunity: stale keys on a machine must never win over
 control's placement state. Every multi-phase fleet command aborts before its
 next phase if any node fails.
 
-`fleet stop` waits for the selected services to become inactive and preserves
-their databases, logs, installed files, and current keys. `fleet status` is
-read-only and reports the node number, DC, role, assigned identity, NodeID,
-systemd state, L1 serving state, and accepted height.
+`fleet stop` disables and gracefully stops the selected services, waits for
+inactivity, and preserves their databases, logs, installed files, and current
+keys. `fleet status` is read-only and reports the node number, DC, role,
+assigned identity, NodeID, systemd intent and runtime state, L1 serving state,
+and accepted height.
+
+P-chain status remains available when no validator or RPC has been deployed.
+It reports:
+
+```text
+P-CHAIN  MODE    LOCAL HEIGHT  UPSTREAM HEIGHT  LAG  L1 STATE  READY TO FREEZE
+13       follow  289700        289700           0    complete  yes
+```
+
+The upstream height is sampled immediately before the local height. Following
+is `synced` when local height reaches that sample and `catching-up` otherwise.
+Frozen mode reports `frozen`, its local height, and the upstream delta instead
+of calling an intentionally frozen node unsynchronized. `READY TO FREEZE=yes`
+requires both synchronization and local visibility of the complete management
+and main validator sets. `fleet pchain freeze` runs the same check and refuses
+to freeze when either condition is missing.
 
 `fleet destroy` sends SIGKILL to every selected AvalancheGo process, prevents
 systemd from restarting it, and verifies every selected unit is inactive
@@ -353,14 +377,17 @@ The command atomically updates `deployment/placement.json`, then rewrites the
 assigned identity files on every inventory node, including unchanged nodes.
 It does not stop or restart any process. Rewriting the complete fleet every
 time makes disk state deterministic and makes a rerun a full reconciliation,
-not a delta.
+not a delta. If identity `a` is already assigned to node 5, rerunning
+`fleet place a 5` leaves the mapping unchanged but still rewrites every key.
 
-`fleet restart` reads every running node's NodeID and compares it with the
-NodeID assigned by `deployment/placement.json`. It collects every mismatch,
-stops all mismatched nodes, and starts them all only after every stop succeeds.
-If any stop fails, none are started. Nodes that already run their assigned
-identity are untouched. This explicit command activates keys written by
-`place`.
+`fleet apply-placement` reads every running node's NodeID and compares it with
+the NodeID assigned by `deployment/placement.json`. It snapshots every
+mismatched running node, stops that complete set, and starts that same set only
+after every stop succeeds. If any stop fails, none are started. Nodes already
+running their assigned identity are untouched. Nodes that were down when the
+command began remain down, even if their on-disk identity differs. This
+explicit command activates keys written by `place` without sounding like a
+whole-fleet restart.
 
 Two refusals, both correctness rather than policy:
 1. an identity that would end up live twice (cannot be expressed anyway);
