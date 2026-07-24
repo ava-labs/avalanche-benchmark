@@ -92,6 +92,7 @@ func TestWeightsLoadLetteredIdentities(t *testing.T) {
 		{Number: 30, Role: config.RoleValidator},
 		{Number: 40, Role: config.RoleValidator},
 		{Number: 50, Role: config.RoleRPC},
+		{Number: 60, Role: config.RoleBeacon},
 	}
 	generated, err := identity.Generate(root, nodes, 1)
 	if err != nil {

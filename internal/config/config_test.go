@@ -20,6 +20,7 @@ func TestLoadFiles(t *testing.T) {
 	}, "\n"))
 	writeFile(t, nodesPath, strings.Join([]string{
 		"5 host=rpc.example role=rpc",
+		"6 host=beacon.example role=beacon",
 		"4 host=v4.example role=validator dc=B",
 		"2 host=v2.example role=validator dc=A",
 		"1 host=v1.example role=validator dc=A",
@@ -33,8 +34,8 @@ func TestLoadFiles(t *testing.T) {
 	if cfg.Environment.Network != "fuji" {
 		t.Fatalf("unexpected environment: %+v", cfg.Environment)
 	}
-	if len(cfg.Nodes) != 5 {
-		t.Fatalf("expected 5 nodes, got %d", len(cfg.Nodes))
+	if len(cfg.Nodes) != 6 {
+		t.Fatalf("expected 6 nodes, got %d", len(cfg.Nodes))
 	}
 	for i, node := range cfg.Nodes {
 		if node.Number != i+1 {
@@ -95,6 +96,28 @@ func TestLoadNetworkEnvironmentDoesNotRequireFundingKey(t *testing.T) {
 	}
 }
 
+func TestLoadFleetEnvironmentRequiresSSHButNotFundingKey(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "fleet-key")
+	writeFile(t, keyPath, "private")
+	path := filepath.Join(dir, ".env")
+	writeFile(t, path, strings.Join([]string{
+		"NETWORK=fuji",
+		"PCHAIN_API=https://api.avax-test.network",
+		"FUNDING_PRIVATE_KEY=",
+		"SSH_USER=ubuntu",
+		"SSH_KEY_PATH=" + keyPath,
+	}, "\n"))
+
+	environment, err := LoadFleetEnvironment(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if environment.Network != "fuji" || environment.SSHUser != "ubuntu" || environment.SSHKeyPath != keyPath {
+		t.Fatalf("unexpected fleet environment: %+v", environment)
+	}
+}
+
 func TestLoadNodesFailsLoudly(t *testing.T) {
 	base := []string{
 		"1 host=v1 role=validator",
@@ -102,12 +125,14 @@ func TestLoadNodesFailsLoudly(t *testing.T) {
 		"3 host=v3 role=validator",
 		"4 host=v4 role=validator",
 		"5 host=r1 role=rpc",
+		"6 host=p1 role=beacon",
 	}
 	tests := map[string][]string{
 		"duplicate number": append(append([]string{}, base...), "5 host=r2 role=rpc"),
-		"unknown field":    append(append([]string{}, base...), "6 host=r2 role=rpc site=A"),
-		"invalid role":     []string{"1 host=v1 role=validator", "2 host=v2 role=validator", "3 host=v3 role=validator", "4 host=v4 role=validator", "5 host=r1 role=spare"},
-		"missing rpc":      base[:4],
+		"unknown field":    append(append([]string{}, base...), "7 host=r2 role=rpc site=A"),
+		"invalid role":     []string{"1 host=v1 role=validator", "2 host=v2 role=validator", "3 host=v3 role=validator", "4 host=v4 role=validator", "5 host=r1 role=spare", "6 host=p1 role=beacon"},
+		"missing rpc":      append(append([]string{}, base[:4]...), "6 host=p1 role=beacon"),
+		"missing beacon":   base[:5],
 	}
 	for name, lines := range tests {
 		t.Run(name, func(t *testing.T) {

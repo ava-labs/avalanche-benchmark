@@ -152,19 +152,23 @@ func generateKeys(root string, managerCommittee int) error {
 	}
 	validatorCount := 0
 	rpcCount := 0
+	beaconCount := 0
 	for _, node := range result.Public.Nodes {
 		switch node.Role {
 		case config.RoleValidator:
 			validatorCount++
 		case config.RoleRPC:
 			rpcCount++
+		case config.RoleBeacon:
+			beaconCount++
 		}
 	}
 	fmt.Printf("loaded %s\n", nodesPath)
 	fmt.Printf(
-		"generated keys: validators=%d rpc=%d managers=%d root=%s\n",
+		"generated keys: validators=%d rpc=%d beacons=%d managers=%d root=%s\n",
 		validatorCount,
 		rpcCount,
+		beaconCount,
 		len(result.Public.Managers),
 		deploymentPath,
 	)

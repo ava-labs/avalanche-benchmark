@@ -128,6 +128,7 @@ func (p Public) Validate() error {
 	seenNodeIDs := make(map[ids.NodeID]struct{}, len(p.Nodes)+len(p.Managers))
 	validatorCount := 0
 	rpcCount := 0
+	beaconCount := 0
 	previousNode := 0
 	for i, node := range p.Nodes {
 		expectedIdentity := identity.Name(i)
@@ -171,8 +172,16 @@ func (p Public) Validate() error {
 				return fmt.Errorf("rpc %s signer must not be provided", node.Identity)
 			}
 			rpcCount++
+		case config.RoleBeacon:
+			if node.Weight != 0 {
+				return fmt.Errorf("beacon %s weight must be 0, got %d", node.Identity, node.Weight)
+			}
+			if node.Signer != nil {
+				return fmt.Errorf("beacon %s signer must not be provided", node.Identity)
+			}
+			beaconCount++
 		default:
-			return fmt.Errorf("node %s role must be validator or rpc, got %q", node.Identity, node.Role)
+			return fmt.Errorf("node %s role must be validator, rpc, or beacon, got %q", node.Identity, node.Role)
 		}
 	}
 	if validatorCount < 4 {
@@ -180,6 +189,9 @@ func (p Public) Validate() error {
 	}
 	if rpcCount < 1 {
 		return fmt.Errorf("at least 1 rpc is required")
+	}
+	if beaconCount != 1 {
+		return fmt.Errorf("exactly 1 P-chain beacon is required, got %d", beaconCount)
 	}
 	if len(p.Managers) != 1 && len(p.Managers) != 4 {
 		return fmt.Errorf("manager count must be 1 or 4, got %d", len(p.Managers))

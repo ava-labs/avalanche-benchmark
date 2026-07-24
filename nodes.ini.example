@@ -1,4 +1,4 @@
-# <node-number> host=<address> role=validator|rpc [dc=<tag>]
+# <node-number> host=<address> role=validator|rpc|beacon [dc=<tag>]
 # Validators are registered in ascending node-number order. The first three
 # validators start at weight 100000; every remaining validator starts at 1000.
 1  host=10.0.0.11 role=validator dc=A
@@ -13,3 +13,4 @@
 10 host=10.0.0.16 role=rpc       dc=A
 11 host=10.1.0.15 role=rpc       dc=B
 12 host=10.1.0.16 role=rpc       dc=B
+13 host=10.2.0.10 role=beacon

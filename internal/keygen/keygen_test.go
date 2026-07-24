@@ -19,6 +19,7 @@ func TestGenerateWritesPrivateBundleAndPublicHandover(t *testing.T) {
 		{Number: 3, Role: config.RoleValidator},
 		{Number: 4, Role: config.RoleValidator},
 		{Number: 5, Role: config.RoleRPC},
+		{Number: 6, Role: config.RoleBeacon},
 	}
 	output := filepath.Join(t.TempDir(), "deployment")
 	result, err := Generate(output, nodes, 1)
@@ -34,7 +35,7 @@ func TestGenerateWritesPrivateBundleAndPublicHandover(t *testing.T) {
 	if digest != result.Digest {
 		t.Fatalf("digest changed across handover: generated %s, loaded %s", result.Digest, digest)
 	}
-	if len(loaded.Nodes) != 5 || len(loaded.Managers) != 1 {
+	if len(loaded.Nodes) != 6 || len(loaded.Managers) != 1 {
 		t.Fatalf("unexpected public identity counts: %+v", loaded)
 	}
 	if loaded.Nodes[4].Signer != nil || loaded.Nodes[4].Weight != 0 {
@@ -42,6 +43,12 @@ func TestGenerateWritesPrivateBundleAndPublicHandover(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(output, "identities", "e", "signer.key")); !os.IsNotExist(err) {
 		t.Fatalf("RPC signer key must not exist, got %v", err)
+	}
+	if loaded.Nodes[5].Signer != nil || loaded.Nodes[5].Weight != 0 {
+		t.Fatal("P-chain beacon must have neither signer nor weight")
+	}
+	if _, err := os.Stat(filepath.Join(output, "identities", "f", "signer.key")); !os.IsNotExist(err) {
+		t.Fatalf("P-chain beacon signer key must not exist, got %v", err)
 	}
 
 	genesisKeyPath := filepath.Join(output, "genesis-funds.key")
