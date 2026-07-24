@@ -65,6 +65,12 @@ nohup.out
 /monitoring/prometheus.yml
 /monitoring/provisioning/
 
+# Foundry (contracts/): deps and build outputs are regenerable; the Go build
+# consumes only the checked-in artifacts under internal/oraclecontracts/
+/contracts/lib/
+/contracts/cache/
+/contracts/out/
+
 # Local editor/agent state
 /.claude/
 /.legacy/
