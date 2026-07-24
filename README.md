@@ -78,8 +78,8 @@ performed by `fleet deploy`.
   ingress and anchors L1 access. `beacon` = exactly one unregistered P-chain
   follow-only node with a stable TLS identity and no BLS signer.
 - `dc` is an optional freeform display/selector tag. If omitted, it remains
-  visibly unset. Fleet verbs accept `dc=<tag>` selectors and `status` groups by
-  it. Nothing functional depends on it.
+  visibly unset. Maintenance verbs accept `dc=<tag>` selectors and `status`
+  groups by it. Nothing functional depends on it.
 - Weights are **not** inventory. On-chain weight is the sole truth; `status`
   reads it from the P-chain.
 - `deployment/public.json` is generated from the private identities and is the
@@ -164,7 +164,7 @@ l1 weights             show identity letters, NodeIDs, weights, and fee days lef
 l1 topup <days>        fund every registered validator to <days> of runway
 l1 set-weight <letter> <w> set main identity to 1, 1000, or 100000
 l1 destroy             disable every converted L1 validator and reclaim its balance
-fleet deploy [<node>|dc=<tag> ...]
+fleet deploy
 fleet start [<node>|dc=<tag> ...]
 fleet stop [<node>|dc=<tag> ...]
 fleet destroy [<node>|dc=<tag> ...]
@@ -282,8 +282,10 @@ is ready for a new `create`. There is no local destroyed flag.
 
 ### deploy, start, stop, and status
 
-With no selector, these commands target every node. A selector is a node
-number or `dc=<tag>`; multiple selectors form a union.
+`fleet deploy` always targets the complete inventory and takes no arguments.
+Deployment is one deterministic operation, not a node-maintenance interface.
+For `start`, `stop`, `destroy`, and `status`, a selector is a node number or
+`dc=<tag>`; multiple selectors form a union, and no selector targets every node.
 
 `fleet deploy` first deploys the sole P-chain beacon through strict stop,
 package, systemd-unit, identity, and start phases. The beacon follows the
@@ -292,11 +294,11 @@ are omitted so AvalancheGo uses its embedded defaults. Before any L1 service is
 touched, deploy queries the beacon and requires the complete management and
 main validator sets recorded by `public.json` and `network.env`.
 
-It then runs fleet-wide phases for the selected validator and RPC nodes: stop
-every selected service, rsync the current binaries and rendered configuration,
-install and enable every systemd unit, push each node's initial generated
-identity, start every selected service, then wait for all selected nodes to
-serve the L1. Every validator and RPC uses the beacon's inventory host and
+It then runs fleet-wide phases for every validator and RPC node: stop every
+service, rsync the current binaries and rendered configuration, install and
+enable every systemd unit, push each node's initial generated identity, start
+every service, then wait for all nodes to serve the L1. Every validator and RPC
+uses the beacon's inventory host and
 generated NodeID as its sole P-chain bootstrap, while its state-sync list
 contains the other validator and RPC nodes only. Phasing lets all members of a
 cold fleet start before the readiness wait requires quorum. Deploy includes

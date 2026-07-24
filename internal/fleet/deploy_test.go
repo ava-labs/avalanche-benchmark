@@ -34,24 +34,6 @@ func TestPortsArePositionalPerHost(t *testing.T) {
 	}
 }
 
-func TestSelectorsFormAUnion(t *testing.T) {
-	nodes := []config.Node{
-		{Number: 1, DC: "A"},
-		{Number: 2, DC: "A"},
-		{Number: 3, DC: "B"},
-	}
-	got, err := selectNodes(nodes, []string{"dc=A", "3"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 3 || got[0].Number != 1 || got[1].Number != 2 || got[2].Number != 3 {
-		t.Fatalf("unexpected selection: %+v", got)
-	}
-	if _, err := selectNodes(nodes, []string{"dc=C"}); err == nil {
-		t.Fatal("expected unmatched selector error")
-	}
-}
-
 func TestRenderBeaconFollowsDefaultsAndL1UsesBeacon(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "node-config.json"), `{"index-enabled":false}`)

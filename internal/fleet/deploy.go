@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -86,8 +85,8 @@ type nodeDeployment struct {
 	renderDir string
 }
 
-func (d *Deployer) Deploy(ctx context.Context, selectors []string) error {
-	prepared, cleanup, err := d.prepare(selectors)
+func (d *Deployer) Deploy(ctx context.Context) error {
+	prepared, cleanup, err := d.prepare()
 	if err != nil {
 		return err
 	}
@@ -130,7 +129,7 @@ func (d *Deployer) Deploy(ctx context.Context, selectors []string) error {
 			return err
 		}
 	}
-	fmt.Fprintf(d.out, "deployed P-chain beacon and %d selected L1 node(s)\n", len(prepared.selected))
+	fmt.Fprintf(d.out, "deployed P-chain beacon and %d L1 node(s)\n", len(prepared.selected))
 	return nil
 }
 
@@ -152,7 +151,7 @@ func (d *Deployer) phase(
 	return nil
 }
 
-func (d *Deployer) prepare(selectors []string) (deployment, func(), error) {
+func (d *Deployer) prepare() (deployment, func(), error) {
 	noCleanup := func() {}
 	environment, err := config.LoadFleetEnvironment(filepath.Join(d.root, ".env"))
 	if err != nil {
@@ -237,10 +236,6 @@ func (d *Deployer) prepare(selectors []string) (deployment, func(), error) {
 		return deployment{}, noCleanup, err
 	}
 
-	targets, err := selectNodes(nodes, selectors)
-	if err != nil {
-		return deployment{}, noCleanup, err
-	}
 	ports := portsByNode(nodes)
 	renderRoot, err := os.MkdirTemp("", "fleet-deploy-")
 	if err != nil {
@@ -290,7 +285,7 @@ func (d *Deployer) prepare(selectors []string) (deployment, func(), error) {
 		renderDir: beaconRender,
 	}
 
-	for _, node := range targets {
+	for _, node := range nodes {
 		if node.Role == config.RoleBeacon {
 			continue
 		}
@@ -357,52 +352,6 @@ func requiredID(values map[string]string, field string) (ids.ID, error) {
 		return ids.Empty, fmt.Errorf("deployment/network.env: invalid %s: %w", field, err)
 	}
 	return id, nil
-}
-
-func selectNodes(nodes []config.Node, selectors []string) ([]config.Node, error) {
-	if len(selectors) == 0 {
-		return append([]config.Node(nil), nodes...), nil
-	}
-	selected := make(map[int]config.Node)
-	for _, selector := range selectors {
-		if dc, ok := strings.CutPrefix(selector, "dc="); ok {
-			if dc == "" {
-				return nil, fmt.Errorf("selector dc= requires a tag")
-			}
-			matched := false
-			for _, node := range nodes {
-				if node.DC == dc {
-					selected[node.Number] = node
-					matched = true
-				}
-			}
-			if !matched {
-				return nil, fmt.Errorf("selector %q matches no nodes", selector)
-			}
-			continue
-		}
-		number, err := strconv.Atoi(selector)
-		if err != nil || number <= 0 {
-			return nil, fmt.Errorf("selector must be a node number or dc=<tag>, got %q", selector)
-		}
-		matched := false
-		for _, node := range nodes {
-			if node.Number == number {
-				selected[number] = node
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			return nil, fmt.Errorf("selector %q matches no nodes", selector)
-		}
-	}
-	result := make([]config.Node, 0, len(selected))
-	for _, node := range selected {
-		result = append(result, node)
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Number < result[j].Number })
-	return result, nil
 }
 
 func portsByNode(nodes []config.Node) map[int][2]int {

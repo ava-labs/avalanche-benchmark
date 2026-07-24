@@ -23,13 +23,13 @@ func run() error {
 	}
 	program := filepath.Base(os.Args[0])
 	switch {
-	case len(os.Args) >= 2 && os.Args[1] == "deploy":
-		return fleet.NewDeployer(root, os.Stdout).Deploy(context.Background(), os.Args[2:])
+	case len(os.Args) == 2 && os.Args[1] == "deploy":
+		return fleet.NewDeployer(root, os.Stdout).Deploy(context.Background())
 	default:
 		return fmt.Errorf("usage:\n%s", usage(program))
 	}
 }
 
 func usage(program string) string {
-	return fmt.Sprintf("  %s deploy [<node>|dc=<tag> ...]", program)
+	return fmt.Sprintf("  %s deploy", program)
 }
