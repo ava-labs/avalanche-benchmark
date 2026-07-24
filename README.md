@@ -408,12 +408,11 @@ already-accepted nonce is rejected, only missing transactions land, a fork
 cannot forge an unsigned transaction. Consensus-level failover therefore does
 not need to be perfectly lossless; it needs to be fast and convergent.
 
-Consensus is tuned so that losing one high-weight validator (~66% of stake
-remaining) still finalizes at four-digit TPS: `alpha` sits just below the
-maximum, and `k` must not exceed the validator count. The one-validator shape
-uses `k=1, alpha=1`; the failover shape uses `k=5, alpha=4`. A `k` larger than
-the set never finalizes: blocks build but are never accepted with
-`errInsufficientWeight`.
+Consensus parameters are verified benchmark inputs. Every topology, including
+one validator, uses the shipped `subnet-config.json` unchanged: `k=30`,
+`alphaPreference=16`, `alphaConfidence=17`, `beta=12`, and a 100ms proposer
+window. Sampling is with replacement. Fleet commands never derive or rewrite
+consensus settings from inventory.
 
 There is no scores file. The deliverable is the drill itself plus the live
 dashboards: run `bombard`, run a drill, watch throughput, finalized height per

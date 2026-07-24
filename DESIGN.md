@@ -124,7 +124,7 @@ An RPC node is: a PINNED (IP, NodeID) that tracks the chain, serves ingress, and
 ## Consensus and recovery facts (validated live)
 
 - Wiping only the L1 chain data (`chainData/<L1chainID>` plus logs), while keeping the P-chain DB, was proven to state-sync a node fresh onto the majority branch without a re-fork (2026-07-18, Fuji, AvalancheGo 4265498). The June-2026 belief that recovery must delete all validator data is disproven. This recovery operation is deliberately not hidden inside `stop` or `start`: both preserve data. Add a separate explicit recovery primitive only when the runbook needs it.
-- subnet-config k fix: k (sample size) must be <= validator count. k=20 with 8 validators never finalized (errInsufficientWeight, blocks built but not accepted). The one-validator shape renders k=1, alpha=1. The failover shape renders k=5, alpha=4. Alpha sits just below max so losing ONE high validator (~66%) still finalizes at speed: a single high failover does not halt the chain.
+- Consensus parameters are verified benchmark inputs, not inventory-derived settings. Every topology, including one validator, uses the shipped `subnet-config.json` unchanged: k 30, alpha preference 16, alpha confidence 17, beta 12, and proposer window 100ms. Fleet tooling must never calculate, rewrite, or otherwise adjust consensus parameters from the node count. Sampling is with replacement; reducing k for a small roster is incorrect and produces forks.
 - Isolated-fleet peering needs SG ingress AND egress for the staking port from/to both the intra-region private CIDR and the fleet public IPs (cross-region uses public IPs, same-VPC traffic arrives from private IPs, so public-IP-only rules silently fail intra-region).
 
 ## Constraints (standing)
