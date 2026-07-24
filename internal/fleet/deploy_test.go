@@ -75,6 +75,8 @@ func TestRenderBeaconFollowsDefaultsAndL1UsesBeacon(t *testing.T) {
 		[2]int{9650, 9651},
 		"",
 		"",
+		"",
+		"",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -111,16 +113,43 @@ func TestRenderBeaconFollowsDefaultsAndL1UsesBeacon(t *testing.T) {
 		subnetID,
 		[2]int{9650, 9651},
 		"beacon:9651",
-		"NodeID-test",
+		"NodeID-beacon",
+		"sibling:9651",
+		"NodeID-sibling",
 	); err != nil {
 		t.Fatal(err)
 	}
 	validatorConfig := readTestJSON(t, filepath.Join(validatorDir, "node.json"))
-	if validatorConfig["bootstrap-ips"] != "beacon:9651" || validatorConfig["state-sync-ips"] != "beacon:9651" {
-		t.Fatalf("validator does not use sole P-chain beacon: %v", validatorConfig)
+	if validatorConfig["bootstrap-ips"] != "beacon:9651" || validatorConfig["bootstrap-ids"] != "NodeID-beacon" {
+		t.Fatalf("validator does not use sole P-chain beacon for bootstrap: %v", validatorConfig)
+	}
+	if validatorConfig["state-sync-ips"] != "sibling:9651" || validatorConfig["state-sync-ids"] != "NodeID-sibling" {
+		t.Fatalf("validator does not use L1 sibling for state sync: %v", validatorConfig)
 	}
 	if validatorConfig["staking-signer-key-file"] == nil {
 		t.Fatal("validator signer path missing")
+	}
+}
+
+func TestStateSyncPeersExcludeBeaconAndSelf(t *testing.T) {
+	nodes := []config.Node{
+		{Number: 1, Host: "validator-a", Role: config.RoleValidator},
+		{Number: 2, Host: "validator-b", Role: config.RoleValidator},
+		{Number: 3, Host: "rpc", Role: config.RoleRPC},
+		{Number: 4, Host: "beacon", Role: config.RoleBeacon},
+	}
+	public := map[int]creation.PublicNode{
+		1: {NodeID: "NodeID-a"},
+		2: {NodeID: "NodeID-b"},
+		3: {NodeID: "NodeID-rpc"},
+		4: {NodeID: "NodeID-beacon"},
+	}
+	ips, nodeIDs := stateSyncPeers(nodes[0], nodes, public, portsByNode(nodes))
+	if ips != "validator-b:9651,rpc:9651" {
+		t.Fatalf("state sync IPs = %q", ips)
+	}
+	if nodeIDs != "NodeID-b,NodeID-rpc" {
+		t.Fatalf("state sync IDs = %q", nodeIDs)
 	}
 }
 

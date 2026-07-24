@@ -279,7 +279,7 @@ func (d *Deployer) prepare(selectors []string) (deployment, func(), error) {
 		return deployment{}, noCleanup, err
 	}
 	beaconRender := filepath.Join(renderRoot, strconv.Itoa(beacon.Number))
-	if err := renderNode(beaconRender, d.root, environment, beacon, beaconIdentity, chainID, subnetID, ports[beacon.Number], "", ""); err != nil {
+	if err := renderNode(beaconRender, d.root, environment, beacon, beaconIdentity, chainID, subnetID, ports[beacon.Number], "", "", "", ""); err != nil {
 		cleanup()
 		return deployment{}, noCleanup, err
 	}
@@ -301,6 +301,7 @@ func (d *Deployer) prepare(selectors []string) (deployment, func(), error) {
 		}
 		renderDir := filepath.Join(renderRoot, strconv.Itoa(node.Number))
 		bootstrapIP := fmt.Sprintf("%s:%d", beacon.Host, ports[beacon.Number][1])
+		stateSyncIPs, stateSyncIDs := stateSyncPeers(node, nodes, publicByNode, ports)
 		if err := renderNode(
 			renderDir,
 			d.root,
@@ -312,6 +313,8 @@ func (d *Deployer) prepare(selectors []string) (deployment, func(), error) {
 			ports[node.Number],
 			bootstrapIP,
 			beaconIdentity.NodeID,
+			stateSyncIPs,
+			stateSyncIDs,
 		); err != nil {
 			cleanup()
 			return deployment{}, noCleanup, err
@@ -324,6 +327,24 @@ func (d *Deployer) prepare(selectors []string) (deployment, func(), error) {
 		})
 	}
 	return result, cleanup, nil
+}
+
+func stateSyncPeers(
+	node config.Node,
+	nodes []config.Node,
+	public map[int]creation.PublicNode,
+	ports map[int][2]int,
+) (string, string) {
+	var peerIPs []string
+	var peerIDs []string
+	for _, peer := range nodes {
+		if peer.Number == node.Number || peer.Role == config.RoleBeacon {
+			continue
+		}
+		peerIPs = append(peerIPs, fmt.Sprintf("%s:%d", peer.Host, ports[peer.Number][1]))
+		peerIDs = append(peerIDs, public[peer.Number].NodeID)
+	}
+	return strings.Join(peerIPs, ","), strings.Join(peerIDs, ",")
 }
 
 func requiredID(values map[string]string, field string) (ids.ID, error) {
@@ -403,6 +424,7 @@ func renderNode(
 	chainID, subnetID ids.ID,
 	ports [2]int,
 	bootstrapIP, bootstrapID string,
+	stateSyncIPs, stateSyncIDs string,
 ) error {
 	if err := os.Mkdir(renderDir, 0o700); err != nil {
 		return fmt.Errorf("create node %d render directory: %w", node.Number, err)
@@ -443,8 +465,8 @@ func renderNode(
 		cfg["subnet-config-dir"] = filepath.Join(remoteConfigDir, strconv.Itoa(node.Number), "subnets")
 		cfg["bootstrap-ips"] = bootstrapIP
 		cfg["bootstrap-ids"] = bootstrapID
-		cfg["state-sync-ips"] = bootstrapIP
-		cfg["state-sync-ids"] = bootstrapID
+		cfg["state-sync-ips"] = stateSyncIPs
+		cfg["state-sync-ids"] = stateSyncIDs
 		if node.Role == config.RoleValidator {
 			cfg["staking-signer-key-file"] = filepath.Join(stakingDir, "signer.key")
 		} else {

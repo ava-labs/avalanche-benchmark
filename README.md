@@ -297,7 +297,8 @@ every selected service, rsync the current binaries and rendered configuration,
 install and enable every systemd unit, push each node's initial generated
 identity, start every selected service, then wait for all selected nodes to
 serve the L1. Every validator and RPC uses the beacon's inventory host and
-generated NodeID as its sole P-chain bootstrap. Phasing lets all members of a
+generated NodeID as its sole P-chain bootstrap, while its state-sync list
+contains the other validator and RPC nodes only. Phasing lets all members of a
 cold fleet start before the readiness wait requires quorum. Deploy includes
 start. There is no provisioned check or local deploy-state flag.
 
@@ -352,9 +353,9 @@ identity are untouched. This explicit command activates keys written by
 
 Two refusals, both correctness rather than policy:
 1. an identity that would end up live twice (cannot be expressed anyway);
-2. any swap involving an `rpc` node. RPC identities are bootstrap anchors
+2. any swap involving an `rpc` node. RPC identities are L1 state-sync seeds
    (see below) and unstaked, so moving them breaks the mesh, and moving a
-   validator onto an RPC slot silently de-anchors it.
+   validator onto an RPC slot silently changes its role.
 
 Everything else, including which identity goes where, when, and why, is yours. The tool
 ships mechanisms, not failover policy.
@@ -405,8 +406,10 @@ generated public identity manifest. Bootstrap entries are verified by TLS at
 dial time, so the beacon identity is stable and cannot participate in key
 placement.
 
-Subnet-EVM state sync remains configured by the shipped role-specific chain
-configuration. The P-chain beacon does not track or serve the L1.
+Each validator and RPC receives every other validator and RPC inventory node
+as its L1 state-sync peers. The list excludes itself and the P-chain beacon.
+The beacon does not track or serve the L1 and therefore must never appear in a
+downstream state-sync list.
 
 Why RPCs exist at all: serving transaction ingress on a validator measurably
 slows its block production. RPCs take the load (`bombard` fans across all of

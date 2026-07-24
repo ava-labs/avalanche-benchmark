@@ -115,7 +115,8 @@ An RPC node is a pinned identity that tracks the chain and serves ingress.
 
 ## Bootstrap topology
 
-- Every validator and RPC uses the sole P-chain beacon's `(host:staking-port, NodeID)` as its explicit primary-network bootstrap and state-sync peer.
+- Every validator and RPC uses the sole P-chain beacon's `(host:staking-port, NodeID)` only as its explicit primary-network bootstrap.
+- L1 state-sync peers are every other validator and RPC inventory node, excluding the node itself and the beacon. The beacon never tracks the L1 and therefore must never appear in downstream state-sync lists.
 - The beacon follows the public P-chain without running consensus. It does not track or serve the benchmark L1.
 - The beacon identity is pinned. It cannot participate in validator placement.
 
