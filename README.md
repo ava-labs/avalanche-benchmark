@@ -29,15 +29,14 @@ Two L1s, one fleet, one P-chain beacon:
   must still be movable.
 - **The P-chain beacon**: exactly one inventory node running AvalancheGo as a
   systemd service. It has a fresh stable TLS identity, owns the fleet's P-chain
-  state, and is not registered on either L1. Initial `fleet deploy` starts it in
-  follow-only mode using AvalancheGo's embedded network bootstrappers. Deploy
-  waits until the beacon sees both converted L1 validator sets before touching
-  any validator or RPC service. Every validator and RPC then uses the beacon's
-  inventory address and generated NodeID as its sole P-chain bootstrap.
+  state, and is not registered on either L1. Initial `fleet deploy` requires an
+  explicit `frozen` or `follow` mode. Deploy waits until the beacon sees both
+  converted L1 validator sets before touching any validator or RPC service.
+  Every validator and RPC then uses the beacon's inventory address and
+  generated NodeID as its sole P-chain bootstrap.
 
-The first deploy implements the following path only. Switching the deployed
-beacon between following and frozen is a separate lifecycle step and is not
-performed by `fleet deploy`.
+Switching the deployed beacon between following and frozen is a separate
+lifecycle step after initial deployment.
 
 ## Inventory: nodes.ini
 
@@ -164,7 +163,7 @@ l1 weights             show identity letters, NodeIDs, weights, and fee days lef
 l1 topup <days>        fund every registered validator to <days> of runway
 l1 set-weight <letter> <w> set main identity to 1, 1000, or 100000
 l1 destroy             disable every converted L1 validator and reclaim its balance
-fleet deploy
+fleet deploy <frozen|follow>
 fleet start [<node>|dc=<tag> ...]
 fleet stop [<node>|dc=<tag> ...]
 fleet destroy [<node>|dc=<tag> ...]
@@ -230,8 +229,9 @@ generation and chain creation happen on separate machines. Both commands print
 the file's SHA-256 so the operator can verify the copy.
 
 Creation does not freeze the P-chain. The L1 may be pre-created on another
-machine. `fleet deploy` starts the inventory beacon in following mode and waits
-until that beacon sees both conversion results before starting the L1 nodes.
+machine. `fleet deploy frozen` restores the certified P-chain archive, while
+`fleet deploy follow` obtains the conversion results from the public network.
+Both wait until the beacon sees both results before starting the L1 nodes.
 
 ### topup
 
@@ -282,17 +282,23 @@ is ready for a new `create`. There is no local destroyed flag.
 
 ### deploy, start, stop, and status
 
-`fleet deploy` always targets the complete inventory and takes no arguments.
-Deployment is one deterministic operation, not a node-maintenance interface.
+`fleet deploy` always targets the complete inventory. Its one required argument
+chooses the beacon's initial P-chain source: `frozen` or `follow`. There is no
+default. Deployment is not a node-maintenance interface.
 For `start`, `stop`, `destroy`, and `status`, a selector is a node number or
 `dc=<tag>`; multiple selectors form a union, and no selector targets every node.
 
 `fleet deploy` first deploys the sole P-chain beacon through strict stop,
-package, systemd-unit, identity, and start phases. The beacon follows the
-selected public network with `--p-chain-follow-only=true`; its bootstrap fields
-are omitted so AvalancheGo uses its embedded defaults. Before any L1 service is
-touched, deploy queries the beacon and requires the complete management and
-main validator sets recorded by `public.json` and `network.env`.
+package, systemd-unit, identity, optional archive restore, and start phases.
+Both modes set `--p-chain-follow-only=true`. `follow` omits bootstrap fields so
+AvalancheGo uses its embedded network peers. `frozen` explicitly sets both
+bootstrap lists empty. A frozen deploy requires `pchain.tar.gz` in the working
+directory. The archive must contain one non-empty top-level `db/` directory.
+Deploy restores it only when the remote beacon database is empty; rerunning
+deploy preserves an existing beacon database and does not transfer the archive.
+Before any L1 service is touched, deploy queries the beacon and requires the
+complete management and main validator sets recorded by `public.json` and
+`network.env`.
 
 It then runs fleet-wide phases for every validator and RPC node: stop every
 service, rsync the current binaries and rendered configuration, install and
@@ -443,10 +449,25 @@ Prometheus + Grafana on control, scraping every node's `/ext/metrics`).
 
 ### P-chain beacon modes
 
-`fleet deploy` renders following mode: it enables
-`--p-chain-follow-only=true` and omits upstream bootstrap fields so AvalancheGo
-uses its embedded network bootstrappers. The systemd service and numbered data
-directory preserve the beacon identity and P-chain state.
+Initial deployment is explicit:
+
+```bash
+fleet deploy frozen
+fleet deploy follow
+```
+
+`frozen` requires `pchain.tar.gz`, restores it when the beacon has no database,
+and starts with explicit-empty bootstrap lists. The archive is created only
+from a stopped P-chain-only AvalancheGo node and contains its `db/` directory:
+
+```bash
+tar -C <stopped-beacon-data-directory> -czf pchain.tar.gz db/
+```
+
+`follow` requires no archive. It preserves any existing database and omits
+bootstrap fields so AvalancheGo follows its embedded network peers. The
+systemd service and numbered data directory preserve the beacon identity,
+mode, and P-chain state.
 
 Two explicit lifecycle commands are planned but not implemented in this
 deploy slice:
@@ -476,7 +497,9 @@ go run ./cmd/l1 keygen      # fresh private bundle + public inputs, one manager
 go run ./cmd/l1 create      # create both L1s from public inputs
 make pack
 # copy remote-benchmark.tar.gz to the control host and extract it
-./bin/fleet deploy
+# choose exactly one initial P-chain source:
+./bin/fleet deploy follow
+# or place pchain.tar.gz here and run: ./bin/fleet deploy frozen
 ```
 
 The deployed P-chain state lives in the beacon node's numbered data directory.

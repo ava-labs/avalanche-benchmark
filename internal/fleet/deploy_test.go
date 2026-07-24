@@ -5,15 +5,31 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 	"github.com/ava-labs/avalanchego/ids"
 )
+
+type recordingRunner struct {
+	output []byte
+	runs   [][]string
+}
+
+func (r *recordingRunner) Run(_ context.Context, name string, args ...string) error {
+	r.runs = append(r.runs, append([]string{name}, args...))
+	return nil
+}
+
+func (r *recordingRunner) Output(_ context.Context, _ string, _ ...string) ([]byte, error) {
+	return r.output, nil
+}
 
 func TestPortsArePositionalPerHost(t *testing.T) {
 	nodes := []config.Node{
@@ -31,6 +47,16 @@ func TestPortsArePositionalPerHost(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ports = %v, want %v", got, want)
+	}
+}
+
+func TestDeployModeIsExplicitAndFrozenRequiresArchive(t *testing.T) {
+	deployer := NewDeployer(t.TempDir(), os.Stdout)
+	if _, _, err := deployer.prepare(""); err == nil || !strings.Contains(err.Error(), "deploy mode") {
+		t.Fatalf("missing mode error = %v", err)
+	}
+	if _, _, err := deployer.prepare(frozenMode); err == nil || !strings.Contains(err.Error(), pchainArchive) {
+		t.Fatalf("missing frozen archive error = %v", err)
 	}
 }
 
@@ -55,6 +81,7 @@ func TestRenderBeaconFollowsDefaultsAndL1UsesBeacon(t *testing.T) {
 		chainID,
 		subnetID,
 		[2]int{9650, 9651},
+		followMode,
 		"",
 		"",
 		"",
@@ -75,6 +102,30 @@ func TestRenderBeaconFollowsDefaultsAndL1UsesBeacon(t *testing.T) {
 	if _, exists := beaconConfig["track-subnets"]; exists {
 		t.Fatal("P-chain beacon must not track the L1")
 	}
+
+	frozenDir := filepath.Join(root, "frozen-beacon")
+	if err := renderNode(
+		frozenDir,
+		root,
+		environment,
+		beacon,
+		creation.PublicNode{Identity: "a", Role: config.RoleBeacon},
+		chainID,
+		subnetID,
+		[2]int{9650, 9651},
+		frozenMode,
+		"",
+		"",
+		"",
+		"",
+	); err != nil {
+		t.Fatal(err)
+	}
+	frozenConfig := readTestJSON(t, filepath.Join(frozenDir, "node.json"))
+	if frozenConfig["bootstrap-ips"] != "" || frozenConfig["bootstrap-ids"] != "" {
+		t.Fatalf("frozen beacon must have explicit-empty bootstrap peers: %v", frozenConfig)
+	}
+
 	unit, err := os.ReadFile(filepath.Join(beaconDir, "node.service"))
 	if err != nil {
 		t.Fatal(err)
@@ -94,6 +145,7 @@ func TestRenderBeaconFollowsDefaultsAndL1UsesBeacon(t *testing.T) {
 		chainID,
 		subnetID,
 		[2]int{9650, 9651},
+		followMode,
 		"beacon:9651",
 		"NodeID-beacon",
 		"sibling:9651",
@@ -132,6 +184,48 @@ func TestStateSyncPeersExcludeBeaconAndSelf(t *testing.T) {
 	}
 	if nodeIDs != "NodeID-b,NodeID-rpc" {
 		t.Fatalf("state sync IDs = %q", nodeIDs)
+	}
+}
+
+func TestFrozenDeployPreservesExistingBeaconDatabase(t *testing.T) {
+	runner := &recordingRunner{output: []byte("present")}
+	var output bytes.Buffer
+	deployer := &Deployer{root: t.TempDir(), out: &output, runner: runner}
+	deployment := deployment{environment: config.FleetEnvironment{SSHUser: "ubuntu"}}
+	beacon := nodeDeployment{node: config.Node{Number: 13, Host: "beacon"}}
+	if err := deployer.seedBeacon(context.Background(), deployment, beacon); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.runs) != 0 {
+		t.Fatalf("existing database triggered mutation: %v", runner.runs)
+	}
+	if !strings.Contains(output.String(), "preserving") {
+		t.Fatalf("output = %q", output.String())
+	}
+}
+
+func TestFrozenDeployRestoresArchiveIntoEmptyBeaconDatabase(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, pchainArchive), "archive")
+	runner := &recordingRunner{output: []byte("missing")}
+	deployer := &Deployer{root: root, out: io.Discard, runner: runner}
+	deployment := deployment{
+		environment: config.FleetEnvironment{
+			SSHUser:    "ubuntu",
+			SSHKeyPath: "/key",
+		},
+	}
+	beacon := nodeDeployment{node: config.Node{Number: 13, Host: "beacon"}}
+	if err := deployer.seedBeacon(context.Background(), deployment, beacon); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.runs) != 3 {
+		t.Fatalf("restore commands = %d, want 3: %v", len(runner.runs), runner.runs)
+	}
+	extract := strings.Join(runner.runs[2], " ")
+	if !strings.Contains(extract, "tar -xzf") ||
+		!strings.Contains(extract, "/var/lib/avalanche-benchmark/13/db") {
+		t.Fatalf("restore command = %q", extract)
 	}
 }
 

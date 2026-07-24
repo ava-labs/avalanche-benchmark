@@ -31,6 +31,7 @@
 
 # Deployment packages
 /remote-benchmark.tar.gz
+/pchain.tar.gz
 /avalanche-benchmark-*.tar.gz
 /avalanche-benchmark-*.rpm
 # RPM staging tree (make rpm)

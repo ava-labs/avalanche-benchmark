@@ -29,12 +29,16 @@ const (
 	remotePackageDir = "/opt/avalanche-benchmark"
 	remoteConfigDir  = "/etc/avalanche-benchmark"
 	remoteDataDir    = "/var/lib/avalanche-benchmark"
+	pchainArchive    = "pchain.tar.gz"
+	frozenMode       = "frozen"
+	followMode       = "follow"
 )
 
 var sshUserPattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]*$`)
 
 type commandRunner interface {
 	Run(context.Context, string, ...string) error
+	Output(context.Context, string, ...string) ([]byte, error)
 }
 
 type osCommandRunner struct {
@@ -47,6 +51,12 @@ func (r osCommandRunner) Run(ctx context.Context, name string, args ...string) e
 	command.Stdout = r.stdout
 	command.Stderr = r.stderr
 	return command.Run()
+}
+
+func (r osCommandRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
+	command := exec.CommandContext(ctx, name, args...)
+	command.Stderr = r.stderr
+	return command.Output()
 }
 
 type Deployer struct {
@@ -76,6 +86,7 @@ type deployment struct {
 	managerSubnetID ids.ID
 	expectedMain    map[ids.NodeID]struct{}
 	expectedManager map[ids.NodeID]struct{}
+	beaconMode      string
 }
 
 type nodeDeployment struct {
@@ -85,8 +96,8 @@ type nodeDeployment struct {
 	renderDir string
 }
 
-func (d *Deployer) Deploy(ctx context.Context) error {
-	prepared, cleanup, err := d.prepare()
+func (d *Deployer) Deploy(ctx context.Context, beaconMode string) error {
+	prepared, cleanup, err := d.prepare(beaconMode)
 	if err != nil {
 		return err
 	}
@@ -104,11 +115,18 @@ func (d *Deployer) Deploy(ctx context.Context) error {
 		{"beacon package", d.installPackage},
 		{"beacon systemd", d.installUnit},
 		{"beacon identity", d.installIdentity},
-		{"beacon start", d.start},
 	} {
 		if err := d.phase(ctx, beaconOnly, phase.name, phase.action); err != nil {
 			return err
 		}
+	}
+	if prepared.beaconMode == frozenMode {
+		if err := d.phase(ctx, beaconOnly, "beacon P-chain seed", d.seedBeacon); err != nil {
+			return err
+		}
+	}
+	if err := d.phase(ctx, beaconOnly, "beacon start", d.start); err != nil {
+		return err
 	}
 	if err := d.waitBeaconReady(ctx, prepared); err != nil {
 		return fmt.Errorf("beacon readiness phase node %d (%s): %w", prepared.beacon.node.Number, prepared.beacon.node.Host, err)
@@ -151,8 +169,22 @@ func (d *Deployer) phase(
 	return nil
 }
 
-func (d *Deployer) prepare() (deployment, func(), error) {
+func (d *Deployer) prepare(beaconMode string) (deployment, func(), error) {
 	noCleanup := func() {}
+	if beaconMode != frozenMode && beaconMode != followMode {
+		return deployment{}, noCleanup, fmt.Errorf("deploy mode must be %q or %q, got %q", frozenMode, followMode, beaconMode)
+	}
+	if beaconMode == frozenMode {
+		archivePath := filepath.Join(d.root, pchainArchive)
+		if info, err := os.Stat(archivePath); err != nil {
+			if os.IsNotExist(err) {
+				return deployment{}, noCleanup, fmt.Errorf("frozen deploy requires ./%s; file not found", pchainArchive)
+			}
+			return deployment{}, noCleanup, fmt.Errorf("frozen deploy requires ./%s: %w", pchainArchive, err)
+		} else if !info.Mode().IsRegular() {
+			return deployment{}, noCleanup, fmt.Errorf("frozen deploy requires ./%s to be a regular file", pchainArchive)
+		}
+	}
 	environment, err := config.LoadFleetEnvironment(filepath.Join(d.root, ".env"))
 	if err != nil {
 		return deployment{}, noCleanup, err
@@ -249,6 +281,7 @@ func (d *Deployer) prepare() (deployment, func(), error) {
 		managerSubnetID: managerSubnetID,
 		expectedMain:    make(map[ids.NodeID]struct{}),
 		expectedManager: make(map[ids.NodeID]struct{}),
+		beaconMode:      beaconMode,
 	}
 	for _, node := range public.Nodes {
 		if node.Role == config.RoleValidator {
@@ -274,7 +307,7 @@ func (d *Deployer) prepare() (deployment, func(), error) {
 		return deployment{}, noCleanup, err
 	}
 	beaconRender := filepath.Join(renderRoot, strconv.Itoa(beacon.Number))
-	if err := renderNode(beaconRender, d.root, environment, beacon, beaconIdentity, chainID, subnetID, ports[beacon.Number], "", "", "", ""); err != nil {
+	if err := renderNode(beaconRender, d.root, environment, beacon, beaconIdentity, chainID, subnetID, ports[beacon.Number], beaconMode, "", "", "", ""); err != nil {
 		cleanup()
 		return deployment{}, noCleanup, err
 	}
@@ -306,6 +339,7 @@ func (d *Deployer) prepare() (deployment, func(), error) {
 			chainID,
 			subnetID,
 			ports[node.Number],
+			beaconMode,
 			bootstrapIP,
 			beaconIdentity.NodeID,
 			stateSyncIPs,
@@ -372,6 +406,7 @@ func renderNode(
 	generated creation.PublicNode,
 	chainID, subnetID ids.ID,
 	ports [2]int,
+	beaconMode string,
 	bootstrapIP, bootstrapID string,
 	stateSyncIPs, stateSyncIDs string,
 ) error {
@@ -403,8 +438,13 @@ func renderNode(
 	if node.Role == config.RoleBeacon {
 		cfg["p-chain-follow-only"] = true
 		cfg["staking-ephemeral-signer-enabled"] = true
-		delete(cfg, "bootstrap-ips")
-		delete(cfg, "bootstrap-ids")
+		if beaconMode == frozenMode {
+			cfg["bootstrap-ips"] = ""
+			cfg["bootstrap-ids"] = ""
+		} else {
+			delete(cfg, "bootstrap-ips")
+			delete(cfg, "bootstrap-ids")
+		}
 		delete(cfg, "state-sync-ips")
 		delete(cfg, "state-sync-ids")
 	} else {
@@ -550,6 +590,14 @@ func (d *Deployer) runSSH(ctx context.Context, deployment deployment, node nodeD
 	return nil
 }
 
+func (d *Deployer) runSSHOutput(ctx context.Context, deployment deployment, node nodeDeployment, command string) ([]byte, error) {
+	output, err := d.runner.Output(ctx, "ssh", d.sshArgs(deployment, node, command)...)
+	if err != nil {
+		return nil, fmt.Errorf("ssh command failed: %w", err)
+	}
+	return output, nil
+}
+
 func (d *Deployer) rsync(ctx context.Context, deployment deployment, node nodeDeployment, local, remote string) error {
 	sshCommand := append([]string{"ssh"}, sshOptions(deployment.environment.SSHKeyPath)...)
 	args := []string{
@@ -657,6 +705,63 @@ func (d *Deployer) installIdentity(ctx context.Context, deployment deployment, n
 			"rm -rf %[4]s",
 		target, deployment.environment.SSHUser, files, stage)
 	return d.runSSH(ctx, deployment, node, command)
+}
+
+func (d *Deployer) seedBeacon(ctx context.Context, deployment deployment, node nodeDeployment) error {
+	dataDir := fmt.Sprintf("%s/%d", remoteDataDir, node.node.Number)
+	databaseDir := dataDir + "/db"
+	output, err := d.runSSHOutput(
+		ctx,
+		deployment,
+		node,
+		fmt.Sprintf("if [ -n \"$(find %s -mindepth 1 -print -quit 2>/dev/null)\" ]; then printf present; else printf missing; fi", databaseDir),
+	)
+	if err != nil {
+		return err
+	}
+	switch strings.TrimSpace(string(output)) {
+	case "present":
+		fmt.Fprintf(d.out, "P-chain beacon database already exists; preserving %s\n", databaseDir)
+		return nil
+	case "missing":
+	default:
+		return fmt.Errorf("unexpected P-chain database check result %q", strings.TrimSpace(string(output)))
+	}
+
+	stage := dataDir + "/.pchain-import"
+	if err := d.runSSH(
+		ctx,
+		deployment,
+		node,
+		fmt.Sprintf(
+			"sudo rm -rf %[1]s && sudo install -d -o %[2]s -g %[2]s -m 0700 %[1]s",
+			stage,
+			deployment.environment.SSHUser,
+		),
+	); err != nil {
+		return err
+	}
+	if err := d.rsyncFile(ctx, deployment, node, filepath.Join(d.root, pchainArchive), stage); err != nil {
+		return err
+	}
+	command := fmt.Sprintf(
+		"mkdir -m 700 %[1]s/unpacked && "+
+			"tar -xzf %[1]s/%[2]s -C %[1]s/unpacked && "+
+			"test -n \"$(find %[1]s/unpacked/db -mindepth 1 -print -quit 2>/dev/null)\" && "+
+			"sudo rm -rf %[3]s && "+
+			"sudo mv %[1]s/unpacked/db %[3]s && "+
+			"sudo chown -R %[4]s:%[4]s %[3]s && "+
+			"sudo rm -rf %[1]s",
+		stage,
+		pchainArchive,
+		databaseDir,
+		deployment.environment.SSHUser,
+	)
+	if err := d.runSSH(ctx, deployment, node, command); err != nil {
+		return fmt.Errorf("%s must contain a non-empty db/ directory: %w", pchainArchive, err)
+	}
+	fmt.Fprintf(d.out, "restored P-chain beacon database from %s\n", pchainArchive)
+	return nil
 }
 
 func (d *Deployer) start(ctx context.Context, deployment deployment, node nodeDeployment) error {

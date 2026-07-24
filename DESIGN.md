@@ -18,12 +18,16 @@ process with its own numbered machine slot, stable TLS identity, P-chain
 database, ports, configuration, logs, and systemd unit. It is never registered
 on an L1 and has no BLS signer or proof of possession.
 
-Initial `fleet deploy` starts the beacon first in follow-only mode. Its
-bootstrap fields are omitted so AvalancheGo reads the built-in network
-bootstrappers. Deploy does not touch any validator or RPC service until the
-beacon's local P-chain API contains the complete management and main validator
-sets recorded by `public.json` and `network.env`. Every validator and RPC then
-uses the beacon's inventory address and generated NodeID as its sole
+Initial `fleet deploy <frozen|follow>` requires the operator to choose the
+beacon's P-chain source explicitly. Both modes use follow-only mode. `follow`
+omits bootstrap fields so AvalancheGo reads its built-in network peers.
+`frozen` requires a local `pchain.tar.gz` containing one top-level `db/`
+directory and renders explicit-empty bootstrap lists. It restores that archive
+only when the remote beacon database is empty; rerunning deploy preserves
+existing P-chain state. Deploy does not touch any validator or RPC service
+until the beacon's local P-chain API contains the complete management and main
+validator sets recorded by `public.json` and `network.env`. Every validator and
+RPC then uses the beacon's inventory address and generated NodeID as its sole
 primary-network bootstrap.
 
 Motivations:
@@ -34,13 +38,17 @@ Motivations:
   into `.env` or another registry.
 - Waiting on the beacon's local validator view proves that the exact P-chain
   state needed by the L1 is present before L1 nodes start.
-- Initial deploy has one mode: following. Future explicit commands are
-  `fleet beacon freeze`, which renders empty upstream bootstrap lists and
-  restarts the beacon, and `fleet beacon follow`, which restores AvalancheGo's
-  embedded upstreams and restarts the beacon. Downstream configurations never
-  change. Reboots retain the last rendered mode. These transitions support the
-  frozen-to-following benchmark and later P-chain state visibility, including
-  ICM-related state.
+- Initial deploy has two explicit modes because generic users may need to sync
+  from the public network while isolated delivery starts from a certified
+  archive. Neither is a safe universal default, so omitting the mode is an
+  error. This required decision is different from optional deployment
+  selectors, which were removed because they only added mental load.
+- Future explicit commands are `fleet beacon freeze`, which renders empty
+  upstream bootstrap lists and restarts the beacon, and `fleet beacon follow`,
+  which restores AvalancheGo's embedded upstreams and restarts the beacon.
+  Downstream configurations never change. Reboots retain the last rendered
+  mode. These transitions support the frozen-to-following benchmark and later
+  P-chain state visibility, including ICM-related state.
 
 ## Creation
 
@@ -70,7 +78,7 @@ Decisions and motivations:
 - Fail-fast is a feature. Commands validate all required configuration and prior-step artifacts before performing work. A failure names the missing field, file, or prerequisite step. The tool never guesses paths, falls back to legacy variables, auto-discovers omitted configuration, silently repairs state, or continues with partial input. A command may generate only the artifacts that its documented step owns, and it reports each generated path and on-chain transaction.
 - Every registered main and committee validator starts with a 0.1 AVAX continuous-fee balance. `l1 topup <days>` reads the current P-chain fee rate and raises every registered balance to at least that many days of runway. Validators already above the target are left unchanged.
 - `l1 destroy` accepts complete or partial creation state, disables every converted main validator first and management validator last, and reclaims whichever balances exist. It verifies the funding key controls deactivation and receives remaining balances before submitting anything. If any operation fails, `deployment/` remains intact for an explicit rerun. Only after every balance is reclaimed does `destroy` remove `deployment/`, including its obsolete private keys and transaction state. An already-destroyed leftover directory is removed too. Creation never resumes. There is no local destroyed flag: height-consistent P-Chain state determines whether more balances remain, while presence of `deployment/` determines whether local creation state exists. Other lifecycle commands remain strict and fail on incomplete creation. `l1 address` remains available before creation because an imported key must be funded first.
-- Creation is not freezing. A chain may be pre-created anywhere with P-chain access. The inventory beacon later follows beyond both conversions and can freeze that accepted state in place.
+- Creation is not freezing. A chain may be pre-created anywhere with P-chain access. The inventory beacon can receive a certified archive containing both conversions or follow the public network beyond them.
 - The implementation deliberately serializes `public.json` during `keygen` and reloads it during `create`, even when both commands run on one machine. This continuously tests the exact public-only handover used when the two commands run in different trust domains.
 
 ## Inventory and naming
@@ -122,7 +130,7 @@ An RPC node is a pinned identity that tracks the chain and serves ingress.
 
 ## Deployment simplifications (decided 2026-07-22)
 
-- `fleet deploy` is software deployment, not machine provisioning. It takes no arguments and always deploys the complete inventory. It deploys the sole P-chain beacon first through stop, package, systemd, identity, and start barriers, then waits for its local P-chain API to contain both converted validator sets. Only then does it run the same barriers for every validator and RPC node, followed by one readiness barrier after all services have started. Deploy includes start. There is no separate provisioned check or deploy-state flag.
+- `fleet deploy <frozen|follow>` is software deployment, not machine provisioning. Its required argument selects only the initial beacon source; it takes no node selectors and always deploys the complete inventory. It deploys the sole P-chain beacon first through stop, package, systemd, identity, optional archive restore, and start barriers, then waits for its local P-chain API to contain both converted validator sets. Only then does it run the same barriers for every validator and RPC node, followed by one readiness barrier after all services have started. Deploy includes start. There is no separate provisioned check or deploy-state flag.
 - Logical nodes sharing a host are ordered by node number and receive HTTP/staking ports `9650/9651`, then `9652/9653`, and so on. Every logical node has separate data, logs, configuration, identity, and systemd unit paths.
 - `fleet start [selectors...]` uses the same selector rules and fleet-wide phases: stop all selected services, wait for all to become inactive, push every currently assigned identity again, start all, then wait for all to serve the L1. A failure in any phase aborts before the next phase. Re-pushing on every start is intentional: local placement is authoritative, and a stale remote key must never survive a restart.
 - `fleet stop [selectors...]` stops the selected systemd services and waits for inactivity. It preserves every database, log, installed artifact, and current remote key.
