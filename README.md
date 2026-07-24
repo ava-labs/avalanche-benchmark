@@ -92,9 +92,12 @@ P-chain process.
 - `deployment/public.json` is generated from the private identities and is the
   public NodeID, PoP, and initial-weight handover. Validation IDs, current
   weights, and active state come from the P-chain.
-- Several nodes may share a host (ports are positional: the k-th node on a
-  host gets HTTP `9650+2k`, staking `9651+2k`), but the intended shape is one
-  node per machine, permanently. Identities move; nodes do not.
+- Several logical nodes, including the P-chain beacon, may share one host and
+  IP. Nodes on that host are ordered by node number. The first uses HTTP 9650
+  and staking 9651, the second 9652/9653, the third 9654/9655, and so on.
+  Every node has its own data directory, logs, configuration, identity, and
+  systemd unit. The intended failover shape remains one blockchain node per
+  machine, permanently. Identities move; nodes do not.
 
 Copy `nodes.ini.example` to `nodes.ini`, then edit its hosts and optional DC
 tags. Inventory defines machines and roles only. It does not contain secrets.
