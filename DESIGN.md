@@ -43,19 +43,28 @@ Motivations:
   archive. Neither is a safe universal default, so omitting the mode is an
   error. This required decision is different from optional deployment
   selectors, which were removed because they only added mental load.
-- Future explicit commands are `fleet pchain freeze`, which renders empty
-  upstream bootstrap lists and restarts the P-chain node, and
-  `fleet pchain follow`, which restores AvalancheGo's embedded upstreams and
-  restarts the P-chain node. Downstream configurations never change. Reboots
-  retain the last rendered mode. These transitions support the
-  frozen-to-following benchmark and later P-chain state visibility, including
-  ICM-related state.
+- `fleet pchain follow` is both the first-run initializer and the later mode
+  transition. It reconciles only the P-chain node's package, systemd unit,
+  identity, and following configuration, starts it, and waits until both
+  converted validator sets are visible. It never starts or changes a validator
+  or RPC node. On an existing deployment it restores AvalancheGo's embedded
+  upstreams and restarts only the P-chain node.
+- `fleet pchain freeze` renders empty upstream bootstrap lists and restarts only
+  the P-chain node. Downstream configurations never change. Reboots retain the
+  last rendered mode. These transitions support the frozen-to-following
+  benchmark and later P-chain state visibility, including ICM-related state.
 - `fleet pchain archive` is the only archive producer. It requires the managed
   P-chain service to be running, stops it, creates a consistent archive of its
   `db/`, restarts it in the unchanged mode before downloading, validates the
   download, and atomically publishes `./pchain.tar.gz`. It refuses to overwrite
   an existing local archive. Owning the stop and restart avoids unsafe copies
   from arbitrary running database directories.
+- Starting frozen from an empty fleet is deliberately three explicit steps:
+  `fleet pchain follow`, `fleet pchain archive`, then `fleet deploy frozen`.
+  The first step obtains the newly created chain state without starting the L1
+  fleet, the second produces the portable artifact, and the final step freezes
+  the P-chain node before any validator or RPC starts. `fleet deploy follow` is
+  not a substitute because it starts the complete L1 fleet in following mode.
 
 ## Creation
 

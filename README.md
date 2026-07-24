@@ -165,6 +165,8 @@ l1 set-weight <letter> <w> set main identity to 1, 1000, or 100000
 l1 destroy             disable every converted L1 validator and reclaim its balance
 fleet deploy <frozen|follow>
 fleet pchain archive
+fleet pchain freeze
+fleet pchain follow
 fleet start [<node>|dc=<tag> ...]
 fleet stop [<node>|dc=<tag> ...]
 fleet destroy [<node>|dc=<tag> ...]
@@ -476,22 +478,37 @@ bootstrap fields so AvalancheGo follows its embedded network peers. The
 systemd service and numbered data directory preserve the P-chain node identity,
 mode, and P-chain state.
 
-Two explicit lifecycle commands are planned but not implemented in this
-deploy slice:
+Two P-chain lifecycle commands are designed but not implemented yet:
 
 ```bash
 fleet pchain freeze
 fleet pchain follow
 ```
 
-`freeze` will render empty upstream bootstrap lists and restart only the
-P-chain node. `follow` will omit those lists again and restart only the P-chain
-node. Downstream validator and RPC configurations always point to the same
+`fleet pchain follow` will also be the first-run initializer. It will reconcile
+and start only the P-chain node in following mode, then wait until both
+converted validator sets are visible. It will never start or change a validator
+or RPC node. On an existing deployment it will omit the upstream lists again
+and restart only the P-chain node.
+
+`fleet pchain freeze` will render empty upstream bootstrap lists and restart
+only the P-chain node. Downstream configurations always point to the same
 P-chain node and never change. A machine reboot retains the last rendered
-P-chain node configuration and therefore retains its mode. The transition is
-needed both for frozen-to-following benchmark operation and for making later
-public P-chain state, including ICM-related state, visible to the isolated
-fleet.
+P-chain configuration and therefore retains its mode.
+
+Starting frozen from an empty fleet is therefore:
+
+```bash
+fleet pchain follow
+fleet pchain archive
+fleet deploy frozen
+```
+
+The first command obtains the newly created chain state without starting the
+L1 fleet. `archive` restarts the P-chain node in following mode after producing
+the artifact. `deploy frozen` then freezes it before starting any validator or
+RPC. Do not substitute `fleet deploy follow`: that starts the complete L1 fleet
+in following mode before the frozen archive exists.
 
 ## Quick start
 
@@ -510,6 +527,9 @@ make pack
 ./bin/fleet pchain archive  # optional: produce pchain.tar.gz for frozen testing
 # or place pchain.tar.gz here and run: ./bin/fleet deploy frozen
 ```
+
+To start frozen when this control directory has no P-chain archive yet, use the
+three-step flow in the P-chain modes section instead of `fleet deploy follow`.
 
 The deployed P-chain state lives in the P-chain node's numbered data directory.
 `fleet deploy` preserves that directory across package updates.
