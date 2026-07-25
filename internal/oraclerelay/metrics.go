@@ -24,19 +24,18 @@ var priceScale = big.NewFloat(1e8)
 // metrics holds the relay's Prometheus collectors on a dedicated registry so no
 // global state leaks between the relay and any test.
 type metrics struct {
-	registry           *prometheus.Registry
-	price              *prometheus.GaugeVec
-	priceUpdatedAt     *prometheus.GaugeVec
-	mainPriceOrigin    *prometheus.GaugeVec
-	seq                *prometheus.GaugeVec
-	e2eLatency         *prometheus.HistogramVec
-	pipelineLatency    *prometheus.HistogramVec
-	delivered          *prometheus.CounterVec
-	confirmed          *prometheus.CounterVec
-	skipped            *prometheus.CounterVec
-	batchSize          prometheus.Histogram
-	inflight           prometheus.Gauge
-	canonicalRefreshes prometheus.Counter
+	registry        *prometheus.Registry
+	price           *prometheus.GaugeVec
+	priceUpdatedAt  *prometheus.GaugeVec
+	mainPriceOrigin *prometheus.GaugeVec
+	seq             *prometheus.GaugeVec
+	e2eLatency      *prometheus.HistogramVec
+	pipelineLatency *prometheus.HistogramVec
+	delivered       *prometheus.CounterVec
+	confirmed       *prometheus.CounterVec
+	skipped         *prometheus.CounterVec
+	batchSize       prometheus.Histogram
+	inflight        prometheus.Gauge
 }
 
 func newMetrics() *metrics {
@@ -101,11 +100,6 @@ func newMetrics() *metrics {
 			Name:      "inflight",
 			Help:      "Sent-but-unconfirmed delivery txs in the confirmer queue.",
 		}),
-		canonicalRefreshes: prometheus.NewCounter(prometheus.CounterOpts{
-			Namespace: metricsNamespace,
-			Name:      "canonical_set_refreshes_total",
-			Help:      "Canonical validator-set fetches triggered by an epoch-height change.",
-		}),
 	}
 	registry.MustRegister(
 		m.price,
@@ -119,7 +113,6 @@ func newMetrics() *metrics {
 		m.skipped,
 		m.batchSize,
 		m.inflight,
-		m.canonicalRefreshes,
 	)
 	return m
 }
@@ -199,8 +192,4 @@ func (m *metrics) recordSeq(asset string, seq uint64) {
 
 func (m *metrics) recordSkipped(asset string) {
 	m.skipped.WithLabelValues(asset).Inc()
-}
-
-func (m *metrics) recordCanonicalRefresh() {
-	m.canonicalRefreshes.Inc()
 }

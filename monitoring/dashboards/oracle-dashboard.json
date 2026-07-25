@@ -431,37 +431,6 @@
       "options": {}
     },
     {
-      "id": 12,
-      "type": "timeseries",
-      "title": "Canonical-set refreshes (epoch rolls)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 24
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "increase(oracle_relay_canonical_set_refreshes_total[10m])",
-          "refId": "A",
-          "legendFormat": "refreshes / 10m"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "options": {}
-    },
-    {
       "id": 24,
       "type": "row",
       "title": "Freshness \u2014 push cadence and staleness",

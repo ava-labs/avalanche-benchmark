@@ -383,6 +383,14 @@ deployment the relay job belongs to
 [icm-relayer](https://github.com/ava-labs/icm-services); the control-host
 relayer is the airgap-friendly demo equivalent.
 
+**First-epoch warm-up.** A freshly created chain cannot accept its first block
+until its first Granite epoch seals — roughly `graniteEpochDuration` (~5
+minutes on Fuji) after genesis. Start `feed` and `relay` only after that
+window: earlier, the oracle chain has no accepted blocks to emit Warp messages
+from, and `relay` will sit at the ACP-181 visibility gate (it prints the exact
+boundary it is sleeping until). This is a one-time wait per deployment, not per
+restart — once the chains are producing blocks they stay warm.
+
 ### down / up: recovery primitive
 
 `down` wipes only `chainData/<L1-chain-id>` and logs, never the P-chain DB

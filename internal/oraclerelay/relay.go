@@ -62,27 +62,6 @@ func batchGasLimit(n int) uint64 {
 	return uint64(baseDeliveryGas + perMessageDeliveryGas*n)
 }
 
-// canonicalSetCache memoizes the canonical oracle validator set by the P-chain
-// height its epoch pins. The epoch rolls only every few minutes, so this avoids
-// a getValidatorsAt call on every message.
-type canonicalSetCache struct {
-	height uint64
-	set    validators.WarpSet
-	loaded bool
-}
-
-// needsRefetch reports whether the cached set is missing or was built at a
-// different pinned height than the one now in effect.
-func (c *canonicalSetCache) needsRefetch(height uint64) bool {
-	return !c.loaded || c.height != height
-}
-
-func (c *canonicalSetCache) store(height uint64, set validators.WarpSet) {
-	c.height = height
-	c.set = set
-	c.loaded = true
-}
-
 // confirmMessage carries one batched message's data through to confirmation so
 // its own latency histograms can be observed with the batch's single receipt.
 type confirmMessage struct {
@@ -136,7 +115,11 @@ func Relay(ctx context.Context, pChainAPI string, deployment Deployment, deploym
 		return fmt.Errorf("read main chain ID: %w", err)
 	}
 	mainSigner := ethtypes.LatestSignerForChainID(mainChainID)
-	nonce, err := main.PendingNonce(ctx, feederAddress)
+	// Start from the LATEST mined nonce, not pending: a crashed run leaves
+	// nonce-gapped delivery txs queued in the mempool, and starting at pending
+	// would stack new txs behind that unminable gap forever. The priority gas
+	// premium below lets a restart's resends replace any stale queue entries.
+	nonce, err := main.LatestNonce(ctx, feederAddress)
 	if err != nil {
 		return fmt.Errorf("read feeder nonce on main chain: %w", err)
 	}
@@ -183,7 +166,21 @@ func Relay(ctx context.Context, pChainAPI string, deployment Deployment, deploym
 	go confirmDeliveries(runCtx, main, pending, fail, meters, output)
 	go pollMainPrices(runCtx, main, deployment, meters, fail)
 
-	var cache canonicalSetCache
+	// Build the oracle canonical validator set once. The oracle L1's set is
+	// immutable in this design — set-weight targets the main L1, never the oracle,
+	// and place never touches it — so membership, keys, weights, and therefore the
+	// canonical bit ordering are fixed for the relay's lifetime. The main chain's
+	// Warp verifier pins a P-chain height that may advance, but an unchanging set
+	// yields the same canonical order at every height, so one fetch is correct and
+	// removes a getCurrentEpoch + getValidatorsAt round-trip from every delivery.
+	epoch, err := mainEpochs.GetCurrentEpoch(ctx)
+	if err != nil {
+		return fmt.Errorf("read main-chain Warp epoch: %w", err)
+	}
+	warpSet, err := canonicalSet(ctx, pChain, epoch.PChainHeight, deployment.OracleSubnetID)
+	if err != nil {
+		return fmt.Errorf("build oracle canonical set at height %d: %w", epoch.PChainHeight, err)
+	}
 	fresh := newFreshnessGate()
 	for {
 		select {
@@ -207,7 +204,7 @@ func Relay(ctx context.Context, pChainAPI string, deployment Deployment, deploym
 			if len(batch) == 0 {
 				continue
 			}
-			item, err := deliverBatch(runCtx, pChain, mainEpochs, main, mainSigner, feederKey, signers, &nonce, &cache, deployment, batch, meters, output)
+			item, err := deliverBatch(runCtx, main, mainSigner, feederKey, signers, &nonce, warpSet, deployment, batch, meters, output)
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					continue
@@ -384,41 +381,23 @@ func collectBatch(first ethtypes.Log, logs <-chan ethtypes.Log, fresh *freshness
 // receivePrices(count). Confirmation happens asynchronously.
 func deliverBatch(
 	ctx context.Context,
-	pChain *platformvm.Client,
-	mainEpochs epochClient,
 	main *evmClient,
 	mainSigner ethtypes.Signer,
 	feederKey *ecdsa.PrivateKey,
 	signers []bls.Signer,
 	nonce *uint64,
-	cache *canonicalSetCache,
+	warpSet validators.WarpSet,
 	deployment Deployment,
 	batch []batchMessage,
 	meters *metrics,
 	output io.Writer,
 ) (pendingDelivery, error) {
-	// The verifier uses the validator set pinned by the main chain's CURRENT
-	// proposervm epoch, so canonical bit positions must be built at exactly that
-	// P-chain height. One epoch read serves the whole batch; the set is cached
-	// until the pinned height changes.
-	epoch, err := mainEpochs.GetCurrentEpoch(ctx)
-	if err != nil {
-		return pendingDelivery{}, fmt.Errorf("read main-chain Warp epoch: %w", err)
-	}
-	if cache.needsRefetch(epoch.PChainHeight) {
-		warpSet, err := canonicalSet(ctx, pChain, epoch.PChainHeight, deployment.OracleSubnetID)
-		if err != nil {
-			return pendingDelivery{}, fmt.Errorf("build oracle canonical set at height %d: %w", epoch.PChainHeight, err)
-		}
-		cache.store(epoch.PChainHeight, warpSet)
-		meters.recordCanonicalRefresh()
-	}
-
 	// One access-list tuple per message; predicate order equals message order, so
-	// receivePrices reads warp index i from the i-th tuple.
+	// receivePrices reads warp index i from the i-th tuple. warpSet is the fixed
+	// oracle canonical set built once at startup (see Relay).
 	tuples := make(ethtypes.AccessList, 0, len(batch))
 	for _, msg := range batch {
-		signed, err := signAndAggregate(msg.unsigned, cache.set, signers)
+		signed, err := signAndAggregate(msg.unsigned, warpSet, signers)
 		if err != nil {
 			return pendingDelivery{}, err
 		}

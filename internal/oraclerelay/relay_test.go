@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/ava-labs/avalanchego/ids"
-	"github.com/ava-labs/avalanchego/snow/validators"
 	ethcommon "github.com/ava-labs/libevm/common"
 	ethtypes "github.com/ava-labs/libevm/core/types"
 )
@@ -148,35 +147,6 @@ func TestPriorityGasPrice(t *testing.T) {
 			t.Fatalf("priorityGasPrice(%d) = %s, want %d", tc.suggested, got, tc.want)
 		}
 	}
-}
-
-func TestCanonicalSetCacheRefetchDecision(t *testing.T) {
-	var cache canonicalSetCache
-
-	if !cache.needsRefetch(10) {
-		t.Fatal("empty cache must require a fetch")
-	}
-
-	cache.store(10, validators.WarpSet{TotalWeight: 42})
-	if cache.needsRefetch(10) {
-		t.Fatal("same pinned height must reuse the cached set")
-	}
-	if cache.set.TotalWeight != 42 {
-		t.Fatalf("cached set not stored: TotalWeight = %d", cache.set.TotalWeight)
-	}
-	if !cache.needsRefetch(11) {
-		t.Fatal("a new pinned height must trigger a refetch")
-	}
-
-	cache.store(11, validators.WarpSet{TotalWeight: 7})
-	if cache.needsRefetch(11) {
-		t.Fatal("cache must track the latest stored height")
-	}
-	if cache.needsRefetch(10) {
-		// A height going backwards is still a change and must refetch.
-		return
-	}
-	t.Fatal("a different (earlier) height must trigger a refetch")
 }
 
 func TestWSEndpoint(t *testing.T) {
