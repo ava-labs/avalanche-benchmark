@@ -15,8 +15,8 @@ import {
 /// real encode -> Warp -> decode round trip.
 contract WarpMock is IWarpMessenger {
     bytes public lastPayload;
-    WarpMessage internal verifiedMsg;
-    bool internal verifiedOk;
+    mapping(uint32 => WarpMessage) internal verifiedMsg;
+    mapping(uint32 => bool) internal verifiedOk;
 
     function sendWarpMessage(
         bytes calldata payload
@@ -26,9 +26,9 @@ contract WarpMock is IWarpMessenger {
     }
 
     function getVerifiedWarpMessage(
-        uint32
+        uint32 index
     ) external view returns (WarpMessage memory, bool) {
-        return (verifiedMsg, verifiedOk);
+        return (verifiedMsg[index], verifiedOk[index]);
     }
 
     function getVerifiedWarpBlockHash(
@@ -43,8 +43,12 @@ contract WarpMock is IWarpMessenger {
     }
 
     function setVerified(WarpMessage memory m, bool ok) external {
-        verifiedMsg = m;
-        verifiedOk = ok;
+        setVerifiedAt(0, m, ok);
+    }
+
+    function setVerifiedAt(uint32 index, WarpMessage memory m, bool ok) public {
+        verifiedMsg[index] = m;
+        verifiedOk[index] = ok;
     }
 }
 
@@ -194,13 +198,88 @@ contract PriceFeedTest is Test {
         assertEq(updatedAt, 1_000);
     }
 
+    bytes32 constant ASSET_B = keccak256("BTC/USD");
+    bytes32 constant ASSET_C = keccak256("ETH/USD");
+
+    event PriceReceived(bytes32 indexed assetId, uint256 price, uint256 updatedAt);
+    event PriceSkipped(bytes32 indexed assetId, uint256 seq);
+
+    function test_batchRoundTrip() public {
+        warp.setVerifiedAt(0, _msg(ASSET, 100, 1_000, 1), true);
+        warp.setVerifiedAt(1, _msg(ASSET_B, 200, 1_000, 1), true);
+        warp.setVerifiedAt(2, _msg(ASSET_C, 300, 1_000, 1), true);
+
+        rcv.receivePrices(3);
+
+        (uint256 pa, ) = rcv.latestPrice(ASSET);
+        (uint256 pb, ) = rcv.latestPrice(ASSET_B);
+        (uint256 pc, ) = rcv.latestPrice(ASSET_C);
+        assertEq(pa, 100);
+        assertEq(pb, 200);
+        assertEq(pc, 300);
+    }
+
+    function test_batchSkipsStaleMidBatch() public {
+        // Seed ASSET at seq 5.
+        _deliver(500, 900, 5);
+
+        // Batch: fresh B, stale ASSET dup (seq 5), fresh C.
+        warp.setVerifiedAt(0, _msg(ASSET_B, 200, 1_000, 1), true);
+        warp.setVerifiedAt(1, _msg(ASSET, 999, 1_000, 5), true);
+        warp.setVerifiedAt(2, _msg(ASSET_C, 300, 1_000, 1), true);
+
+        vm.expectEmit(true, false, false, true);
+        emit PriceSkipped(ASSET, 5);
+        rcv.receivePrices(3);
+
+        // The stale duplicate did not overwrite ASSET; B and C landed.
+        (uint256 pa, ) = rcv.latestPrice(ASSET);
+        (uint256 pb, ) = rcv.latestPrice(ASSET_B);
+        (uint256 pc, ) = rcv.latestPrice(ASSET_C);
+        assertEq(pa, 500); // unchanged
+        assertEq(pb, 200);
+        assertEq(pc, 300);
+    }
+
+    function test_batchWrongOriginRevertsWholeBatch() public {
+        warp.setVerifiedAt(0, _msg(ASSET, 100, 1_000, 1), true);
+        // Second entry is verified but from the wrong sender: fail loud.
+        WarpMessage memory bad = _msg(ASSET_B, 200, 1_000, 1);
+        bad.originSenderAddress = address(0xBAD);
+        warp.setVerifiedAt(1, bad, true);
+
+        vm.expectRevert("wrong origin sender");
+        rcv.receivePrices(2);
+
+        // Nothing persisted — the whole batch reverted.
+        (uint256 pa, ) = rcv.latestPrice(ASSET);
+        assertEq(pa, 0);
+    }
+
+    function test_batchCountBounds() public {
+        vm.expectRevert("bad count");
+        rcv.receivePrices(0);
+
+        vm.expectRevert("bad count");
+        rcv.receivePrices(33);
+    }
+
+    function _msg(
+        bytes32 assetId,
+        uint256 price,
+        uint256 ts,
+        uint256 seq
+    ) internal view returns (WarpMessage memory) {
+        return
+            WarpMessage({
+                sourceChainID: sourceChainID,
+                originSenderAddress: address(agg),
+                payload: abi.encode(assetId, price, ts, seq)
+            });
+    }
+
     function _deliver(uint256 price, uint256 ts, uint256 seq) internal {
-        WarpMessage memory m = WarpMessage({
-            sourceChainID: sourceChainID,
-            originSenderAddress: address(agg),
-            payload: abi.encode(ASSET, price, ts, seq)
-        });
-        warp.setVerified(m, true);
+        warp.setVerified(_msg(ASSET, price, ts, seq), true);
         rcv.receivePrice(0);
     }
 }

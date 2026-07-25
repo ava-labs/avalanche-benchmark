@@ -38,9 +38,47 @@ contract PriceFeedReceiver {
         uint256 updatedAt
     );
 
+    // Emitted when a batch entry is a verified-but-not-fresher duplicate; it is
+    // skipped rather than reverting so the rest of the batch still lands.
+    event PriceSkipped(bytes32 indexed assetId, uint256 seq);
+
     function receivePrice(uint32 messageIndex) external {
+        (bytes32 assetId, uint256 price, uint256 updatedAt, uint256 seq) =
+            _verifiedPayload(messageIndex);
+
+        // Single delivery reverts on a stale seq (unchanged compat behaviour).
+        require(seq > prices[assetId].seq, "stale update");
+        _store(assetId, price, updatedAt, seq);
+    }
+
+    function receivePrices(uint32 count) external {
+        require(count > 0 && count <= 32, "bad count");
+
+        for (uint32 i = 0; i < count; i++) {
+            (bytes32 assetId, uint256 price, uint256 updatedAt, uint256 seq) =
+                _verifiedPayload(i);
+
+            // A stale/duplicate entry inside a batch is skipped, not reverted,
+            // so one replayed message can't burn the whole batch.
+            if (seq <= prices[assetId].seq) {
+                emit PriceSkipped(assetId, seq);
+                continue;
+            }
+            _store(assetId, price, updatedAt, seq);
+        }
+    }
+
+    // Reads and validates one verified Warp message. A verified message from the
+    // wrong place means the relay delivered garbage, so these still revert.
+    function _verifiedPayload(
+        uint32 index
+    )
+        internal
+        view
+        returns (bytes32 assetId, uint256 price, uint256 updatedAt, uint256 seq)
+    {
         (WarpMessage memory message, bool valid) = WARP.getVerifiedWarpMessage(
-            messageIndex
+            index
         );
         require(valid, "invalid warp message");
         require(message.sourceChainID == sourceChainID, "wrong source chain");
@@ -50,13 +88,20 @@ contract PriceFeedReceiver {
         );
 
         // Payload is EXACTLY four 32-byte words: assetId, price, updatedAt, seq.
-        (bytes32 assetId, uint256 price, uint256 updatedAt, uint256 seq) = abi
-            .decode(message.payload, (bytes32, uint256, uint256, uint256));
+        (assetId, price, updatedAt, seq) = abi.decode(
+            message.payload,
+            (bytes32, uint256, uint256, uint256)
+        );
+    }
 
+    function _store(
+        bytes32 assetId,
+        uint256 price,
+        uint256 updatedAt,
+        uint256 seq
+    ) internal {
         // Freshness is by sequence, not timestamp, so multiple updates per
         // second per asset are accepted. updatedAt is kept only for display.
-        require(seq > prices[assetId].seq, "stale update");
-
         prices[assetId] = Price(price, updatedAt, seq);
         emit PriceReceived(assetId, price, updatedAt);
     }

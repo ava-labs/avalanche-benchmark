@@ -41,7 +41,7 @@ Checked in so the Go build never needs `solc`/`forge`:
   `0x`-prefixed line. Bake into the oracle chain's genesis alloc.
 - `artifacts/PriceFeedReceiver.runtime.hex` — same, for the main L1.
 - `artifacts/selectors.json` — 4-byte selectors for `submitPrice`,
-  `receivePrice`, `latestPrice`.
+  `receivePrice`, `receivePrices` (batched, up to 32/call), `latestPrice`.
 
 ## Regenerate
 
