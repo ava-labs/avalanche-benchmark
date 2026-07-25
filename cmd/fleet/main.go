@@ -1,12 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/pchainsource"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/fleet"
 )
 
 func main() {
@@ -23,17 +23,22 @@ func run() error {
 	}
 	program := filepath.Base(os.Args[0])
 	switch {
-	case len(os.Args) == 4 && os.Args[1] == "pchain" && os.Args[2] == "start":
-		environment, err := config.LoadNetworkEnvironment(filepath.Join(root, ".env"))
-		if err != nil {
-			return err
-		}
-		return pchainsource.New(root, environment.Network, os.Stdout).Start(os.Args[3])
+	case len(os.Args) == 3 && os.Args[1] == "deploy":
+		return fleet.NewDeployer(root, os.Stdout).Deploy(context.Background(), os.Args[2])
+	case len(os.Args) == 3 && os.Args[1] == "pchain" && os.Args[2] == "archive":
+		return fleet.NewDeployer(root, os.Stdout).ArchivePChain(context.Background())
+	case len(os.Args) == 3 && os.Args[1] == "pchain" && os.Args[2] == "follow":
+		return fleet.NewDeployer(root, os.Stdout).FollowPChain(context.Background())
 	default:
 		return fmt.Errorf("usage:\n%s", usage(program))
 	}
 }
 
 func usage(program string) string {
-	return fmt.Sprintf("  %s pchain start <following|frozen>", program)
+	return fmt.Sprintf(
+		"  %s deploy <frozen|follow>\n  %s pchain archive\n  %s pchain follow",
+		program,
+		program,
+		program,
+	)
 }

@@ -19,6 +19,7 @@ type Role string
 const (
 	RoleValidator       Role = "validator"
 	RoleRPC             Role = "rpc"
+	RolePChain          Role = "pchain"
 	RoleArchive         Role = "archive"
 	RoleOracleValidator Role = "oracle-validator"
 	RoleOracleRPC       Role = "oracle-rpc"
@@ -42,6 +43,12 @@ type Environment struct {
 type NetworkEnvironment struct {
 	Network   string
 	PChainAPI string
+}
+
+type FleetEnvironment struct {
+	Network    string
+	SSHUser    string
+	SSHKeyPath string
 }
 
 type Config struct {
@@ -79,22 +86,8 @@ func LoadEnvironment(path string) (Environment, error) {
 		return Environment{}, err
 	}
 
-	allowed := map[string]struct{}{
-		"NETWORK":             {},
-		"PCHAIN_API":          {},
-		"FUNDING_PRIVATE_KEY": {},
-		"SSH_USER":            {},
-		"SSH_KEY_PATH":        {},
-	}
-	var unknown []string
-	for key := range values {
-		if _, ok := allowed[key]; !ok {
-			unknown = append(unknown, key)
-		}
-	}
-	if len(unknown) > 0 {
-		sort.Strings(unknown)
-		return Environment{}, fmt.Errorf("%s: unknown field(s): %s", path, strings.Join(unknown, ", "))
+	if err := validateEnvironmentFields(path, values); err != nil {
+		return Environment{}, err
 	}
 
 	required := func(key string) (string, error) {
@@ -130,6 +123,68 @@ func LoadEnvironment(path string) (Environment, error) {
 		FundingPrivateKey: fundingPrivateKey,
 		SSHUser:           strings.TrimSpace(values["SSH_USER"]),
 		SSHKeyPath:        strings.TrimSpace(values["SSH_KEY_PATH"]),
+	}, nil
+}
+
+func validateEnvironmentFields(path string, values map[string]string) error {
+	allowed := map[string]struct{}{
+		"NETWORK":             {},
+		"PCHAIN_API":          {},
+		"FUNDING_PRIVATE_KEY": {},
+		"SSH_USER":            {},
+		"SSH_KEY_PATH":        {},
+	}
+	var unknown []string
+	for key := range values {
+		if _, ok := allowed[key]; !ok {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return fmt.Errorf("%s: unknown field(s): %s", path, strings.Join(unknown, ", "))
+	}
+	return nil
+}
+
+// LoadFleetEnvironment reads only deployment settings. Fleet deployment must
+// not require the funding private key used by l1.
+func LoadFleetEnvironment(path string) (FleetEnvironment, error) {
+	values, err := godotenv.Read(path)
+	if err != nil {
+		return FleetEnvironment{}, fmt.Errorf("read required configuration %s: %w", path, err)
+	}
+	if err := validateEnvironmentFields(path, values); err != nil {
+		return FleetEnvironment{}, err
+	}
+	networkEnvironment, err := parseNetworkEnvironment(path, values)
+	if err != nil {
+		return FleetEnvironment{}, err
+	}
+	required := func(key string) (string, error) {
+		value := strings.TrimSpace(values[key])
+		if value == "" {
+			return "", fmt.Errorf("%s: required field %s is not provided", path, key)
+		}
+		return value, nil
+	}
+	sshUser, err := required("SSH_USER")
+	if err != nil {
+		return FleetEnvironment{}, err
+	}
+	sshKeyPath, err := required("SSH_KEY_PATH")
+	if err != nil {
+		return FleetEnvironment{}, err
+	}
+	if info, err := os.Stat(sshKeyPath); err != nil {
+		return FleetEnvironment{}, fmt.Errorf("%s: SSH_KEY_PATH %s is unavailable: %w", path, sshKeyPath, err)
+	} else if info.IsDir() {
+		return FleetEnvironment{}, fmt.Errorf("%s: SSH_KEY_PATH %s is a directory", path, sshKeyPath)
+	}
+	return FleetEnvironment{
+		Network:    networkEnvironment.Network,
+		SSHUser:    sshUser,
+		SSHKeyPath: sshKeyPath,
 	}, nil
 }
 
@@ -184,7 +239,7 @@ func LoadNodes(path string) ([]Node, error) {
 			continue
 		}
 		if len(fields) < 3 {
-			return nil, fmt.Errorf("%s:%d: expected <node-number> host=<address> role=validator|rpc|archive|oracle-validator|oracle-rpc [dc=<tag>]", path, lineNumber)
+			return nil, fmt.Errorf("%s:%d: expected <node-number> host=<address> role=validator|rpc|pchain|archive|oracle-validator|oracle-rpc [dc=<tag>]", path, lineNumber)
 		}
 
 		number, err := strconv.Atoi(fields[0])
@@ -217,9 +272,9 @@ func LoadNodes(path string) ([]Node, error) {
 		}
 		role := Role(values["role"])
 		switch role {
-		case RoleValidator, RoleRPC, RoleArchive, RoleOracleValidator, RoleOracleRPC:
+		case RoleValidator, RoleRPC, RolePChain, RoleArchive, RoleOracleValidator, RoleOracleRPC:
 		default:
-			return nil, fmt.Errorf("%s:%d: role must be validator, rpc, archive, oracle-validator, or oracle-rpc, got %q", path, lineNumber, values["role"])
+			return nil, fmt.Errorf("%s:%d: role must be validator, rpc, pchain, archive, oracle-validator, or oracle-rpc, got %q", path, lineNumber, values["role"])
 		}
 		nodes = append(nodes, Node{Number: number, Host: host, Role: role, DC: values["dc"]})
 	}
@@ -229,6 +284,7 @@ func LoadNodes(path string) ([]Node, error) {
 
 	validatorCount := 0
 	rpcCount := 0
+	pchainCount := 0
 	archiveCount := 0
 	oracleValidatorCount := 0
 	oracleRPCCount := 0
@@ -238,6 +294,8 @@ func LoadNodes(path string) ([]Node, error) {
 			validatorCount++
 		case RoleRPC:
 			rpcCount++
+		case RolePChain:
+			pchainCount++
 		case RoleArchive:
 			archiveCount++
 		case RoleOracleValidator:
@@ -251,6 +309,9 @@ func LoadNodes(path string) ([]Node, error) {
 	}
 	if rpcCount < 1 {
 		return nil, fmt.Errorf("%s: expected at least 1 rpc node, found %d", path, rpcCount)
+	}
+	if pchainCount != 1 {
+		return nil, fmt.Errorf("%s: expected exactly 1 P-chain node, found %d", path, pchainCount)
 	}
 	// A single archive cannot cross-check its own answers and leaves no
 	// replica while it re-executes from genesis after a loss.

@@ -138,6 +138,7 @@ func (p Public) Validate() error {
 	seenNodeIDs := make(map[ids.NodeID]struct{}, len(p.Nodes)+len(p.Managers))
 	validatorCount := 0
 	rpcCount := 0
+	pchainCount := 0
 	archiveCount := 0
 	oracleValidatorCount := 0
 	oracleRPCCount := 0
@@ -187,7 +188,7 @@ func (p Public) Validate() error {
 				return fmt.Errorf("oracle validator %s signer: %w", node.Identity, err)
 			}
 			oracleValidatorCount++
-		case config.RoleRPC, config.RoleArchive, config.RoleOracleRPC:
+		case config.RoleRPC, config.RoleArchive, config.RoleOracleRPC, config.RolePChain:
 			if node.Weight != 0 {
 				return fmt.Errorf("%s %s weight must be 0, got %d", node.Role, node.Identity, node.Weight)
 			}
@@ -201,9 +202,11 @@ func (p Public) Validate() error {
 				archiveCount++
 			case config.RoleOracleRPC:
 				oracleRPCCount++
+			case config.RolePChain:
+				pchainCount++
 			}
 		default:
-			return fmt.Errorf("node %s role must be validator, rpc, archive, oracle-validator, or oracle-rpc, got %q", node.Identity, node.Role)
+			return fmt.Errorf("node %s role must be validator, rpc, pchain, archive, oracle-validator, or oracle-rpc, got %q", node.Identity, node.Role)
 		}
 	}
 	if validatorCount < 4 {
@@ -211,6 +214,9 @@ func (p Public) Validate() error {
 	}
 	if rpcCount < 1 {
 		return fmt.Errorf("at least 1 rpc is required")
+	}
+	if pchainCount != 1 {
+		return fmt.Errorf("exactly 1 P-chain node is required, got %d", pchainCount)
 	}
 	if archiveCount == 1 {
 		return fmt.Errorf("0 or at least 2 archive nodes are required, got 1")

@@ -93,6 +93,7 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 			{Number: 3, Host: "v3", Role: config.RoleValidator},
 			{Number: 4, Host: "v4", Role: config.RoleValidator},
 			{Number: 5, Host: "rpc", Role: config.RoleRPC},
+			{Number: 6, Host: "pchain", Role: config.RolePChain},
 		},
 	}
 	wallet := &fakeWallet{}
@@ -213,9 +214,10 @@ func TestCreateWithOracleRunsManagerOracleMain(t *testing.T) {
 			{Number: 3, Host: "v3", Role: config.RoleValidator},
 			{Number: 4, Host: "v4", Role: config.RoleValidator},
 			{Number: 5, Host: "rpc", Role: config.RoleRPC},
-			{Number: 6, Host: "o1", Role: config.RoleOracleValidator},
-			{Number: 7, Host: "o2", Role: config.RoleOracleValidator},
-			{Number: 8, Host: "rpc", Role: config.RoleOracleRPC},
+			{Number: 6, Host: "pchain", Role: config.RolePChain},
+			{Number: 7, Host: "o1", Role: config.RoleOracleValidator},
+			{Number: 8, Host: "o2", Role: config.RoleOracleValidator},
+			{Number: 9, Host: "rpc", Role: config.RoleOracleRPC},
 		},
 	}
 	wallet := &fakeWallet{}
@@ -324,6 +326,7 @@ func TestRequiredFreshCreateBalanceIncludesAllRegistrationsAndFeeReserve(t *test
 			{Role: config.RoleValidator},
 			{Role: config.RoleValidator},
 			{Role: config.RoleRPC},
+			{Role: config.RolePChain},
 		},
 		Managers: make([]PublicManager, 4),
 	}

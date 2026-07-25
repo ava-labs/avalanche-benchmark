@@ -19,6 +19,7 @@ func TestGenerateWritesPrivateBundleAndPublicHandover(t *testing.T) {
 		{Number: 3, Role: config.RoleValidator},
 		{Number: 4, Role: config.RoleValidator},
 		{Number: 5, Role: config.RoleRPC},
+		{Number: 6, Role: config.RolePChain},
 	}
 	output := filepath.Join(t.TempDir(), "deployment")
 	result, err := Generate(output, nodes, 1)
@@ -34,7 +35,7 @@ func TestGenerateWritesPrivateBundleAndPublicHandover(t *testing.T) {
 	if digest != result.Digest {
 		t.Fatalf("digest changed across handover: generated %s, loaded %s", result.Digest, digest)
 	}
-	if len(loaded.Nodes) != 5 || len(loaded.Managers) != 1 {
+	if len(loaded.Nodes) != 6 || len(loaded.Managers) != 1 {
 		t.Fatalf("unexpected public identity counts: %+v", loaded)
 	}
 	if loaded.Nodes[4].Signer != nil || loaded.Nodes[4].Weight != 0 {
@@ -42,6 +43,12 @@ func TestGenerateWritesPrivateBundleAndPublicHandover(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(output, "identities", "e", "signer.key")); !os.IsNotExist(err) {
 		t.Fatalf("RPC signer key must not exist, got %v", err)
+	}
+	if loaded.Nodes[5].Signer != nil || loaded.Nodes[5].Weight != 0 {
+		t.Fatal("P-chain node must have neither signer nor weight")
+	}
+	if _, err := os.Stat(filepath.Join(output, "identities", "f", "signer.key")); !os.IsNotExist(err) {
+		t.Fatalf("P-chain node signer key must not exist, got %v", err)
 	}
 
 	genesisKeyPath := filepath.Join(output, "genesis-funds.key")
@@ -85,11 +92,12 @@ func TestGenerateOracleIdentitiesAndFeederKey(t *testing.T) {
 		{Number: 3, Role: config.RoleValidator},
 		{Number: 4, Role: config.RoleValidator},
 		{Number: 5, Role: config.RoleRPC},
-		{Number: 6, Role: config.RoleArchive},
+		{Number: 6, Role: config.RolePChain},
 		{Number: 7, Role: config.RoleArchive},
-		{Number: 8, Role: config.RoleOracleValidator},
+		{Number: 8, Role: config.RoleArchive},
 		{Number: 9, Role: config.RoleOracleValidator},
-		{Number: 10, Role: config.RoleOracleRPC},
+		{Number: 10, Role: config.RoleOracleValidator},
+		{Number: 11, Role: config.RoleOracleRPC},
 	}
 	output := filepath.Join(t.TempDir(), "deployment")
 	if _, err := Generate(output, nodes, 1); err != nil {
@@ -100,18 +108,18 @@ func TestGenerateOracleIdentitiesAndFeederKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Identity letters follow inventory order: h and i are the oracle
-	// validators, f and g the archives, j the oracle rpc.
-	oracleValidator := loaded.Nodes[7]
+	// Identity letters follow inventory order: i and j are the oracle
+	// validators, f the P-chain node, g and h the archives, k the oracle rpc.
+	oracleValidator := loaded.Nodes[8]
 	if oracleValidator.Role != config.RoleOracleValidator || oracleValidator.Signer == nil || oracleValidator.Weight != creation.OracleWeight {
 		t.Fatalf("unexpected oracle validator: %+v", oracleValidator)
 	}
-	for _, index := range []int{5, 6, 9} {
+	for _, index := range []int{5, 6, 7, 10} {
 		if loaded.Nodes[index].Signer != nil || loaded.Nodes[index].Weight != 0 {
 			t.Fatalf("node %s must have neither signer nor weight", loaded.Nodes[index].Identity)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(output, "identities", "h", "signer.key")); err != nil {
+	if _, err := os.Stat(filepath.Join(output, "identities", "i", "signer.key")); err != nil {
 		t.Fatalf("oracle validator BLS key must exist: %v", err)
 	}
 

@@ -23,6 +23,7 @@ func TestLoadPublicRejectsPolicyDriftAndUnknownFields(t *testing.T) {
 		{Number: 3, Role: config.RoleValidator},
 		{Number: 4, Role: config.RoleValidator},
 		{Number: 5, Role: config.RoleRPC},
+		{Number: 6, Role: config.RolePChain},
 	}
 	generated, err := identity.Generate(private, nodes, 1)
 	if err != nil {

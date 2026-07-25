@@ -11,26 +11,69 @@ A performance-under-failover benchmark toolset for Avalanche L1s in ISOLATED net
 - This release's whole point is BOTH P-chain modes in one toolset with an in-place transition. Motivation: releases already exist for the frozen mode (key-swap failover) and the live mode (weight-change failover) SEPARATELY; a third single-mode release would be redundant. The novel deliverable is the frozen-to-proxied transition.
 - Deliverable form: primitives + a runbook + dashboards. NO formal per-run report artifact (decided against a scores file): the dashboards and the drills ARE the deliverable; this is a validation/demo kit. We ship what to trigger, the operator owns automation and triggers.
 
-## The two P-chain modes and the source (the central idea)
+## P-chain node
 
-There is no separate deployment-mode variable or lifecycle manager. One P-chain source process runs in the foreground on control, and its required start argument selects the bootstrap configuration:
+The inventory contains exactly one `pchain` role. It is a real AvalancheGo
+process with its own numbered machine slot, stable TLS identity, P-chain
+database, ports, configuration, logs, and systemd unit. It is never registered
+on an L1 and has no BLS signer or proof of possession.
 
-- **Frozen P-chain**: both source bootstrap lists are explicitly empty. The source serves its preserved frontier but accepts no newer P-chain blocks.
-- **Following P-chain**: the source runs `--p-chain-follow-only=true` using the packaged AvalancheGo binary's built-in network bootstrappers.
-
-Always true in both modes:
-- Every start reuses the same database and NodeID.
-- The source and fleet nodes run `--partial-sync-primary-network`; C and X are never synced.
-- Validators point at the fleet's RPC nodes. RPC nodes point at the source's stable `(IP, NodeID)`.
-- `fleet pchain start <following|frozen>` is the entire source interface. It replaces itself with AvalancheGo and remains in the foreground.
+Initial `fleet deploy <frozen|follow>` requires the operator to choose the
+P-chain node's source explicitly. Both modes use follow-only mode. `follow`
+omits bootstrap fields so AvalancheGo reads its built-in network peers.
+`frozen` requires a local `pchain.tar.gz` containing one top-level `db/`
+directory and renders explicit-empty bootstrap lists. Frozen deploy validates
+the local archive before any remote mutation. With the service stopped, it
+restores only when the remote database is empty: extraction and nonempty `db/`
+validation happen in a temporary sibling location, followed by an atomic rename
+into place. Every rerun discards interrupted staging. Once a nonempty database
+exists, it is authoritative and preserved. Deploy starts the P-chain node and
+does not touch any validator or RPC service until its local API contains the
+complete management and main validator sets recorded by `public.json` and
+`network.env`. Therefore a preserved but half-synced database remains frozen
+and fails at this acceptance gate. The operator either resumes following until
+the state is ready, or stops its service and deliberately removes the remote
+database before rerunning frozen deploy to seed it from the archive. There is no
+reset command or completion marker. Every validator and RPC then uses the
+P-chain node's inventory address and generated NodeID as its sole
+primary-network bootstrap.
 
 Motivations:
-- The client control host already has internet. Therefore initial snapshot shipment, archive import, USB tooling, reset tooling, and a second P-chain process do not need to exist.
-- Initial installation and every later refresh use the same sequence: start following until the required state is accepted, stop it, then start frozen.
-- Following omits both bootstrap fields so AvalancheGo reads its embedded `genesis/bootstrappers.json`. The benchmark never copies or pins that list, so updating the packaged AvalancheGo binary also updates the defaults. Freeze must instead render both lists explicitly empty.
-- The benchmark uses exactly one source on control. Its stable identity lets every downstream node keep the same bootstrap configuration through every following/frozen transition.
-- `fleet` does not daemonize, supervise, restart, or report status. Foreground AvalancheGo owns logs, signals, and exit status.
-- Already-running fleet nodes continue while the source is stopped. A fleet node starting during that gap cannot pass its configured bootstrap-beacon gate until the source returns, even with an existing local P-chain database.
+- The P-chain state owner is explicit in inventory and receives the same
+  systemd, identity, co-location, and deployment treatment as every other
+  long-running node.
+- The P-chain node's NodeID is derived from generated identity state. It is not copied
+  into `.env` or another registry.
+- Waiting on the P-chain node's local validator view proves that the exact
+  P-chain state needed by the L1 is present before L1 nodes start.
+- Initial deploy has two explicit modes because generic users may need to sync
+  from the public network while isolated delivery starts from a certified
+  archive. Neither is a safe universal default, so omitting the mode is an
+  error. This required decision is different from optional deployment
+  selectors, which were removed because they only added mental load.
+- `fleet pchain follow` is both the first-run initializer and the later mode
+  transition. It reconciles only the P-chain node's package, systemd unit,
+  identity, and following configuration, starts it, verifies the service is
+  running, and returns. It never starts or changes a validator or RPC node.
+  Catch-up is observable through `fleet status`; the future `fleet pchain
+  freeze` command owns the readiness gate. On an existing deployment, follow
+  restores AvalancheGo's embedded upstreams and restarts only the P-chain node.
+- `fleet pchain freeze` renders empty upstream bootstrap lists and restarts only
+  the P-chain node. Downstream configurations never change. Reboots retain the
+  last rendered mode. These transitions support the frozen-to-following
+  benchmark and later P-chain state visibility, including ICM-related state.
+- `fleet pchain archive` is the only archive producer. It requires the managed
+  P-chain service to be running, stops it, creates a consistent archive of its
+  `db/`, restarts it in the unchanged mode before downloading, validates the
+  download, and atomically publishes `./pchain.tar.gz`. It refuses to overwrite
+  an existing local archive. Owning the stop and restart avoids unsafe copies
+  from arbitrary running database directories.
+- Starting frozen from an empty fleet is deliberately three explicit steps:
+  `fleet pchain follow`, `fleet pchain archive`, then `fleet deploy frozen`.
+  The first step obtains the newly created chain state without starting the L1
+  fleet, the second produces the portable artifact, and the final step freezes
+  the P-chain node before any validator or RPC starts. `fleet deploy follow` is
+  not a substitute because it starts the complete L1 fleet in following mode.
 
 ## Creation
 
@@ -47,7 +90,7 @@ Decisions and motivations:
 - Making the main L1 self-managed was DROPPED. Motivation: in a DC failure the high-stake nodes are down; if they are also the signing authority you cannot sign the weight reassignment that recovers from their loss. The separate management L1 is self-managed through its own management chain, while its signing authority remains independent of the fleet that fails.
 - Signing is ALWAYS key-only and off-node: the tool holds BLS keys and signs locally, never asks a node to sign. Same motivation: nodes may be dead exactly when signing is needed.
 - C-Chain PoA validator-manager contract DROPPED from this toolset. Motivation: the benchmark measures consensus under load, not a Solidity manager; it is client-specific surface. If a client needs it, it is an adapter later (YAGNI).
-- Initial weights are baked DIRECTLY into `public.json` by `keygen`: first 3 validators by ascending node number 100000, all remaining validators 1000, managers 1000. `create` copies those values verbatim into the conversion transactions. Motivation: one generated handover artifact completely defines the validator sets, and the creation machine cannot drift by independently interpreting `nodes.ini`.
+- Initial weights are baked DIRECTLY into `public.json` by `keygen`: up to the first 3 validators by ascending node number receive 100000, all remaining validators receive 1000, and managers receive 1000. A one-validator chain therefore starts with its only validator active. `create` copies those values verbatim into the conversion transactions. Motivation: one generated handover artifact completely defines the validator sets, and the creation machine cannot drift by independently interpreting `nodes.ini`.
 - Weight-change certification at create DROPPED (the old flow registered everyone at 1 and raised 1,2,3 via the committee purely to prove the path). Motivation: the proxied mode exercises weight changing for real; a create-time proof is redundant.
 - `keygen` always generates every validator, RPC, and manager identity fresh. It never loads or reuses an existing identity and requires `deployment/` to be absent. A failed partial creation is abandoned; `destroy` reclaims any converted balances and removes its output. No resume path.
 - `keygen` reads `nodes.ini` only. It never reads `.env` and requires no network access. Committee size is a `keygen` argument, not environment state: omit it for 1 or pass 4 for one-signer-loss tolerance.
@@ -60,20 +103,21 @@ Decisions and motivations:
 - Fail-fast is a feature. Commands validate all required configuration and prior-step artifacts before performing work. A failure names the missing field, file, or prerequisite step. The tool never guesses paths, falls back to legacy variables, auto-discovers omitted configuration, silently repairs state, or continues with partial input. A command may generate only the artifacts that its documented step owns, and it reports each generated path and on-chain transaction.
 - Every registered main and committee validator starts with a 0.1 AVAX continuous-fee balance. `l1 topup <days>` reads the current P-chain fee rate and raises every registered balance to at least that many days of runway. Validators already above the target are left unchanged.
 - `l1 destroy` accepts complete or partial creation state, disables every converted main validator first and management validator last, and reclaims whichever balances exist. It verifies the funding key controls deactivation and receives remaining balances before submitting anything. If any operation fails, `deployment/` remains intact for an explicit rerun. Only after every balance is reclaimed does `destroy` remove `deployment/`, including its obsolete private keys and transaction state. An already-destroyed leftover directory is removed too. Creation never resumes. There is no local destroyed flag: height-consistent P-Chain state determines whether more balances remain, while presence of `deployment/` determines whether local creation state exists. Other lifecycle commands remain strict and fail on incomplete creation. `l1 address` remains available before creation because an imported key must be funded first.
-- Creation is not freezing. A chain may be pre-created anywhere with P-chain access. The deployment control source later follows beyond both conversions and freezes that accepted state in place.
+- Creation is not freezing. A chain may be pre-created anywhere with P-chain access. The inventory P-chain node can receive a certified archive containing both conversions or follow the public network beyond them.
 - The implementation deliberately serializes `public.json` during `keygen` and reloads it during `create`, even when both commands run on one machine. This continuously tests the exact public-only handover used when the two commands run in different trust domains.
 
 ## Inventory and naming
 
 ini-style inventory; the shape is the user's, we impose almost nothing ("freestyle"). We deliberately do NOT provide a "do good" binary that decides swaps or weights for the user: primitives, not policy.
 
-- Machines and nodes are NUMBERS. Node identities are immutable lowercase letters (`a`, `b`, ...), stored under `deployment/identities/<letter>`. Manager identities use a separate lowercase-letter namespace under `deployment/manager/<letter>`. Motivation: key swapping inherently makes identity-to-machine placement dynamic, so using numbers for both makes identity `1` and machine `1` dangerously ambiguous as soon as they diverge. Different namespaces expose the distinction instead of pretending the mapping does not exist. The mapping is observed from stable NodeIDs and current placement, not maintained as a second user-authored registry.
-- role is a property of the NODE: validator | rpc. The ONE functional field.
-- Validators are registered in ascending node-number order. The first three in that order receive weight 100000; all remaining validators receive weight 1000.
-- Inventory requires at least four validators and at least one RPC. Three high validators plus at least one low validator are the minimum useful failover shape; an RPC is required for stable ingress and bootstrap anchoring.
-- `keygen` freshly generates TLS and BLS staking keys for validators, stable TLS identities without BLS signer keys for RPC nodes, and TLS+BLS identities for the manager committee. No identity is reused between generation attempts.
-- Many nodes may co-host on one machine, but the unified experience default is one blockchain node per physical machine, permanently, even under key swaps.
-- dc= is an optional freeform tag. If omitted, it remains visibly unset; the tool does not invent one. Display and selector ONLY (fleet status grouping, batch verbs like `down dc=A` to simulate a whole-DC failure, per-DC dashboard panels are a nice-to-have). Nothing functional may ever depend on it.
+- Machines and nodes are NUMBERS. Node identities are immutable lowercase letters (`a`, `b`, ...), stored under `deployment/identities/<letter>`. Manager identities use a separate lowercase-letter namespace under `deployment/manager/<letter>`. Motivation: key swapping inherently makes identity-to-machine placement dynamic, so using numbers for both makes identity `1` and machine `1` dangerously ambiguous as soon as they diverge. Different namespaces expose the distinction instead of pretending the mapping does not exist.
+- `keygen` writes the initial machine-to-identity bijection to `deployment/placement.json`. It is generated state, never user-authored. `deploy` and `start` read it to decide which key belongs on each node; `place` is the only command that changes it. Motivation: a key swap makes placement dynamic, so control needs one explicit source of truth. Inferring desired placement from running processes would make stopped nodes ambiguous and turn remote drift into control-side intent.
+- role is a property of the NODE: validator | rpc | pchain. The ONE functional field. Exactly one P-chain node is required.
+- Validators are registered in ascending node-number order. Up to the first three in that order receive weight 100000; all remaining validators receive weight 1000.
+- Two inventory shapes are valid. A one-validator development deployment may contain exactly one validator and no RPC. A failover deployment requires at least four validators and at least one RPC. Counts of two or three validators are refused because they are neither the minimal single-node setup nor the benchmark's three-active-plus-spare failover shape.
+- `keygen` freshly generates TLS and BLS staking keys for validators, stable TLS identities without BLS signer keys for RPC and P-chain nodes, and TLS+BLS identities for the manager committee. No identity is reused between generation attempts.
+- Many logical nodes, including the P-chain node, may share one physical host and IP. Nodes on the same host are ordered by node number. The first uses HTTP 9650 and staking 9651; each additional node adds 2 to both ports (9652/9653, 9654/9655, and so on). Every co-located node has its own data directory, logs, configuration, identity, and systemd unit. The normal failover topology still defaults to one blockchain node per physical machine, permanently, even under key swaps.
+- dc= is an optional freeform tag. If omitted, it remains visibly unset; the tool does not invent one. Display and selector ONLY (`fleet status` grouping and selectors such as `dc=A`). Nothing functional may ever depend on it.
 - Weights are NOT inventory: on-chain weight is the sole truth.
 - `deployment/public.json` is the generated public handover and identity registry. It is derived once from the private keys, never user-authored. Before creation it supplies NodeIDs, PoPs, and initial weights. After creation, live weight and active state still come only from the P-chain.
 - The public package contains no private keys or generated deployment secrets. The populated `.env`, committee keys, validator staking keys, and generated deployment state are transferred separately as a private handover bundle.
@@ -81,31 +125,33 @@ ini-style inventory; the shape is the user's, we impose almost nothing ("freesty
 
 ## The two primitives
 
-- `place <identity> <node>`: set a lettered validator identity's location on a numbered node, for example `place a 5`. It is a SWAP, not a drop: whatever identity currently sits on the target node rides back to the moved identity's old node. Motivation: we always have exactly as many identities as nodes; a swap preserves that bijection automatically (nothing orphaned, nothing duplicated), which makes equivocation STRUCTURALLY inexpressible rather than merely checked. Executed two-pass (stop both nodes, swap keys on disk, start both) so the two identities are never live crossed mid-move. Weight-agnostic.
+- `fleet place <identity> <node>`: set a lettered validator identity's location on a numbered node, for example `fleet place a 5`. It is a SWAP, not a drop: whatever validator identity currently sits on the target node rides back to the moved identity's old node. Motivation: we always have exactly as many validator identities as validator nodes; a swap preserves that bijection automatically (nothing orphaned, nothing duplicated), which makes equivocation STRUCTURALLY inexpressible rather than merely checked. It atomically updates `deployment/placement.json`, then rewrites the identity files on EVERY inventory node from that complete mapping. It does not stop or restart anything. Rewriting the whole fleet, including unchanged assignments, makes disk state deterministic and makes rerunning the command a complete reconciliation rather than a delta. If the requested identity is already on the requested node, the mapping remains unchanged but every key is still rewritten.
+- `fleet apply-placement`: compare every RUNNING node's runtime NodeID with the NodeID assigned by `deployment/placement.json`. Snapshot the mismatched running set first, stop all of it, and start that same set only after every stop succeeds. A failure in any phase aborts before the next phase. Nodes whose runtime identity already matches are untouched. Nodes that were stopped before the command remain stopped even when their on-disk identity differs. This is the explicit step that activates a placement change without pretending to restart the fleet.
 - `set-weight <identity> <weight>`: set a validator's on-chain weight via a committee-signed SetL1ValidatorWeightTx. Location-agnostic. It accepts exactly `1` (dead), `1000` (spare), or `100000` (active). Weight `1` is the minimum and preserves fixed membership; `0` and every intermediate value are refused.
 - Before constructing or submitting a weight transaction, `set-weight` derives the management conversion block height from the already-recorded conversion transaction ID and requires the P-chain height pinned by `proposervm.getCurrentEpoch` to be at least that conversion height. The derived height is never stored. This is the exact ACP-181 visibility gate: current-height reads can show the committee while Warp admission still uses an older epoch snapshot. If the epoch is not yet sealable, the command prints the exact JST boundary and sleeps until it. It then visibly submits and prints a no-op P-chain `BaseTx`, rechecks the epoch, and submits one second visible no-op only when the first block could not advance the epoch. The command constructs and submits the weight transaction exactly once after the gate succeeds; a weight-transaction failure remains an immediate error.
 
 Exactly TWO guards, both correctness, not policy:
-1. No identity live on two nodes (equivocation forks/slashes). Enforced structurally by swap-shaped place + two-pass execution.
+1. No identity live on two nodes (equivocation forks/slashes). Enforced structurally by swap-shaped placement plus the stop-all-before-start-any apply-placement barrier.
 2. No validator<->RPC swap (see RPC section). Everything else is the operator's freedom.
 
 Failover strategies are compositions the OPERATOR makes: key-swap failover = `place` a dead high identity onto a live node (frozen-mode compatible, no P-chain writes). Weight-change failover = `set-weight` a spare to active and the failed validator to dead without moving identities (proxied mode only; lower disruption, no wipe/resync). Deliberately NOT merged into one clever reconcile abstraction: two small code paths beat one clever one at 3am. The two strategies cannot corrupt each other because weight attaches to the identity, not the node, and place preserves the bijection.
 
 ## RPC nodes
 
-An RPC node is: a PINNED (IP, NodeID) that tracks the chain, serves ingress, and anchors bootstrap. Nothing to simplify further.
+An RPC node is a pinned identity that tracks the chain and serves ingress.
 
-- Stable identities REQUIRED: bootstrap entries are (IP, NodeID) pairs verified by TLS at dial time. The mesh's rendezvous points must never change identity, or every peer's bootstrap entry for them silently rots. Validators can swap freely precisely because nothing anchors on them.
+- Stable identities remain required because RPC nodes are fixed ingress endpoints. Validators can swap freely because their machine placement is not an external endpoint.
 - Zero stake, never registered on-chain, and no BLS signer key at all (run with an ephemeral signer): one less secret to manage, and `set-weight` cannot even express them.
-- `place` refuses them (guard 2). Swapping an RPC identity would break the anchors; swapping a validator identity onto an RPC node would silently de-anchor the mesh.
+- `place` refuses them (guard 2). Swapping an RPC identity would move an ingress endpoint and swapping a validator identity onto an RPC node would change its role.
 - Why RPCs exist as a separate role at all: serving tx load on a validator measurably slows its block production, so ingress is kept off validators. RPCs are bombard's ingress and are never promoted.
+- The one-validator development shape is the deliberate exception. Its validator also serves RPC and points at the P-chain node for primary-network bootstrap. It has no failover or independent L1 state-sync source. `stop` and `start` preserve its L1 data; losing that data requires restoring a backup or recreating the development chain.
 
-## Bootstrap topology (two-hop, from the mainnet-committee release)
+## Bootstrap topology
 
-- Validators bootstrap from the fleet's own RPC nodes.
-- RPC nodes bootstrap from the P-chain source: the fleet's one controlled P-chain path.
-- state-sync lists = bootstrap lists (one anchor list; two lists that always contain the same nodes is pointless).
-- GOTCHA (proven live): empty bootstrap lists do NOT auto-discover peers from P-chain records; lists must be explicit. And every key swap invalidates any (IP, NodeID) bootstrap entry pointing at a swapped VALIDATOR, which is exactly why anchors are RPCs only. (The interim fleet listed all 12 nodes as bootstrap anchors; it survived swaps only because enough unswapped entries remained. Do not copy that.)
+- Every validator and RPC uses the sole P-chain node's `(host:staking-port, NodeID)` only as its explicit primary-network bootstrap.
+- L1 state-sync peers are every other validator and RPC inventory node, excluding the node itself and the P-chain node. The P-chain node never tracks the L1 and therefore must never appear in downstream state-sync lists.
+- The P-chain node follows the public P-chain without running consensus. It does not track or serve the benchmark L1.
+- The P-chain node identity is pinned. It cannot participate in validator placement.
 
 ## The oracle L1 (added 2026-07-23)
 
@@ -212,15 +258,36 @@ Warp → control-host signing → receiver state on main, ~0.5s relay latency at
 
 ## Deployment simplifications (decided 2026-07-22)
 
-- DELETE the provisioned() existence check; always rsync everything. Motivation: the check treated nodes with STALE keys as provisioned, booting them with wrong NodeIDs (bit us live 2026-07-20); rsync is idempotent and near-instant when unchanged. Deleting the mechanism removes the whole drift-bug class; fixing it would just shrink it.
-- NO key pre-staging on nodes. Control holds all keys and pushes the right one at `place` time (~1KB scp). Motivation: one less deploy step, no staging drift, and a compromised box leaks ONE identity instead of eight.
+- Every mutating fleet command is a reconciliation to an explicit end state,
+  not a sequence that assumes its previous invocation finished. It writes
+  control-side intent atomically before remote work, revalidates remote state,
+  and repeats idempotent pushes on every rerun. A process may have stopped,
+  failed, or timed out after any individual action; rerunning the same command
+  must converge rather than invert or duplicate the previous partial work.
+- There is no cordon registry or hidden node state. Systemd is the process
+  manager and the only up/down intent: start enables and starts a unit; stop
+  disables and stops it. Commands that apply identity placement inspect the
+  running set at entry and never start a node that was already down.
+- All managed machines remain reachable from control. Simulated node and DC
+  loss stops or kills AvalancheGo processes on reachable machines. A genuinely
+  unreachable machine fails the command and is outside this benchmark's
+  operating model.
+- `fleet deploy <frozen|follow>` is software deployment, not machine provisioning. Its required argument selects only the initial P-chain node source; it takes no node selectors and always deploys the complete inventory. It deploys the sole P-chain node first through stop, package, systemd, identity, optional archive restore, and start barriers, then waits for its local P-chain API to contain both converted validator sets. Only then does it run the same barriers for every validator and RPC node, followed by one readiness barrier after all services have started. Deploy includes start. There is no separate provisioned check or deploy-state flag.
+- Logical nodes sharing a host are ordered by node number and receive HTTP/staking ports `9650/9651`, then `9652/9653`, and so on. Every logical node has separate data, logs, configuration, identity, and systemd unit paths.
+- `fleet start [selectors...]` uses the same selector rules and fleet-wide phases: stop all selected services, wait for all to become inactive, push every currently assigned identity again, start all, then wait for all to serve the L1. A failure in any phase aborts before the next phase. Re-pushing on every start is intentional: local placement is authoritative, and a stale remote key must never survive a restart.
+- `fleet stop [selectors...]` disables and gracefully stops the selected systemd services and waits for inactivity. It preserves every database, log, installed artifact, and current remote key.
+- `fleet destroy [selectors...]` uses the same selectors and is deliberately local, unlike `l1 destroy`. It sends SIGKILL to every selected AvalancheGo process, prevents systemd from restarting it, and requires every selected unit to be inactive before deleting any data. If any kill or inactivity check fails, it deletes nothing. It then deletes only that L1's `chainData/<L1-chain-id>` on the selected nodes. It preserves the complete P-chain database, identities, logs, configuration, binaries, and systemd units so the next `fleet start` can rebuild the L1 without repeating the expensive P-chain sync. SIGKILL is intentional: this command simulates an abrupt machine loss. Normal `fleet stop` remains graceful.
+- `fleet status [selectors...]` is read-only and works when only the P-chain node has been initialized. It reports node number, DC, role, assigned identity, NodeID, systemd intent and runtime state, L1 serving state, and accepted height. With no selector it reports the entire inventory, grouped by DC when `dc` is present.
+- P-chain status reports mode, local height, an upstream height sampled immediately before the local read, block lag, visibility of both converted validator sets, and `READY TO FREEZE yes|no`. Following is `synced` when local height is at least the sampled upstream height and `catching-up` otherwise. Frozen state is reported as `frozen` with its local height and upstream delta, never mislabeled unsynchronized. Ready-to-freeze requires both synchronization and both local validator sets. `fleet pchain freeze` runs the same gate and fails with the exact heights or missing set instead of freezing an unknown state.
+- Every inventory node process, including the P-chain node, is a systemd service because it must survive the control terminal and machine restarts.
+- DELETE the provisioned() existence check; always rsync everything during deploy. Motivation: the check treated nodes with STALE keys as provisioned, booting them with wrong NodeIDs (bit us live 2026-07-20); rsync is idempotent and near-instant when unchanged. Deleting the mechanism removes the whole drift-bug class; fixing it would just shrink it.
+- NO key pre-staging on nodes. Control holds all keys and pushes only the identity selected for that node during `deploy`, `start`, or `place` (~1KB over ssh). Motivation: one less deploy step, no staging drift, and a compromised box leaks ONE identity instead of every identity.
 - Keep binaries always rebuilt fresh before every ship (user rule). Aggressive fast iteration: recreate L1s/committees/chains freely, never nurse half-broken on-chain state; the ONE thing preserved rather than redone is the P-chain sync (the expensive part on an isolated fleet).
 
 ## Consensus and recovery facts (validated live)
 
-- Wipe-on-down PROVEN (2026-07-18, Fuji, avalanchego 4265498): `down` wipes ONLY the L1 chain data (chainData/<L1chainID> + logs), keeping the P-chain DB; `up` state-syncs the L1 fresh (seconds-to-minutes) and reconverges on the majority branch, no re-fork. Evidence: identical block hashes across all nodes for blocks produced while a node was down+wiped and after rejoin; single branch, quorum 3/3. The June-2026 "must nuke all of data/validator" belief is DISPROVEN.
-- Fork recovery for a node that never went down is the same tool: `down` + `up` on any node whose accepted hash diverges from the majority of high validators. Runbook procedure, not automated.
-- subnet-config k fix: k (sample size) must be <= validator count. k=20 with 8 validators never finalized (errInsufficientWeight, blocks built but not accepted). Use k=5, alpha=4 for the flat 8-validator topology. Alpha sits just below max so losing ONE high validator (~66%) still finalizes at speed: a single high failover does not halt the chain.
+- Wiping only the L1 chain data while keeping the P-chain DB was proven to state-sync a node fresh onto the majority branch without a re-fork (2026-07-18, Fuji, AvalancheGo 4265498). The June-2026 belief that recovery must delete all validator data is disproven. `fleet destroy` exposes exactly this operation. It is deliberately not hidden inside `stop` or `start`: both preserve data.
+- Consensus parameters are verified benchmark inputs, not inventory-derived settings. Every topology, including one validator, uses the shipped `subnet-config.json` unchanged: k 30, alpha preference 16, alpha confidence 17, beta 12, and proposer window 100ms. Fleet tooling must never calculate, rewrite, or otherwise adjust consensus parameters from the node count. Sampling is with replacement; reducing k for a small roster is incorrect and produces forks.
 - Isolated-fleet peering needs SG ingress AND egress for the staking port from/to both the intra-region private CIDR and the fleet public IPs (cross-region uses public IPs, same-VPC traffic arrives from private IPs, so public-IP-only rules silently fail intra-region).
 
 ## Constraints (standing)

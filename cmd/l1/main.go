@@ -151,15 +151,16 @@ func generateKeys(root string, managerCommittee int) error {
 	if err != nil {
 		return err
 	}
-	roleCounts := make(map[config.Role]int, 5)
+	roleCounts := make(map[config.Role]int, 6)
 	for _, node := range result.Public.Nodes {
 		roleCounts[node.Role]++
 	}
 	fmt.Printf("loaded %s\n", nodesPath)
 	fmt.Printf(
-		"generated keys: validators=%d rpc=%d archive=%d oracle-validators=%d oracle-rpc=%d managers=%d root=%s\n",
+		"generated keys: validators=%d rpc=%d pchain=%d archive=%d oracle-validators=%d oracle-rpc=%d managers=%d root=%s\n",
 		roleCounts[config.RoleValidator],
 		roleCounts[config.RoleRPC],
+		roleCounts[config.RolePChain],
 		roleCounts[config.RoleArchive],
 		roleCounts[config.RoleOracleValidator],
 		roleCounts[config.RoleOracleRPC],
