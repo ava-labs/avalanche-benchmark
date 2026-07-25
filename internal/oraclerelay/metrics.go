@@ -27,6 +27,7 @@ type metrics struct {
 	registry           *prometheus.Registry
 	price              *prometheus.GaugeVec
 	priceUpdatedAt     *prometheus.GaugeVec
+	mainPriceOrigin    *prometheus.GaugeVec
 	seq                *prometheus.GaugeVec
 	e2eLatency         *prometheus.HistogramVec
 	pipelineLatency    *prometheus.HistogramVec
@@ -52,6 +53,11 @@ func newMetrics() *metrics {
 			Name:      "price_updated_at",
 			Help:      "Unix seconds of the latest price, by asset and chain.",
 		}, []string{"asset", "chain"}),
+		mainPriceOrigin: prometheus.NewGaugeVec(prometheus.GaugeOpts{
+			Namespace: metricsNamespace,
+			Name:      "main_price_origin_seconds",
+			Help:      "Millisecond-precise unix time the price now on main first appeared on the oracle chain, by asset. `time() - this` is the true main-side staleness (the contract's own updatedAt is only second-resolution).",
+		}, []string{"asset"}),
 		seq: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: metricsNamespace,
 			Name:      "seq",
@@ -104,6 +110,7 @@ func newMetrics() *metrics {
 	registry.MustRegister(
 		m.price,
 		m.priceUpdatedAt,
+		m.mainPriceOrigin,
 		m.seq,
 		m.e2eLatency,
 		m.pipelineLatency,
@@ -160,6 +167,11 @@ func (m *metrics) recordConfirmation(asset string, seenAt time.Time, updatedAt u
 	m.confirmed.WithLabelValues(asset).Inc()
 	m.e2eLatency.WithLabelValues(asset).Observe(now.Sub(time.Unix(int64(updatedAt), 0)).Seconds())
 	m.pipelineLatency.WithLabelValues(asset).Observe(now.Sub(seenAt).Seconds())
+	// The origin time is seenAt (when the relay dequeued the oracle log, a
+	// millisecond-precise proxy for when the price became real on the oracle
+	// chain). Dashboards read `time() - originTime` for a sub-second staleness;
+	// the contract's own updatedAt is only second-resolution (block.timestamp).
+	m.mainPriceOrigin.WithLabelValues(asset).Set(float64(seenAt.UnixNano()) / 1e9)
 }
 
 // recordBatchSize is observed once per delivery tx.

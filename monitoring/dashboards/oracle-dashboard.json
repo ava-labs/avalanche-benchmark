@@ -119,7 +119,7 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "Main-chain price staleness (s since oracle update)",
+      "title": "Main-chain price staleness (true, sub-second)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -136,7 +136,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "time() - oracle_relay_price_updated_at{chain=\"main\"}",
+          "expr": "time() - oracle_relay_main_price_origin_seconds",
           "refId": "A",
           "legendFormat": "{{asset}}"
         }
@@ -603,7 +603,7 @@
     {
       "id": 28,
       "type": "timeseries",
-      "title": "Price staleness \u2014 main side (s since receiver update)",
+      "title": "Price staleness \u2014 main side (from oracle origin)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -620,7 +620,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "time() - oracle_relay_price_updated_at{chain=\"main\"}",
+          "expr": "time() - oracle_relay_main_price_origin_seconds",
           "refId": "A",
           "legendFormat": "{{asset}}"
         }
