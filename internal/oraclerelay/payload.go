@@ -24,6 +24,11 @@ var (
 	submitPriceSelector  = [4]byte{0x9f, 0x21, 0xbf, 0x2e} // submitPrice(bytes32,uint256)
 	receivePriceSelector = [4]byte{0xb8, 0xc1, 0x27, 0x58} // receivePrice(uint32)
 	latestPriceSelector  = [4]byte{0x4e, 0xec, 0x7c, 0x2b} // latestPrice(bytes32)
+	// receivePrices(uint32) — batched delivery. Derived locally as
+	// keccak256("receivePrices(uint32)")[:4]; verified against selectors.json's
+	// other entries with the same method. Hardcoded until the contracts agent
+	// lands it in selectors.json.
+	receivePricesSelector = [4]byte{0x0f, 0xb5, 0x7c, 0xdd}
 )
 
 // Mock feed assets. assetId is the keccak256 of the human-readable symbol, the
@@ -139,6 +144,15 @@ func packReceivePrice(index uint32) []byte {
 	data := make([]byte, 0, 4+32)
 	data = append(data, receivePriceSelector[:]...)
 	data = append(data, leftPad32(new(big.Int).SetUint64(uint64(index)).Bytes())...)
+	return data
+}
+
+// packReceivePrices builds calldata for receivePrices(uint32 count), where count
+// is the number of warp predicates carried in the tx's access list (in order).
+func packReceivePrices(count uint32) []byte {
+	data := make([]byte, 0, 4+32)
+	data = append(data, receivePricesSelector[:]...)
+	data = append(data, leftPad32(new(big.Int).SetUint64(uint64(count)).Bytes())...)
 	return data
 }
 

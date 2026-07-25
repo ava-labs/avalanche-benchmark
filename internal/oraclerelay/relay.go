@@ -26,14 +26,14 @@ import (
 )
 
 const (
-	deliveryGasLimit = 600000
-	// We attach exactly one warp predicate, so receivePrice always references
-	// access-list index 0.
-	warpPredicateIndex uint32 = 0
 	// Deliveries are sent as messages arrive and confirmed asynchronously; this
 	// bounds how many unconfirmed txs may be in flight before send blocks (that
 	// back-pressure is intentional).
 	maxInFlight = 256
+	// maxBatchSize caps how many messages ride one delivery tx (one warp predicate
+	// each). Batching only kicks in under backlog; there is no timer, so a single
+	// pending message degrades to a batch of one with zero added latency.
+	maxBatchSize = 16
 	// A delivery that is not mined within this window is fatal.
 	confirmTimeout = 30 * time.Second
 	// Deliveries pay a premium over the suggested gas price so they out-bid
@@ -42,6 +42,10 @@ const (
 	// the front of the queue under load. The floor guards against a zero suggestion.
 	deliveryGasPriceMultiplier = 10
 	minDeliveryGasPrice        = 10 // wei
+	// Gas scales with batch size: a fixed base plus a per-message allowance for
+	// each message's warp signature verification and receiver storage write.
+	baseDeliveryGas       = 400000
+	perMessageDeliveryGas = 250000
 )
 
 // priorityGasPrice applies the delivery premium and floor.
@@ -51,6 +55,11 @@ func priorityGasPrice(suggested *big.Int) *big.Int {
 		return floor
 	}
 	return price
+}
+
+// batchGasLimit sizes a delivery tx's gas for n batched messages.
+func batchGasLimit(n int) uint64 {
+	return uint64(baseDeliveryGas + perMessageDeliveryGas*n)
 }
 
 // canonicalSetCache memoizes the canonical oracle validator set by the P-chain
@@ -74,14 +83,20 @@ func (c *canonicalSetCache) store(height uint64, set validators.WarpSet) {
 	c.loaded = true
 }
 
-// pendingDelivery is a sent-but-unconfirmed delivery handed to the confirmer.
-// seenAt and updatedAt travel with it so latency histograms can be observed at
-// confirmation time.
-type pendingDelivery struct {
+// confirmMessage carries one batched message's data through to confirmation so
+// its own latency histograms can be observed with the batch's single receipt.
+type confirmMessage struct {
 	asset     string
-	hash      ethcommon.Hash
 	seenAt    time.Time
 	updatedAt uint64
+}
+
+// pendingDelivery is a sent-but-unconfirmed delivery tx handed to the confirmer.
+// One tx may carry several messages (a batch); each is confirmed against the
+// tx's single receipt.
+type pendingDelivery struct {
+	hash     ethcommon.Hash
+	messages []confirmMessage
 }
 
 // Relay watches the aggregator's SendWarpMessage broadcasts on the oracle L1 over
@@ -182,11 +197,19 @@ func Relay(ctx context.Context, pChainAPI string, deployment Deployment, deploym
 			}
 			return fmt.Errorf("oracle log subscription over %s failed: %w", wsURL, err)
 		case entry := <-logs:
-			// The ws-event-seen clock starts the moment the log is dequeued.
-			seenAt := time.Now()
-			item, err := deliver(runCtx, pChain, mainEpochs, main, mainSigner, feederKey, signers, &nonce, &cache, fresh, deployment, entry, seenAt, meters, output)
+			// Drain everything currently buffered along with this message and pack
+			// the survivors into one batch. No timer: batching emerges only under
+			// backlog, so a lone message ships immediately as a batch of one.
+			batch, err := collectBatch(entry, logs, fresh, meters, output)
 			if err != nil {
-				if errors.Is(err, context.Canceled) || errors.Is(err, errStaleSkipped) {
+				return err
+			}
+			if len(batch) == 0 {
+				continue
+			}
+			item, err := deliverBatch(runCtx, pChain, mainEpochs, main, mainSigner, feederKey, signers, &nonce, &cache, deployment, batch, meters, output)
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
 					continue
 				}
 				return err
@@ -255,13 +278,6 @@ func oracleStartTimes(ctx context.Context, pChain *platformvm.Client, subnetID i
 	return startTimes, nil
 }
 
-// deliver signs a single aggregator broadcast and sends the delivery tx, bumping
-// the feeder nonce. Confirmation happens asynchronously; the returned item is
-// handed to the confirmer.
-// errStaleSkipped marks a message dropped by the freshness gate; it is the one
-// non-fatal deliver outcome.
-var errStaleSkipped = errors.New("stale message skipped")
-
 // freshnessGate remembers the highest seq delivered per asset. seq is a per-asset
 // monotonic counter assigned by the aggregator, so it orders same-second updates
 // that updatedAt (second resolution) cannot. Marking happens at send time: a
@@ -282,7 +298,91 @@ func (g *freshnessGate) fresher(assetID [32]byte, seq uint64) bool {
 	return true
 }
 
-func deliver(
+// batchMessage is a parsed, freshness-passed message awaiting signing/packing.
+type batchMessage struct {
+	assetID     ethcommon.Hash
+	asset       string
+	seq         uint64
+	updatedAt   uint64
+	price       *big.Int
+	oracleBlock uint64
+	seenAt      time.Time
+	unsigned    *warp.UnsignedMessage
+}
+
+// parseAndGate decodes one log and applies the sequence freshness gate. It
+// returns ok=false (no error) for a stale/duplicate message, which is skipped;
+// a decode error is fatal.
+func parseAndGate(log ethtypes.Log, fresh *freshnessGate, meters *metrics, output io.Writer) (batchMessage, bool, error) {
+	unsignedBytes, err := UnpackEventMessage(log.Data)
+	if err != nil {
+		return batchMessage{}, false, fmt.Errorf("oracle block %d: %w", log.BlockNumber, err)
+	}
+	submission, err := ParseSubmission(unsignedBytes)
+	if err != nil {
+		return batchMessage{}, false, fmt.Errorf("oracle block %d: %w", log.BlockNumber, err)
+	}
+	asset := AssetName(submission.AssetID)
+	seq := submission.Seq.Uint64()
+	// Freshness is sequence-based: deliver only when seq exceeds the last seq
+	// delivered for this asset, skipping duplicates/reorders (e.g. on ws
+	// reconnect) instead of burning a guaranteed stale-update revert.
+	if !fresh.fresher(submission.AssetID, seq) {
+		meters.recordSkipped(asset)
+		fmt.Fprintf(output, "skipped %s oracle-block %d: seq %d not fresher\n", asset, log.BlockNumber, seq)
+		return batchMessage{}, false, nil
+	}
+	unsigned, err := warp.ParseUnsignedMessage(unsignedBytes)
+	if err != nil {
+		return batchMessage{}, false, fmt.Errorf("oracle block %d: parse unsigned Warp message: %w", log.BlockNumber, err)
+	}
+	return batchMessage{
+		assetID:     submission.AssetID,
+		asset:       asset,
+		seq:         seq,
+		updatedAt:   submission.UpdatedAt.Uint64(),
+		price:       submission.Price,
+		oracleBlock: log.BlockNumber,
+		// The ws-event-seen clock starts when the log is dequeued for this batch.
+		seenAt:   time.Now(),
+		unsigned: unsigned,
+	}, true, nil
+}
+
+// collectBatch packs the triggering log plus everything already buffered in the
+// ws channel (non-blocking) into up to maxBatchSize freshness-passed messages,
+// preserving arrival order. It never waits for more messages.
+func collectBatch(first ethtypes.Log, logs <-chan ethtypes.Log, fresh *freshnessGate, meters *metrics, output io.Writer) ([]batchMessage, error) {
+	batch := make([]batchMessage, 0, maxBatchSize)
+	add := func(log ethtypes.Log) (full bool, err error) {
+		msg, ok, err := parseAndGate(log, fresh, meters, output)
+		if err != nil {
+			return false, err
+		}
+		if ok {
+			batch = append(batch, msg)
+		}
+		return len(batch) >= maxBatchSize, nil
+	}
+	if full, err := add(first); err != nil || full {
+		return batch, err
+	}
+	for {
+		select {
+		case log := <-logs:
+			if full, err := add(log); err != nil || full {
+				return batch, err
+			}
+		default:
+			return batch, nil
+		}
+	}
+}
+
+// deliverBatch signs each message in the batch and packs them into ONE
+// AccessListTx: one warp-precompile predicate per message in message order, with
+// receivePrices(count). Confirmation happens asynchronously.
+func deliverBatch(
 	ctx context.Context,
 	pChain *platformvm.Client,
 	mainEpochs epochClient,
@@ -292,38 +392,15 @@ func deliver(
 	signers []bls.Signer,
 	nonce *uint64,
 	cache *canonicalSetCache,
-	fresh *freshnessGate,
 	deployment Deployment,
-	log ethtypes.Log,
-	seenAt time.Time,
+	batch []batchMessage,
 	meters *metrics,
 	output io.Writer,
 ) (pendingDelivery, error) {
-	unsignedBytes, err := UnpackEventMessage(log.Data)
-	if err != nil {
-		return pendingDelivery{}, fmt.Errorf("oracle block %d: %w", log.BlockNumber, err)
-	}
-	submission, err := ParseSubmission(unsignedBytes)
-	if err != nil {
-		return pendingDelivery{}, fmt.Errorf("oracle block %d: %w", log.BlockNumber, err)
-	}
-	// Freshness is sequence-based: deliver only when seq exceeds the last seq
-	// delivered for this asset, skipping duplicates/reorders (e.g. on ws
-	// reconnect) instead of burning a guaranteed stale-update revert.
-	seq := submission.Seq.Uint64()
-	if !fresh.fresher(submission.AssetID, seq) {
-		meters.recordSkipped(AssetName(submission.AssetID))
-		fmt.Fprintf(output, "skipped %s oracle-block %d: seq %d not fresher\n", AssetName(submission.AssetID), log.BlockNumber, seq)
-		return pendingDelivery{}, errStaleSkipped
-	}
-	unsigned, err := warp.ParseUnsignedMessage(unsignedBytes)
-	if err != nil {
-		return pendingDelivery{}, fmt.Errorf("oracle block %d: parse unsigned Warp message: %w", log.BlockNumber, err)
-	}
-
 	// The verifier uses the validator set pinned by the main chain's CURRENT
-	// proposervm epoch, so the canonical bit positions must be built at exactly
-	// that P-chain height. The set is cached until the pinned height changes.
+	// proposervm epoch, so canonical bit positions must be built at exactly that
+	// P-chain height. One epoch read serves the whole batch; the set is cached
+	// until the pinned height changes.
 	epoch, err := mainEpochs.GetCurrentEpoch(ctx)
 	if err != nil {
 		return pendingDelivery{}, fmt.Errorf("read main-chain Warp epoch: %w", err)
@@ -336,31 +413,35 @@ func deliver(
 		cache.store(epoch.PChainHeight, warpSet)
 		meters.recordCanonicalRefresh()
 	}
-	signed, err := signAndAggregate(unsigned, cache.set, signers)
-	if err != nil {
-		return pendingDelivery{}, err
+
+	// One access-list tuple per message; predicate order equals message order, so
+	// receivePrices reads warp index i from the i-th tuple.
+	tuples := make(ethtypes.AccessList, 0, len(batch))
+	for _, msg := range batch {
+		signed, err := signAndAggregate(msg.unsigned, cache.set, signers)
+		if err != nil {
+			return pendingDelivery{}, err
+		}
+		tuples = append(tuples, ethtypes.AccessTuple{
+			Address:     WarpPrecompileAddress,
+			StorageKeys: PackPredicate(signed.Bytes()),
+		})
 	}
 
 	suggestedGasPrice, err := main.GasPrice(ctx)
 	if err != nil {
 		return pendingDelivery{}, fmt.Errorf("read main gas price: %w", err)
 	}
-	gasPrice := priorityGasPrice(suggestedGasPrice)
 	receiver := deployment.ReceiverAddress
 	tx := ethtypes.NewTx(&ethtypes.AccessListTx{
-		ChainID:  mainSigner.ChainID(),
-		Nonce:    *nonce,
-		GasPrice: gasPrice,
-		Gas:      deliveryGasLimit,
-		To:       &receiver,
-		Value:    big.NewInt(0),
-		Data:     packReceivePrice(warpPredicateIndex),
-		// The signed Warp message rides as a predicate keyed by the Warp
-		// precompile; the verifier reads it from this access-list entry.
-		AccessList: ethtypes.AccessList{{
-			Address:     WarpPrecompileAddress,
-			StorageKeys: PackPredicate(signed.Bytes()),
-		}},
+		ChainID:    mainSigner.ChainID(),
+		Nonce:      *nonce,
+		GasPrice:   priorityGasPrice(suggestedGasPrice),
+		Gas:        batchGasLimit(len(batch)),
+		To:         &receiver,
+		Value:      big.NewInt(0),
+		Data:       packReceivePrices(uint32(len(batch))),
+		AccessList: tuples,
 	})
 	signedTx, err := ethtypes.SignTx(tx, mainSigner, feederKey)
 	if err != nil {
@@ -370,17 +451,22 @@ func deliver(
 	if err != nil {
 		return pendingDelivery{}, fmt.Errorf("encode delivery tx: %w", err)
 	}
-	asset := AssetName(submission.AssetID)
 	hash, err := main.SendRawTransaction(ctx, rawTx)
 	if err != nil {
-		return pendingDelivery{}, fmt.Errorf("deliver price for %s: %w", asset, err)
+		return pendingDelivery{}, fmt.Errorf("deliver batch of %d: %w", len(batch), err)
 	}
 	*nonce++
-	updatedAt := submission.UpdatedAt.Uint64()
-	meters.recordDelivery(asset, submission.Price, updatedAt)
-	meters.recordSeq(asset, seq)
-	fmt.Fprintf(output, "delivered %s price %s seq %d oracle-block %d main-tx %s\n", asset, formatPrice(submission.Price.Int64()), seq, log.BlockNumber, hash.Hex())
-	return pendingDelivery{asset: asset, hash: hash, seenAt: seenAt, updatedAt: updatedAt}, nil
+
+	meters.recordBatchSize(len(batch))
+	messages := make([]confirmMessage, len(batch))
+	for i, msg := range batch {
+		meters.recordDelivery(msg.asset, msg.price, msg.updatedAt)
+		meters.recordSeq(msg.asset, msg.seq)
+		fmt.Fprintf(output, "delivered %s price %s seq %d oracle-block %d main-tx %s (batch %d/%d)\n",
+			msg.asset, formatPrice(msg.price.Int64()), msg.seq, msg.oracleBlock, hash.Hex(), i+1, len(batch))
+		messages[i] = confirmMessage{asset: msg.asset, seenAt: msg.seenAt, updatedAt: msg.updatedAt}
+	}
+	return pendingDelivery{hash: hash, messages: messages}, nil
 }
 
 // confirmDeliveries confirms sent deliveries in order. A reverted or unconfirmed
@@ -398,15 +484,21 @@ func confirmDeliveries(ctx context.Context, main *evmClient, pending <-chan pend
 				if ctx.Err() != nil {
 					return
 				}
-				fail(fmt.Errorf("await delivery receipt for %s tx %s: %w", item.asset, item.hash.Hex(), err))
+				fail(fmt.Errorf("await delivery receipt for batch tx %s: %w", item.hash.Hex(), err))
 				return
 			}
 			if r.Status != 1 {
-				fail(fmt.Errorf("delivery for %s reverted: tx %s in block %d", item.asset, item.hash.Hex(), r.BlockNumber))
+				fail(fmt.Errorf("delivery batch reverted: tx %s in block %d", item.hash.Hex(), r.BlockNumber))
 				return
 			}
-			meters.recordConfirmation(item.asset, item.seenAt, item.updatedAt, time.Now())
-			fmt.Fprintf(output, "confirmed %s tx %s block %d\n", item.asset, item.hash.Hex(), r.BlockNumber)
+			// One receipt covers the whole batch; observe each message's own
+			// latency against it, then release the single tx from the queue.
+			now := time.Now()
+			for _, msg := range item.messages {
+				meters.recordConfirmation(msg.asset, msg.seenAt, msg.updatedAt, now)
+			}
+			meters.recordDequeued()
+			fmt.Fprintf(output, "confirmed batch of %d tx %s block %d\n", len(item.messages), item.hash.Hex(), r.BlockNumber)
 		}
 	}
 }

@@ -33,6 +33,7 @@ type metrics struct {
 	delivered          *prometheus.CounterVec
 	confirmed          *prometheus.CounterVec
 	skipped            *prometheus.CounterVec
+	batchSize          prometheus.Histogram
 	inflight           prometheus.Gauge
 	canonicalRefreshes prometheus.Counter
 }
@@ -83,10 +84,16 @@ func newMetrics() *metrics {
 			Name:      "skipped_stale_total",
 			Help:      "Messages not delivered because their seq was not higher than an already-delivered one, by asset.",
 		}, []string{"asset"}),
+		batchSize: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Namespace: metricsNamespace,
+			Name:      "batch_size",
+			Help:      "Messages packed into one delivery tx, observed per tx.",
+			Buckets:   []float64{1, 2, 3, 5, 8, 12, 16},
+		}),
 		inflight: prometheus.NewGauge(prometheus.GaugeOpts{
 			Namespace: metricsNamespace,
 			Name:      "inflight",
-			Help:      "Sent-but-unconfirmed deliveries in the confirmer queue.",
+			Help:      "Sent-but-unconfirmed delivery txs in the confirmer queue.",
 		}),
 		canonicalRefreshes: prometheus.NewCounter(prometheus.CounterOpts{
 			Namespace: metricsNamespace,
@@ -103,6 +110,7 @@ func newMetrics() *metrics {
 		m.delivered,
 		m.confirmed,
 		m.skipped,
+		m.batchSize,
 		m.inflight,
 		m.canonicalRefreshes,
 	)
@@ -146,10 +154,22 @@ func (m *metrics) recordEnqueued() {
 	m.inflight.Inc()
 }
 
+// recordConfirmation is observed per message in a confirmed batch; it does not
+// touch inflight, which tracks whole txs (see recordDequeued).
 func (m *metrics) recordConfirmation(asset string, seenAt time.Time, updatedAt uint64, now time.Time) {
 	m.confirmed.WithLabelValues(asset).Inc()
 	m.e2eLatency.WithLabelValues(asset).Observe(now.Sub(time.Unix(int64(updatedAt), 0)).Seconds())
 	m.pipelineLatency.WithLabelValues(asset).Observe(now.Sub(seenAt).Seconds())
+}
+
+// recordBatchSize is observed once per delivery tx.
+func (m *metrics) recordBatchSize(size int) {
+	m.batchSize.Observe(float64(size))
+}
+
+// recordEnqueued / recordDequeued bracket one delivery tx's time in the
+// confirmer queue.
+func (m *metrics) recordDequeued() {
 	m.inflight.Dec()
 }
 

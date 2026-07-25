@@ -122,6 +122,16 @@ func (c *evmClient) PendingNonce(ctx context.Context, address ethcommon.Address)
 	return uint64(raw), nil
 }
 
+// LatestNonce returns the account nonce at the latest mined block, ignoring any
+// still-queued pool transactions.
+func (c *evmClient) LatestNonce(ctx context.Context, address ethcommon.Address) (uint64, error) {
+	var raw hexutil.Uint64
+	if err := c.call(ctx, "eth_getTransactionCount", []any{address.Hex(), "latest"}, &raw); err != nil {
+		return 0, err
+	}
+	return uint64(raw), nil
+}
+
 func (c *evmClient) GasPrice(ctx context.Context) (*big.Int, error) {
 	var raw hexutil.Big
 	if err := c.call(ctx, "eth_gasPrice", nil, &raw); err != nil {

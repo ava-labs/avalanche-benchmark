@@ -20,9 +20,9 @@ const (
 	// Submit cadence. Both assets are submitted every tick: 10 ticks/s means 10
 	// updates/s per asset (20 tx/s total). The contract assigns each a monotonic
 	// per-asset seq, so sub-second updates are ordered without timestamp clashes.
-	// 250ms keeps the total message rate (~8/s for two assets) comfortably under
-	// the relay's ~20/s per-message ceiling so a transient backlog always drains.
-	feedInterval = 250 * time.Millisecond
+	// Batched relay delivery removed the old per-message ceiling, so the feed runs
+	// at full rate; a relay backlog now drains by packing more messages per tx.
+	feedInterval = 100 * time.Millisecond
 	// FeedMetricsListenAddress is the fixed, unconfigurable /metrics bind address.
 	FeedMetricsListenAddress = "0.0.0.0:9701"
 	feedMetricsNamespace     = "oracle_feed"
@@ -153,7 +153,12 @@ func Feed(ctx context.Context, deployment Deployment, deploymentDirectory, oracl
 		return fmt.Errorf("read oracle chain ID: %w", err)
 	}
 	signer := ethtypes.LatestSignerForChainID(chainID)
-	nonce, err := oracle.PendingNonce(ctx, feederAddress)
+	// Start from the LATEST mined nonce, not pending. A crashed run leaves
+	// nonce-gapped txs queued in the mempool; starting at pending would stack new
+	// txs behind that unminable gap forever. Latest-nonce re-sends over the queue
+	// (see the 2x gas-price premium below, which lets the resends replace the
+	// stale, minimum-fee queue entries).
+	nonce, err := oracle.LatestNonce(ctx, feederAddress)
 	if err != nil {
 		return fmt.Errorf("read feeder nonce: %w", err)
 	}
@@ -190,10 +195,14 @@ func Feed(ctx context.Context, deployment Deployment, deploymentDirectory, oracl
 			return err
 		case <-ticker.C:
 		}
-		gasPrice, err := oracle.GasPrice(ctx)
+		suggestedGasPrice, err := oracle.GasPrice(ctx)
 		if err != nil {
 			return fmt.Errorf("read oracle gas price: %w", err)
 		}
+		// Pay 2x the suggested price on every feed tx. On a minBaseFee=1 chain this
+		// is negligible, and it lets a latest-nonce restart's gap-refills replace
+		// any stale, minimum-fee entries still queued in the mempool.
+		gasPrice := new(big.Int).Mul(suggestedGasPrice, big.NewInt(2))
 		for _, asset := range KnownAssets {
 			price := walk.next(asset.name)
 			hash, err := submitPrice(ctx, oracle, signer, feederKey, aggregator, &nonce, asset.id, price, gasPrice)
