@@ -87,8 +87,8 @@ func TestAssetName(t *testing.T) {
 	if got := AssetName(assetBTC); got != "BTC-USD" {
 		t.Fatalf("BTC name = %q", got)
 	}
-	if got := AssetName(assetAVAX); got != "AVAX-USD" {
-		t.Fatalf("AVAX name = %q", got)
+	if got := AssetName(assetUSDC); got != "USDC-USD" {
+		t.Fatalf("USDC name = %q", got)
 	}
 	unknown := ethcommon.HexToHash("0xdead")
 	if got := AssetName(unknown); got != unknown.Hex() {
@@ -97,7 +97,7 @@ func TestAssetName(t *testing.T) {
 }
 
 func TestPackSubmitPrice(t *testing.T) {
-	data := packSubmitPrice(assetAVAX, big.NewInt(2500000000))
+	data := packSubmitPrice(assetUSDC, big.NewInt(2500000000))
 	if len(data) != 4+64 {
 		t.Fatalf("calldata length = %d, want 68", len(data))
 	}
@@ -106,8 +106,8 @@ func TestPackSubmitPrice(t *testing.T) {
 			t.Fatalf("selector byte %d = %#x, want %#x", i, data[i], b)
 		}
 	}
-	if got := ethcommon.BytesToHash(data[4:36]); got != assetAVAX {
-		t.Fatalf("assetID word = %s, want %s", got.Hex(), assetAVAX.Hex())
+	if got := ethcommon.BytesToHash(data[4:36]); got != assetUSDC {
+		t.Fatalf("assetID word = %s, want %s", got.Hex(), assetUSDC.Hex())
 	}
 	if got := new(big.Int).SetBytes(data[36:68]); got.Int64() != 2500000000 {
 		t.Fatalf("price word = %s", got)

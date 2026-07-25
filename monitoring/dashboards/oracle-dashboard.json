@@ -78,7 +78,7 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "AVAX-USD now",
+      "title": "USDC-USD now",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -95,7 +95,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "oracle_relay_price{asset=\"AVAX-USD\"}",
+          "expr": "oracle_relay_price{asset=\"USDC-USD\"}",
           "refId": "A",
           "legendFormat": "{{chain}}"
         }
@@ -242,7 +242,7 @@
     {
       "id": 7,
       "type": "timeseries",
-      "title": "AVAX-USD \u2014 oracle vs main (overlay)",
+      "title": "USDC-USD \u2014 oracle vs main (overlay)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -259,7 +259,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "oracle_relay_price{asset=\"AVAX-USD\",chain=\"oracle\"}",
+          "expr": "oracle_relay_price{asset=\"USDC-USD\",chain=\"oracle\"}",
           "refId": "A",
           "legendFormat": "oracle (submitted)"
         },
@@ -268,14 +268,15 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "oracle_relay_price{asset=\"AVAX-USD\",chain=\"main\"}",
+          "expr": "oracle_relay_price{asset=\"USDC-USD\",chain=\"main\"}",
           "refId": "B",
           "legendFormat": "main (receiver state)"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "currencyUSD"
+          "unit": "currencyUSD",
+          "decimals": 4
         },
         "overrides": []
       },

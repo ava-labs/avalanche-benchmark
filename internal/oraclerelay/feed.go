@@ -31,23 +31,24 @@ const (
 // Mock feed parameters in 8-decimal fixed point: a slow bounded random walk so
 // the demo shows moving prices without needing a real data source.
 const (
-	btcBase  int64 = 60000 * 1e8
-	btcStep  int64 = 20 * 1e8 // +/- up to $20 per second
-	btcBand  int64 = 2000 * 1e8
-	avaxBase int64 = 25 * 1e8
-	avaxStep int64 = 2e6 // +/- up to $0.02 per second
-	avaxBand int64 = 2 * 1e8
+	btcBase int64 = 60000 * 1e8
+	btcStep int64 = 20 * 1e8 // +/- up to $20 per second
+	btcBand int64 = 2000 * 1e8
+	// USDC is a stablecoin, so it holds near $1.00 with only peg-jitter.
+	usdcBase int64 = 1 * 1e8
+	usdcStep int64 = 5e4  // +/- up to $0.0005 per second
+	usdcBand int64 = 20e4 // stays within +/- $0.002 of the peg
 )
 
 type priceWalk struct {
 	rng  *rand.Rand
 	btc  int64
-	avax int64
+	usdc int64
 }
 
 func newPriceWalk() *priceWalk {
 	// Fixed seed: the walk only needs to look plausible, not be unpredictable.
-	return &priceWalk{rng: rand.New(rand.NewSource(1)), btc: btcBase, avax: avaxBase}
+	return &priceWalk{rng: rand.New(rand.NewSource(1)), btc: btcBase, usdc: usdcBase}
 }
 
 func step(rng *rand.Rand, current, base, maxStep, band int64) int64 {
@@ -67,8 +68,8 @@ func (w *priceWalk) next(name string) int64 {
 		w.btc = step(w.rng, w.btc, btcBase, btcStep, btcBand)
 		return w.btc
 	default:
-		w.avax = step(w.rng, w.avax, avaxBase, avaxStep, avaxBand)
-		return w.avax
+		w.usdc = step(w.rng, w.usdc, usdcBase, usdcStep, usdcBand)
+		return w.usdc
 	}
 }
 

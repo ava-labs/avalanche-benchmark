@@ -63,9 +63,9 @@ func TestPriceWalkStaysWithinBand(t *testing.T) {
 		if btc < btcBase-btcBand || btc > btcBase+btcBand {
 			t.Fatalf("BTC price %d escaped band [%d, %d]", btc, btcBase-btcBand, btcBase+btcBand)
 		}
-		avax := w.next("AVAX-USD")
-		if avax < avaxBase-avaxBand || avax > avaxBase+avaxBand {
-			t.Fatalf("AVAX price %d escaped band [%d, %d]", avax, avaxBase-avaxBand, avaxBase+avaxBand)
+		usdc := w.next("USDC-USD")
+		if usdc < usdcBase-usdcBand || usdc > usdcBase+usdcBand {
+			t.Fatalf("USDC price %d escaped band [%d, %d]", usdc, usdcBase-usdcBand, usdcBase+usdcBand)
 		}
 	}
 }

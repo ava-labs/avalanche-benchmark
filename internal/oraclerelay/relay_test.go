@@ -27,7 +27,7 @@ func TestCollectBatchOrderAndSeqGate(t *testing.T) {
 	fresh := newFreshnessGate()
 	meters := newMetrics()
 	logs := make(chan ethtypes.Log, 8)
-	logs <- makeLog(t, assetAVAX, 25e8, 100, 1, 11)   // fresh
+	logs <- makeLog(t, assetUSDC, 25e8, 100, 1, 11)   // fresh
 	logs <- makeLog(t, assetBTC, 60000e8, 100, 1, 12) // stale: BTC seq 1 already delivered as first
 	logs <- makeLog(t, assetBTC, 60050e8, 101, 2, 13) // fresh
 
@@ -43,7 +43,7 @@ func TestCollectBatchOrderAndSeqGate(t *testing.T) {
 	if batch[0].asset != "BTC-USD" || batch[0].seq != 1 || batch[0].oracleBlock != 10 {
 		t.Fatalf("batch[0] = %+v", batch[0])
 	}
-	if batch[1].asset != "AVAX-USD" || batch[1].seq != 1 {
+	if batch[1].asset != "USDC-USD" || batch[1].seq != 1 {
 		t.Fatalf("batch[1] = %+v", batch[1])
 	}
 	if batch[2].asset != "BTC-USD" || batch[2].seq != 2 {
@@ -108,8 +108,8 @@ func TestPackReceivePrices(t *testing.T) {
 
 func TestFreshnessGateBySeq(t *testing.T) {
 	gate := newFreshnessGate()
-	var btc, avax [32]byte
-	btc[0], avax[0] = 1, 2
+	var btc, usdc [32]byte
+	btc[0], usdc[0] = 1, 2
 
 	if !gate.fresher(btc, 1) {
 		t.Fatal("first seq for an asset must pass")
@@ -124,7 +124,7 @@ func TestFreshnessGateBySeq(t *testing.T) {
 		t.Fatal("a higher seq must pass")
 	}
 	// A different asset is tracked independently.
-	if !gate.fresher(avax, 1) {
+	if !gate.fresher(usdc, 1) {
 		t.Fatal("first seq for a second asset must pass")
 	}
 	if gate.fresher(btc, 2) {

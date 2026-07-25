@@ -35,7 +35,7 @@ var (
 // same value the feeder passes to submitPrice, so the relay can label prices.
 var (
 	assetBTC  = crypto.Keccak256Hash([]byte("BTC-USD"))
-	assetAVAX = crypto.Keccak256Hash([]byte("AVAX-USD"))
+	assetUSDC = crypto.Keccak256Hash([]byte("USDC-USD"))
 )
 
 type assetRef struct {
@@ -46,7 +46,7 @@ type assetRef struct {
 // KnownAssets is the fixed set the feeder submits and the relay charts.
 var KnownAssets = []assetRef{
 	{"BTC-USD", assetBTC},
-	{"AVAX-USD", assetAVAX},
+	{"USDC-USD", assetUSDC},
 }
 
 // AssetName returns the symbol for a known assetId, or its hex otherwise.

@@ -28,8 +28,8 @@ func TestAssetIDByName(t *testing.T) {
 	if id, ok := assetIDByName("BTC-USD"); !ok || id != assetBTC {
 		t.Fatalf("BTC-USD reverse lookup = (%s, %v)", id.Hex(), ok)
 	}
-	if id, ok := assetIDByName("AVAX-USD"); !ok || id != assetAVAX {
-		t.Fatalf("AVAX-USD reverse lookup = (%s, %v)", id.Hex(), ok)
+	if id, ok := assetIDByName("USDC-USD"); !ok || id != assetUSDC {
+		t.Fatalf("USDC-USD reverse lookup = (%s, %v)", id.Hex(), ok)
 	}
 	if _, ok := assetIDByName("ETH-USD"); ok {
 		t.Fatal("unknown symbol must not resolve")
