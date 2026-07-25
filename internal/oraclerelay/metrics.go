@@ -55,8 +55,8 @@ func newMetrics() *metrics {
 		}, []string{"asset", "chain"}),
 		mainPriceOrigin: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: metricsNamespace,
-			Name:      "main_price_origin_seconds",
-			Help:      "Millisecond-precise unix time the price now on main first appeared on the oracle chain, by asset. `time() - this` is the true main-side staleness (the contract's own updatedAt is only second-resolution).",
+			Name:      "main_price_staleness_seconds",
+			Help:      "Age of the price now on main, measured on the relay's clock as (confirm time - oracle-log-seen time), by asset. This is a value, not an age derived with time(), so the scrape interval does not inflate it the way the contract's second-resolution updatedAt does.",
 		}, []string{"asset"}),
 		seq: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: metricsNamespace,
@@ -167,11 +167,11 @@ func (m *metrics) recordConfirmation(asset string, seenAt time.Time, updatedAt u
 	m.confirmed.WithLabelValues(asset).Inc()
 	m.e2eLatency.WithLabelValues(asset).Observe(now.Sub(time.Unix(int64(updatedAt), 0)).Seconds())
 	m.pipelineLatency.WithLabelValues(asset).Observe(now.Sub(seenAt).Seconds())
-	// The origin time is seenAt (when the relay dequeued the oracle log, a
-	// millisecond-precise proxy for when the price became real on the oracle
-	// chain). Dashboards read `time() - originTime` for a sub-second staleness;
-	// the contract's own updatedAt is only second-resolution (block.timestamp).
-	m.mainPriceOrigin.WithLabelValues(asset).Set(float64(seenAt.UnixNano()) / 1e9)
+	// Export the delivery latency as a value (confirm - oracle-log-seen), not an
+	// age derived with time(): the price on main is this many seconds behind the
+	// oracle. A value stays ~150ms however often Prometheus scrapes it, whereas a
+	// time()-minus-timestamp form would inflate by the scrape interval.
+	m.mainPriceOrigin.WithLabelValues(asset).Set(now.Sub(seenAt).Seconds())
 }
 
 // recordBatchSize is observed once per delivery tx.

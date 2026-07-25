@@ -136,7 +136,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "time() - oracle_relay_main_price_origin_seconds",
+          "expr": "max by (asset) (oracle_relay_main_price_staleness_seconds)",
           "refId": "A",
           "legendFormat": "{{asset}}"
         }
@@ -620,7 +620,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "time() - oracle_relay_main_price_origin_seconds",
+          "expr": "max by (asset) (oracle_relay_main_price_staleness_seconds)",
           "refId": "A",
           "legendFormat": "{{asset}}"
         }
