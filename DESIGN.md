@@ -196,7 +196,19 @@ Warp → control-host signing → receiver state on main, ~0.5s relay latency at
   burning guaranteed on-chain reverts; second resolution is thus the
   freshness floor. Sub-second freshness would need a monotonic sequence
   number in the payload instead of block.timestamp — a contract change, so a
-  chain recreation.
+  chain recreation. (Done 2026-07-25: payloads carry a per-asset seq.)
+- `initialMinDelayMS` seeds the ACP-226 min block delay ONLY when Granite is
+  active at the genesis block's own timestamp — and a zero `graniteTimestamp`
+  is coerced to the network's real activation date, so a zero genesis
+  `timestamp` (1970) is pre-Granite, the seed is skipped, and the chain
+  starts at the hardcoded ~2000ms `InitialDelayExcess`, converging toward
+  `min-delay-target` at 200 excess units (~0.02%) per block: ~23k blocks to
+  reach 25ms. This masqueraded as a fixed ~2s block cadence immune to every
+  fee/delay setting and to 585 TPS of load (blocks packed instead of
+  speeding up). Fix: genesis `timestamp` set to a fixed post-Granite instant
+  (2026-07-01). Proven live: with the seed applied, bombard mined 1000 TPS at
+  91–117ms tx p50 on the same fleet, and long-lived chains explain why the
+  earlier release saw 25ms "from genesis" — they had converged over days.
 
 ## Deployment simplifications (decided 2026-07-22)
 
