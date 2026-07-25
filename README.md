@@ -78,7 +78,7 @@ lifecycle step after initial deployment.
   follow-only node with a stable TLS identity and no BLS signer.
 - `dc` is an optional freeform display/selector tag. If omitted, it remains
   visibly unset. Maintenance verbs accept `dc=<tag>` selectors and `status`
-  groups by it. Nothing functional depends on it.
+  displays it for every machine. Nothing functional depends on it.
 - Weights are **not** inventory. On-chain weight is the sole truth; `status`
   reads it from the P-chain.
 - `deployment/public.json` is generated from the private identities and is the
@@ -170,7 +170,7 @@ fleet pchain follow
 fleet start [<node>|dc=<tag> ...]
 fleet stop [<node>|dc=<tag> ...]
 fleet destroy [<node>|dc=<tag> ...]
-fleet status [<node>|dc=<tag> ...]
+fleet status
 fleet place <identity-letter> <node>
 fleet apply-placement
 ```
@@ -299,8 +299,9 @@ unreachable machine fails the command and is outside the benchmark scope.
 `fleet deploy` always targets the complete inventory. Its one required argument
 chooses the P-chain node's initial source: `frozen` or `follow`. There is no
 default. Deployment is not a node-maintenance interface.
-For `start`, `stop`, `destroy`, and `status`, a selector is a node number or
-`dc=<tag>`; multiple selectors form a union, and no selector targets every node.
+For `start`, `stop`, and `destroy`, a selector is a node number or `dc=<tag>`;
+multiple selectors form a union, and no selector targets every node. `status`
+takes no selectors and always reports the complete inventory.
 
 `fleet deploy` first deploys the sole P-chain node through strict stop,
 package, systemd-unit, identity, optional archive restore, and start phases.
@@ -348,9 +349,40 @@ next phase if any node fails.
 
 `fleet stop` disables and gracefully stops the selected services, waits for
 inactivity, and preserves their databases, logs, installed files, and current
-keys. `fleet status` is read-only and reports the node number, DC, role,
-assigned identity, NodeID, systemd intent and runtime state, L1 serving state,
-and accepted height.
+keys. `fleet status` is read-only and prints one machine-centric node table:
+
+```text
+NODE  DC  ROLE       ID  WEIGHT  STATE  HEIGHT
+1     A   validator  a   100000  up     812345
+9     A   rpc        i   -       up     812344
+```
+
+The P-chain machine is deliberately absent from this table. It has its own
+section below, so the full inventory is covered across both sections without
+duplicating a row or mixing P-chain and L1 heights.
+
+`ID` is the identity assigned to that machine by `deployment/placement.json`.
+For a validator, `WEIGHT` is the actual weight of that identity read from the
+fleet's local P-chain view and is always `1`, `1000`, or `100000`. RPC rows show
+`-`. `STATE` collapses systemd intent and runtime details into `up`, `down`,
+`failed`, or `not installed`. `HEIGHT` is the raw accepted L1 height observed on
+that machine. Exact height differences are normal with 25ms blocks across
+roughly 20ms inter-DC latency, so status never flags a height mismatch.
+
+Nodes are probed concurrently with one attempt each and no retry. A cell reads
+`-` when the value does not apply or the node is deliberately down, and `?` when
+the value should exist but could not be observed.
+
+Runtime NodeID is a verification check, not a permanent column. When a running
+node's runtime identity differs from the identity assigned by placement,
+`status` prints a loud explicit error rather than quietly presenting the row as
+healthy.
+
+`fleet status` always prints everything it managed to observe. Probe failures
+are collected, never aborted on, and reported below the table. It exits nonzero
+for identity drift, for an active service whose API cannot answer, and for a
+P-chain API failure when the P-chain view is required. Deliberate `down` and
+`not installed` nodes are valid drill states and exit zero.
 
 P-chain status remains available when no validator or RPC has been deployed.
 It reports:
@@ -362,11 +394,18 @@ P-CHAIN  MODE    LOCAL HEIGHT  UPSTREAM HEIGHT  LAG  L1 STATE  READY TO FREEZE
 
 The upstream height is sampled immediately before the local height. Following
 is `synced` when local height reaches that sample and `catching-up` otherwise.
-Frozen mode reports `frozen`, its local height, and the upstream delta instead
-of calling an intentionally frozen node unsynchronized. `READY TO FREEZE=yes`
-requires both synchronization and local visibility of the complete management
-and main validator sets. `fleet pchain freeze` runs the same check and refuses
-to freeze when either condition is missing.
+`READY TO FREEZE=yes` requires both synchronization and local visibility of the
+complete management and main validator sets. When following and the upstream
+API is unreachable, upstream height and lag are `?` and `READY TO FREEZE` is
+`no`, because synchronization cannot be established without an upstream height.
+
+Frozen mode reports `frozen` with its local height and shows upstream height,
+lag, and `READY TO FREEZE` as `-`. It never contacts the upstream: the node is
+already frozen, so readiness to freeze is meaningless and an unreachable
+upstream is not a failure. Local height and validator-set visibility are still
+reported whenever the local P-chain API answers. `fleet pchain freeze` runs the
+same synchronization and validator-set check and refuses to freeze when either
+condition is missing.
 
 `fleet destroy` sends SIGKILL to every selected AvalancheGo process, prevents
 systemd from restarting it, and verifies every selected unit is inactive
