@@ -503,11 +503,16 @@ func confirmDeliveries(ctx context.Context, main *evmClient, pending <-chan pend
 	}
 }
 
+// mainPricePollInterval samples the receiver's on-chain price for the main
+// series. It must be well under the delivery latency (~150ms) or the metric,
+// not the pipeline, becomes the reported staleness floor.
+const mainPricePollInterval = 250 * time.Millisecond
+
 // pollMainPrices reads latestPrice from the receiver contract on the main chain
-// every 2s for each known asset and exports it as the chain="main" price series.
+// for each known asset and exports it as the chain="main" price series.
 // A read failure is fatal, consistent with the relay's fail-fast ethos.
 func pollMainPrices(ctx context.Context, main *evmClient, deployment Deployment, meters *metrics, fail func(error)) {
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(mainPricePollInterval)
 	defer ticker.Stop()
 	for {
 		select {
