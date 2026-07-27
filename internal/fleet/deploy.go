@@ -72,11 +72,14 @@ type Deployer struct {
 
 func NewDeployer(root string, out io.Writer) *Deployer {
 	return &Deployer{
-		root:      root,
-		out:       out,
-		runner:    osCommandRunner{stdout: out, stderr: os.Stderr},
-		http:      &http.Client{Timeout: 5 * time.Second},
-		waitLimit: 10 * time.Minute,
+		root:   root,
+		out:    out,
+		runner: osCommandRunner{stdout: out, stderr: os.Stderr},
+		http:   &http.Client{Timeout: 5 * time.Second},
+		// 30 minutes, not 10: twelve nodes bootstrapping the P-chain from one
+		// frozen relay measured about 7 to 8 minutes each, and the old limit
+		// aborted deploys whose nodes were healthy and still progressing.
+		waitLimit: 30 * time.Minute,
 	}
 }
 
