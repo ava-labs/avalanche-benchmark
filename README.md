@@ -210,6 +210,8 @@ ssh -i ~/.ssh/fleet ubuntu@<pchain-host> \
 
 The shipped example: 8 validators and 4 RPC nodes split across two sites, one P-chain node, one control machine. Nothing below is provider-specific.
 
+![Two-site benchmark topology](docs/architecture.png)
+
 ```mermaid
 flowchart LR
     subgraph CONTROL[control machine]
