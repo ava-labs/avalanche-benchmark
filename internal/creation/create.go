@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/funding"
@@ -159,9 +160,10 @@ func create(
 		return Result{}, fmt.Errorf("read required genesis template %s: %w", genesisTemplatePath, err)
 	}
 	genesisAddress := ethcommon.HexToAddress(public.GenesisAddress)
+	createdAt := time.Now()
 	// The management chain never runs, so its genesis stays contract-free even
 	// when the main chain's genesis later embeds the oracle receiver.
-	managementGenesis, err := RenderGenesis(template, []ethcommon.Address{genesisAddress}, nil, nil)
+	managementGenesis, err := RenderGenesis(template, []ethcommon.Address{genesisAddress}, nil, nil, createdAt)
 	if err != nil {
 		return Result{}, err
 	}
@@ -186,6 +188,7 @@ func create(
 				},
 			}},
 			&feederAddress,
+			createdAt,
 		)
 		if err != nil {
 			return Result{}, err
@@ -228,17 +231,18 @@ func create(
 	}
 
 	keychain := secp256k1fx.NewKeychain(fundingKey)
-	wallet, err := newWallet(ctx, environment.PChainAPI, keychain, primary.WalletConfig{})
-	if err != nil {
-		return Result{}, fmt.Errorf("connect P-chain wallet to %s: %w", environment.PChainAPI, err)
+	issue := func(action string, build func(pwallet.Wallet) (*txs.Tx, error)) (*txs.Tx, error) {
+		return issueTx(ctx, action, environment.PChainAPI, keychain, &state, newWallet, build)
 	}
 	subnetOwner := &secp256k1fx.OutputOwners{Threshold: 1, Addrs: []ids.ShortID{fundingKey.Address()}}
 	validatorOwner := warpmessage.PChainOwner{Threshold: 1, Addresses: []ids.ShortID{fundingKey.Address()}}
 
 	fmt.Println("creating manager subnet")
-	managerSubnetTx, err := wallet.IssueCreateSubnetTx(subnetOwner)
+	managerSubnetTx, err := issue("manager CreateSubnetTx", func(w pwallet.Wallet) (*txs.Tx, error) {
+		return w.IssueCreateSubnetTx(subnetOwner)
+	})
 	if err != nil {
-		return Result{}, fmt.Errorf("manager CreateSubnetTx: %w", err)
+		return Result{}, err
 	}
 	state.ManagerSubnetID = managerSubnetTx.ID()
 	fmt.Printf("accepted manager CreateSubnetTx %s\n", managerSubnetTx.ID())
@@ -246,14 +250,12 @@ func create(
 		return Result{}, err
 	}
 
-	wallet, err = makeWallet(ctx, environment.PChainAPI, keychain, state, newWallet)
+	fmt.Println("creating management chain")
+	managerChainTx, err := issue("manager CreateChainTx", func(w pwallet.Wallet) (*txs.Tx, error) {
+		return w.IssueCreateChainTx(state.ManagerSubnetID, managementGenesis, constants.SubnetEVMID, nil, "management")
+	})
 	if err != nil {
 		return Result{}, err
-	}
-	fmt.Println("creating management chain")
-	managerChainTx, err := wallet.IssueCreateChainTx(state.ManagerSubnetID, managementGenesis, constants.SubnetEVMID, nil, "management")
-	if err != nil {
-		return Result{}, fmt.Errorf("manager CreateChainTx: %w", err)
 	}
 	state.ManagerChainID = managerChainTx.ID()
 	fmt.Printf("accepted manager CreateChainTx %s\n", managerChainTx.ID())
@@ -272,14 +274,16 @@ func create(
 		return Result{}, err
 	}
 	fmt.Println("converting manager subnet to a self-managed L1")
-	managerConvertTx, err := wallet.IssueConvertSubnetToL1Tx(
-		state.ManagerSubnetID,
-		state.ManagerChainID,
-		managerAddress.Bytes(),
-		managerValidators,
-	)
+	managerConvertTx, err := issue("manager ConvertSubnetToL1Tx", func(w pwallet.Wallet) (*txs.Tx, error) {
+		return w.IssueConvertSubnetToL1Tx(
+			state.ManagerSubnetID,
+			state.ManagerChainID,
+			managerAddress.Bytes(),
+			managerValidators,
+		)
+	})
 	if err != nil {
-		return Result{}, fmt.Errorf("manager ConvertSubnetToL1Tx: %w", err)
+		return Result{}, err
 	}
 	state.ManagerConvertTxID = managerConvertTx.ID()
 	fmt.Printf("accepted manager ConvertSubnetToL1Tx %s\n", managerConvertTx.ID())
@@ -293,9 +297,11 @@ func create(
 		}
 		fmt.Printf("generated %s\n", oracleGenesisPath)
 		fmt.Println("creating oracle subnet")
-		oracleSubnetTx, err := wallet.IssueCreateSubnetTx(subnetOwner)
+		oracleSubnetTx, err := issue("oracle CreateSubnetTx", func(w pwallet.Wallet) (*txs.Tx, error) {
+			return w.IssueCreateSubnetTx(subnetOwner)
+		})
 		if err != nil {
-			return Result{}, fmt.Errorf("oracle CreateSubnetTx: %w", err)
+			return Result{}, err
 		}
 		state.OracleSubnetID = oracleSubnetTx.ID()
 		fmt.Printf("accepted oracle CreateSubnetTx %s\n", oracleSubnetTx.ID())
@@ -303,14 +309,12 @@ func create(
 			return Result{}, err
 		}
 
-		wallet, err = makeWallet(ctx, environment.PChainAPI, keychain, state, newWallet)
+		fmt.Println("creating oracle chain")
+		oracleChainTx, err := issue("oracle CreateChainTx", func(w pwallet.Wallet) (*txs.Tx, error) {
+			return w.IssueCreateChainTx(state.OracleSubnetID, oracleGenesis, constants.SubnetEVMID, nil, "oracle")
+		})
 		if err != nil {
 			return Result{}, err
-		}
-		fmt.Println("creating oracle chain")
-		oracleChainTx, err := wallet.IssueCreateChainTx(state.OracleSubnetID, oracleGenesis, constants.SubnetEVMID, nil, "oracle")
-		if err != nil {
-			return Result{}, fmt.Errorf("oracle CreateChainTx: %w", err)
 		}
 		state.OracleChainID = oracleChainTx.ID()
 		fmt.Printf("accepted oracle CreateChainTx %s\n", oracleChainTx.ID())
@@ -337,14 +341,16 @@ func create(
 			return Result{}, err
 		}
 		fmt.Println("converting oracle subnet to an L1 managed by the management chain")
-		oracleConvertTx, err := wallet.IssueConvertSubnetToL1Tx(
-			state.OracleSubnetID,
-			state.ManagerChainID,
-			managerAddress.Bytes(),
-			oracleValidators,
-		)
+		oracleConvertTx, err := issue("oracle ConvertSubnetToL1Tx", func(w pwallet.Wallet) (*txs.Tx, error) {
+			return w.IssueConvertSubnetToL1Tx(
+				state.OracleSubnetID,
+				state.ManagerChainID,
+				managerAddress.Bytes(),
+				oracleValidators,
+			)
+		})
 		if err != nil {
-			return Result{}, fmt.Errorf("oracle ConvertSubnetToL1Tx: %w", err)
+			return Result{}, err
 		}
 		state.OracleConvertTxID = oracleConvertTx.ID()
 		fmt.Printf("accepted oracle ConvertSubnetToL1Tx %s\n", oracleConvertTx.ID())
@@ -370,6 +376,7 @@ func create(
 				},
 			}},
 			nil,
+			createdAt,
 		)
 		if err != nil {
 			return Result{}, err
@@ -381,9 +388,11 @@ func create(
 	}
 
 	fmt.Println("creating main subnet")
-	mainSubnetTx, err := wallet.IssueCreateSubnetTx(subnetOwner)
+	mainSubnetTx, err := issue("main CreateSubnetTx", func(w pwallet.Wallet) (*txs.Tx, error) {
+		return w.IssueCreateSubnetTx(subnetOwner)
+	})
 	if err != nil {
-		return Result{}, fmt.Errorf("main CreateSubnetTx: %w", err)
+		return Result{}, err
 	}
 	state.SubnetID = mainSubnetTx.ID()
 	fmt.Printf("accepted main CreateSubnetTx %s\n", mainSubnetTx.ID())
@@ -391,14 +400,12 @@ func create(
 		return Result{}, err
 	}
 
-	wallet, err = makeWallet(ctx, environment.PChainAPI, keychain, state, newWallet)
+	fmt.Println("creating main chain")
+	mainChainTx, err := issue("main CreateChainTx", func(w pwallet.Wallet) (*txs.Tx, error) {
+		return w.IssueCreateChainTx(state.SubnetID, mainGenesis, constants.SubnetEVMID, nil, "benchmark")
+	})
 	if err != nil {
 		return Result{}, err
-	}
-	fmt.Println("creating main chain")
-	mainChainTx, err := wallet.IssueCreateChainTx(state.SubnetID, mainGenesis, constants.SubnetEVMID, nil, "benchmark")
-	if err != nil {
-		return Result{}, fmt.Errorf("main CreateChainTx: %w", err)
 	}
 	state.ChainID = mainChainTx.ID()
 	fmt.Printf("accepted main CreateChainTx %s\n", mainChainTx.ID())
@@ -425,14 +432,16 @@ func create(
 		return Result{}, err
 	}
 	fmt.Println("converting main subnet to an L1 managed by the management chain")
-	mainConvertTx, err := wallet.IssueConvertSubnetToL1Tx(
-		state.SubnetID,
-		state.ManagerChainID,
-		managerAddress.Bytes(),
-		mainValidators,
-	)
+	mainConvertTx, err := issue("main ConvertSubnetToL1Tx", func(w pwallet.Wallet) (*txs.Tx, error) {
+		return w.IssueConvertSubnetToL1Tx(
+			state.SubnetID,
+			state.ManagerChainID,
+			managerAddress.Bytes(),
+			mainValidators,
+		)
+	})
 	if err != nil {
-		return Result{}, fmt.Errorf("main ConvertSubnetToL1Tx: %w", err)
+		return Result{}, err
 	}
 	state.ConvertTxID = mainConvertTx.ID()
 	fmt.Printf("accepted main ConvertSubnetToL1Tx %s\n", mainConvertTx.ID())
@@ -454,6 +463,54 @@ func requireMissing(path string) error {
 	default:
 		return fmt.Errorf("inspect creation output %s: %w", path, err)
 	}
+}
+
+const issueAttempts = 5
+
+// issueBackoff is a variable so tests can exhaust the retries without sleeping.
+var issueBackoff = 3 * time.Second
+
+// issueTx rebuilds the wallet before every attempt and retries a failed
+// issuance.
+//
+// The P-chain wallet caches its UTXO set when it is constructed. After a few
+// sequential issuances it can build a transaction that spends an output the
+// network has already consumed, which fails verification with "failed to read
+// consumed UTXO". Rebuilding before each attempt makes the retry a fresh build
+// against current state rather than a replay of the same doomed transaction,
+// so this both retries and removes the cause.
+func issueTx(
+	ctx context.Context,
+	action string,
+	api string,
+	keys keychain.Keychain,
+	state *State,
+	newWallet walletFactory,
+	build func(pwallet.Wallet) (*txs.Tx, error),
+) (*txs.Tx, error) {
+	var lastErr error
+	for attempt := 1; attempt <= issueAttempts; attempt++ {
+		wallet, err := makeWallet(ctx, api, keys, *state, newWallet)
+		if err != nil {
+			return nil, err
+		}
+		tx, err := build(wallet)
+		if err == nil {
+			return tx, nil
+		}
+		lastErr = err
+		if attempt == issueAttempts {
+			break
+		}
+		fmt.Printf("%s attempt %d/%d failed: %v\n", action, attempt, issueAttempts, err)
+		fmt.Printf("  rebuilding the wallet UTXO set, retrying in %s\n", issueBackoff)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(issueBackoff):
+		}
+	}
+	return nil, fmt.Errorf("%s after %d attempts: %w", action, issueAttempts, lastErr)
 }
 
 func makeWallet(

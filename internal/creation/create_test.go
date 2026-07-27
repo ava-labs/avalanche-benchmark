@@ -3,6 +3,7 @@ package creation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -136,8 +137,17 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	if !reflect.DeepEqual(wallet.events, wantEvents) {
 		t.Fatalf("unexpected transaction order: got %v, want %v", wallet.events, wantEvents)
 	}
-	if len(walletConfigs) != 3 || len(walletConfigs[0].SubnetIDs) != 0 || len(walletConfigs[1].SubnetIDs) != 1 || len(walletConfigs[2].SubnetIDs) != 2 {
-		t.Fatalf("unexpected wallet refreshes: %+v", walletConfigs)
+	// One rebuild per issuance: the wallet caches its UTXO set, so reusing one
+	// across issuances is what produced "failed to read consumed UTXO" live.
+	// Each rebuild must carry every subnet known at that point.
+	wantSubnetCounts := []int{0, 1, 1, 1, 2, 2}
+	if len(walletConfigs) != len(wantSubnetCounts) {
+		t.Fatalf("expected %d wallet rebuilds, got %d: %+v", len(wantSubnetCounts), len(walletConfigs), walletConfigs)
+	}
+	for i, want := range wantSubnetCounts {
+		if got := len(walletConfigs[i].SubnetIDs); got != want {
+			t.Fatalf("wallet rebuild %d tracked %d subnet(s), want %d: %+v", i, got, want, walletConfigs)
+		}
 	}
 	if len(wallet.conversions) != 2 {
 		t.Fatalf("expected two conversions, got %d", len(wallet.conversions))
@@ -346,5 +356,65 @@ func TestValidateManagerCommittee(t *testing.T) {
 		if err := ValidateManagerCommittee(size); err == nil {
 			t.Errorf("size %d accepted", size)
 		}
+	}
+}
+
+// flakyWallet fails the first n issuances, imitating a stale UTXO set.
+type flakyWallet struct {
+	fakeWallet
+	failures int
+}
+
+func (w *flakyWallet) IssueCreateSubnetTx(owners *secp256k1fx.OutputOwners, opts ...commonopts.Option) (*txs.Tx, error) {
+	if w.failures > 0 {
+		w.failures--
+		return nil, errors.New("failed to read consumed UTXO 2hMVvavZV9RUCzgGY63q8ZFCYDX4vVDr2txhxANbsXUiBTjYL4:0 due to: not found")
+	}
+	return w.fakeWallet.IssueCreateSubnetTx(owners, opts...)
+}
+
+func TestIssueTxRebuildsTheWalletAndRetries(t *testing.T) {
+	previous := issueBackoff
+	issueBackoff = 0
+	t.Cleanup(func() { issueBackoff = previous })
+
+	wallet := &flakyWallet{failures: 2}
+	rebuilds := 0
+	factory := func(_ context.Context, _ string, _ keychain.Keychain, _ primary.WalletConfig) (pwallet.Wallet, error) {
+		rebuilds++
+		return wallet, nil
+	}
+	state := State{}
+	tx, err := issueTx(context.Background(), "main CreateSubnetTx", "https://example.invalid", nil, &state, factory,
+		func(w pwallet.Wallet) (*txs.Tx, error) { return w.IssueCreateSubnetTx(nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tx == nil {
+		t.Fatal("expected a transaction after the retries succeeded")
+	}
+	// Two failures then a success, and a fresh wallet for every attempt.
+	if rebuilds != 3 {
+		t.Fatalf("wallet rebuilds = %d, want 3 (one per attempt)", rebuilds)
+	}
+}
+
+func TestIssueTxGivesUpAndReportsTheLastError(t *testing.T) {
+	previous := issueBackoff
+	issueBackoff = 0
+	t.Cleanup(func() { issueBackoff = previous })
+
+	wallet := &flakyWallet{failures: issueAttempts}
+	factory := func(_ context.Context, _ string, _ keychain.Keychain, _ primary.WalletConfig) (pwallet.Wallet, error) {
+		return wallet, nil
+	}
+	state := State{}
+	_, err := issueTx(context.Background(), "main CreateSubnetTx", "https://example.invalid", nil, &state, factory,
+		func(w pwallet.Wallet) (*txs.Tx, error) { return w.IssueCreateSubnetTx(nil) })
+	if err == nil {
+		t.Fatal("expected exhausted retries to fail")
+	}
+	if !strings.Contains(err.Error(), "main CreateSubnetTx") || !strings.Contains(err.Error(), "consumed UTXO") {
+		t.Fatalf("error must name the action and carry the last cause, got: %v", err)
 	}
 }

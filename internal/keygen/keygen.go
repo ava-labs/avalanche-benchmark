@@ -9,6 +9,7 @@ import (
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/placement"
 	"github.com/ava-labs/avalanchego/utils/crypto/secp256k1"
 	ethcommon "github.com/ava-labs/libevm/common"
 )
@@ -69,6 +70,10 @@ func Generate(outputDirectory string, nodes []config.Node, managerCount int) (Re
 	publicPath := filepath.Join(outputDirectory, "public.json")
 	digest, err := creation.SavePublic(publicPath, public)
 	if err != nil {
+		return Result{}, err
+	}
+	placementPath := filepath.Join(outputDirectory, placement.FileName)
+	if err := placement.Save(placementPath, placement.Default(public)); err != nil {
 		return Result{}, err
 	}
 	return Result{Public: public, Digest: digest}, nil

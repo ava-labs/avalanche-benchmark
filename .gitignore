@@ -77,3 +77,4 @@ nohup.out
 /.legacy/
 .DS_Store
 .linux-build/
+/.questions/

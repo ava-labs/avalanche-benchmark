@@ -23,6 +23,10 @@ import (
 	"github.com/ava-labs/avalanchego/utils/units"
 )
 
+// defaultManagerCommittee is one signer: the minimum authority. Four is the
+// smallest committee that survives losing one signing key.
+const defaultManagerCommittee = 1
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, "ERROR:", err)
@@ -35,9 +39,12 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("get working directory: %w", err)
 	}
+	if err := config.InstallAPITokenFromRoot(root); err != nil {
+		return err
+	}
 	switch {
 	case (len(os.Args) == 2 || len(os.Args) == 3) && os.Args[1] == "keygen":
-		managerCommittee := 1
+		managerCommittee := defaultManagerCommittee
 		if len(os.Args) == 3 {
 			managerCommittee, err = strconv.Atoi(os.Args[2])
 			if err != nil {
@@ -119,6 +126,20 @@ func create(root string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect ./deployment/network.env: %w", err)
 	}
+	// An absent deployment directory means there is nothing to create from, so
+	// generate the identities rather than making the operator run a second
+	// command that has exactly one sensible outcome. An existing but incomplete
+	// directory is still an error: it means a previous run left state behind.
+	if _, err := os.Stat(deploymentPath); errors.Is(err, os.ErrNotExist) {
+		fmt.Println("no ./deployment; generating fresh identities first")
+		if err := generateKeys(root, defaultManagerCommittee); err != nil {
+			return err
+		}
+		fmt.Println()
+	} else if err != nil {
+		return fmt.Errorf("inspect ./deployment: %w", err)
+	}
+
 	envPath := filepath.Join(root, ".env")
 	environment, err := config.LoadEnvironment(envPath)
 	if err != nil {

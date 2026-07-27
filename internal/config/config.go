@@ -43,6 +43,9 @@ type Environment struct {
 type NetworkEnvironment struct {
 	Network   string
 	PChainAPI string
+	// PChainAPIToken is the optional rate-limit bypass token for the public
+	// API. It is a secret and never belongs in a committed file or a build.
+	PChainAPIToken string
 }
 
 type FleetEnvironment struct {
@@ -130,6 +133,7 @@ func validateEnvironmentFields(path string, values map[string]string) error {
 	allowed := map[string]struct{}{
 		"NETWORK":             {},
 		"PCHAIN_API":          {},
+		"PCHAIN_API_TOKEN":    {},
 		"FUNDING_PRIVATE_KEY": {},
 		"SSH_USER":            {},
 		"SSH_KEY_PATH":        {},
@@ -215,7 +219,17 @@ func parseNetworkEnvironment(path string, values map[string]string) (NetworkEnvi
 	if err != nil || parsedAPI.Host == "" || (parsedAPI.Scheme != "http" && parsedAPI.Scheme != "https") {
 		return NetworkEnvironment{}, fmt.Errorf("%s: PCHAIN_API must be an explicit http or https URL, got %q", path, pChainAPI)
 	}
-	return NetworkEnvironment{Network: network, PChainAPI: pChainAPI}, nil
+	if parsedAPI.RawQuery != "" {
+		return NetworkEnvironment{}, fmt.Errorf(
+			"%s: PCHAIN_API must not carry a query string; the AvalancheGo client overwrites it. Use PCHAIN_API_TOKEN instead",
+			path,
+		)
+	}
+	return NetworkEnvironment{
+		Network:        network,
+		PChainAPI:      pChainAPI,
+		PChainAPIToken: strings.TrimSpace(values["PCHAIN_API_TOKEN"]),
+	}, nil
 }
 
 func LoadNodes(path string) ([]Node, error) {

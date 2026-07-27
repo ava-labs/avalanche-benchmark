@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	ethcommon "github.com/ava-labs/libevm/common"
 )
@@ -23,10 +24,13 @@ const genesisTestTemplate = `{
 	"parentHash":"0x0"
 }`
 
+// genesisTestCreated is an arbitrary fixed creation instant used across tests.
+var genesisTestCreated = time.Unix(1785000000, 0)
+
 func TestRenderGenesisFundsOnlyDerivedAddress(t *testing.T) {
 	address := ethcommon.HexToAddress("0x1234567890123456789012345678901234567890")
 
-	rendered, err := RenderGenesis([]byte(genesisTestTemplate), []ethcommon.Address{address}, nil, nil)
+	rendered, err := RenderGenesis([]byte(genesisTestTemplate), []ethcommon.Address{address}, nil, nil, genesisTestCreated)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,8 +49,26 @@ func TestRenderGenesisFundsOnlyDerivedAddress(t *testing.T) {
 
 func TestRenderGenesisRejectsStaticAllocation(t *testing.T) {
 	template := []byte(`{"config":{},"alloc":{"static":{"balance":"1"}}}`)
-	if _, err := RenderGenesis(template, []ethcommon.Address{{}}, nil, nil); err == nil {
+	if _, err := RenderGenesis(template, []ethcommon.Address{{}}, nil, nil, genesisTestCreated); err == nil {
 		t.Fatal("expected static allocation to be rejected")
+	}
+}
+
+// A genesis stamped before the network's Granite activation leaves Granite
+// inactive at block zero, which silently discards initialMinDelayMS and starts
+// the chain at the 2000ms ACP-226 default.
+func TestRenderGenesisStampsCreationTime(t *testing.T) {
+	rendered, err := RenderGenesis([]byte(genesisTestTemplate), []ethcommon.Address{ethcommon.HexToAddress("0x01")}, nil, nil, genesisTestCreated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document genesisDocument
+	if err := json.Unmarshal(rendered, &document); err != nil {
+		t.Fatal(err)
+	}
+	want := "0x6a64f040"
+	if document.Timestamp != want {
+		t.Fatalf("genesis timestamp = %q, want %q (the creation time, not the template zero)", document.Timestamp, want)
 	}
 }
 
@@ -61,7 +83,7 @@ func TestRenderGenesisBakesContractCodeAndStorage(t *testing.T) {
 		},
 	}
 
-	rendered, err := RenderGenesis([]byte(genesisTestTemplate), []ethcommon.Address{funded, feeder}, []ContractAllocation{contract}, nil)
+	rendered, err := RenderGenesis([]byte(genesisTestTemplate), []ethcommon.Address{funded, feeder}, []ContractAllocation{contract}, nil, genesisTestCreated)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +111,7 @@ func TestRenderGenesisFeeManagerAdmin(t *testing.T) {
 	admin := ethcommon.HexToAddress("0xAbcDef0123456789abCDef0123456789ABcdEF01")
 	withFeeManager := []byte(strings.Replace(genesisTestTemplate, `"config":{"chainId":99999}`, `"config":{"chainId":99999,"feeManagerConfig":{"blockTimestamp":7}}`, 1))
 
-	rendered, err := RenderGenesis(withFeeManager, []ethcommon.Address{admin}, nil, &admin)
+	rendered, err := RenderGenesis(withFeeManager, []ethcommon.Address{admin}, nil, &admin, genesisTestCreated)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,10 +128,10 @@ func TestRenderGenesisFeeManagerAdmin(t *testing.T) {
 		t.Fatalf("admin not injected: %+v", admins)
 	}
 
-	if _, err := RenderGenesis(withFeeManager, []ethcommon.Address{admin}, nil, nil); err == nil {
+	if _, err := RenderGenesis(withFeeManager, []ethcommon.Address{admin}, nil, nil, genesisTestCreated); err == nil {
 		t.Fatal("feeManagerConfig without an admin must be rejected")
 	}
-	if _, err := RenderGenesis([]byte(genesisTestTemplate), []ethcommon.Address{admin}, nil, &admin); err == nil {
+	if _, err := RenderGenesis([]byte(genesisTestTemplate), []ethcommon.Address{admin}, nil, &admin, genesisTestCreated); err == nil {
 		t.Fatal("admin without feeManagerConfig must be rejected")
 	}
 }
@@ -121,7 +143,7 @@ func TestRenderGenesisRejectsBadContracts(t *testing.T) {
 		"unprefixed code":  {Address: AggregatorAddress, RuntimeCode: "6001"},
 		"funded collision": {Address: funded[0], RuntimeCode: "0x6001"},
 	} {
-		if _, err := RenderGenesis([]byte(genesisTestTemplate), funded, []ContractAllocation{contract}, nil); err == nil {
+		if _, err := RenderGenesis([]byte(genesisTestTemplate), funded, []ContractAllocation{contract}, nil, genesisTestCreated); err == nil {
 			t.Fatalf("%s: expected error", name)
 		}
 	}

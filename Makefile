@@ -1,4 +1,4 @@
-.PHONY: all clean build pack package-build bin/l1 bin/fleet bin/oracle bin/VERSIONS
+.PHONY: all clean build pack pack-fast package-build bin/l1 bin/fleet bin/oracle bin/bombard bin/VERSIONS
 
 .DEFAULT_GOAL := all
 
@@ -10,13 +10,13 @@ PACKAGE_GO_ENV := GOTOOLCHAIN=$(GO_TOOLCHAIN) \
 	GOMODCACHE=/tmp/avalanche-benchmark-gomodcache \
 	GOCACHE=/tmp/avalanche-benchmark-gocache
 AVALANCHEGO_REPO := https://github.com/ava-labs/avalanchego.git
-AVALANCHEGO_COMMIT := a067df1192c95d4755f76a631ef3c6ed772e977c
+AVALANCHEGO_COMMIT := 80c123c996d7dbdab5f2800ed894348df7e11c21
 AVALANCHEGO_BUILD_DIR := $(CURDIR)/.build/avalanchego-$(AVALANCHEGO_COMMIT)
 SUBNET_EVM_ID := srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
 
 all: build
 
-build: bin/l1 bin/fleet bin/oracle
+build: bin/l1 bin/fleet bin/oracle bin/bombard
 
 bin/l1:
 	mkdir -p bin
@@ -29,6 +29,10 @@ bin/fleet:
 bin/oracle:
 	mkdir -p bin
 	$(PACKAGE_GO_ENV) go build -o bin/oracle ./cmd/oracle
+
+bin/bombard:
+	mkdir -p bin
+	$(PACKAGE_GO_ENV) go build -o bin/bombard ./cmd/bombard
 
 bin/avalanchego:
 	rm -rf $(AVALANCHEGO_BUILD_DIR)
@@ -49,35 +53,48 @@ bin/avalanchego:
 bin/$(SUBNET_EVM_ID): bin/avalanchego
 	test -x bin/$(SUBNET_EVM_ID)
 
-bin/VERSIONS: bin/avalanchego bin/$(SUBNET_EVM_ID) bin/l1 bin/fleet bin/oracle
+bin/VERSIONS: bin/avalanchego bin/$(SUBNET_EVM_ID) bin/l1 bin/fleet bin/oracle bin/bombard
 	bin/avalanchego --version > bin/VERSIONS
-	go version bin/avalanchego bin/$(SUBNET_EVM_ID) bin/l1 bin/fleet bin/oracle >> bin/VERSIONS
+	go version bin/avalanchego bin/$(SUBNET_EVM_ID) bin/l1 bin/fleet bin/oracle bin/bombard >> bin/VERSIONS
 	echo "avalanchego commit $(AVALANCHEGO_COMMIT)" >> bin/VERSIONS
 	echo "kit commit $$(git rev-parse HEAD)" >> bin/VERSIONS
 	cat bin/VERSIONS
 
-package-build: bin/avalanchego bin/$(SUBNET_EVM_ID) bin/l1 bin/fleet bin/oracle bin/VERSIONS
+package-build: bin/avalanchego bin/$(SUBNET_EVM_ID) bin/l1 bin/fleet bin/oracle bin/bombard bin/VERSIONS
+
+PACK_FILES := \
+	bin/ \
+	README.md \
+	DESIGN.md \
+	.env.example \
+	nodes.ini.example \
+	genesis-template.json \
+	oracle-genesis-template.json \
+	node-config.json \
+	chain-config.json \
+	chain-config-rpc.json \
+	chain-config-archive.json \
+	subnet-config.json \
+	subnet-config-oracle.json \
+	scripts/tpsdist.py \
+	monitoring/grafana-datasources.yml \
+	monitoring/dashboards/
 
 pack:
 	rm -rf bin
 	$(MAKE) package-build
 	rm -f remote-benchmark.tar.gz
-	tar -czf remote-benchmark.tar.gz \
-		bin/ \
-		README.md \
-		DESIGN.md \
-		.env.example \
-		nodes.ini.example \
-		genesis-template.json \
-		oracle-genesis-template.json \
-		node-config.json \
-		chain-config.json \
-		chain-config-rpc.json \
-		chain-config-archive.json \
-		subnet-config.json \
-		subnet-config-oracle.json \
-		monitoring/grafana-datasources.yml \
-		monitoring/dashboards/
+	tar -czf remote-benchmark.tar.gz $(PACK_FILES)
+	tar -tzf remote-benchmark.tar.gz
+
+# pack-fast keeps an already built avalanchego and plugin and rebuilds only the
+# kit binaries. Use it while iterating; use pack for anything shipped.
+pack-fast:
+	test -x bin/avalanchego && test -x bin/$(SUBNET_EVM_ID)
+	rm -f bin/l1 bin/fleet bin/oracle bin/bombard bin/VERSIONS
+	$(MAKE) package-build
+	rm -f remote-benchmark.tar.gz
+	tar -czf remote-benchmark.tar.gz $(PACK_FILES)
 	tar -tzf remote-benchmark.tar.gz
 
 clean:

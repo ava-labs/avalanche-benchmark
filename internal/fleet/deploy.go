@@ -21,6 +21,7 @@ import (
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/placement"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/vms/platformvm"
 	"github.com/joho/godotenv"
@@ -72,11 +73,14 @@ type Deployer struct {
 
 func NewDeployer(root string, out io.Writer) *Deployer {
 	return &Deployer{
-		root:      root,
-		out:       out,
-		runner:    osCommandRunner{stdout: out, stderr: os.Stderr},
-		http:      &http.Client{Timeout: 5 * time.Second},
-		waitLimit: 10 * time.Minute,
+		root:   root,
+		out:    out,
+		runner: osCommandRunner{stdout: out, stderr: os.Stderr},
+		http:   &http.Client{Timeout: 5 * time.Second},
+		// 30 minutes, not 10: twelve nodes bootstrapping the P-chain from one
+		// frozen relay measured about 7 to 8 minutes each, and the old limit
+		// aborted deploys whose nodes were healthy and still progressing.
+		waitLimit: 30 * time.Minute,
 	}
 }
 
@@ -99,7 +103,36 @@ type nodeDeployment struct {
 	renderDir string
 }
 
-func (d *Deployer) Deploy(ctx context.Context, pchainMode string) error {
+// l1DeployPhases is the per-node sequence that installs software and brings an
+// L1 node back up.
+var l1DeployPhases = []struct {
+	name   string
+	action func(*Deployer) func(context.Context, deployment, nodeDeployment) error
+}{
+	{"stop", func(d *Deployer) func(context.Context, deployment, nodeDeployment) error { return d.stop }},
+	{"package", func(d *Deployer) func(context.Context, deployment, nodeDeployment) error { return d.installPackage }},
+	{"systemd", func(d *Deployer) func(context.Context, deployment, nodeDeployment) error { return d.installUnit }},
+	{"identity", func(d *Deployer) func(context.Context, deployment, nodeDeployment) error { return d.installIdentity }},
+	{"start", func(d *Deployer) func(context.Context, deployment, nodeDeployment) error { return d.start }},
+	{"readiness", func(d *Deployer) func(context.Context, deployment, nodeDeployment) error { return d.waitL1Ready }},
+}
+
+// Deploy installs software on the L1 fleet and brings it up.
+//
+// With no selectors it deploys the whole inventory: the P-chain node first,
+// gated on its validator sets, then every L1 node phase by phase (all stop,
+// all package, ... , all start). That ordering is REQUIRED for a fresh fleet,
+// because a node only finishes bootstrapping once 75% of stake is connected,
+// so no node can become ready until its peers are also running.
+//
+// With selectors it is a ROLLING UPGRADE of already-running nodes: the P-chain
+// node is left alone (upgrade it with `fleet pchain freeze|follow`, which
+// reinstalls its package too) and each selected node runs the entire phase
+// sequence, including readiness, before the next node is touched. Use this to
+// replace binaries on a live fleet. Restarting several nodes at once loses the
+// peers that serve state-sync summaries, and a node that cannot get a summary
+// replays the whole chain from genesis instead of syncing.
+func (d *Deployer) Deploy(ctx context.Context, pchainMode string, selectors []string) error {
 	prepared, cleanup, err := d.prepare(pchainMode, true)
 	if err != nil {
 		return err
@@ -111,32 +144,65 @@ func (d *Deployer) Deploy(ctx context.Context, pchainMode string) error {
 		}
 	}
 
-	// The P-chain node is reconciled and accepted before any L1 node is
-	// touched. This is a phase barrier, not a best-effort bootstrap hint.
-	if err := d.reconcilePChain(ctx, prepared, prepared.pchainMode == frozenMode); err != nil {
-		return err
-	}
-	if err := d.waitPChainReady(ctx, prepared); err != nil {
-		return fmt.Errorf("P-chain readiness phase node %d (%s): %w", prepared.pchain.node.Number, prepared.pchain.node.Host, err)
+	rolling := len(selectors) > 0
+	if rolling {
+		chosen, err := selectNodes(l1Only(prepared.selected), selectors)
+		if err != nil {
+			return err
+		}
+		picked := make([]nodeDeployment, 0, len(chosen))
+		for _, want := range chosen {
+			for _, node := range prepared.selected {
+				if node.node.Number == want.Number {
+					picked = append(picked, node)
+					break
+				}
+			}
+		}
+		prepared.selected = picked
+	} else {
+		// The P-chain node is reconciled and accepted before any L1 node is
+		// touched. This is a phase barrier, not a best-effort bootstrap hint.
+		if err := d.reconcilePChain(ctx, prepared, prepared.pchainMode == frozenMode); err != nil {
+			return err
+		}
+		if err := d.waitPChainReady(ctx, prepared); err != nil {
+			return fmt.Errorf("P-chain readiness phase node %d (%s): %w", prepared.pchain.node.Number, prepared.pchain.node.Host, err)
+		}
 	}
 
-	for _, phase := range []struct {
-		name   string
-		action func(context.Context, deployment, nodeDeployment) error
-	}{
-		{"stop", d.stop},
-		{"package", d.installPackage},
-		{"systemd", d.installUnit},
-		{"identity", d.installIdentity},
-		{"start", d.start},
-		{"readiness", d.waitL1Ready},
-	} {
-		if err := d.phase(ctx, prepared, phase.name, phase.action); err != nil {
+	if rolling {
+		for _, node := range prepared.selected {
+			fmt.Fprintf(d.out, "== node %d (%s)\n", node.node.Number, node.node.Host)
+			one := prepared
+			one.selected = []nodeDeployment{node}
+			for _, phase := range l1DeployPhases {
+				if err := d.phase(ctx, one, phase.name, phase.action(d)); err != nil {
+					return err
+				}
+			}
+		}
+		fmt.Fprintf(d.out, "rolled %d L1 node(s), one at a time\n", len(prepared.selected))
+		return nil
+	}
+
+	for _, phase := range l1DeployPhases {
+		if err := d.phase(ctx, prepared, phase.name, phase.action(d)); err != nil {
 			return err
 		}
 	}
 	fmt.Fprintf(d.out, "deployed P-chain node and %d L1 node(s)\n", len(prepared.selected))
 	return nil
+}
+
+// l1Only projects the prepared deployments back to plain inventory nodes so the
+// shared selector parser can be reused.
+func l1Only(nodes []nodeDeployment) []config.Node {
+	result := make([]config.Node, 0, len(nodes))
+	for _, node := range nodes {
+		result = append(result, node.node)
+	}
+	return result
 }
 
 func (d *Deployer) FollowPChain(ctx context.Context) error {
@@ -177,12 +243,28 @@ func (d *Deployer) reconcilePChain(ctx context.Context, prepared deployment, see
 	return d.phase(ctx, pchainOnly, "P-chain start", d.startAndVerify)
 }
 
+// howToProduceArchive turns the empty-state dead end into instructions. A
+// frozen deploy cannot invent the archive, so the error names the exact
+// sequence that produces one and the alternative that needs none.
+const howToProduceArchive = `
+Produce the archive from a synchronized P-chain node:
+
+  fleet pchain follow    start the P-chain node following its upstream
+  fleet status           wait for synced and both validator sets visible
+  fleet pchain archive   write ./` + pchainArchive + `
+  fleet deploy frozen    retry this command
+
+Or deploy without an archive and let the P-chain node follow the public
+network instead:
+
+  fleet deploy follow`
+
 func (d *Deployer) validateFrozenDeployArchive() error {
 	archivePath := filepath.Join(d.root, pchainArchive)
 	info, err := os.Stat(archivePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("frozen deploy requires ./%s; file not found", pchainArchive)
+			return fmt.Errorf("frozen deploy requires ./%s; file not found\n%s", pchainArchive, howToProduceArchive)
 		}
 		return fmt.Errorf("frozen deploy requires ./%s: %w", pchainArchive, err)
 	}
@@ -378,6 +460,35 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 		return deployment{}, noCleanup, fmt.Errorf("deployment/public.json has %d nodes but nodes.ini has %d", len(publicByNode), len(nodes))
 	}
 
+	// Which identity belongs on a machine is placement.json, NOT public.json.
+	// public.json records the ORIGINAL keygen assignment and never changes, so
+	// resolving identities from it makes deploy silently undo every key swap: a
+	// failover that moved an identity off a dead box would put it straight back
+	// on the next deploy. placement.json is the control-side truth that place
+	// and start already honour.
+	currentPlacement, err := placement.Load(placement.Path(d.root))
+	if err != nil {
+		return deployment{}, noCleanup, err
+	}
+	if err := placement.Validate(currentPlacement, public, nodes); err != nil {
+		return deployment{}, noCleanup, err
+	}
+	identityByLetter := make(map[string]creation.PublicNode, len(public.Nodes))
+	for _, node := range public.Nodes {
+		identityByLetter[node.Identity] = node
+	}
+	assignedIdentity := func(node config.Node) (creation.PublicNode, error) {
+		letter, placed := currentPlacement[node.Number]
+		if !placed {
+			return creation.PublicNode{}, fmt.Errorf("deployment/placement.json has no identity for node %d", node.Number)
+		}
+		identity, known := identityByLetter[letter]
+		if !known {
+			return creation.PublicNode{}, fmt.Errorf("deployment/placement.json assigns unknown identity %q to node %d", letter, node.Number)
+		}
+		return identity, nil
+	}
+
 	state, err := godotenv.Read(filepath.Join(d.root, "deployment", "network.env"))
 	if err != nil {
 		return deployment{}, noCleanup, fmt.Errorf("read required deployment state deployment/network.env: %w", err)
@@ -428,9 +539,6 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 		if info.Mode()&0o111 == 0 {
 			return deployment{}, noCleanup, fmt.Errorf("required deployment binary %s is not executable", plugin)
 		}
-		if err := verifyConsensusConfig(filepath.Join(d.root, "subnet-config.json")); err != nil {
-			return deployment{}, noCleanup, err
-		}
 	}
 
 	ports := portsByNode(nodes)
@@ -466,7 +574,11 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 			break
 		}
 	}
-	pchainIdentity := publicByNode[pchain.Number]
+	pchainIdentity, err := assignedIdentity(pchain)
+	if err != nil {
+		cleanup()
+		return deployment{}, noCleanup, err
+	}
 	if err := validateIdentityFiles(d.root, pchainIdentity); err != nil {
 		cleanup()
 		return deployment{}, noCleanup, err
@@ -490,7 +602,11 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 		if node.Role == config.RolePChain {
 			continue
 		}
-		generated := publicByNode[node.Number]
+		generated, err := assignedIdentity(node)
+		if err != nil {
+			cleanup()
+			return deployment{}, noCleanup, err
+		}
 		if err := validateIdentityFiles(d.root, generated); err != nil {
 			cleanup()
 			return deployment{}, noCleanup, err
@@ -697,32 +813,6 @@ func writeJSON(path string, value any) error {
 		return err
 	}
 	return os.WriteFile(path, append(contents, '\n'), 0o600)
-}
-
-func verifyConsensusConfig(path string) error {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	var cfg struct {
-		Snow struct {
-			K               int `json:"k"`
-			AlphaPreference int `json:"alphaPreference"`
-			AlphaConfidence int `json:"alphaConfidence"`
-			Beta            int `json:"beta"`
-		} `json:"snowParameters"`
-		ProposerWindow                int  `json:"proposerWindowMilliseconds"`
-		ProposerMillisecondTimestamps bool `json:"proposerMillisecondTimestamps"`
-	}
-	decoder := json.NewDecoder(bytes.NewReader(contents))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&cfg); err != nil {
-		return fmt.Errorf("decode immutable consensus config %s: %w", path, err)
-	}
-	if cfg.Snow.K != 30 || cfg.Snow.AlphaPreference != 16 || cfg.Snow.AlphaConfidence != 17 || cfg.Snow.Beta != 12 || cfg.ProposerWindow != 100 {
-		return fmt.Errorf("%s does not contain the verified consensus parameters k=30 alphaPreference=16 alphaConfidence=17 beta=12 proposerWindowMilliseconds=100", path)
-	}
-	return nil
 }
 
 func validateIdentityFiles(root string, generated creation.PublicNode) error {
@@ -1025,22 +1115,24 @@ func (d *Deployer) startAndVerify(ctx context.Context, deployment deployment, no
 	)
 }
 
+// waitPChainReady blocks until the P-chain node passes the gate for its mode.
+// The node runs with --p-chain-follow-only, so it never finishes bootstrapping
+// and every platform.* call against it answers 503 forever: readiness is
+// observed from its health check, log, and metrics, and the validator sets come
+// from the public API. See pchainReadyOnce for the per-mode gate.
 func (d *Deployer) waitPChainReady(ctx context.Context, deployment deployment) error {
 	deadline := time.Now().Add(d.waitLimit)
-	uri := fmt.Sprintf("http://%s:%d", deployment.pchain.node.Host, deployment.pchain.httpPort)
-	client := platformvm.NewClient(uri)
 	var lastError error
 	for time.Now().Before(deadline) {
-		manager, managerErr := client.GetCurrentValidators(ctx, deployment.managerSubnetID, nil)
-		main, mainErr := client.GetCurrentValidators(ctx, deployment.subnetID, nil)
-		if managerErr == nil && mainErr == nil &&
-			containsValidators(manager, deployment.expectedManager) &&
-			containsValidators(main, deployment.expectedMain) {
-			fmt.Fprintln(d.out, "P-chain node contains management and main L1 validator state")
+		ready, err := d.pchainReadyOnce(ctx, deployment)
+		if err == nil {
+			fmt.Fprintln(d.out, ready)
 			return nil
 		}
-		lastError = fmt.Errorf("management=%v main=%v", managerErr, mainErr)
-		if err := wait(ctx, time.Second); err != nil {
+		lastError = err
+		// One attempt costs an ssh round trip, and the node logs its progress
+		// every 5 seconds anyway, so polling faster only adds connections.
+		if err := wait(ctx, 5*time.Second); err != nil {
 			return err
 		}
 	}
