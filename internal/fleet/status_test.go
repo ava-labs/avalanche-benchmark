@@ -78,7 +78,7 @@ func TestFatalProbeIgnoresDeliberateStates(t *testing.T) {
 
 func TestPChainStatusRow(t *testing.T) {
 	visible := statusPChainProbe{
-		number: 13, serviceState: statusUp, created: true,
+		number: 13, serviceState: statusUp, created: true, bootstrapped: true,
 		localOK: true, localHeight: 289700,
 		setsOK: true, mainVisible: true, managerVisible: true,
 	}
@@ -123,6 +123,36 @@ func TestPChainStatusRow(t *testing.T) {
 	}
 	if row.local != statusUnknown || row.lag != statusUnknown || row.mode != statusUnknown || row.ready != "no" {
 		t.Errorf("silent local row = %+v, want unknown local, lag and mode with ready no", row)
+	}
+
+	// Still replaying: the mode says so and carries the progress, and the node
+	// is never called synced no matter how the heights compare.
+	row = following(func(probe *statusPChainProbe) {
+		probe.bootstrapped = false
+		probe.progress = "executing 97.5%, eta 9s"
+	})
+	if row.mode != statusBootstrapping+" executing 97.5%, eta 9s" {
+		t.Errorf("bootstrapping mode = %q", row.mode)
+	}
+	if row.local != "289700" || row.upstream != "289700" || row.lag != "0" || row.ready != "no" {
+		t.Errorf("bootstrapping row = %+v", row)
+	}
+
+	// Replaying without a progress line yet still reports the state.
+	row = following(func(probe *statusPChainProbe) { probe.bootstrapped = false })
+	if row.mode != statusBootstrapping {
+		t.Errorf("bootstrapping without progress mode = %q", row.mode)
+	}
+
+	// A frozen node that is still replaying reports the replay, not the mode it
+	// was rendered in, and never claims readiness.
+	replayingFrozen := visible
+	replayingFrozen.mode = frozenMode
+	replayingFrozen.bootstrapped = false
+	replayingFrozen.progress = "fetching 40.2%, eta 3m"
+	row = pchainStatusRow(replayingFrozen)
+	if row.mode != statusBootstrapping+" fetching 40.2%, eta 3m" || row.ready != statusNA {
+		t.Errorf("replaying frozen row = %+v", row)
 	}
 
 	// Synced but the validator sets are incomplete: not ready to freeze.

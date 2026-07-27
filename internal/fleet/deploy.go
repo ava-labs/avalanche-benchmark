@@ -1041,22 +1041,24 @@ func (d *Deployer) startAndVerify(ctx context.Context, deployment deployment, no
 	)
 }
 
+// waitPChainReady blocks until the P-chain node passes the gate for its mode.
+// The node runs with --p-chain-follow-only, so it never finishes bootstrapping
+// and every platform.* call against it answers 503 forever: readiness is
+// observed from its health check, log, and metrics, and the validator sets come
+// from the public API. See pchainReadyOnce for the per-mode gate.
 func (d *Deployer) waitPChainReady(ctx context.Context, deployment deployment) error {
 	deadline := time.Now().Add(d.waitLimit)
-	uri := fmt.Sprintf("http://%s:%d", deployment.pchain.node.Host, deployment.pchain.httpPort)
-	client := platformvm.NewClient(uri)
 	var lastError error
 	for time.Now().Before(deadline) {
-		manager, managerErr := client.GetCurrentValidators(ctx, deployment.managerSubnetID, nil)
-		main, mainErr := client.GetCurrentValidators(ctx, deployment.subnetID, nil)
-		if managerErr == nil && mainErr == nil &&
-			containsValidators(manager, deployment.expectedManager) &&
-			containsValidators(main, deployment.expectedMain) {
-			fmt.Fprintln(d.out, "P-chain node contains management and main L1 validator state")
+		ready, err := d.pchainReadyOnce(ctx, deployment)
+		if err == nil {
+			fmt.Fprintln(d.out, ready)
 			return nil
 		}
-		lastError = fmt.Errorf("management=%v main=%v", managerErr, mainErr)
-		if err := wait(ctx, time.Second); err != nil {
+		lastError = err
+		// One attempt costs an ssh round trip, and the node logs its progress
+		// every 5 seconds anyway, so polling faster only adds connections.
+		if err := wait(ctx, 5*time.Second); err != nil {
 			return err
 		}
 	}

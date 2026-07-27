@@ -33,6 +33,11 @@ const (
 	statusNotInstalled = "not installed"
 )
 
+// statusBootstrapping is the P-chain mode of a node whose bootstrapped health
+// check is not passing yet. It is a replay in progress, not the permanent
+// "not done bootstrapping" that --p-chain-follow-only reports forever.
+const statusBootstrapping = "bootstrapping"
+
 // collapseServiceState maps systemd unit presence plus is-active and
 // is-enabled onto the four reported states.
 func collapseServiceState(unitPresent bool, isActive, isEnabled string) string {
@@ -112,11 +117,17 @@ type statusProbe struct {
 	failures       []string
 }
 
-// statusPChainProbe is everything the P-chain machine reported.
+// statusPChainProbe is everything the P-chain machine and the public API
+// reported. The local node is follow-only, so the heights are observed from its
+// log plus metrics and everything about validator sets comes from the public
+// API.
 type statusPChainProbe struct {
 	number         int
 	serviceState   string
 	mode           string
+	bootstrapped   bool
+	progress       string
+	watchHint      string
 	localOK        bool
 	localHeight    uint64
 	upstreamOK     bool
@@ -186,7 +197,7 @@ func pchainStatusRow(probe statusPChainProbe) statusPChainRow {
 		}
 		row.lag = strconv.FormatUint(lag, 10)
 		row.mode = "catching-up"
-		if probe.localHeight >= probe.upstreamHeight {
+		if probe.bootstrapped && probe.localHeight >= probe.upstreamHeight {
 			row.mode = "synced"
 			if row.l1State == "complete" {
 				row.ready = "yes"
@@ -195,6 +206,15 @@ func pchainStatusRow(probe statusPChainProbe) statusPChainRow {
 	default:
 		row.upstream = statusUnknown
 		row.lag = statusUnknown
+	}
+	// A node that has not passed its bootstrapped health check is still
+	// replaying, whichever mode it was rendered in. That fact outranks the
+	// configured mode, because nothing it reports is final yet.
+	if !probe.bootstrapped && probe.mode != "" {
+		row.mode = statusBootstrapping
+		if probe.progress != "" {
+			row.mode += " " + probe.progress
+		}
 	}
 	return row
 }
@@ -237,11 +257,6 @@ func (d *Deployer) Status(ctx context.Context) error {
 	var failures []string
 	var drifts []string
 	fatal := 0
-	if inv.created && !pchain.setsOK && pchain.serviceState != statusUp {
-		failures = append(failures, fmt.Sprintf(
-			"local P-chain view is unavailable (node %d service is %s), validator weights not observed",
-			pchain.number, pchain.serviceState))
-	}
 
 	rows := make([]statusRow, 0, len(probes))
 	for _, probe := range probes {
@@ -262,7 +277,7 @@ func (d *Deployer) Status(ctx context.Context) error {
 					row.weight = strconv.FormatUint(weight, 10)
 				} else if pchain.setsOK {
 					failures = append(failures, fmt.Sprintf(
-						"node %d: identity %s (%s) is not in the local P-chain main validator set",
+						"node %d: identity %s (%s) is not in the public P-chain main validator set",
 						probe.node.Number, probe.identity, probe.expectedNodeID))
 				}
 			}
@@ -282,9 +297,17 @@ func (d *Deployer) Status(ctx context.Context) error {
 	fmt.Fprint(d.out, renderStatusTable(rows))
 	fmt.Fprintln(d.out)
 	fmt.Fprint(d.out, renderStatusPChain(pchainStatusRow(pchain)))
+	if pchain.watchHint != "" {
+		fmt.Fprintln(d.out, pchain.watchHint)
+	}
 	failures = append(failures, pchain.failures...)
-	if pchain.serviceState == statusUp &&
-		(!pchain.localOK || pchain.mode == "" || (pchain.created && !pchain.setsOK)) {
+	// The validator sets are read from the public API, so their absence is a
+	// failure no matter what the P-chain machine is doing. A node that is still
+	// replaying is a reported state, not a failure.
+	if pchain.created && !pchain.setsOK {
+		fatal++
+	}
+	if pchain.serviceState == statusUp && (!pchain.localOK || pchain.mode == "") {
 		fatal++
 	}
 
@@ -365,6 +388,21 @@ func (d *Deployer) probePChainStatus(ctx context.Context, inv inventory, remote 
 		created:      inv.created,
 		mainWeights:  map[string]uint64{},
 	}
+
+	// Validator sets and weights are network facts that a follow-only node can
+	// never answer, so they come from the public API and stay observable even
+	// when the P-chain machine is down.
+	var public *platformvm.Client
+	network, err := config.LoadNetworkEnvironment(filepath.Join(d.root, ".env"))
+	if err != nil {
+		probe.failures = append(probe.failures, fmt.Sprintf("P-chain public API: %v", err))
+	} else {
+		public = platformvm.NewClient(network.PChainAPI)
+		if inv.created {
+			d.probePublicValidatorSets(ctx, inv, public, network.PChainAPI, &probe)
+		}
+	}
+
 	target, err := inv.target(inv.pchain)
 	if err != nil {
 		probe.failures = append(probe.failures, fmt.Sprintf("P-chain node %d: %v", inv.pchain.Number, err))
@@ -386,48 +424,59 @@ func (d *Deployer) probePChainStatus(ctx context.Context, inv inventory, remote 
 	}
 	probe.mode = mode
 
-	client := platformvm.NewClient(fmt.Sprintf("http://%s:%d", inv.pchain.Host, target.httpPort))
-	if probe.mode == followMode {
+	if probe.mode == followMode && public != nil {
 		// Sampled immediately before the local read so the comparison can never
 		// call a lagging node synced.
-		network, err := config.LoadNetworkEnvironment(filepath.Join(d.root, ".env"))
+		upstreamCtx, cancel := context.WithTimeout(ctx, d.http.Timeout)
+		height, err := public.GetHeight(upstreamCtx)
+		cancel()
 		if err != nil {
-			probe.failures = append(probe.failures, fmt.Sprintf("P-chain upstream: %v", err))
+			probe.failures = append(probe.failures, fmt.Sprintf("P-chain upstream %s: read height: %v", network.PChainAPI, err))
 		} else {
-			upstreamCtx, cancel := context.WithTimeout(ctx, d.http.Timeout)
-			height, err := platformvm.NewClient(network.PChainAPI).GetHeight(upstreamCtx)
-			cancel()
-			if err != nil {
-				probe.failures = append(probe.failures, fmt.Sprintf("P-chain upstream %s: read height: %v", network.PChainAPI, err))
-			} else {
-				probe.upstreamOK = true
-				probe.upstreamHeight = height
-			}
+			probe.upstreamOK = true
+			probe.upstreamHeight = height
 		}
 	}
 
-	heightCtx, cancelHeight := context.WithTimeout(ctx, d.http.Timeout)
-	local, err := client.GetHeight(heightCtx)
-	cancelHeight()
+	observation, err := d.observePChain(ctx, remote, target)
 	if err != nil {
-		probe.failures = append(probe.failures, fmt.Sprintf("P-chain node %d (%s): read local height: %v", inv.pchain.Number, inv.pchain.Host, err))
-	} else {
-		probe.localOK = true
-		probe.localHeight = local
-	}
-	if !inv.created {
+		probe.failures = append(probe.failures, fmt.Sprintf(
+			"P-chain node %d (%s): observe local P-chain: %v", inv.pchain.Number, inv.pchain.Host, err))
 		return probe
 	}
+	probe.bootstrapped = observation.bootstrapped
+	probe.progress = observation.progress
+	probe.localOK = observation.heightOK
+	probe.localHeight = observation.height
+	if !observation.heightOK {
+		probe.failures = append(probe.failures, fmt.Sprintf(
+			"P-chain node %d (%s): no startup height in %s, local height not observable",
+			inv.pchain.Number, inv.pchain.Host, pchainLogPath(target)))
+	}
+	if !probe.bootstrapped {
+		probe.watchHint = pchainWatchHint(inv.environment, target)
+	}
+	return probe
+}
 
-	setsCtx, cancelSets := context.WithTimeout(ctx, d.http.Timeout)
-	defer cancelSets()
-	manager, managerErr := client.GetCurrentValidators(setsCtx, inv.managerSubnetID, nil)
-	main, mainErr := client.GetCurrentValidators(setsCtx, inv.subnetID, nil)
+// probePublicValidatorSets fills in everything the public P-chain API knows
+// about this L1: whether both validator sets are visible and what each main
+// validator weighs.
+func (d *Deployer) probePublicValidatorSets(
+	ctx context.Context,
+	inv inventory,
+	public *platformvm.Client,
+	uri string,
+	probe *statusPChainProbe,
+) {
+	setsCtx, cancel := context.WithTimeout(ctx, d.http.Timeout)
+	defer cancel()
+	manager, managerErr := public.GetCurrentValidators(setsCtx, inv.managerSubnetID, nil)
+	main, mainErr := public.GetCurrentValidators(setsCtx, inv.subnetID, nil)
 	if managerErr != nil || mainErr != nil {
 		probe.failures = append(probe.failures, fmt.Sprintf(
-			"P-chain node %d (%s): read local validator sets: management=%v main=%v",
-			inv.pchain.Number, inv.pchain.Host, managerErr, mainErr))
-		return probe
+			"P-chain API %s: read validator sets: management=%v main=%v", uri, managerErr, mainErr))
+		return
 	}
 	probe.setsOK = true
 	expectedMain := make(map[ids.NodeID]struct{})
@@ -453,7 +502,6 @@ func (d *Deployer) probePChainStatus(ctx context.Context, inv inventory, remote 
 	for _, validator := range main {
 		probe.mainWeights[validator.NodeID.String()] = validator.Weight
 	}
-	return probe
 }
 
 // probeService is the single ssh round trip per machine: unit presence plus

@@ -39,7 +39,7 @@ func (g freezeGate) check() error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf(
-			"local P-chain view is missing the %s validator set (local height %d, upstream height %d)",
+			"public P-chain API is missing the %s validator set (local height %d, upstream height %d)",
 			strings.Join(missing, " and "), g.localHeight, g.upstreamHeight,
 		)
 	}
@@ -75,7 +75,7 @@ func (d *Deployer) FreezePChain(ctx context.Context) error {
 		}
 		fmt.Fprintf(
 			d.out,
-			"P-chain node is synchronized at height %d and sees both validator sets\n",
+			"P-chain node is synchronized at height %d and the public API shows both validator sets\n",
 			gate.localHeight,
 		)
 	}
@@ -88,38 +88,49 @@ func (d *Deployer) FreezePChain(ctx context.Context) error {
 }
 
 // freezeGateState samples the upstream height, then immediately the local
-// height, then the local validator view. The order matters: a local height read
-// after the upstream sample can only understate progress, never overstate it.
+// height, then the validator view. The order matters: a local height read after
+// the upstream sample can only understate progress, never overstate it.
+//
+// The local node runs with --p-chain-follow-only and therefore rejects every
+// platform.* call forever, so its height is observed rather than queried and
+// the validator sets come from the public API.
 func (d *Deployer) freezeGateState(ctx context.Context, prepared deployment) (freezeGate, error) {
 	network, err := config.LoadNetworkEnvironment(filepath.Join(d.root, ".env"))
 	if err != nil {
 		return freezeGate{}, err
 	}
-	upstream := platformvm.NewClient(network.PChainAPI)
-	upstreamHeight, err := upstream.GetHeight(ctx)
+	public := platformvm.NewClient(network.PChainAPI)
+	upstreamHeight, err := public.GetHeight(ctx)
 	if err != nil {
 		return freezeGate{}, fmt.Errorf("read upstream P-chain height from %s: %w", network.PChainAPI, err)
 	}
 
-	uri := fmt.Sprintf("http://%s:%d", prepared.pchain.node.Host, prepared.pchain.httpPort)
-	local := platformvm.NewClient(uri)
-	localHeight, err := local.GetHeight(ctx)
+	observation, err := d.observePChain(ctx, prepared, prepared.pchain)
 	if err != nil {
-		return freezeGate{}, fmt.Errorf("read local P-chain height from %s: %w", uri, err)
+		return freezeGate{}, fmt.Errorf(
+			"observe P-chain node %d (%s): %w",
+			prepared.pchain.node.Number, prepared.pchain.node.Host, err,
+		)
+	}
+	if !observation.heightOK {
+		return freezeGate{}, fmt.Errorf(
+			"P-chain node %d (%s): local height is not observable in %s",
+			prepared.pchain.node.Number, prepared.pchain.node.Host, pchainLogPath(prepared.pchain),
+		)
 	}
 
-	manager, err := local.GetCurrentValidators(ctx, prepared.managerSubnetID, nil)
+	manager, err := public.GetCurrentValidators(ctx, prepared.managerSubnetID, nil)
 	if err != nil {
-		return freezeGate{}, fmt.Errorf("read management validator set from %s: %w", uri, err)
+		return freezeGate{}, fmt.Errorf("read management validator set from %s: %w", network.PChainAPI, err)
 	}
-	main, err := local.GetCurrentValidators(ctx, prepared.subnetID, nil)
+	main, err := public.GetCurrentValidators(ctx, prepared.subnetID, nil)
 	if err != nil {
-		return freezeGate{}, fmt.Errorf("read main validator set from %s: %w", uri, err)
+		return freezeGate{}, fmt.Errorf("read main validator set from %s: %w", network.PChainAPI, err)
 	}
 
 	return freezeGate{
 		upstreamHeight: upstreamHeight,
-		localHeight:    localHeight,
+		localHeight:    observation.height,
 		managerVisible: containsValidators(manager, prepared.expectedManager),
 		mainVisible:    containsValidators(main, prepared.expectedMain),
 	}, nil
