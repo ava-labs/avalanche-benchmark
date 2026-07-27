@@ -10,7 +10,7 @@ PACKAGE_GO_ENV := GOTOOLCHAIN=$(GO_TOOLCHAIN) \
 	GOMODCACHE=/tmp/avalanche-benchmark-gomodcache \
 	GOCACHE=/tmp/avalanche-benchmark-gocache
 AVALANCHEGO_REPO := https://github.com/ava-labs/avalanchego.git
-AVALANCHEGO_COMMIT := a067df1192c95d4755f76a631ef3c6ed772e977c
+AVALANCHEGO_COMMIT := 80c123c996d7dbdab5f2800ed894348df7e11c21
 AVALANCHEGO_BUILD_DIR := $(CURDIR)/.build/avalanchego-$(AVALANCHEGO_COMMIT)
 SUBNET_EVM_ID := srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
 

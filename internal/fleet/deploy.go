@@ -102,7 +102,36 @@ type nodeDeployment struct {
 	renderDir string
 }
 
-func (d *Deployer) Deploy(ctx context.Context, pchainMode string) error {
+// l1DeployPhases is the per-node sequence that installs software and brings an
+// L1 node back up.
+var l1DeployPhases = []struct {
+	name   string
+	action func(*Deployer) func(context.Context, deployment, nodeDeployment) error
+}{
+	{"stop", func(d *Deployer) func(context.Context, deployment, nodeDeployment) error { return d.stop }},
+	{"package", func(d *Deployer) func(context.Context, deployment, nodeDeployment) error { return d.installPackage }},
+	{"systemd", func(d *Deployer) func(context.Context, deployment, nodeDeployment) error { return d.installUnit }},
+	{"identity", func(d *Deployer) func(context.Context, deployment, nodeDeployment) error { return d.installIdentity }},
+	{"start", func(d *Deployer) func(context.Context, deployment, nodeDeployment) error { return d.start }},
+	{"readiness", func(d *Deployer) func(context.Context, deployment, nodeDeployment) error { return d.waitL1Ready }},
+}
+
+// Deploy installs software on the L1 fleet and brings it up.
+//
+// With no selectors it deploys the whole inventory: the P-chain node first,
+// gated on its validator sets, then every L1 node phase by phase (all stop,
+// all package, ... , all start). That ordering is REQUIRED for a fresh fleet,
+// because a node only finishes bootstrapping once 75% of stake is connected,
+// so no node can become ready until its peers are also running.
+//
+// With selectors it is a ROLLING UPGRADE of already-running nodes: the P-chain
+// node is left alone (upgrade it with `fleet pchain freeze|follow`, which
+// reinstalls its package too) and each selected node runs the entire phase
+// sequence, including readiness, before the next node is touched. Use this to
+// replace binaries on a live fleet. Restarting several nodes at once loses the
+// peers that serve state-sync summaries, and a node that cannot get a summary
+// replays the whole chain from genesis instead of syncing.
+func (d *Deployer) Deploy(ctx context.Context, pchainMode string, selectors []string) error {
 	prepared, cleanup, err := d.prepare(pchainMode, true)
 	if err != nil {
 		return err
@@ -114,32 +143,65 @@ func (d *Deployer) Deploy(ctx context.Context, pchainMode string) error {
 		}
 	}
 
-	// The P-chain node is reconciled and accepted before any L1 node is
-	// touched. This is a phase barrier, not a best-effort bootstrap hint.
-	if err := d.reconcilePChain(ctx, prepared, prepared.pchainMode == frozenMode); err != nil {
-		return err
-	}
-	if err := d.waitPChainReady(ctx, prepared); err != nil {
-		return fmt.Errorf("P-chain readiness phase node %d (%s): %w", prepared.pchain.node.Number, prepared.pchain.node.Host, err)
+	rolling := len(selectors) > 0
+	if rolling {
+		chosen, err := selectNodes(l1Only(prepared.selected), selectors)
+		if err != nil {
+			return err
+		}
+		picked := make([]nodeDeployment, 0, len(chosen))
+		for _, want := range chosen {
+			for _, node := range prepared.selected {
+				if node.node.Number == want.Number {
+					picked = append(picked, node)
+					break
+				}
+			}
+		}
+		prepared.selected = picked
+	} else {
+		// The P-chain node is reconciled and accepted before any L1 node is
+		// touched. This is a phase barrier, not a best-effort bootstrap hint.
+		if err := d.reconcilePChain(ctx, prepared, prepared.pchainMode == frozenMode); err != nil {
+			return err
+		}
+		if err := d.waitPChainReady(ctx, prepared); err != nil {
+			return fmt.Errorf("P-chain readiness phase node %d (%s): %w", prepared.pchain.node.Number, prepared.pchain.node.Host, err)
+		}
 	}
 
-	for _, phase := range []struct {
-		name   string
-		action func(context.Context, deployment, nodeDeployment) error
-	}{
-		{"stop", d.stop},
-		{"package", d.installPackage},
-		{"systemd", d.installUnit},
-		{"identity", d.installIdentity},
-		{"start", d.start},
-		{"readiness", d.waitL1Ready},
-	} {
-		if err := d.phase(ctx, prepared, phase.name, phase.action); err != nil {
+	if rolling {
+		for _, node := range prepared.selected {
+			fmt.Fprintf(d.out, "== node %d (%s)\n", node.node.Number, node.node.Host)
+			one := prepared
+			one.selected = []nodeDeployment{node}
+			for _, phase := range l1DeployPhases {
+				if err := d.phase(ctx, one, phase.name, phase.action(d)); err != nil {
+					return err
+				}
+			}
+		}
+		fmt.Fprintf(d.out, "rolled %d L1 node(s), one at a time\n", len(prepared.selected))
+		return nil
+	}
+
+	for _, phase := range l1DeployPhases {
+		if err := d.phase(ctx, prepared, phase.name, phase.action(d)); err != nil {
 			return err
 		}
 	}
 	fmt.Fprintf(d.out, "deployed P-chain node and %d L1 node(s)\n", len(prepared.selected))
 	return nil
+}
+
+// l1Only projects the prepared deployments back to plain inventory nodes so the
+// shared selector parser can be reused.
+func l1Only(nodes []nodeDeployment) []config.Node {
+	result := make([]config.Node, 0, len(nodes))
+	for _, node := range nodes {
+		result = append(result, node.node)
+	}
+	return result
 }
 
 func (d *Deployer) FollowPChain(ctx context.Context) error {

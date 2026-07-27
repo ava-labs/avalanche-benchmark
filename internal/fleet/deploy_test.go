@@ -82,7 +82,7 @@ func TestFrozenDeployValidatesConfigurationBeforeArchive(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, pchainArchive), "not an archive")
 	deployer := NewDeployer(root, io.Discard)
-	err := deployer.Deploy(context.Background(), frozenMode)
+	err := deployer.Deploy(context.Background(), frozenMode, nil)
 	if err == nil || !strings.Contains(err.Error(), ".env") {
 		t.Fatalf("frozen deploy did not report configuration first: %v", err)
 	}

@@ -36,10 +36,10 @@ func run() error {
 
 	switch arguments[0] {
 	case "deploy":
-		if len(arguments) != 2 {
+		if len(arguments) < 2 {
 			return fmt.Errorf("usage:\n%s", usage(program))
 		}
-		return deployer.Deploy(ctx, arguments[1])
+		return deployer.Deploy(ctx, arguments[1], arguments[2:])
 	case "pchain":
 		if len(arguments) != 2 {
 			return fmt.Errorf("usage:\n%s", usage(program))
@@ -78,7 +78,7 @@ func run() error {
 
 func usage(program string) string {
 	lines := []string{
-		"deploy <frozen|follow>",
+		"deploy <frozen|follow> [<node>|dc=<tag> ...]",
 		"pchain <archive|follow|freeze>",
 		"status",
 		"start [<node>|dc=<tag> ...]",

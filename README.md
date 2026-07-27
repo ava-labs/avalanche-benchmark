@@ -142,7 +142,7 @@ Unknown fields, missing fields, and malformed values fail the command before it 
 | `l1 topup <days>` | raise every registered validator to `<days>` of fee runway |
 | `l1 set-weight <letter> <1\|1000\|100000>` | weight-change failover through the committee |
 | `l1 destroy` | disable every validator, reclaim balances, remove `deployment/` |
-| `fleet deploy <frozen\|follow>` | whole inventory, no selectors. Argument picks the P-chain source. |
+| `fleet deploy <frozen\|follow> [sel...]` | no selectors: whole inventory, P-chain first. With selectors: rolling upgrade, one node fully through all phases before the next. |
 | `fleet pchain follow` | first-run initializer and unfreeze. P-chain node only. |
 | `fleet pchain freeze` | gate on synced + both validator sets, then switch to empty bootstrap lists |
 | `fleet pchain archive` | stop, snapshot `db/`, restart, download, validate, publish `./pchain.tar.gz` |
@@ -153,7 +153,9 @@ Unknown fields, missing fields, and malformed values fail the command before it 
 | `fleet place <letter> <node>` | reconcile, swap placement, reconcile again. The only placement verb. |
 | `bombard -rps N -duration D` | load generator, fans across all `role=rpc` nodes |
 
-Selector is a node number or `dc=<tag>`; multiple form a union; none means all. Separate arguments and comma-separated both work (`fleet stop 1 11 12` = `fleet stop 1,11,12`). `deploy` and `status` take no selectors.
+Selector is a node number or `dc=<tag>`; multiple form a union; none means all. Separate arguments and comma-separated both work (`fleet stop 1 11 12` = `fleet stop 1,11,12`). `status` takes no selectors.
+
+**Upgrading binaries on a live fleet**: `fleet deploy <mode> <node>` one node at a time, and `fleet pchain freeze` (or `follow`) for the P-chain node, which reinstalls its package too. Never redeploy the whole fleet at once for an upgrade: restarting several nodes together removes the peers that serve state-sync summaries, and a node that cannot obtain one replays the entire chain from genesis instead of syncing in seconds.
 
 `fleet start` returns as soon as the services are up and deliberately does not wait for them to serve. A node only finishes bootstrapping once 75% of stake is connected (avalanchego's startup tracker is `(3*bootstrapWeight+3)/4`), so during a multi-node recovery no node can become ready until the others are also running. A blocking start would deadlock: restarting node A waits on node B, which has not been started because the command is still blocked on A. Start the whole set, then watch `fleet status` converge. `deploy` and `place` still block, since they bring up a coordinated set.
 
