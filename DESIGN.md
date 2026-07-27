@@ -13,67 +13,19 @@ A performance-under-failover benchmark toolset for Avalanche L1s in ISOLATED net
 
 ## P-chain node
 
-The inventory contains exactly one `pchain` role. It is a real AvalancheGo
-process with its own numbered machine slot, stable TLS identity, P-chain
-database, ports, configuration, logs, and systemd unit. It is never registered
-on an L1 and has no BLS signer or proof of possession.
+The inventory contains exactly one `pchain` role. It is a real AvalancheGo process with its own numbered machine slot, stable TLS identity, P-chain database, ports, configuration, logs, and systemd unit. It is never registered on an L1 and has no BLS signer or proof of possession.
 
-Initial `fleet deploy <frozen|follow>` requires the operator to choose the
-P-chain node's source explicitly. Both modes use follow-only mode. `follow`
-omits bootstrap fields so AvalancheGo reads its built-in network peers.
-`frozen` requires a local `pchain.tar.gz` containing one top-level `db/`
-directory and renders explicit-empty bootstrap lists. Frozen deploy validates
-the local archive before any remote mutation. With the service stopped, it
-restores only when the remote database is empty: extraction and nonempty `db/`
-validation happen in a temporary sibling location, followed by an atomic rename
-into place. Every rerun discards interrupted staging. Once a nonempty database
-exists, it is authoritative and preserved. Deploy starts the P-chain node and
-does not touch any validator or RPC service until its local API contains the
-complete management and main validator sets recorded by `public.json` and
-`network.env`. Therefore a preserved but half-synced database remains frozen
-and fails at this acceptance gate. The operator either resumes following until
-the state is ready, or stops its service and deliberately removes the remote
-database before rerunning frozen deploy to seed it from the archive. There is no
-reset command or completion marker. Every validator and RPC then uses the
-P-chain node's inventory address and generated NodeID as its sole
-primary-network bootstrap.
+Initial `fleet deploy <frozen|follow>` requires the operator to choose the P-chain node's source explicitly. Both modes use follow-only mode. `follow` omits bootstrap fields so AvalancheGo reads its built-in network peers. `frozen` requires a local `pchain.tar.gz` containing one top-level `db/` directory and renders explicit-empty bootstrap lists. Frozen deploy validates the local archive before any remote mutation. With the service stopped, it restores only when the remote database is empty: extraction and nonempty `db/` validation happen in a temporary sibling location, followed by an atomic rename into place. Every rerun discards interrupted staging. Once a nonempty database exists, it is authoritative and preserved. Deploy starts the P-chain node and does not touch any validator or RPC service until its local API contains the complete management and main validator sets recorded by `public.json` and `network.env`. Therefore a preserved but half-synced database remains frozen and fails at this acceptance gate. The operator either resumes following until the state is ready, or stops its service and deliberately removes the remote database before rerunning frozen deploy to seed it from the archive. There is no reset command or completion marker. Every validator and RPC then uses the P-chain node's inventory address and generated NodeID as its sole primary-network bootstrap.
 
 Motivations:
-- The P-chain state owner is explicit in inventory and receives the same
-  systemd, identity, co-location, and deployment treatment as every other
-  long-running node.
-- The P-chain node's NodeID is derived from generated identity state. It is not copied
-  into `.env` or another registry.
-- Waiting on the P-chain node's local validator view proves that the exact
-  P-chain state needed by the L1 is present before L1 nodes start.
-- Initial deploy has two explicit modes because generic users may need to sync
-  from the public network while isolated delivery starts from a certified
-  archive. Neither is a safe universal default, so omitting the mode is an
-  error. This required decision is different from optional deployment
-  selectors, which were removed because they only added mental load.
-- `fleet pchain follow` is both the first-run initializer and the later mode
-  transition. It reconciles only the P-chain node's package, systemd unit,
-  identity, and following configuration, starts it, verifies the service is
-  running, and returns. It never starts or changes a validator or RPC node.
-  Catch-up is observable through `fleet status`; the future `fleet pchain
-  freeze` command owns the readiness gate. On an existing deployment, follow
-  restores AvalancheGo's embedded upstreams and restarts only the P-chain node.
-- `fleet pchain freeze` renders empty upstream bootstrap lists and restarts only
-  the P-chain node. Downstream configurations never change. Reboots retain the
-  last rendered mode. These transitions support the frozen-to-following
-  benchmark and later P-chain state visibility, including ICM-related state.
-- `fleet pchain archive` is the only archive producer. It requires the managed
-  P-chain service to be running, stops it, creates a consistent archive of its
-  `db/`, restarts it in the unchanged mode before downloading, validates the
-  download, and atomically publishes `./pchain.tar.gz`. It refuses to overwrite
-  an existing local archive. Owning the stop and restart avoids unsafe copies
-  from arbitrary running database directories.
-- Starting frozen from an empty fleet is deliberately three explicit steps:
-  `fleet pchain follow`, `fleet pchain archive`, then `fleet deploy frozen`.
-  The first step obtains the newly created chain state without starting the L1
-  fleet, the second produces the portable artifact, and the final step freezes
-  the P-chain node before any validator or RPC starts. `fleet deploy follow` is
-  not a substitute because it starts the complete L1 fleet in following mode.
+- The P-chain state owner is explicit in inventory and receives the same systemd, identity, co-location, and deployment treatment as every other long-running node.
+- The P-chain node's NodeID is derived from generated identity state. It is not copied into `.env` or another registry.
+- Waiting on the P-chain node's local validator view proves that the exact P-chain state needed by the L1 is present before L1 nodes start.
+- Initial deploy has two explicit modes because generic users may need to sync from the public network while isolated delivery starts from a certified archive. Neither is a safe universal default, so omitting the mode is an error. This required decision is different from optional deployment selectors, which were removed because they only added mental load.
+- `fleet pchain follow` is both the first-run initializer and the later mode transition. It reconciles only the P-chain node's package, systemd unit, identity, and following configuration, starts it, verifies the service is running, and returns. It never starts or changes a validator or RPC node. Catch-up is observable through `fleet status`; the future `fleet pchain freeze` command owns the readiness gate. On an existing deployment, follow restores AvalancheGo's embedded upstreams and restarts only the P-chain node.
+- `fleet pchain freeze` renders empty upstream bootstrap lists and restarts only the P-chain node. Downstream configurations never change. Reboots retain the last rendered mode. These transitions support the frozen-to-following benchmark and later P-chain state visibility, including ICM-related state.
+- `fleet pchain archive` is the only archive producer. It requires the managed P-chain service to be running, stops it, creates a consistent archive of its `db/`, restarts it in the unchanged mode before downloading, validates the download, and atomically publishes `./pchain.tar.gz`. It refuses to overwrite an existing local archive. Owning the stop and restart avoids unsafe copies from arbitrary running database directories.
+- Starting frozen from an empty fleet is deliberately three explicit steps: `fleet pchain follow`, `fleet pchain archive`, then `fleet deploy frozen`. The first step obtains the newly created chain state without starting the L1 fleet, the second produces the portable artifact, and the final step freezes the P-chain node before any validator or RPC starts. `fleet deploy follow` is not a substitute because it starts the complete L1 fleet in following mode.
 
 ## Creation
 
@@ -155,38 +107,15 @@ An RPC node is a pinned identity that tracks the chain and serves ingress.
 
 ## Deployment simplifications (decided 2026-07-22)
 
-- Every mutating fleet command is a reconciliation to an explicit end state,
-  not a sequence that assumes its previous invocation finished. It writes
-  control-side intent atomically before remote work, revalidates remote state,
-  and repeats idempotent pushes on every rerun. A process may have stopped,
-  failed, or timed out after any individual action; rerunning the same command
-  must converge rather than invert or duplicate the previous partial work.
-- There is no cordon registry or hidden node state. Systemd is the process
-  manager and the only up/down intent: start enables and starts a unit; stop
-  disables and stops it. Commands that apply identity placement inspect the
-  running set at entry and never start a node that was already down.
-- All managed machines remain reachable from control. Simulated node and DC
-  loss stops or kills AvalancheGo processes on reachable machines. A genuinely
-  unreachable machine fails the command and is outside this benchmark's
-  operating model.
+- Every mutating fleet command is a reconciliation to an explicit end state, not a sequence that assumes its previous invocation finished. It writes control-side intent atomically before remote work, revalidates remote state, and repeats idempotent pushes on every rerun. A process may have stopped, failed, or timed out after any individual action; rerunning the same command must converge rather than invert or duplicate the previous partial work.
+- There is no cordon registry or hidden node state. Systemd is the process manager and the only up/down intent: start enables and starts a unit; stop disables and stops it. Commands that apply identity placement inspect the running set at entry and never start a node that was already down.
+- All managed machines remain reachable from control. Simulated node and DC loss stops or kills AvalancheGo processes on reachable machines. A genuinely unreachable machine fails the command and is outside this benchmark's operating model.
 - `fleet deploy <frozen|follow>` is software deployment, not machine provisioning. Its required argument selects only the initial P-chain node source; it takes no node selectors and always deploys the complete inventory. It deploys the sole P-chain node first through stop, package, systemd, identity, optional archive restore, and start barriers, then waits for its local P-chain API to contain both converted validator sets. Only then does it run the same barriers for every validator and RPC node, followed by one readiness barrier after all services have started. Deploy includes start. There is no separate provisioned check or deploy-state flag.
 - Logical nodes sharing a host are ordered by node number and receive HTTP/staking ports `9650/9651`, then `9652/9653`, and so on. Every logical node has separate data, logs, configuration, identity, and systemd unit paths.
 - `fleet start [selectors...]` uses the same selector rules and fleet-wide phases: stop all selected services, wait for all to become inactive, push every currently assigned identity again, start all, then wait for all to serve the L1. A failure in any phase aborts before the next phase. Re-pushing on every start is intentional: local placement is authoritative, and a stale remote key must never survive a restart.
 - `fleet stop [selectors...]` disables and gracefully stops the selected systemd services and waits for inactivity. It preserves every database, log, installed artifact, and current remote key.
 - `fleet destroy [selectors...]` uses the same selectors and is deliberately local, unlike `l1 destroy`. It sends SIGKILL to every selected AvalancheGo process, prevents systemd from restarting it, and requires every selected unit to be inactive before deleting any data. If any kill or inactivity check fails, it deletes nothing. It then deletes only that L1's `chainData/<L1-chain-id>` on the selected nodes. It preserves the complete P-chain database, identities, logs, configuration, binaries, and systemd units so the next `fleet start` can rebuild the L1 without repeating the expensive P-chain sync. SIGKILL is intentional: this command simulates an abrupt machine loss. Normal `fleet stop` remains graceful.
-- `fleet status` is read-only, takes no selectors, and always reports the full
-  inventory in one machine-centric node table with columns `NODE`, `DC`, `ROLE`,
-  `ID`, `WEIGHT`, `STATE`, and `HEIGHT`. `ID` comes from
-  `deployment/placement.json`. A validator's actual weight belongs to that
-  identity and is read from the fleet's local P-chain view; it is `1`, `1000`,
-  or `100000`. RPC weights are `-`. `STATE` collapses systemd intent
-  and runtime details into `up`, `down`, `failed`, or `not installed`.
-  Height is a raw accepted-L1-height observation. Exact cross-node
-  height differences are normal with 25ms blocks across roughly 20ms inter-DC
-  latency and are never flagged as a mismatch. Runtime NodeID is a verification
-  check, not a permanent column. A running node whose runtime identity differs
-  from its placement assignment produces a loud explicit error. Status still
-  works when only the P-chain node has been initialized.
+- `fleet status` is read-only, takes no selectors, and always reports the full inventory in one machine-centric node table with columns `NODE`, `DC`, `ROLE`, `ID`, `WEIGHT`, `STATE`, and `HEIGHT`. `ID` comes from `deployment/placement.json`. A validator's actual weight belongs to that identity and is read from the public P-chain API; it is `1`, `1000`, or `100000`. RPC weights are `-`. Reading weight from the fleet's own P-chain node is impossible and was never achievable: `--p-chain-follow-only` keeps the local node permanently in bootstrap, so every local `platform.*` call is rejected for the life of the process. See `why_info_isbootstrapped_never_flips_true_under_p_chain_follow_only` in the wiki. The public API is the only source that can answer, and the rate-limit bypass token makes it cheap. `STATE` collapses systemd intent and runtime details into `up`, `down`, `failed`, or `not installed`. Height is a raw accepted-L1-height observation. Exact cross-node height differences are normal with 25ms blocks across roughly 20ms inter-DC latency and are never flagged as a mismatch. Runtime NodeID is a verification check, not a permanent column. A running node whose runtime identity differs from its placement assignment produces a loud explicit error. Status still works when only the P-chain node has been initialized.
 - The P-chain machine never appears in the node table. It is covered by the separate P-chain section, so the two sections together still represent the full inventory without duplicating a machine or mixing P-chain and L1 heights.
 - `fleet status` probes nodes concurrently, one attempt each, no retries, using the existing HTTP timeout rather than a new option. It never aborts on the first failure: it prints everything observed, then lists the collected failures below the table. `-` means not applicable or deliberately down, `?` means the value should exist but could not be observed. Exit is nonzero for identity drift, for an active service whose API cannot answer, and for a P-chain API failure when the P-chain view is required. Deliberate `down` and `not installed` nodes are valid drill states and exit zero.
 - P-chain status reports mode, local height, an upstream height sampled immediately before the local read, block lag, visibility of both converted validator sets, and `READY TO FREEZE yes|no`. Following is `synced` when local height is at least the sampled upstream height and `catching-up` otherwise. While following, an unreachable upstream API yields `?` for upstream height and lag and `READY TO FREEZE=no`, because synchronization cannot be established without an upstream height. Frozen mode reports `frozen` with its local height and shows upstream, lag, and ready-to-freeze as `-`; it never contacts the upstream, since readiness to freeze is meaningless for an already frozen node and an unreachable upstream is not a failure. Local height and validator-set visibility are still reported whenever the local P-chain API answers. Ready-to-freeze requires both synchronization and both local validator sets. `fleet pchain freeze` runs the same gate and fails with the exact heights or missing set instead of freezing an unknown state.
