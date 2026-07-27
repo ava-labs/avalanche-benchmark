@@ -3,6 +3,7 @@ package fleet
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
@@ -10,13 +11,27 @@ import (
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/placement"
 )
 
-// Place moves a validator identity onto a validator machine and pushes the
-// resulting assignment to disk on every inventory machine. It is a
-// control-plane move plus key distribution: it never stops or starts anything.
+// Place moves a validator identity onto a validator machine and makes the fleet
+// serve it. It is the ONLY placement verb: reconcile, write, reconcile.
+//
+//	before  converge any pre-existing drift, so this move is the only change in
+//	        flight. Silent when the fleet already matches placement.json.
+//	write   update placement.json atomically.
+//	after   restart exactly the nodes whose runtime identity is now wrong.
+//
+// The before phase is the point of the design. Without it, a place on a fleet
+// that had not been applied yet would silently bundle someone else's pending
+// move into this one, so a single restart would carry two identity changes and
+// a failure would leave neither attributable. Converging first makes every
+// place a single, isolated transition.
 //
 // Placement is a bijection, so moving identity X onto machine N necessarily
 // swaps: whatever machine N held goes to the machine X came from.
 func (d *Deployer) Place(ctx context.Context, identityLetter string, node int) error {
+	if err := d.reconcilePlacement(ctx); err != nil {
+		return fmt.Errorf("converging the fleet before placing: %w", err)
+	}
+
 	inv, err := d.inventory()
 	if err != nil {
 		return err
@@ -29,49 +44,36 @@ func (d *Deployer) Place(ctx context.Context, identityLetter string, node int) e
 		return fmt.Errorf("refusing to write an invalid placement: %w", err)
 	}
 
-	// Control-side truth is written before any remote work, so a crash during
-	// the push leaves placement.json correct and a rerun converges.
+	current := inv.placement
 	if err := placement.Save(placement.Path(d.root), next); err != nil {
 		return err
 	}
-	inv.placement = next
 	for _, move := range moves {
 		fmt.Fprintln(d.out, move)
 	}
 
-	// Every inventory machine is rewritten, not just the two that changed, so
-	// disk state is deterministic and a rerun is a full reconciliation.
-	// Each machine receives only the one identity assigned to it.
-	prepared, err := d.placementTargets(inv, inv.nodes)
-	if err != nil {
-		return err
+	// Test the placement, not len(moves): a no-op place still returns one move
+	// (the "already on node N" note), so counting moves would restart nodes after
+	// a placement that changed nothing.
+	if maps.Equal(next, current) {
+		return nil
 	}
-	if err := d.phase(ctx, prepared, "identity", d.installIdentity); err != nil {
-		return err
-	}
-	fmt.Fprintf(d.out, "pushed assigned keys to %d machine(s); no service was restarted\n", len(prepared.selected))
-	// place only rewrites disk. Until the affected nodes restart they keep
-	// serving their OLD identity, so the fleet disagrees with placement.json and
-	// nothing has actually moved. Name the next command explicitly: this is the
-	// one step an operator forgets, and the symptom (no change at all) looks
-	// exactly like place having silently failed. A no-op place produces no moves
-	// and needs no restart, so stay quiet there.
-	if len(moves) > 0 {
-		fmt.Fprintln(d.out, "placement.json now disagrees with the running fleet; apply it with:")
-		fmt.Fprintln(d.out, "  fleet apply-placement")
-	}
-	return nil
+	return d.reconcilePlacement(ctx)
 }
 
-// ApplyPlacement reconciles the runtime to placement.json: it restarts exactly
+// reconcilePlacement drives the runtime to placement.json: it restarts exactly
 // the machines that are not already serving their assigned identity.
-func (d *Deployer) ApplyPlacement(ctx context.Context) error {
+//
+// Silent when there is nothing to do, in either phase. place runs it twice and
+// the converged case is the common one, so announcing a check that found
+// nothing would just bury the output the operator asked for.
+func (d *Deployer) reconcilePlacement(ctx context.Context) error {
 	inv, err := d.inventory()
 	if err != nil {
 		return err
 	}
 	if !inv.created {
-		return fmt.Errorf("apply-placement requires a complete deployment/network.env; run l1 create first")
+		return fmt.Errorf("place requires a complete deployment/network.env; run l1 create first")
 	}
 
 	l1 := inv.l1Nodes()
@@ -88,12 +90,11 @@ func (d *Deployer) ApplyPlacement(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if len(restart) == 0 {
+		return nil
+	}
 	for _, note := range notes {
 		fmt.Fprintln(d.out, note)
-	}
-	if len(restart) == 0 {
-		fmt.Fprintln(d.out, "every running node already serves its assigned identity; nothing to apply")
-		return nil
 	}
 
 	prepared, err := d.placementTargets(inv, restart)
@@ -161,7 +162,7 @@ func planPlace(inv inventory, identityLetter string, node int) (placement.Placem
 		next[number] = letter
 	}
 	if source == node {
-		return next, []string{fmt.Sprintf("identity %s is already on node %d; nothing moved, keys rewritten", identityLetter, node)}, nil
+		return next, []string{fmt.Sprintf("identity %s is already on node %d; nothing moved", identityLetter, node)}, nil
 	}
 	next[node] = identityLetter
 	next[source] = displaced
@@ -172,7 +173,7 @@ func planPlace(inv inventory, identityLetter string, node int) (placement.Placem
 	return next, moves, nil
 }
 
-// placementProbe is what apply-placement observes about one machine.
+// placementProbe is what reconcilePlacement observes about one machine.
 type placementProbe struct {
 	active  bool
 	enabled bool
@@ -181,7 +182,7 @@ type placementProbe struct {
 	nodeID string
 }
 
-// planApply is the pure half of ApplyPlacement: given what each machine is
+// planApply is the pure half of reconcilePlacement: given what each machine is
 // currently doing, decide which machines must be restarted.
 func planApply(inv inventory, nodes []config.Node, probes map[int]placementProbe) ([]config.Node, []string, error) {
 	var restart []config.Node

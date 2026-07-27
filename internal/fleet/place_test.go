@@ -105,7 +105,7 @@ func TestPlaceRejectsNonValidatorMachinesAndIdentities(t *testing.T) {
 	}
 }
 
-func TestApplyPlacementRestartsOnlyDriftedOrInterruptedNodes(t *testing.T) {
+func TestReconcilePlacementRestartsOnlyDriftedOrInterruptedNodes(t *testing.T) {
 	inv := placementTestInventory(t)
 	inv.placement = placement.Placement{1: "c", 2: "b", 3: "a", 4: "d", 5: "e", 6: "f"}
 	l1 := inv.l1Nodes()
@@ -118,7 +118,7 @@ func TestApplyPlacementRestartsOnlyDriftedOrInterruptedNodes(t *testing.T) {
 		3: {active: true, enabled: true, nodeID: "NodeID-C"},
 		// deliberately down: fleet stop disables the unit
 		4: {active: false, enabled: false},
-		// interrupted apply-placement: stopped but still enabled
+		// interrupted place: stopped but still enabled
 		5: {active: false, enabled: true},
 	}
 	restart, notes, err := planApply(inv, l1, probes)
@@ -138,7 +138,7 @@ func TestApplyPlacementRestartsOnlyDriftedOrInterruptedNodes(t *testing.T) {
 	}
 }
 
-func TestApplyPlacementIsANoOpWhenEveryNodeIsConsistent(t *testing.T) {
+func TestReconcilePlacementIsANoOpWhenEveryNodeIsConsistent(t *testing.T) {
 	inv := placementTestInventory(t)
 	l1 := inv.l1Nodes()
 	probes := map[int]placementProbe{
@@ -157,7 +157,7 @@ func TestApplyPlacementIsANoOpWhenEveryNodeIsConsistent(t *testing.T) {
 	}
 }
 
-func TestApplyPlacementFailsWhenAnActiveNodeCannotBeIdentified(t *testing.T) {
+func TestReconcilePlacementFailsWhenAnActiveNodeCannotBeIdentified(t *testing.T) {
 	inv := placementTestInventory(t)
 	probes := map[int]placementProbe{1: {active: true, enabled: true}}
 	_, _, err := planApply(inv, inv.nodes[:1], probes)

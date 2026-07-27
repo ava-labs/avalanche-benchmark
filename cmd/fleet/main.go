@@ -72,11 +72,6 @@ func run() error {
 			return fmt.Errorf("place node must be an inventory node number, got %q", arguments[2])
 		}
 		return deployer.Place(ctx, arguments[1], node)
-	case "apply-placement":
-		if len(arguments) != 1 {
-			return fmt.Errorf("apply-placement takes no arguments")
-		}
-		return deployer.ApplyPlacement(ctx)
 	}
 	return fmt.Errorf("usage:\n%s", usage(program))
 }
@@ -90,7 +85,6 @@ func usage(program string) string {
 		"stop [<node>|dc=<tag> ...]",
 		"destroy [<node>|dc=<tag> ...]",
 		"place <identity-letter> <node>",
-		"apply-placement",
 	}
 	text := ""
 	for _, line := range lines {

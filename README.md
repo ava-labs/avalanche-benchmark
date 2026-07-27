@@ -65,8 +65,7 @@ Issue weight changes while the P-chain node is following. A transaction submitte
 ./bin/fleet stop dc=B             # graceful DC loss
 ./bin/fleet destroy dc=B          # abrupt loss: SIGKILL plus L1 chain data wipe
 ./bin/fleet start dc=B            # bring back, re-pushing assigned identities
-./bin/fleet place a 5             # key-swap failover, no restart
-./bin/fleet apply-placement       # activate the swap by restarting only mismatched nodes
+./bin/fleet place a 5             # key-swap failover: converge, move, restart the mismatched
 ./bin/l1 set-weight d 100000      # weight-change failover
 ```
 
@@ -145,13 +144,12 @@ Unknown fields, missing fields, and malformed values fail the command before it 
 | `fleet start [sel...]` | stop, re-push identities, start. Returns immediately, does NOT wait for serving |
 | `fleet stop [sel...]` | graceful, preserves data, keys, logs |
 | `fleet destroy [sel...]` | SIGKILL + delete `chainData/<chain-id>` only. Simulates abrupt loss. |
-| `fleet place <letter> <node>` | swap placement, push keys, restart nothing |
-| `fleet apply-placement` | restart exactly the nodes whose runtime identity is wrong |
+| `fleet place <letter> <node>` | reconcile, swap placement, reconcile again. The only placement verb. |
 | `bombard -rps N -duration D` | load generator, fans across all `role=rpc` nodes |
 
 Selector is a node number or `dc=<tag>`; multiple form a union; none means all. Separate arguments and comma-separated both work (`fleet stop 1 11 12` = `fleet stop 1,11,12`). `deploy` and `status` take no selectors.
 
-`fleet start` returns as soon as the services are up and deliberately does not wait for them to serve. A node only finishes bootstrapping once 75% of stake is connected (avalanchego's startup tracker is `(3*bootstrapWeight+3)/4`), so during a multi-node recovery no node can become ready until the others are also running. A blocking start would deadlock: restarting node A waits on node B, which has not been started because the command is still blocked on A. Start the whole set, then watch `fleet status` converge. `deploy` and `apply-placement` still block, since they bring up the full fleet.
+`fleet start` returns as soon as the services are up and deliberately does not wait for them to serve. A node only finishes bootstrapping once 75% of stake is connected (avalanchego's startup tracker is `(3*bootstrapWeight+3)/4`), so during a multi-node recovery no node can become ready until the others are also running. A blocking start would deadlock: restarting node A waits on node B, which has not been started because the command is still blocked on A. Start the whole set, then watch `fleet status` converge. `deploy` and `place` still block, since they bring up a coordinated set.
 
 Every mutating fleet command runs fleet-wide phases and aborts before the next phase if any node fails. Rerunning converges. Control-side state is written atomically before remote work.
 
@@ -206,11 +204,19 @@ ssh -i ~/.ssh/fleet ubuntu@<pchain-host> \
 - L1 state-sync peers for each node are all other validator and RPC nodes, never itself and never the P-chain node.
 - Ingress goes only to `role=rpc` nodes. Serving transactions on a validator measurably slows its block production.
 
-## place and apply-placement
+## place
 
-`place a 5` moves identity `a` to node 5 **and** node 5's previous identity to `a`'s old node. Placement is always a transposition, so the bijection holds by construction. It writes `placement.json` atomically, then rewrites the assigned identity on every inventory node, and restarts nothing.
+`place a 5` moves identity `a` to node 5 **and** node 5's previous identity to `a`'s old node. Placement is always a transposition, so the bijection holds by construction. It is the only placement verb and runs three phases:
 
-`apply-placement` reads each running node's NodeID, compares with placement, and restarts only the mismatched set. Nodes already correct are untouched. Nodes deliberately down (inactive and disabled) stay down; inactive but enabled means an interrupted run and gets brought back.
+| phase | what |
+| --- | --- |
+| before | reconcile the fleet to `placement.json`. Silent when already converged. |
+| write | update `placement.json` atomically |
+| after | reconcile again, activating the move |
+
+Reconcile means: read each running node's NodeID, compare with placement, restart only the mismatched set, pushing the assigned key before each restart. Nodes already correct are untouched. Nodes deliberately down (inactive and disabled) stay down; inactive but enabled means an interrupted run and gets brought back.
+
+The before phase is why there is no separate apply step. Placing onto a fleet that had not been applied yet would bundle the pending move into this one, so a single restart would carry two identity changes and a failure would leave neither attributable. Converging first makes every `place` an isolated transition. A `place` that changes nothing skips the after phase entirely.
 
 Refused, for correctness not policy: any swap involving an `rpc` or `pchain` node. Their identities are state-sync seeds and unstaked, and moving a validator onto one silently changes its role.
 
@@ -227,7 +233,7 @@ Warp admission verifies against the P-chain height pinned in the current ACP-181
 Fixed benchmark input, identical for every topology including a single validator. Fleet commands never derive consensus settings from inventory.
 
 ```
-k=20  alphaPreference=11  alphaConfidence=11  beta=12  proposerWindow=50ms
+k=20  alphaPreference=11  alphaConfidence=11  beta=12  proposerWindow=100ms
 ```
 
 Block cadence is 25ms: `min-delay-target` in `chain-config.json` and `initialMinDelayMS` in the genesis. The genesis is stamped with creation time; a genesis stamped `0` would sit before the network's Granite activation, leaving Granite inactive at block zero, silently discarding `initialMinDelayMS`, and starting the chain at the 2000ms ACP-226 default.
@@ -254,4 +260,5 @@ Measure with `scripts/tpsdist.py`, not the bombard TUI. The script reads `timest
 - **`fleet destroy` is not `l1 destroy`.** The first wipes local L1 chain data to simulate machine loss; the second disables validators on the P-chain and reclaims balances.
 - **`bombard -resubmit`** must exceed the worst observed block latency, otherwise a slow chain produces a resubmit storm larger than the issued count.
 - **The frozen P-chain must be at or above the height `l1 create` landed at.** `l1 create` issues against the public API, so it advances the real P-chain; a snapshot taken before those transactions leaves the first L1 blocks referencing a height the local P-chain never reaches. Nodes that already hold the blocks keep running (accepted blocks are never re-verified), so the fleet looks healthy until a node rejoins from an empty database and dies with `block P-chain height larger than current P-chain height`. Always follow to the tip and re-freeze **after** `l1 create`.
+- **Do not restart a node within a minute of restarting its state-sync sources.** State sync first asks peers which block to sync to, weighted by stake and needing alpha weight to be believed. If no peer can answer yet, the only summary on offer is genesis, and subnet-evm then skips state sync because `lastAccepted + state-sync-min-blocks > summaryHeight` holds trivially at `0 + n > 0`. The node replays from block 0 instead: 180k blocks and half an hour, versus roughly 30 seconds when a healthy peer can serve a summary. Recover nodes one at a time, or wait for the sources to reach tip. The log line to look for is `syncMode: "Skipped"` with `syncableHeight=0`.
 - The pack artifact contains no private keys. Transfer `.env`, `deployment/`, and the ssh key separately.
