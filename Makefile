@@ -1,4 +1,4 @@
-.PHONY: all clean build pack package-build bin/l1 bin/fleet bin/VERSIONS
+.PHONY: all clean build pack pack-fast package-build bin/l1 bin/fleet bin/VERSIONS
 
 .DEFAULT_GOAL := all
 
@@ -54,23 +54,35 @@ bin/VERSIONS: bin/avalanchego bin/$(SUBNET_EVM_ID) bin/l1 bin/fleet
 
 package-build: bin/avalanchego bin/$(SUBNET_EVM_ID) bin/l1 bin/fleet bin/VERSIONS
 
+PACK_FILES := \
+	bin/ \
+	README.md \
+	DESIGN.md \
+	.env.example \
+	nodes.ini.example \
+	genesis-template.json \
+	node-config.json \
+	chain-config.json \
+	chain-config-rpc.json \
+	subnet-config.json \
+	monitoring/grafana-datasources.yml \
+	monitoring/dashboards/
+
 pack:
 	rm -rf bin
 	$(MAKE) package-build
 	rm -f remote-benchmark.tar.gz
-	tar -czf remote-benchmark.tar.gz \
-		bin/ \
-		README.md \
-		DESIGN.md \
-		.env.example \
-		nodes.ini.example \
-		genesis-template.json \
-		node-config.json \
-		chain-config.json \
-		chain-config-rpc.json \
-		subnet-config.json \
-		monitoring/grafana-datasources.yml \
-		monitoring/dashboards/
+	tar -czf remote-benchmark.tar.gz $(PACK_FILES)
+	tar -tzf remote-benchmark.tar.gz
+
+# pack-fast keeps an already built avalanchego and plugin and rebuilds only the
+# kit binaries. Use it while iterating; use pack for anything shipped.
+pack-fast:
+	test -x bin/avalanchego && test -x bin/$(SUBNET_EVM_ID)
+	rm -f bin/l1 bin/fleet bin/VERSIONS
+	$(MAKE) package-build
+	rm -f remote-benchmark.tar.gz
+	tar -czf remote-benchmark.tar.gz $(PACK_FILES)
 	tar -tzf remote-benchmark.tar.gz
 
 clean:
