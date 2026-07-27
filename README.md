@@ -117,7 +117,7 @@ Issue weight changes while the P-chain node is following. A transaction submitte
 | `dc=` | display and maintenance-selector only. Nothing functional depends on it. |
 | Co-location | several nodes may share a host. Ports are positional by node order on that host: 9650/9651, 9652/9653, 9654/9655. |
 | Weights are not inventory | on-chain weight is the only truth |
-| `archive` | 0 or >= 2: an RPC-shaped main-L1 node with pruning and state-sync disabled (`chain-config-archive.json`). Must exist from genesis (an archive cannot state-sync); never a bootstrap anchor. |
+| `archive` | 0 or >= 2: an RPC-shaped main-L1 node with pruning and state-sync disabled (`chain-config-archive.json`). Must exist from genesis (an archive cannot state-sync); deployed like any other node. |
 | Oracle roles come together | `oracle-validator` / `oracle-rpc` declare the optional oracle L1 (`subnet-config-oracle.json`, all weights 1000, no key swaps). Omit both for no oracle chain; each requires the other. |
 
 ## .env

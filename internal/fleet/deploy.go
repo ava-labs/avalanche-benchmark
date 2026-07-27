@@ -91,9 +91,26 @@ type deployment struct {
 	chainID         ids.ID
 	subnetID        ids.ID
 	managerSubnetID ids.ID
+	oracleChainID   ids.ID
+	oracleSubnetID  ids.ID
 	expectedMain    map[ids.NodeID]struct{}
 	expectedManager map[ids.NodeID]struct{}
+	expectedOracle  map[ids.NodeID]struct{}
 	pchainMode      string
+}
+
+// oracleRole reports whether the role lives on the oracle L1.
+func oracleRole(role config.Role) bool {
+	return role == config.RoleOracleValidator || role == config.RoleOracleRPC
+}
+
+// l1For returns the chain and subnet a node serves: oracle roles live on the
+// oracle L1, every other L1 role on the main one.
+func (p deployment) l1For(role config.Role) (ids.ID, ids.ID) {
+	if oracleRole(role) {
+		return p.oracleChainID, p.oracleSubnetID
+	}
+	return p.chainID, p.subnetID
 }
 
 type nodeDeployment struct {
@@ -508,6 +525,20 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 	if err != nil {
 		return deployment{}, noCleanup, err
 	}
+	hasOracle, hasArchive := false, false
+	for _, node := range nodes {
+		hasOracle = hasOracle || oracleRole(node.Role)
+		hasArchive = hasArchive || node.Role == config.RoleArchive
+	}
+	var oracleChainID, oracleSubnetID ids.ID
+	if hasOracle {
+		if oracleChainID, err = requiredID(state, "ORACLE_CHAIN_ID"); err != nil {
+			return deployment{}, noCleanup, err
+		}
+		if oracleSubnetID, err = requiredID(state, "ORACLE_SUBNET_ID"); err != nil {
+			return deployment{}, noCleanup, err
+		}
+	}
 
 	requiredFiles := []string{
 		filepath.Join(d.root, "bin", "avalanchego"),
@@ -520,6 +551,12 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 			filepath.Join(d.root, "chain-config-rpc.json"),
 			filepath.Join(d.root, "subnet-config.json"),
 		)
+		if hasOracle {
+			requiredFiles = append(requiredFiles, filepath.Join(d.root, "subnet-config-oracle.json"))
+		}
+		if hasArchive {
+			requiredFiles = append(requiredFiles, filepath.Join(d.root, "chain-config-archive.json"))
+		}
 	}
 	for _, path := range requiredFiles {
 		if info, err := os.Stat(path); err != nil {
@@ -552,14 +589,21 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 		chainID:         chainID,
 		subnetID:        subnetID,
 		managerSubnetID: managerSubnetID,
+		oracleChainID:   oracleChainID,
+		oracleSubnetID:  oracleSubnetID,
 		expectedMain:    make(map[ids.NodeID]struct{}),
 		expectedManager: make(map[ids.NodeID]struct{}),
+		expectedOracle:  make(map[ids.NodeID]struct{}),
 		pchainMode:      pchainMode,
 	}
 	for _, node := range public.Nodes {
-		if node.Role == config.RoleValidator {
+		switch node.Role {
+		case config.RoleValidator:
 			nodeID, _ := ids.NodeIDFromString(node.NodeID)
 			result.expectedMain[nodeID] = struct{}{}
+		case config.RoleOracleValidator:
+			nodeID, _ := ids.NodeIDFromString(node.NodeID)
+			result.expectedOracle[nodeID] = struct{}{}
 		}
 	}
 	for _, manager := range public.Managers {
@@ -614,14 +658,15 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 		renderDir := filepath.Join(renderRoot, strconv.Itoa(node.Number))
 		bootstrapIP := fmt.Sprintf("%s:%d", pchain.Host, ports[pchain.Number][1])
 		stateSyncIPs, stateSyncIDs := stateSyncPeers(node, nodes, publicByNode, ports)
+		nodeChainID, nodeSubnetID := result.l1For(node.Role)
 		if err := renderNode(
 			renderDir,
 			d.root,
 			environment,
 			node,
 			generated,
-			chainID,
-			subnetID,
+			nodeChainID,
+			nodeSubnetID,
 			ports[node.Number],
 			pchainMode,
 			bootstrapIP,
@@ -672,6 +717,10 @@ func stateSyncPeers(
 	var peerIDs []string
 	for _, peer := range nodes {
 		if peer.Number == node.Number || peer.Role == config.RolePChain {
+			continue
+		}
+		// Only a node on the same L1 holds that chain's state-sync summaries.
+		if oracleRole(peer.Role) != oracleRole(node.Role) {
 			continue
 		}
 		peerIPs = append(peerIPs, fmt.Sprintf("%s:%d", peer.Host, ports[peer.Number][1]))
@@ -760,7 +809,7 @@ func renderNode(
 		cfg["bootstrap-ids"] = bootstrapID
 		cfg["state-sync-ips"] = stateSyncIPs
 		cfg["state-sync-ids"] = stateSyncIDs
-		if node.Role == config.RoleValidator {
+		if node.Role == config.RoleValidator || node.Role == config.RoleOracleValidator {
 			cfg["staking-signer-key-file"] = filepath.Join(stakingDir, "signer.key")
 		} else {
 			cfg["staking-ephemeral-signer-enabled"] = true
@@ -771,12 +820,19 @@ func renderNode(
 	}
 	if node.Role != config.RolePChain {
 		chainConfig := "chain-config.json"
-		if node.Role == config.RoleRPC {
+		switch node.Role {
+		case config.RoleRPC, config.RoleOracleRPC:
 			chainConfig = "chain-config-rpc.json"
+		case config.RoleArchive:
+			chainConfig = "chain-config-archive.json"
+		}
+		subnetConfig := "subnet-config.json"
+		if oracleRole(node.Role) {
+			subnetConfig = "subnet-config-oracle.json"
 		}
 		for _, copyPair := range [][2]string{
 			{filepath.Join(root, chainConfig), filepath.Join(renderDir, "chain.json")},
-			{filepath.Join(root, "subnet-config.json"), filepath.Join(renderDir, "subnet.json")},
+			{filepath.Join(root, subnetConfig), filepath.Join(renderDir, "subnet.json")},
 		} {
 			contents, err := os.ReadFile(copyPair[0])
 			if err != nil {
@@ -818,7 +874,7 @@ func writeJSON(path string, value any) error {
 func validateIdentityFiles(root string, generated creation.PublicNode) error {
 	dir := filepath.Join(root, "deployment", "identities", generated.Identity)
 	names := []string{"staker.crt", "staker.key"}
-	if generated.Role == config.RoleValidator {
+	if generated.Role == config.RoleValidator || generated.Role == config.RoleOracleValidator {
 		names = append(names, "signer.key")
 	}
 	for _, name := range names {
@@ -1002,13 +1058,14 @@ func (d *Deployer) installPackage(ctx context.Context, deployment deployment, no
 		remotePackageDir, remoteConfigDir, node.node.Number, remoteDataDir,
 		binaryStage, packageStage, deployment.environment.SSHUser)
 	if node.node.Role != config.RolePChain {
+		nodeChainID, nodeSubnetID := deployment.l1For(node.node.Role)
 		install += fmt.Sprintf(
 			" && sudo install -d -m 0755 %[1]s/%[2]d/plugins %[3]s/%[2]d/chains/%[4]s %[3]s/%[2]d/subnets && "+
 				"sudo install -m 0755 %[5]s/%[6]s %[1]s/%[2]d/plugins/%[6]s && "+
 				"sudo install -m 0644 %[7]s/chain.json %[3]s/%[2]d/chains/%[4]s/config.json && "+
 				"sudo install -m 0644 %[7]s/subnet.json %[3]s/%[2]d/subnets/%[8]s.json",
-			remotePackageDir, node.node.Number, remoteConfigDir, deployment.chainID,
-			binaryStage, pluginID, packageStage, deployment.subnetID)
+			remotePackageDir, node.node.Number, remoteConfigDir, nodeChainID,
+			binaryStage, pluginID, packageStage, nodeSubnetID)
 	}
 	return d.runSSH(ctx, deployment, node, install)
 }
@@ -1154,7 +1211,8 @@ func containsValidators(validators []platformvm.ClientPermissionlessValidator, e
 
 func (d *Deployer) waitL1Ready(ctx context.Context, deployment deployment, node nodeDeployment) error {
 	deadline := time.Now().Add(d.waitLimit)
-	url := fmt.Sprintf("http://%s:%d/ext/bc/%s/rpc", node.node.Host, node.httpPort, deployment.chainID)
+	nodeChainID, _ := deployment.l1For(node.node.Role)
+	url := fmt.Sprintf("http://%s:%d/ext/bc/%s/rpc", node.node.Host, node.httpPort, nodeChainID)
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
 	var lastError error
 	for time.Now().Before(deadline) {

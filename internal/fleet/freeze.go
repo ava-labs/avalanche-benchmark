@@ -18,6 +18,7 @@ type freezeGate struct {
 	localHeight    uint64
 	managerVisible bool
 	mainVisible    bool
+	oracleVisible  bool
 }
 
 // check returns nil when the node may be frozen, or the precise reason it may
@@ -36,6 +37,9 @@ func (g freezeGate) check() error {
 	}
 	if !g.mainVisible {
 		missing = append(missing, "main")
+	}
+	if !g.oracleVisible {
+		missing = append(missing, "oracle")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf(
@@ -127,11 +131,21 @@ func (d *Deployer) freezeGateState(ctx context.Context, prepared deployment) (fr
 	if err != nil {
 		return freezeGate{}, fmt.Errorf("read main validator set from %s: %w", network.PChainAPI, err)
 	}
+	// Without oracle roles there is no oracle set to wait for.
+	oracleVisible := true
+	if len(prepared.expectedOracle) > 0 {
+		oracle, err := public.GetCurrentValidators(ctx, prepared.oracleSubnetID, nil)
+		if err != nil {
+			return freezeGate{}, fmt.Errorf("read oracle validator set from %s: %w", network.PChainAPI, err)
+		}
+		oracleVisible = containsValidators(oracle, prepared.expectedOracle)
+	}
 
 	return freezeGate{
 		upstreamHeight: upstreamHeight,
 		localHeight:    observation.height,
 		managerVisible: containsValidators(manager, prepared.expectedManager),
 		mainVisible:    containsValidators(main, prepared.expectedMain),
+		oracleVisible:  oracleVisible,
 	}, nil
 }

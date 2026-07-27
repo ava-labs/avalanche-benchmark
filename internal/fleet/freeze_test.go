@@ -15,27 +15,32 @@ func TestFreezeGateRefusesWithExactReason(t *testing.T) {
 	}{
 		{
 			name: "ready",
-			gate: freezeGate{upstreamHeight: 100, localHeight: 100, managerVisible: true, mainVisible: true},
+			gate: freezeGate{upstreamHeight: 100, localHeight: 100, managerVisible: true, mainVisible: true, oracleVisible: true},
 		},
 		{
 			name: "behind upstream",
-			gate: freezeGate{upstreamHeight: 289700, localHeight: 289600, managerVisible: true, mainVisible: true},
+			gate: freezeGate{upstreamHeight: 289700, localHeight: 289600, managerVisible: true, mainVisible: true, oracleVisible: true},
 			want: []string{"not synchronized", "289600", "289700", "lag 100"},
 		},
 		{
 			name: "management set missing",
-			gate: freezeGate{upstreamHeight: 100, localHeight: 101, managerVisible: false, mainVisible: true},
+			gate: freezeGate{upstreamHeight: 100, localHeight: 101, managerVisible: false, mainVisible: true, oracleVisible: true},
 			want: []string{"missing the management validator set", "101", "100"},
 		},
 		{
 			name: "main set missing",
-			gate: freezeGate{upstreamHeight: 100, localHeight: 100, managerVisible: true, mainVisible: false},
+			gate: freezeGate{upstreamHeight: 100, localHeight: 100, managerVisible: true, mainVisible: false, oracleVisible: true},
 			want: []string{"missing the main validator set"},
 		},
 		{
-			name: "both sets missing",
+			name: "oracle set missing",
+			gate: freezeGate{upstreamHeight: 100, localHeight: 100, managerVisible: true, mainVisible: true, oracleVisible: false},
+			want: []string{"missing the oracle validator set"},
+		},
+		{
+			name: "all sets missing",
 			gate: freezeGate{upstreamHeight: 100, localHeight: 100},
-			want: []string{"missing the management and main validator set"},
+			want: []string{"missing the management and main and oracle validator set"},
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {

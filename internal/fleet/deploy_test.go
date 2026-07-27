@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -530,5 +531,109 @@ func writeArchive(t *testing.T, path string, files map[string]string) {
 	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRenderOracleAndArchiveRoles(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "node-config.json"), `{}`)
+	writeTestFile(t, filepath.Join(root, "chain-config.json"), `{"main":true}`)
+	writeTestFile(t, filepath.Join(root, "chain-config-rpc.json"), `{"rpc":true}`)
+	writeTestFile(t, filepath.Join(root, "chain-config-archive.json"), `{"archive":true}`)
+	writeTestFile(t, filepath.Join(root, "subnet-config.json"), `{"l1":"main"}`)
+	writeTestFile(t, filepath.Join(root, "subnet-config-oracle.json"), `{"l1":"oracle"}`)
+	environment := config.FleetEnvironment{Network: "fuji", SSHUser: "ubuntu"}
+	oracleChainID := ids.GenerateTestID()
+	oracleSubnetID := ids.GenerateTestID()
+
+	cases := map[string]struct {
+		node        config.Node
+		signer      bool
+		chainConfig string
+		subnetCfg   string
+	}{
+		"oracle validator": {
+			node:        config.Node{Number: 8, Role: config.RoleOracleValidator},
+			signer:      true,
+			chainConfig: `{"main":true}`,
+			subnetCfg:   `{"l1":"oracle"}`,
+		},
+		"oracle rpc": {
+			node:        config.Node{Number: 9, Role: config.RoleOracleRPC},
+			chainConfig: `{"rpc":true}`,
+			subnetCfg:   `{"l1":"oracle"}`,
+		},
+		"archive": {
+			node:        config.Node{Number: 6, Role: config.RoleArchive},
+			chainConfig: `{"archive":true}`,
+			subnetCfg:   `{"l1":"main"}`,
+		},
+	}
+	for name, testCase := range cases {
+		t.Run(name, func(t *testing.T) {
+			renderDir := filepath.Join(root, strconv.Itoa(testCase.node.Number))
+			if err := renderNode(
+				renderDir,
+				root,
+				environment,
+				testCase.node,
+				creation.PublicNode{Identity: "x", Role: testCase.node.Role},
+				oracleChainID,
+				oracleSubnetID,
+				[2]int{9650, 9651},
+				followMode,
+				"pchain:9651",
+				"NodeID-pchain",
+				"",
+				"",
+			); err != nil {
+				t.Fatal(err)
+			}
+			rendered := readTestJSON(t, filepath.Join(renderDir, "node.json"))
+			if rendered["track-subnets"] != oracleSubnetID.String() {
+				t.Fatalf("node must track the subnet it was rendered for: %v", rendered["track-subnets"])
+			}
+			if testCase.signer != (rendered["staking-signer-key-file"] != nil) {
+				t.Fatalf("signer key presence = %v, want %v", rendered["staking-signer-key-file"] != nil, testCase.signer)
+			}
+			chain, err := os.ReadFile(filepath.Join(renderDir, "chain.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(chain) != testCase.chainConfig {
+				t.Fatalf("chain.json = %s, want %s", chain, testCase.chainConfig)
+			}
+			subnet, err := os.ReadFile(filepath.Join(renderDir, "subnet.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(subnet) != testCase.subnetCfg {
+				t.Fatalf("subnet.json = %s, want %s", subnet, testCase.subnetCfg)
+			}
+		})
+	}
+}
+
+func TestStateSyncPeersStayWithinTheirL1(t *testing.T) {
+	nodes := []config.Node{
+		{Number: 1, Host: "v1", Role: config.RoleValidator},
+		{Number: 2, Host: "r1", Role: config.RoleRPC},
+		{Number: 3, Host: "p1", Role: config.RolePChain},
+		{Number: 4, Host: "o1", Role: config.RoleOracleValidator},
+		{Number: 5, Host: "o2", Role: config.RoleOracleRPC},
+	}
+	public := map[int]creation.PublicNode{
+		1: {NodeID: "NodeID-v1"}, 2: {NodeID: "NodeID-r1"},
+		4: {NodeID: "NodeID-o1"}, 5: {NodeID: "NodeID-o2"},
+	}
+	ports := portsByNode(nodes)
+
+	ips, ids := stateSyncPeers(nodes[0], nodes, public, ports)
+	if ips != "r1:9651" || ids != "NodeID-r1" {
+		t.Fatalf("main validator peers = %q %q, want only the main rpc", ips, ids)
+	}
+	ips, ids = stateSyncPeers(nodes[3], nodes, public, ports)
+	if ips != "o2:9651" || ids != "NodeID-o2" {
+		t.Fatalf("oracle validator peers = %q %q, want only the oracle rpc", ips, ids)
 	}
 }
