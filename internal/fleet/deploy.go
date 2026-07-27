@@ -177,12 +177,28 @@ func (d *Deployer) reconcilePChain(ctx context.Context, prepared deployment, see
 	return d.phase(ctx, pchainOnly, "P-chain start", d.startAndVerify)
 }
 
+// howToProduceArchive turns the empty-state dead end into instructions. A
+// frozen deploy cannot invent the archive, so the error names the exact
+// sequence that produces one and the alternative that needs none.
+const howToProduceArchive = `
+Produce the archive from a synchronized P-chain node:
+
+  fleet pchain follow    start the P-chain node following its upstream
+  fleet status           wait for synced and both validator sets visible
+  fleet pchain archive   write ./` + pchainArchive + `
+  fleet deploy frozen    retry this command
+
+Or deploy without an archive and let the P-chain node follow the public
+network instead:
+
+  fleet deploy follow`
+
 func (d *Deployer) validateFrozenDeployArchive() error {
 	archivePath := filepath.Join(d.root, pchainArchive)
 	info, err := os.Stat(archivePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("frozen deploy requires ./%s; file not found", pchainArchive)
+			return fmt.Errorf("frozen deploy requires ./%s; file not found\n%s", pchainArchive, howToProduceArchive)
 		}
 		return fmt.Errorf("frozen deploy requires ./%s: %w", pchainArchive, err)
 	}
