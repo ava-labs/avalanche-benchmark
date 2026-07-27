@@ -440,8 +440,7 @@ func deliverBatch(
 	meters.recordBatchSize(len(batch))
 	messages := make([]confirmMessage, len(batch))
 	for i, msg := range batch {
-		meters.recordDelivery(msg.asset, msg.price, msg.updatedAt)
-		meters.recordSeq(msg.asset, msg.seq)
+		meters.recordDelivery(msg.asset, msg.price)
 		fmt.Fprintf(output, "delivered %s price %s seq %d oracle-block %d main-tx %s (batch %d/%d)\n",
 			msg.asset, formatPrice(msg.price.Int64()), msg.seq, msg.oracleBlock, hash.Hex(), i+1, len(batch))
 		messages[i] = confirmMessage{asset: msg.asset, seenAt: msg.seenAt, updatedAt: msg.updatedAt}
@@ -508,12 +507,12 @@ func pollMainPrices(ctx context.Context, main *evmClient, deployment Deployment,
 					fail(fmt.Errorf("poll main latestPrice for %s: %w", asset.name, err))
 					return
 				}
-				price, updatedAt, err := decodeLatestPrice(output)
+				price, _, err := decodeLatestPrice(output)
 				if err != nil {
 					fail(fmt.Errorf("decode main latestPrice for %s: %w", asset.name, err))
 					return
 				}
-				meters.recordMainPrice(asset.name, price, updatedAt)
+				meters.recordMainPrice(asset.name, price)
 			}
 		}
 	}

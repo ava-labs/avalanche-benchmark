@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -54,8 +53,6 @@ type signatureReply struct {
 type responseMux struct {
 	mu      sync.Mutex
 	waiters map[uint32]chan<- signatureReply
-	// trace, when set, logs every inbound op for wire-level debugging.
-	trace io.Writer
 }
 
 func newResponseMux() *responseMux {
@@ -88,9 +85,6 @@ func (m *responseMux) deliver(requestID uint32, reply signatureReply) {
 // Everything except signature responses (pings, gossip) is discarded.
 func (m *responseMux) HandleInbound(_ context.Context, msg message.InboundMessage) {
 	defer msg.OnFinishedHandling()
-	if m.trace != nil {
-		fmt.Fprintf(m.trace, "p2p inbound op=%s from %s\n", msg.Op(), msg.NodeID())
-	}
 	switch payload := msg.Message().(type) {
 	case *p2ppb.AppResponse:
 		m.deliver(payload.RequestId, signatureReply{nodeID: msg.NodeID(), responseData: payload.AppBytes})
@@ -138,9 +132,6 @@ func newP2PSigner(
 		warpSet:       warpSet,
 		indexByNodeID: indexByNodeID,
 		mux:           newResponseMux(),
-	}
-	if os.Getenv("ORACLE_P2P_TRACE") == "1" {
-		signer.mux.trace = output
 	}
 	for _, address := range stakingAddresses {
 		dialCtx, cancel := context.WithTimeout(ctx, p2pDialTimeout)

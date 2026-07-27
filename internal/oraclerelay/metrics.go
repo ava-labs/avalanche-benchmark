@@ -26,9 +26,7 @@ var priceScale = big.NewFloat(1e8)
 type metrics struct {
 	registry        *prometheus.Registry
 	price           *prometheus.GaugeVec
-	priceUpdatedAt  *prometheus.GaugeVec
 	mainPriceOrigin *prometheus.GaugeVec
-	seq             *prometheus.GaugeVec
 	e2eLatency      *prometheus.HistogramVec
 	pipelineLatency *prometheus.HistogramVec
 	signLatency     prometheus.Histogram
@@ -48,21 +46,11 @@ func newMetrics() *metrics {
 			Name:      "price",
 			Help:      "Latest price scaled to whole units (raw / 1e8), by asset and chain.",
 		}, []string{"asset", "chain"}),
-		priceUpdatedAt: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: metricsNamespace,
-			Name:      "price_updated_at",
-			Help:      "Unix seconds of the latest price, by asset and chain.",
-		}, []string{"asset", "chain"}),
 		mainPriceOrigin: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: metricsNamespace,
 			Name:      "main_price_staleness_seconds",
 			Help:      "Age of the price now on main, measured on the relay's clock as (confirm time - oracle-log-seen time), by asset. This is a value, not an age derived with time(), so the scrape interval does not inflate it the way the contract's second-resolution updatedAt does.",
 		}, []string{"asset"}),
-		seq: prometheus.NewGaugeVec(prometheus.GaugeOpts{
-			Namespace: metricsNamespace,
-			Name:      "seq",
-			Help:      "Last per-asset sequence number seen, by asset and chain. Only chain=\"oracle\" is exported: the receiver's latestPrice returns (price, updatedAt) with no seq.",
-		}, []string{"asset", "chain"}),
 		e2eLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Namespace: metricsNamespace,
 			Name:      "e2e_latency_seconds",
@@ -110,9 +98,7 @@ func newMetrics() *metrics {
 	}
 	registry.MustRegister(
 		m.price,
-		m.priceUpdatedAt,
 		m.mainPriceOrigin,
-		m.seq,
 		m.e2eLatency,
 		m.pipelineLatency,
 		m.signLatency,
@@ -152,9 +138,8 @@ func scaledPrice(raw *big.Int) float64 {
 	return value
 }
 
-func (m *metrics) recordDelivery(asset string, price *big.Int, updatedAt uint64) {
+func (m *metrics) recordDelivery(asset string, price *big.Int) {
 	m.price.WithLabelValues(asset, "oracle").Set(scaledPrice(price))
-	m.priceUpdatedAt.WithLabelValues(asset, "oracle").Set(float64(updatedAt))
 	m.delivered.WithLabelValues(asset).Inc()
 }
 
@@ -191,16 +176,8 @@ func (m *metrics) recordDequeued() {
 	m.inflight.Dec()
 }
 
-func (m *metrics) recordMainPrice(asset string, price *big.Int, updatedAt uint64) {
+func (m *metrics) recordMainPrice(asset string, price *big.Int) {
 	m.price.WithLabelValues(asset, "main").Set(scaledPrice(price))
-	m.priceUpdatedAt.WithLabelValues(asset, "main").Set(float64(updatedAt))
-}
-
-// recordSeq exports the last delivered seq for an asset. Only chain="oracle" is
-// set: the receiver's latestPrice view returns no seq, so a chain="main" seq
-// would need a new contract view call and is deliberately not exported.
-func (m *metrics) recordSeq(asset string, seq uint64) {
-	m.seq.WithLabelValues(asset, "oracle").Set(float64(seq))
 }
 
 func (m *metrics) recordSkipped(asset string) {
