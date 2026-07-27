@@ -21,6 +21,7 @@ import (
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/placement"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/vms/platformvm"
 	"github.com/joho/godotenv"
@@ -459,6 +460,35 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 		return deployment{}, noCleanup, fmt.Errorf("deployment/public.json has %d nodes but nodes.ini has %d", len(publicByNode), len(nodes))
 	}
 
+	// Which identity belongs on a machine is placement.json, NOT public.json.
+	// public.json records the ORIGINAL keygen assignment and never changes, so
+	// resolving identities from it makes deploy silently undo every key swap: a
+	// failover that moved an identity off a dead box would put it straight back
+	// on the next deploy. placement.json is the control-side truth that place
+	// and start already honour.
+	currentPlacement, err := placement.Load(placement.Path(d.root))
+	if err != nil {
+		return deployment{}, noCleanup, err
+	}
+	if err := placement.Validate(currentPlacement, public, nodes); err != nil {
+		return deployment{}, noCleanup, err
+	}
+	identityByLetter := make(map[string]creation.PublicNode, len(public.Nodes))
+	for _, node := range public.Nodes {
+		identityByLetter[node.Identity] = node
+	}
+	assignedIdentity := func(node config.Node) (creation.PublicNode, error) {
+		letter, placed := currentPlacement[node.Number]
+		if !placed {
+			return creation.PublicNode{}, fmt.Errorf("deployment/placement.json has no identity for node %d", node.Number)
+		}
+		identity, known := identityByLetter[letter]
+		if !known {
+			return creation.PublicNode{}, fmt.Errorf("deployment/placement.json assigns unknown identity %q to node %d", letter, node.Number)
+		}
+		return identity, nil
+	}
+
 	state, err := godotenv.Read(filepath.Join(d.root, "deployment", "network.env"))
 	if err != nil {
 		return deployment{}, noCleanup, fmt.Errorf("read required deployment state deployment/network.env: %w", err)
@@ -544,7 +574,11 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 			break
 		}
 	}
-	pchainIdentity := publicByNode[pchain.Number]
+	pchainIdentity, err := assignedIdentity(pchain)
+	if err != nil {
+		cleanup()
+		return deployment{}, noCleanup, err
+	}
 	if err := validateIdentityFiles(d.root, pchainIdentity); err != nil {
 		cleanup()
 		return deployment{}, noCleanup, err
@@ -568,7 +602,11 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 		if node.Role == config.RolePChain {
 			continue
 		}
-		generated := publicByNode[node.Number]
+		generated, err := assignedIdentity(node)
+		if err != nil {
+			cleanup()
+			return deployment{}, noCleanup, err
+		}
 		if err := validateIdentityFiles(d.root, generated); err != nil {
 			cleanup()
 			return deployment{}, noCleanup, err
