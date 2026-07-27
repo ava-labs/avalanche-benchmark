@@ -50,6 +50,16 @@ func (d *Deployer) Place(ctx context.Context, identityLetter string, node int) e
 		return err
 	}
 	fmt.Fprintf(d.out, "pushed assigned keys to %d machine(s); no service was restarted\n", len(prepared.selected))
+	// place only rewrites disk. Until the affected nodes restart they keep
+	// serving their OLD identity, so the fleet disagrees with placement.json and
+	// nothing has actually moved. Name the next command explicitly: this is the
+	// one step an operator forgets, and the symptom (no change at all) looks
+	// exactly like place having silently failed. A no-op place produces no moves
+	// and needs no restart, so stay quiet there.
+	if len(moves) > 0 {
+		fmt.Fprintln(d.out, "placement.json now disagrees with the running fleet; apply it with:")
+		fmt.Fprintln(d.out, "  fleet apply-placement")
+	}
 	return nil
 }
 
