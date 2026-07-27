@@ -142,14 +142,16 @@ Unknown fields, missing fields, and malformed values fail the command before it 
 | `fleet pchain freeze` | gate on synced + both validator sets, then switch to empty bootstrap lists |
 | `fleet pchain archive` | stop, snapshot `db/`, restart, download, validate, publish `./pchain.tar.gz` |
 | `fleet status` | read-only, whole inventory, no selectors |
-| `fleet start [sel...]` | stop, re-push identities, start, wait for serving |
+| `fleet start [sel...]` | stop, re-push identities, start. Returns immediately, does NOT wait for serving |
 | `fleet stop [sel...]` | graceful, preserves data, keys, logs |
 | `fleet destroy [sel...]` | SIGKILL + delete `chainData/<chain-id>` only. Simulates abrupt loss. |
 | `fleet place <letter> <node>` | swap placement, push keys, restart nothing |
 | `fleet apply-placement` | restart exactly the nodes whose runtime identity is wrong |
 | `bombard -rps N -duration D` | load generator, fans across all `role=rpc` nodes |
 
-Selector is a node number or `dc=<tag>`; multiple form a union; none means all. `deploy` and `status` take no selectors.
+Selector is a node number or `dc=<tag>`; multiple form a union; none means all. Separate arguments and comma-separated both work (`fleet stop 1 11 12` = `fleet stop 1,11,12`). `deploy` and `status` take no selectors.
+
+`fleet start` returns as soon as the services are up and deliberately does not wait for them to serve. A node only finishes bootstrapping once 75% of stake is connected (avalanchego's startup tracker is `(3*bootstrapWeight+3)/4`), so during a multi-node recovery no node can become ready until the others are also running. A blocking start would deadlock: restarting node A waits on node B, which has not been started because the command is still blocked on A. Start the whole set, then watch `fleet status` converge. `deploy` and `apply-placement` still block, since they bring up the full fleet.
 
 Every mutating fleet command runs fleet-wide phases and aborts before the next phase if any node fails. Rerunning converges. Control-side state is written atomically before remote work.
 

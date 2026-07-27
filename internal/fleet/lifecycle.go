@@ -21,8 +21,23 @@ func selectNodes(candidates []config.Node, selectors []string) ([]config.Node, e
 	if len(selectors) == 0 {
 		return candidates, nil
 	}
-	chosen := make(map[int]struct{}, len(candidates))
+	// Accept "1,11,12" as well as separate arguments. Comma-separated is what a
+	// hand reaches for under drill pressure, and rejecting it wastes a round trip
+	// at the exact moment the fleet is degraded.
+	expanded := make([]string, 0, len(selectors))
 	for _, selector := range selectors {
+		for _, part := range strings.Split(selector, ",") {
+			if part = strings.TrimSpace(part); part != "" {
+				expanded = append(expanded, part)
+			}
+		}
+	}
+	if len(expanded) == 0 {
+		return nil, fmt.Errorf("selectors %q contain no node number or dc=<tag>", strings.Join(selectors, " "))
+	}
+
+	chosen := make(map[int]struct{}, len(candidates))
+	for _, selector := range expanded {
 		matched := 0
 		if tag, isDC := strings.CutPrefix(selector, "dc="); isDC {
 			if tag == "" {
@@ -103,9 +118,17 @@ func (d *Deployer) runPhases(ctx context.Context, state deployment, phases []lif
 }
 
 // Start converges the selected L1 machines: stop everything, re-push the
-// currently assigned identity, start everything, then wait for the L1. The
-// identity push is not an optimization opportunity: placement is authoritative
-// and a stale remote key must never survive a restart.
+// currently assigned identity, then start everything. The identity push is not
+// an optimization opportunity: placement is authoritative and a stale remote
+// key must never survive a restart.
+//
+// Start deliberately does NOT wait for readiness. A node finishes bootstrapping
+// only once 75% of stake is connected (avalanchego builds its startup tracker as
+// (3*bootstrapWeight+3)/4), so when several nodes are down, none of them can
+// become ready until the others are also running. A blocking start would
+// therefore deadlock in exactly the recovery case it exists for: restarting node
+// A waits on node B, which has not been started yet because the command is still
+// blocked on A. Start is a state change; observe convergence with fleet status.
 func (d *Deployer) Start(ctx context.Context, selectors []string) error {
 	state, inv, err := d.lifecycleTargets(selectors)
 	if err != nil {
@@ -118,11 +141,11 @@ func (d *Deployer) Start(ctx context.Context, selectors []string) error {
 		{"stop", d.stop},
 		{"identity", d.installIdentity},
 		{"start", d.enableAndStart},
-		{"readiness", d.waitL1Ready},
 	}); err != nil {
 		return err
 	}
-	fmt.Fprintf(d.out, "started %d L1 node(s)\n", len(state.selected))
+	fmt.Fprintf(d.out, "started %d L1 node(s); not waiting for readiness (needs 75%% of stake connected)\n", len(state.selected))
+	fmt.Fprintln(d.out, "watch convergence with: fleet status")
 	return nil
 }
 

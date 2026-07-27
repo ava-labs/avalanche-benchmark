@@ -38,6 +38,12 @@ func TestSelectNodes(t *testing.T) {
 		{name: "unknown dc tag", selectors: []string{"dc=Z"}, wantError: `selector "dc=Z" matches no L1 node`},
 		{name: "empty dc tag", selectors: []string{"dc="}, wantError: "empty dc tag"},
 		{name: "malformed selector", selectors: []string{"validator"}, wantError: "must be a node number or dc=<tag>"},
+		{name: "comma separated", selectors: []string{"1,3,4"}, want: []int{1, 3, 4}},
+		{name: "comma mixed with separate args", selectors: []string{"1,2", "dc=B"}, want: []int{1, 2, 3}},
+		{name: "comma with spaces and trailing comma", selectors: []string{" 1 , 3 ,"}, want: []int{1, 3}},
+		{name: "comma preserves dc tags", selectors: []string{"dc=A,4"}, want: []int{1, 2, 4}},
+		{name: "only commas", selectors: []string{",,"}, wantError: "contain no node number"},
+		{name: "comma still rejects garbage", selectors: []string{"1,validator"}, wantError: "must be a node number or dc=<tag>"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			got, err := selectNodes(nodes, testCase.selectors)
