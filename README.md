@@ -116,6 +116,8 @@ go run ./cmd/l1 keygen
 
 It reads only `nodes.ini`, requires `deployment/` to be absent, and generates fresh TLS+BLS identities for validators, TLS-only identities for RPCs and the P-chain node, TLS+BLS identities for managers, and `genesis-funds.key`. It writes `deployment/public.json` with the Genesis EVM address and every public identity, NodeID, initial weight, and required PoP, plus `deployment/placement.json` with the initial machine-to-identity bijection. RPCs have no signer or PoP because they are never registered. The P-chain node also has no signer or PoP. Up to the first three validators by ascending node number receive weight 100000, remaining validators receive 1000, and managers receive 1000.
 
+If `deployment/` is absent, `create` generates the identities itself with the default one-member committee, so a clean workspace needs one command rather than two. Run `keygen` explicitly to choose a four-member committee, or to generate on a different machine than the one that creates. An existing but incomplete `deployment/` is still an error, because it means an earlier run left state behind.
+
 Run `create` on a machine with P-chain access:
 
 ```bash
