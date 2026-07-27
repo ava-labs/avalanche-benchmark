@@ -28,11 +28,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// The p2p signer collects signatures the way icm-services' signature-aggregator
+// The relay collects signatures the way icm-services' signature-aggregator
 // does — ACP-118 SignatureRequest AppRequests over each validator's staking
-// port — instead of signing with control-held keys. The fleet's validators are
-// known statically from the inventory, so no peer discovery is needed: dial
-// each one once at startup and hold the connection.
+// port. The relay holds no BLS keys; validators sign their own Warp messages.
+// The fleet's validators are known statically from the inventory, so no peer
+// discovery is needed: dial each one once at startup and hold the connection.
 const (
 	// p2pSignTimeout bounds one message's signature collection. A validator
 	// signs from its in-memory Warp backend, so the budget is round-trip
@@ -99,9 +99,8 @@ func (m *responseMux) HandleInbound(_ context.Context, msg message.InboundMessag
 	}
 }
 
-// p2pSigner implements messageSigner by requesting each oracle validator's BLS
-// signature over p2p and aggregating replies into a BitSetSignature once the
-// quorum weight is reached.
+// p2pSigner requests each oracle validator's BLS signature over p2p and
+// aggregates replies into a BitSetSignature once the quorum weight is reached.
 type p2pSigner struct {
 	peers         []peer.Peer
 	creator       message.Creator
@@ -160,8 +159,6 @@ func newP2PSigner(
 	}
 	return signer, nil
 }
-
-func (s *p2pSigner) Mode() string { return "p2p" }
 
 // Close tears down every peer connection.
 func (s *p2pSigner) Close() {
@@ -253,8 +250,9 @@ func (s *p2pSigner) Sign(ctx context.Context, unsigned *warp.UnsignedMessage) (*
 }
 
 // aggregateByIndex builds the BitSetSignature from per-canonical-index
-// signatures: the same tail as signAndAggregate, but keyed by index because
-// p2p replies arrive keyed by NodeID rather than by held key.
+// signatures (replies arrive keyed by NodeID, mapped to canonical index),
+// aggregates in canonical order, and verifies the quorum locally before
+// returning so a bad aggregate fails here rather than on-chain.
 func aggregateByIndex(unsigned *warp.UnsignedMessage, validatorSet validators.WarpSet, byIndex map[int]*bls.Signature) (*warp.Message, error) {
 	indexes := make([]int, 0, len(byIndex))
 	for index := range byIndex {

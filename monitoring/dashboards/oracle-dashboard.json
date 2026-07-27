@@ -385,8 +385,8 @@
   {
    "id": 103,
    "type": "timeseries",
-   "title": "Signature collection \u2014 local keys vs p2p ACP-118 (p50/p95)",
-   "description": "Time to produce one message's quorum BitSetSignature. local = the relay signs with control-held BLS keys in-process; p2p = the relay requests signatures from the oracle validators over their staking ports (the icm-services signature-aggregator wire protocol) and aggregates at quorum. The gap is the price of not holding keys.",
+   "title": "Signature collection \u2014 ACP-118 quorum from the validators (p50/p95)",
+   "description": "Time to collect one message's quorum BitSetSignature from the oracle validators over their staking ports. The relay holds no BLS keys; requests fan out concurrently and return at the 67% quorum, so this tracks slowest-of-quorum round-trip plus BLS verification.",
    "datasource": {
     "type": "prometheus",
     "uid": "prometheus"
@@ -404,8 +404,8 @@
       "uid": "prometheus"
      },
      "refId": "A",
-     "legendFormat": "{{mode}} p50",
-     "expr": "histogram_quantile(0.50, sum by (le, mode) (rate(oracle_relay_sign_latency_seconds_bucket[2m])))"
+     "legendFormat": "p50",
+     "expr": "histogram_quantile(0.50, sum by (le) (rate(oracle_relay_sign_latency_seconds_bucket[2m])))"
     },
     {
      "datasource": {
@@ -413,8 +413,8 @@
       "uid": "prometheus"
      },
      "refId": "B",
-     "legendFormat": "{{mode}} p95",
-     "expr": "histogram_quantile(0.95, sum by (le, mode) (rate(oracle_relay_sign_latency_seconds_bucket[2m])))"
+     "legendFormat": "p95",
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(oracle_relay_sign_latency_seconds_bucket[2m])))"
     }
    ],
    "fieldConfig": {

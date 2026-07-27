@@ -220,6 +220,13 @@ Warp → control-host signing → receiver state on main, ~0.5s relay latency at
   reach the SDK router that owns the ACP-118 handler. Probed empirically:
   even IDs time out, odd IDs answer in <1ms, at any send rate. The p2p signer
   therefore issues odd requestIDs only.
+- **The relay signs nothing (decided 2026-07-27).** The initial oracle relay
+  signed with control-held oracle BLS keys, mirroring the committee model.
+  Removed in favor of ACP-118 collection only: oracle validators run with
+  their signer keys and answer signature requests anyway, the relay needing
+  zero BLS custody is strictly better, and the measured cost (ladder below)
+  is negligible. The committee keys for `set-weight` remain control-held —
+  that mechanism is unchanged; only the oracle chain signs its own messages.
 - **Signature-collection latency ladder (measured on the fleet at 20 msg/s,
   2026-07-27).** local in-process signing p50 1.8ms / p95 2.4ms; p2p to a
   single validator p50 3.7ms / p95 4.9ms; p2p 3-of-4 quorum fanned across

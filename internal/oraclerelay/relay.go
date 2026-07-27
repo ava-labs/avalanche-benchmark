@@ -11,11 +11,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/upgrade"
 	"github.com/ava-labs/avalanchego/utils/constants"
-	"github.com/ava-labs/avalanchego/utils/crypto/bls"
 	"github.com/ava-labs/avalanchego/vms/platformvm"
 	"github.com/ava-labs/avalanchego/vms/platformvm/warp"
 	"github.com/ava-labs/avalanchego/vms/proposervm"
@@ -79,28 +77,20 @@ type pendingDelivery struct {
 }
 
 // Relay watches the aggregator's SendWarpMessage broadcasts on the oracle L1 over
-// a WebSocket log subscription, has each signed by the oracle validator set —
-// with control-held keys, or over ACP-118 p2p when stakingAddresses is given —
-// and delivers the aggregated Warp message to the receiver on the main L1.
-// Deliveries pipeline: they are signed and sent as messages arrive while a
-// background goroutine confirms receipts. Foreground until ctx cancels; a failed
-// or unconfirmed delivery is fatal.
+// a WebSocket log subscription, has each signed by the oracle validators over
+// ACP-118 on their staking ports, and delivers the aggregated Warp message to
+// the receiver on the main L1. The relay holds no BLS keys: the validators sign
+// their own Warp messages, exactly as a production signature aggregator
+// requests them. Deliveries pipeline: they are signed and sent as messages
+// arrive while a background goroutine confirms receipts. Foreground until ctx
+// cancels; a failed or unconfirmed delivery is fatal.
 func Relay(ctx context.Context, pChainAPI string, deployment Deployment, deploymentDirectory, oracleNodeURL, mainNodeURL string, stakingAddresses []netip.AddrPort, output io.Writer) error {
+	if len(stakingAddresses) == 0 {
+		return fmt.Errorf("relay requires every oracle validator's staking address")
+	}
 	feederKey, feederAddress, err := loadFeederKey(filepath.Join(deploymentDirectory, "oracle-feeder.key"), deployment.FeederAddress)
 	if err != nil {
 		return err
-	}
-	// In p2p mode the relay needs no BLS custody at all — that is the point.
-	var signers []bls.Signer
-	if len(stakingAddresses) == 0 {
-		public, _, err := creation.LoadPublic(filepath.Join(deploymentDirectory, "public.json"))
-		if err != nil {
-			return err
-		}
-		signers, err = loadOracleSigners(deploymentDirectory, public)
-		if err != nil {
-			return err
-		}
 	}
 	networkID, err := constants.NetworkID(deployment.Network)
 	if err != nil {
@@ -186,18 +176,11 @@ func Relay(ctx context.Context, pChainAPI string, deployment Deployment, deploym
 	if err != nil {
 		return fmt.Errorf("build oracle canonical set at height %d: %w", epoch.PChainHeight, err)
 	}
-	var signMessage messageSigner
-	if len(stakingAddresses) > 0 {
-		p2pSign, err := newP2PSigner(ctx, stakingAddresses, networkID, deployment.OracleChainID, warpSet, output)
-		if err != nil {
-			return err
-		}
-		defer p2pSign.Close()
-		signMessage = p2pSign
-	} else {
-		signMessage = localSigner{warpSet: warpSet, signers: signers}
+	signMessage, err := newP2PSigner(ctx, stakingAddresses, networkID, deployment.OracleChainID, warpSet, output)
+	if err != nil {
+		return err
 	}
-	fmt.Fprintf(output, "signing mode: %s\n", signMessage.Mode())
+	defer signMessage.Close()
 	fresh := newFreshnessGate()
 	for {
 		select {
@@ -401,7 +384,7 @@ func deliverBatch(
 	main *evmClient,
 	mainSigner ethtypes.Signer,
 	feederKey *ecdsa.PrivateKey,
-	signMessage messageSigner,
+	signMessage *p2pSigner,
 	nonce *uint64,
 	deployment Deployment,
 	batch []batchMessage,
@@ -418,7 +401,7 @@ func deliverBatch(
 		if err != nil {
 			return pendingDelivery{}, err
 		}
-		meters.recordSignLatency(signMessage.Mode(), time.Since(signStart))
+		meters.recordSignLatency(time.Since(signStart))
 		tuples = append(tuples, ethtypes.AccessTuple{
 			Address:     WarpPrecompileAddress,
 			StorageKeys: PackPredicate(signed.Bytes()),

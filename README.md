@@ -160,7 +160,7 @@ Unknown fields, missing fields, and malformed values fail the command before it 
 | `fleet place <letter> <node>` | reconcile, swap placement, reconcile again. The only placement verb. |
 | `bombard -rps N -duration D` | load generator, fans across all `role=rpc` nodes |
 | `oracle feed <oracle-rpc-url>` | foreground mock price feeder (oracle L1 only) |
-| `oracle relay <oracle-rpc-url> <rpc-url> [p2p=<ip:port,...>]` | foreground Warp price relayer, oracle to main |
+| `oracle relay <oracle-rpc-url> <rpc-url> <staking-ip:port,...>` | foreground Warp price relayer; signatures collected from the validators over ACP-118 |
 
 Selector is a node number or `dc=<tag>`; multiple form a union; none means all. Separate arguments and comma-separated both work (`fleet stop 1 11 12` = `fleet stop 1,11,12`). `status` takes no selectors.
 
@@ -297,8 +297,8 @@ set. Both contracts ship pre-deployed in genesis; there is nothing to deploy
 at runtime.
 
 ```bash
-./bin/oracle feed http://<oracle-rpc>:9650                        # terminal 1
-./bin/oracle relay http://<oracle-rpc>:9650 http://<rpc>:9650     # terminal 2
+./bin/oracle feed http://<oracle-rpc>:9650                                        # terminal 1
+./bin/oracle relay http://<oracle-rpc>:9650 http://<rpc>:9650 <staking-ip:port,...>  # terminal 2
 ```
 
 `feed` submits both assets ten times a second, signed by
@@ -310,16 +310,15 @@ a backlog drains by widening batches instead of growing latency. The receiver
 contract accepts only the oracle chain + aggregator origin and skips stale
 sequence numbers.
 
-Two signing modes, both exporting `oracle_relay_sign_latency_seconds{mode}`:
-
-- **local** (default): control holds every oracle validator BLS key and signs
-  in-process — the airgap model, same custody as `set-weight`.
-- **p2p** (`relay ... p2p=<staking-ip:port,...>`): requests each signature from
-  the validators themselves over ACP-118 on their staking ports — the
-  icm-services signature-aggregator wire protocol — and aggregates at quorum.
-  The relay then holds no BLS keys at all. Only odd requestIDs are used:
-  subnet-evm routes even-requestID AppRequests to its legacy sync handlers,
-  which silently drop them.
+The relay holds no BLS keys. It requests each signature from the oracle
+validators themselves over ACP-118 on their staking ports — the icm-services
+signature-aggregator wire protocol — and aggregates replies at the 67% quorum
+(the committee keys used by `set-weight` remain on control; only the oracle
+chain signs its own messages). Collection latency is exported as
+`oracle_relay_sign_latency_seconds`; measured on the test fleet a 3-of-4
+quorum across three machines costs ~5ms p50, invisible next to block cadence.
+Only odd requestIDs are used: subnet-evm routes even-requestID AppRequests to
+its legacy sync handlers, which silently drop them.
 
 Delivery gates on the ACP-181 epoch pinning a P-chain height at or beyond the
 oracle conversion, so the first message after creation may wait one epoch
