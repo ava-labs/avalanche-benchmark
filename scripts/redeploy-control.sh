@@ -6,18 +6,19 @@
 # the fleet inventory, the funding key, the generated identities, and the
 # P-chain archive.
 #
+# CONTROL is required on every run. It is never inferred: this command wipes a
+# remote workspace, so the target is always stated out loud.
+#
 # Usage:
-#   scripts/redeploy-control.sh                 full pack, rebuilds avalanchego
-#   FAST=1 scripts/redeploy-control.sh          reuse bin/avalanchego, kit only
-#   CONTROL=1.2.3.4 scripts/redeploy-control.sh override the control host
+#   CONTROL=1.2.3.4 scripts/redeploy-control.sh          full pack
+#   CONTROL=1.2.3.4 FAST=1 scripts/redeploy-control.sh   kit binaries only
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
-CONTROL="${CONTROL:-$(awk '$3 == "role=pchain" {sub(/^host=/, "", $2); print $2; exit}' nodes.ini)}"
-if [ -z "$CONTROL" ]; then
-  echo "no control host: pass CONTROL=<ip> or give nodes.ini a role=pchain row" >&2
+if [ -z "${CONTROL:-}" ]; then
+  echo "CONTROL is required: CONTROL=<control-host> $0" >&2
   exit 1
 fi
 SSH_USER="${SSH_USER:-ubuntu}"
