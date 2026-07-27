@@ -225,7 +225,7 @@ Warp admission verifies against the P-chain height pinned in the current ACP-181
 Fixed benchmark input, identical for every topology including a single validator. Fleet commands never derive consensus settings from inventory.
 
 ```
-k=30  alphaPreference=16  alphaConfidence=17  beta=12  proposerWindow=100ms
+k=20  alphaPreference=11  alphaConfidence=11  beta=12  proposerWindow=50ms
 ```
 
 Block cadence is 25ms: `min-delay-target` in `chain-config.json` and `initialMinDelayMS` in the genesis. The genesis is stamped with creation time; a genesis stamped `0` would sit before the network's Granite activation, leaving Granite inactive at block zero, silently discarding `initialMinDelayMS`, and starting the chain at the 2000ms ACP-226 default.

@@ -738,8 +738,24 @@ func verifyConsensusConfig(path string) error {
 	if err := decoder.Decode(&cfg); err != nil {
 		return fmt.Errorf("decode immutable consensus config %s: %w", path, err)
 	}
-	if cfg.Snow.K != 30 || cfg.Snow.AlphaPreference != 16 || cfg.Snow.AlphaConfidence != 17 || cfg.Snow.Beta != 12 || cfg.ProposerWindow != 100 {
-		return fmt.Errorf("%s does not contain the verified consensus parameters k=30 alphaPreference=16 alphaConfidence=17 beta=12 proposerWindowMilliseconds=100", path)
+	// The proposer window is the block-cadence floor whenever the scheduled
+	// proposer misses its slot, so a 100ms window quantized inter-block times to
+	// 101/202/602ms and only a third of blocks reached the 25ms target. 50 is the
+	// avalanchego minimum (subnets.MinProposerWindowMilliseconds); 0 would mean
+	// the 5s default, not "no window".
+	const (
+		wantK               = 20
+		wantAlphaPreference = 11
+		wantAlphaConfidence = 11
+		wantBeta            = 12
+		wantProposerWindow  = 50
+	)
+	if cfg.Snow.K != wantK || cfg.Snow.AlphaPreference != wantAlphaPreference ||
+		cfg.Snow.AlphaConfidence != wantAlphaConfidence || cfg.Snow.Beta != wantBeta ||
+		cfg.ProposerWindow != wantProposerWindow {
+		return fmt.Errorf(
+			"%s does not contain the verified consensus parameters k=%d alphaPreference=%d alphaConfidence=%d beta=%d proposerWindowMilliseconds=%d",
+			path, wantK, wantAlphaPreference, wantAlphaConfidence, wantBeta, wantProposerWindow)
 	}
 	return nil
 }

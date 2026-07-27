@@ -96,7 +96,7 @@ func TestRenderPChainFollowsDefaultsAndL1UsesPChain(t *testing.T) {
 	writeTestFile(t, filepath.Join(root, "node-config.json"), `{"index-enabled":false}`)
 	writeTestFile(t, filepath.Join(root, "chain-config.json"), `{}`)
 	writeTestFile(t, filepath.Join(root, "chain-config-rpc.json"), `{}`)
-	writeTestFile(t, filepath.Join(root, "subnet-config.json"), `{"snowParameters":{"k":30,"alphaPreference":16,"alphaConfidence":17,"beta":12},"proposerWindowMilliseconds":100,"proposerMillisecondTimestamps":true}`)
+	writeTestFile(t, filepath.Join(root, "subnet-config.json"), `{"snowParameters":{"k":20,"alphaPreference":11,"alphaConfidence":11,"beta":12},"proposerWindowMilliseconds":50,"proposerMillisecondTimestamps":true}`)
 	environment := config.FleetEnvironment{Network: "fuji", SSHUser: "ubuntu"}
 	chainID := ids.GenerateTestID()
 	subnetID := ids.GenerateTestID()
