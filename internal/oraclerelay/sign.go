@@ -45,6 +45,28 @@ func canonicalSet(ctx context.Context, pChain *platformvm.Client, pChainHeight u
 	return warp.GetCanonicalValidatorSetFromSubnetID(ctx, validatorState{client: pChain}, pChainHeight, subnetID)
 }
 
+// messageSigner turns an unsigned Warp message into a quorum-signed one. Two
+// implementations: localSigner signs with control-held keys in-process, and
+// p2pSigner requests signatures from the validators over ACP-118 (the
+// icm-services signature-aggregator wire protocol).
+type messageSigner interface {
+	Sign(ctx context.Context, unsigned *warp.UnsignedMessage) (*warp.Message, error)
+	Mode() string
+}
+
+// localSigner is the airgap default: control holds every oracle validator's
+// BLS key and aggregates without any network round trip.
+type localSigner struct {
+	warpSet validators.WarpSet
+	signers []bls.Signer
+}
+
+func (s localSigner) Mode() string { return "local" }
+
+func (s localSigner) Sign(_ context.Context, unsigned *warp.UnsignedMessage) (*warp.Message, error) {
+	return signAndAggregate(unsigned, s.warpSet, s.signers)
+}
+
 // signAndAggregate signs the unsigned message with every local signer that
 // appears in the canonical set, sets the matching canonical bits, aggregates in
 // canonical order, and verifies locally before returning. Lifted from

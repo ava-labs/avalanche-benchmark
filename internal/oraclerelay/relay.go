@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"net/netip"
 	"path/filepath"
 	"time"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 	"github.com/ava-labs/avalanchego/ids"
-	"github.com/ava-labs/avalanchego/snow/validators"
 	"github.com/ava-labs/avalanchego/upgrade"
 	"github.com/ava-labs/avalanchego/utils/constants"
 	"github.com/ava-labs/avalanchego/utils/crypto/bls"
@@ -79,23 +79,28 @@ type pendingDelivery struct {
 }
 
 // Relay watches the aggregator's SendWarpMessage broadcasts on the oracle L1 over
-// a WebSocket log subscription, signs each with every oracle validator's BLS key,
+// a WebSocket log subscription, has each signed by the oracle validator set —
+// with control-held keys, or over ACP-118 p2p when stakingAddresses is given —
 // and delivers the aggregated Warp message to the receiver on the main L1.
 // Deliveries pipeline: they are signed and sent as messages arrive while a
 // background goroutine confirms receipts. Foreground until ctx cancels; a failed
 // or unconfirmed delivery is fatal.
-func Relay(ctx context.Context, pChainAPI string, deployment Deployment, deploymentDirectory, oracleNodeURL, mainNodeURL string, output io.Writer) error {
+func Relay(ctx context.Context, pChainAPI string, deployment Deployment, deploymentDirectory, oracleNodeURL, mainNodeURL string, stakingAddresses []netip.AddrPort, output io.Writer) error {
 	feederKey, feederAddress, err := loadFeederKey(filepath.Join(deploymentDirectory, "oracle-feeder.key"), deployment.FeederAddress)
 	if err != nil {
 		return err
 	}
-	public, _, err := creation.LoadPublic(filepath.Join(deploymentDirectory, "public.json"))
-	if err != nil {
-		return err
-	}
-	signers, err := loadOracleSigners(deploymentDirectory, public)
-	if err != nil {
-		return err
+	// In p2p mode the relay needs no BLS custody at all — that is the point.
+	var signers []bls.Signer
+	if len(stakingAddresses) == 0 {
+		public, _, err := creation.LoadPublic(filepath.Join(deploymentDirectory, "public.json"))
+		if err != nil {
+			return err
+		}
+		signers, err = loadOracleSigners(deploymentDirectory, public)
+		if err != nil {
+			return err
+		}
 	}
 	networkID, err := constants.NetworkID(deployment.Network)
 	if err != nil {
@@ -181,6 +186,18 @@ func Relay(ctx context.Context, pChainAPI string, deployment Deployment, deploym
 	if err != nil {
 		return fmt.Errorf("build oracle canonical set at height %d: %w", epoch.PChainHeight, err)
 	}
+	var signMessage messageSigner
+	if len(stakingAddresses) > 0 {
+		p2pSign, err := newP2PSigner(ctx, stakingAddresses, networkID, deployment.OracleChainID, warpSet, output)
+		if err != nil {
+			return err
+		}
+		defer p2pSign.Close()
+		signMessage = p2pSign
+	} else {
+		signMessage = localSigner{warpSet: warpSet, signers: signers}
+	}
+	fmt.Fprintf(output, "signing mode: %s\n", signMessage.Mode())
 	fresh := newFreshnessGate()
 	for {
 		select {
@@ -204,7 +221,7 @@ func Relay(ctx context.Context, pChainAPI string, deployment Deployment, deploym
 			if len(batch) == 0 {
 				continue
 			}
-			item, err := deliverBatch(runCtx, main, mainSigner, feederKey, signers, &nonce, warpSet, deployment, batch, meters, output)
+			item, err := deliverBatch(runCtx, main, mainSigner, feederKey, signMessage, &nonce, deployment, batch, meters, output)
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
 					continue
@@ -384,23 +401,24 @@ func deliverBatch(
 	main *evmClient,
 	mainSigner ethtypes.Signer,
 	feederKey *ecdsa.PrivateKey,
-	signers []bls.Signer,
+	signMessage messageSigner,
 	nonce *uint64,
-	warpSet validators.WarpSet,
 	deployment Deployment,
 	batch []batchMessage,
 	meters *metrics,
 	output io.Writer,
 ) (pendingDelivery, error) {
 	// One access-list tuple per message; predicate order equals message order, so
-	// receivePrices reads warp index i from the i-th tuple. warpSet is the fixed
-	// oracle canonical set built once at startup (see Relay).
+	// receivePrices reads warp index i from the i-th tuple. The signer was built
+	// once at startup over the fixed oracle canonical set (see Relay).
 	tuples := make(ethtypes.AccessList, 0, len(batch))
 	for _, msg := range batch {
-		signed, err := signAndAggregate(msg.unsigned, warpSet, signers)
+		signStart := time.Now()
+		signed, err := signMessage.Sign(ctx, msg.unsigned)
 		if err != nil {
 			return pendingDelivery{}, err
 		}
+		meters.recordSignLatency(signMessage.Mode(), time.Since(signStart))
 		tuples = append(tuples, ethtypes.AccessTuple{
 			Address:     WarpPrecompileAddress,
 			StorageKeys: PackPredicate(signed.Bytes()),

@@ -505,6 +505,19 @@ deployment the relay job belongs to
 [icm-relayer](https://github.com/ava-labs/icm-services); the control-host
 relayer is the airgap-friendly demo equivalent.
 
+**p2p signing.** By default the relay signs with the control-held oracle BLS
+keys (no network round trip — the airgap model). Appending
+`p2p=<staking-ip:port,...>` instead requests each signature from the oracle
+validators themselves over ACP-118 on their staking ports — the icm-services
+signature-aggregator wire protocol — and aggregates replies at the 67% quorum.
+The relay then needs no BLS custody at all. Both modes export
+`oracle_relay_sign_latency_seconds{mode=...}` so the cost of the round trip is
+measurable on the dashboard.
+
+```bash
+./bin/oracle relay http://<oracle-rpc>:9650 http://<rpc>:9650 p2p=10.0.0.18:9651,10.1.0.18:9651
+```
+
 **First-epoch warm-up.** A freshly created chain cannot accept its first block
 until its first Granite epoch seals — roughly `graniteEpochDuration` (~5
 minutes on Fuji) after genesis. Start `feed` and `relay` only after that

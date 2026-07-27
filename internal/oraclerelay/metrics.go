@@ -31,6 +31,7 @@ type metrics struct {
 	seq             *prometheus.GaugeVec
 	e2eLatency      *prometheus.HistogramVec
 	pipelineLatency *prometheus.HistogramVec
+	signLatency     *prometheus.HistogramVec
 	delivered       *prometheus.CounterVec
 	confirmed       *prometheus.CounterVec
 	skipped         *prometheus.CounterVec
@@ -74,6 +75,12 @@ func newMetrics() *metrics {
 			Help:      "Delivery-confirmed time minus ws-event-seen time, by asset.",
 			Buckets:   []float64{0.025, 0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1, 2, 5},
 		}, []string{"asset"}),
+		signLatency: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Namespace: metricsNamespace,
+			Name:      "sign_latency_seconds",
+			Help:      "Time to produce one message's quorum BitSetSignature, by mode: local = control-held keys in-process, p2p = ACP-118 requests to the validators.",
+			Buckets:   []float64{0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1},
+		}, []string{"mode"}),
 		delivered: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: metricsNamespace,
 			Name:      "delivered_total",
@@ -108,6 +115,7 @@ func newMetrics() *metrics {
 		m.seq,
 		m.e2eLatency,
 		m.pipelineLatency,
+		m.signLatency,
 		m.delivered,
 		m.confirmed,
 		m.skipped,
@@ -165,6 +173,11 @@ func (m *metrics) recordConfirmation(asset string, seenAt time.Time, updatedAt u
 	// oracle. A value stays ~150ms however often Prometheus scrapes it, whereas a
 	// time()-minus-timestamp form would inflate by the scrape interval.
 	m.mainPriceOrigin.WithLabelValues(asset).Set(now.Sub(seenAt).Seconds())
+}
+
+// recordSignLatency is observed once per signed message, labeled by mode.
+func (m *metrics) recordSignLatency(mode string, elapsed time.Duration) {
+	m.signLatency.WithLabelValues(mode).Observe(elapsed.Seconds())
 }
 
 // recordBatchSize is observed once per delivery tx.

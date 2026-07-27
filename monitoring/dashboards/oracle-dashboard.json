@@ -383,6 +383,50 @@
    "options": {}
   },
   {
+   "id": 103,
+   "type": "timeseries",
+   "title": "Signature collection \u2014 local keys vs p2p ACP-118 (p50/p95)",
+   "description": "Time to produce one message's quorum BitSetSignature. local = the relay signs with control-held BLS keys in-process; p2p = the relay requests signatures from the oracle validators over their staking ports (the icm-services signature-aggregator wire protocol) and aggregates at quorum. The gap is the price of not holding keys.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 24
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "A",
+     "legendFormat": "{{mode}} p50",
+     "expr": "histogram_quantile(0.50, sum by (le, mode) (rate(oracle_relay_sign_latency_seconds_bucket[2m])))"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "B",
+     "legendFormat": "{{mode}} p95",
+     "expr": "histogram_quantile(0.95, sum by (le, mode) (rate(oracle_relay_sign_latency_seconds_bucket[2m])))"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "min": 0
+    },
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
    "id": 102,
    "type": "row",
    "title": "Throughput \u2014 feed \u2192 relay \u2192 main",
@@ -391,7 +435,7 @@
     "h": 1,
     "w": 24,
     "x": 0,
-    "y": 24
+    "y": 32
    },
    "panels": []
   },
@@ -407,7 +451,7 @@
     "h": 8,
     "w": 12,
     "x": 0,
-    "y": 25
+    "y": 33
    },
    "targets": [
     {
@@ -469,7 +513,7 @@
     "h": 8,
     "w": 12,
     "x": 12,
-    "y": 25
+    "y": 33
    },
    "targets": [
     {
@@ -509,7 +553,7 @@
     "h": 1,
     "w": 24,
     "x": 0,
-    "y": 33
+    "y": 41
    },
    "panels": []
   },
@@ -525,7 +569,7 @@
     "h": 8,
     "w": 12,
     "x": 0,
-    "y": 34
+    "y": 42
    },
    "targets": [
     {
@@ -556,7 +600,7 @@
     "h": 8,
     "w": 12,
     "x": 12,
-    "y": 34
+    "y": 42
    },
    "targets": [
     {
@@ -599,7 +643,7 @@
     "h": 8,
     "w": 12,
     "x": 0,
-    "y": 42
+    "y": 50
    },
    "targets": [
     {
@@ -630,7 +674,7 @@
     "h": 8,
     "w": 12,
     "x": 12,
-    "y": 42
+    "y": 50
    },
    "targets": [
     {
@@ -658,7 +702,7 @@
     "h": 1,
     "w": 24,
     "x": 0,
-    "y": 50
+    "y": 58
    },
    "panels": []
   },
@@ -674,7 +718,7 @@
     "h": 8,
     "w": 12,
     "x": 0,
-    "y": 51
+    "y": 59
    },
    "targets": [
     {
@@ -705,7 +749,7 @@
     "h": 8,
     "w": 12,
     "x": 12,
-    "y": 51
+    "y": 59
    },
    "targets": [
     {
@@ -733,7 +777,7 @@
     "h": 1,
     "w": 24,
     "x": 0,
-    "y": 59
+    "y": 67
    },
    "panels": []
   },
@@ -749,7 +793,7 @@
     "h": 8,
     "w": 12,
     "x": 0,
-    "y": 60
+    "y": 68
    },
    "targets": [
     {
@@ -780,7 +824,7 @@
     "h": 8,
     "w": 12,
     "x": 12,
-    "y": 60
+    "y": 68
    },
    "targets": [
     {

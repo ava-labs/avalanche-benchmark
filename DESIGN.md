@@ -255,6 +255,17 @@ Warp → control-host signing → receiver state on main, ~0.5s relay latency at
   (2026-07-01). Proven live: with the seed applied, bombard mined 1000 TPS at
   91–117ms tx p50 on the same fleet, and long-lived chains explain why the
   earlier release saw 25ms "from genesis" — they had converged over days.
+- **subnet-evm drops even-requestID AppRequests (found 2026-07-27).** The
+  relay's optional p2p signing mode (`relay ... p2p=<ip:port,...>`) speaks
+  ACP-118 `SignatureRequest` to validators over their staking ports using
+  `peer.StartTestPeer` — no icm-services dependency, no peer discovery
+  (the inventory is static). First attempt answered exactly every other
+  request: subnet-evm partitions the inbound AppRequest requestID space by
+  parity — even IDs route to its legacy sync-handler network, which silently
+  drops unrecognized payloads (no AppError, nothing logged at info); odd IDs
+  reach the SDK router that owns the ACP-118 handler. Probed empirically:
+  even IDs time out, odd IDs answer in <1ms, at any send rate. The p2p signer
+  therefore issues odd requestIDs only.
 
 ## Deployment simplifications (decided 2026-07-22)
 
