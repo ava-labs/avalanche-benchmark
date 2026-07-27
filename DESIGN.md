@@ -220,6 +220,15 @@ Warp → control-host signing → receiver state on main, ~0.5s relay latency at
   reach the SDK router that owns the ACP-118 handler. Probed empirically:
   even IDs time out, odd IDs answer in <1ms, at any send rate. The p2p signer
   therefore issues odd requestIDs only.
+- **Signature-collection latency ladder (measured on the fleet at 20 msg/s,
+  2026-07-27).** local in-process signing p50 1.8ms / p95 2.4ms; p2p to a
+  single validator p50 3.7ms / p95 4.9ms; p2p 3-of-4 quorum fanned across
+  three machines p50 5.1ms / p95 9.5ms / p99 9.9ms. The p50 cost is BLS
+  verification (one per reply plus the aggregate), not the network: same-VPC
+  RTT is ~0.5ms and requests fan out concurrently, so quorum adds
+  slowest-of-3 jitter rather than a sum. End-to-end price staleness stayed
+  ~130ms in every mode — signature collection is two orders of magnitude
+  below block cadence in the delivery budget.
 
 ## Deployment simplifications (decided 2026-07-22)
 
