@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/funding"
@@ -138,7 +139,7 @@ func create(
 	if err != nil {
 		return Result{}, fmt.Errorf("read required genesis template %s: %w", genesisTemplatePath, err)
 	}
-	genesis, err := RenderGenesis(template, ethcommon.HexToAddress(public.GenesisAddress))
+	genesis, err := RenderGenesis(template, ethcommon.HexToAddress(public.GenesisAddress), time.Now())
 	if err != nil {
 		return Result{}, err
 	}
