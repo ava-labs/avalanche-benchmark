@@ -1,4 +1,4 @@
-.PHONY: all clean build pack pack-fast package-build bin/l1 bin/fleet bin/VERSIONS
+.PHONY: all clean build pack pack-fast package-build bin/l1 bin/fleet bin/bombard bin/VERSIONS
 
 .DEFAULT_GOAL := all
 
@@ -16,7 +16,7 @@ SUBNET_EVM_ID := srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
 
 all: build
 
-build: bin/l1 bin/fleet
+build: bin/l1 bin/fleet bin/bombard
 
 bin/l1:
 	mkdir -p bin
@@ -25,6 +25,10 @@ bin/l1:
 bin/fleet:
 	mkdir -p bin
 	$(PACKAGE_GO_ENV) go build -o bin/fleet ./cmd/fleet
+
+bin/bombard:
+	mkdir -p bin
+	$(PACKAGE_GO_ENV) go build -o bin/bombard ./cmd/bombard
 
 bin/avalanchego:
 	rm -rf $(AVALANCHEGO_BUILD_DIR)
@@ -45,14 +49,14 @@ bin/avalanchego:
 bin/$(SUBNET_EVM_ID): bin/avalanchego
 	test -x bin/$(SUBNET_EVM_ID)
 
-bin/VERSIONS: bin/avalanchego bin/$(SUBNET_EVM_ID) bin/l1 bin/fleet
+bin/VERSIONS: bin/avalanchego bin/$(SUBNET_EVM_ID) bin/l1 bin/fleet bin/bombard
 	bin/avalanchego --version > bin/VERSIONS
-	go version bin/avalanchego bin/$(SUBNET_EVM_ID) bin/l1 bin/fleet >> bin/VERSIONS
+	go version bin/avalanchego bin/$(SUBNET_EVM_ID) bin/l1 bin/fleet bin/bombard >> bin/VERSIONS
 	echo "avalanchego commit $(AVALANCHEGO_COMMIT)" >> bin/VERSIONS
 	echo "kit commit $$(git rev-parse HEAD)" >> bin/VERSIONS
 	cat bin/VERSIONS
 
-package-build: bin/avalanchego bin/$(SUBNET_EVM_ID) bin/l1 bin/fleet bin/VERSIONS
+package-build: bin/avalanchego bin/$(SUBNET_EVM_ID) bin/l1 bin/fleet bin/bombard bin/VERSIONS
 
 PACK_FILES := \
 	bin/ \
@@ -79,7 +83,7 @@ pack:
 # kit binaries. Use it while iterating; use pack for anything shipped.
 pack-fast:
 	test -x bin/avalanchego && test -x bin/$(SUBNET_EVM_ID)
-	rm -f bin/l1 bin/fleet bin/VERSIONS
+	rm -f bin/l1 bin/fleet bin/bombard bin/VERSIONS
 	$(MAKE) package-build
 	rm -f remote-benchmark.tar.gz
 	tar -czf remote-benchmark.tar.gz $(PACK_FILES)
