@@ -4,6 +4,12 @@ Benchmark and failover toolset for Avalanche L1s in isolated networks: no intern
 
 Operator manual. Rationale and decision history: **[DESIGN.md](DESIGN.md)**.
 
+## What it needs
+
+Linux hosts reachable from one control machine over ssh, and a P-chain API endpoint (public or your own) for chain creation and weight changes. Nothing else. There is no provisioning layer here: you bring the machines, `nodes.ini` describes them, and the toolset deploys onto them.
+
+The fleet we develop and test against is EC2 across two AWS regions, which is why some notes below cite AWS behaviour. That is our test bed, not a requirement, and none of the tooling knows about a cloud provider. Bare metal, two physical data centers, or twelve VMs on one hypervisor all work; the only thing `dc=` tags do is group nodes for display and selectors.
+
 ## Runbooks
 
 ### Fresh chain on a fresh fleet
@@ -254,8 +260,8 @@ Measure with `scripts/tpsdist.py`, not the bombard TUI. The script reads `timest
 
 ## Gotchas
 
-- **Security groups**: open the staking port (9651, positional per host) in **both** directions between nodes, plus ssh and HTTP from control. Cross-region peering uses public IPs but same-VPC traffic arrives from private IPs, so rules listing only public CIDRs silently break intra-region peering.
-- **An EC2 instance cannot reach its own public IP.** The P-chain node cannot live on the control host, because fleet commands reach every node at the address its peers use.
+- **Firewalling**: the staking port (9651, positional per host) must be open in **both** directions between every pair of nodes, plus ssh and HTTP from control. If nodes sit behind a firewall that filters by source address, remember a node may be reached at one address from across a site boundary and a different one from inside its own site, so a rule listing only the external addresses silently breaks local peering. On AWS specifically, cross-region peering arrives from public IPs while same-VPC traffic arrives from private IPs, and security groups listing only public CIDRs break intra-region peering.
+- **A host often cannot reach its own public address.** Where the public address is a 1:1 NAT rather than an address on the interface (AWS EC2, and most cloud NAT setups), a host connecting to its own public IP fails. The P-chain node therefore cannot live on the control host, because fleet commands reach every node at the address its peers use.
 - **Registered validators burn a continuous fee forever.** Run `l1 destroy` when abandoning a deployment.
 - **`fleet destroy` is not `l1 destroy`.** The first wipes local L1 chain data to simulate machine loss; the second disables validators on the P-chain and reclaims balances.
 - **`bombard -resubmit`** must exceed the worst observed block latency, otherwise a slow chain produces a resubmit storm larger than the issued count.
