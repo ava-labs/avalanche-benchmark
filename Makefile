@@ -69,6 +69,7 @@ PACK_FILES := \
 	chain-config.json \
 	chain-config-rpc.json \
 	subnet-config.json \
+	scripts/tpsdist.py \
 	monitoring/grafana-datasources.yml \
 	monitoring/dashboards/
 
