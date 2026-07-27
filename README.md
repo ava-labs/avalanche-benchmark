@@ -569,17 +569,21 @@ service if present, reconciles its AvalancheGo package, systemd unit, stable
 identity, and following configuration, enables and starts it, verifies the
 service is running, then returns. It never starts or changes a validator or RPC
 node. Rerunning it repeats the full P-chain-node reconciliation and preserves
-the existing database. Use `fleet status` to observe catch-up; the future
-`fleet pchain freeze` command owns the readiness check.
-
-The frozen-mode lifecycle command is designed but not implemented yet:
+the existing database. Use `fleet status` to observe catch-up; `fleet pchain
+freeze` owns the readiness check.
 
 ```bash
 fleet pchain freeze
 ```
 
-`fleet pchain freeze` will render empty upstream bootstrap lists and restart
-only the P-chain node. Downstream configurations always point to the same
+`fleet pchain freeze` first runs the ready-to-freeze gate that `fleet status`
+reports, refusing with the exact heights or the named missing validator set
+rather than freezing an unknown state. Only then does it render empty upstream
+bootstrap lists and restart the P-chain node. It never reseeds, wipes, or
+restores the P-chain database: freezing a synchronized node is a mode change,
+not a data operation. On an already frozen node it reconciles the frozen
+configuration and skips the gate, because a frozen node deliberately stopped
+following its upstream. Downstream configurations always point to the same
 P-chain node and never change. A machine reboot retains the last rendered
 P-chain configuration and therefore retains its mode.
 
