@@ -172,10 +172,14 @@ func pchainStatusRow(probe statusPChainProbe) statusPChainRow {
 	case followMode:
 		row.upstream = statusUnknown
 		row.lag = statusUnknown
+		// An observed upstream height is reported even when the local node
+		// cannot answer. Only lag and the synced verdict need both readings.
+		if probe.upstreamOK {
+			row.upstream = strconv.FormatUint(probe.upstreamHeight, 10)
+		}
 		if !probe.upstreamOK || !probe.localOK {
 			return row
 		}
-		row.upstream = strconv.FormatUint(probe.upstreamHeight, 10)
 		lag := uint64(0)
 		if probe.upstreamHeight > probe.localHeight {
 			lag = probe.upstreamHeight - probe.localHeight

@@ -50,24 +50,31 @@ for keep in "${KEEP[@]}"; do
 done
 prune="${prune% -o}"
 
+# Ship first, verify, and only then wipe. Wiping before the replacement is
+# safely on the box means an interrupted transfer leaves control stripped of
+# its binaries with nothing to extract.
+echo "==> shipping the pack artifact"
+ssh -n "${SSH_OPTS[@]}" "$target" "mkdir -p ~/$REMOTE_DIR"
+scp "${SSH_OPTS[@]}" remote-benchmark.tar.gz "$target:~/$REMOTE_DIR/.incoming.tar.gz"
+# shellcheck disable=SC2029
+ssh -n "${SSH_OPTS[@]}" "$target" "
+  set -eu
+  cd ~/$REMOTE_DIR
+  if ! tar -tzf .incoming.tar.gz >/dev/null 2>&1; then
+    rm -f .incoming.tar.gz
+    echo 'incomplete or corrupt transfer; nothing was wiped' >&2
+    exit 1
+  fi
+"
+
 echo "==> wiping $target:~/$REMOTE_DIR (keeping: ${KEEP[*]})"
 # shellcheck disable=SC2029
 ssh -n "${SSH_OPTS[@]}" "$target" "
   set -eu
-  mkdir -p ~/$REMOTE_DIR
   cd ~/$REMOTE_DIR
-  find . -mindepth 1 -maxdepth 1 \\( $prune \\) -prune -o -exec rm -rf {} +
-  ls -A
-"
-
-echo "==> shipping the pack artifact"
-scp "${SSH_OPTS[@]}" remote-benchmark.tar.gz "$target:~/$REMOTE_DIR/remote-benchmark.tar.gz"
-# shellcheck disable=SC2029
-ssh -n "${SSH_OPTS[@]}" "$target" "
-  set -eu
-  cd ~/$REMOTE_DIR
-  tar -xzf remote-benchmark.tar.gz
-  rm -f remote-benchmark.tar.gz
+  find . -mindepth 1 -maxdepth 1 -name .incoming.tar.gz -prune -o \\( $prune \\) -prune -o -exec rm -rf {} +
+  tar -xzf .incoming.tar.gz
+  rm -f .incoming.tar.gz
   chmod 600 .env 2>/dev/null || true
   echo '--- control workspace ---'
   ls -A

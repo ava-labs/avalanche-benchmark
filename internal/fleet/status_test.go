@@ -115,6 +115,16 @@ func TestPChainStatusRow(t *testing.T) {
 		t.Errorf("unreachable upstream row = %+v, want unknown upstream and lag with ready no", row)
 	}
 
+	// A bootstrapping node cannot answer locally, but the upstream height was
+	// still observed and must be reported rather than shown as unobservable.
+	row = following(func(probe *statusPChainProbe) { probe.localOK = false })
+	if row.upstream != "289700" {
+		t.Errorf("upstream = %q, want the observed height even when the local node is silent", row.upstream)
+	}
+	if row.local != statusUnknown || row.lag != statusUnknown || row.mode != statusUnknown || row.ready != "no" {
+		t.Errorf("silent local row = %+v, want unknown local, lag and mode with ready no", row)
+	}
+
 	// Synced but the validator sets are incomplete: not ready to freeze.
 	row = following(func(probe *statusPChainProbe) { probe.managerVisible = false })
 	if row.mode != "synced" || row.l1State != "partial" || row.ready != "no" {
