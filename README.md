@@ -230,6 +230,20 @@ k=20  alphaPreference=11  alphaConfidence=11  beta=12  proposerWindow=50ms
 
 Block cadence is 25ms: `min-delay-target` in `chain-config.json` and `initialMinDelayMS` in the genesis. The genesis is stamped with creation time; a genesis stamped `0` would sit before the network's Granite activation, leaving Granite inactive at block zero, silently discarding `initialMinDelayMS`, and starting the chain at the 2000ms ACP-226 default.
 
+`proposerWindowMilliseconds` is the cadence floor whenever the scheduled proposer misses its slot, so it bounds the whole benchmark. 50 is the avalanchego minimum (`subnets.MinProposerWindowMilliseconds`); `0` means the 5s default, not "no window". At 100ms, inter-block times quantized to 101/202/602ms and only a third of blocks reached the 25ms target.
+
+## Measured baseline
+
+2x2 topology, 8 validators, 4 RPCs, `bombard -rps 4000`, 12627 blocks over 323s measured with `scripts/tpsdist.py`:
+
+```
+per-second tps   mean 3951   p50 4004   stdev 152   CV 4%   min 3288   below-3000 0/323
+block delta ms   p50 25   p75 25   p90 26   p99 43   max 170   at the 25ms floor 12354/12626
+bombard          p50 68-81ms   p95 114-165ms   in-flight cap not binding
+```
+
+Measure with `scripts/tpsdist.py`, not the bombard TUI. The script reads `timestampMilliseconds` off the blocks, so it reports chain truth; the TUI's mined-tps is observer-side and a watcher that falls behind renders a sawtooth with zero-seconds that never happened. Pass `FROM=<block>` when comparing configs, since a window spanning a restart averages two configs together.
+
 ## Gotchas
 
 - **Security groups**: open the staking port (9651, positional per host) in **both** directions between nodes, plus ssh and HTTP from control. Cross-region peering uses public IPs but same-VPC traffic arrives from private IPs, so rules listing only public CIDRs silently break intra-region peering.
@@ -237,4 +251,5 @@ Block cadence is 25ms: `min-delay-target` in `chain-config.json` and `initialMin
 - **Registered validators burn a continuous fee forever.** Run `l1 destroy` when abandoning a deployment.
 - **`fleet destroy` is not `l1 destroy`.** The first wipes local L1 chain data to simulate machine loss; the second disables validators on the P-chain and reclaims balances.
 - **`bombard -resubmit`** must exceed the worst observed block latency, otherwise a slow chain produces a resubmit storm larger than the issued count.
+- **The frozen P-chain must be at or above the height `l1 create` landed at.** `l1 create` issues against the public API, so it advances the real P-chain; a snapshot taken before those transactions leaves the first L1 blocks referencing a height the local P-chain never reaches. Nodes that already hold the blocks keep running (accepted blocks are never re-verified), so the fleet looks healthy until a node rejoins from an empty database and dies with `block P-chain height larger than current P-chain height`. Always follow to the tip and re-freeze **after** `l1 create`.
 - The pack artifact contains no private keys. Transfer `.env`, `deployment/`, and the ssh key separately.
