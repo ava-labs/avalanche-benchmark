@@ -208,6 +208,47 @@ ssh -i ~/.ssh/fleet ubuntu@<pchain-host> \
 
 ## Topology
 
+The shipped example: 8 validators and 4 RPC nodes split across two sites, one P-chain node, one control machine. Nothing below is provider-specific.
+
+```mermaid
+flowchart LR
+    subgraph CONTROL[control machine]
+        F["fleet / l1<br/>holds deployment/<br/>ssh to every node"]
+        B["bombard<br/>-rps 4000"]
+    end
+
+    UP(["public P-chain API<br/>Fuji or mainnet"])
+    P["node 13 &nbsp; role=pchain<br/>--p-chain-follow-only<br/>follow: tracks upstream<br/>frozen: no bootstrappers"]
+
+    subgraph A[site A &nbsp; dc=A]
+        VA["validators 1-4<br/>identities a b c d"]
+        RA["rpc 9-10<br/>identities i j"]
+    end
+
+    subgraph SB[site B &nbsp; dc=B]
+        VB["validators 5-8<br/>identities e f g h"]
+        RB["rpc 11-12<br/>identities k l"]
+    end
+
+    F -.->|"ssh: deploy, place, status"| A
+    F -.->|ssh| SB
+    F -.->|ssh| P
+    F -->|"create, set-weight, weights"| UP
+    UP -.->|"follow mode only"| P
+
+    B -->|"tx ingress, role=rpc ONLY"| RA
+    B -->|tx ingress| RB
+
+    P -->|"sole primary-network bootstrap"| A
+    P -->|bootstrap| SB
+
+    VA <-->|"L1 consensus + state sync"| VB
+    RA <--> VA
+    RB <--> VB
+```
+
+Solid lines carry chain traffic, dashed lines are control-plane. The P-chain node is the only path to the primary network for the fleet, and in frozen mode its upstream link is cut, which is what makes the L1 runnable with no internet egress.
+
 - The P-chain node is the sole primary-network bootstrap for every validator and RPC, addressed by `(host:staking-port, NodeID)` and verified by TLS at dial. It therefore cannot participate in key placement.
 - L1 state-sync peers for each node are all other validator and RPC nodes, never itself and never the P-chain node.
 - Ingress goes only to `role=rpc` nodes. Serving transactions on a validator measurably slows its block production.
