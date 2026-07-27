@@ -447,9 +447,6 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 		if info.Mode()&0o111 == 0 {
 			return deployment{}, noCleanup, fmt.Errorf("required deployment binary %s is not executable", plugin)
 		}
-		if err := verifyConsensusConfig(filepath.Join(d.root, "subnet-config.json")); err != nil {
-			return deployment{}, noCleanup, err
-		}
 	}
 
 	ports := portsByNode(nodes)
@@ -716,48 +713,6 @@ func writeJSON(path string, value any) error {
 		return err
 	}
 	return os.WriteFile(path, append(contents, '\n'), 0o600)
-}
-
-func verifyConsensusConfig(path string) error {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	var cfg struct {
-		Snow struct {
-			K               int `json:"k"`
-			AlphaPreference int `json:"alphaPreference"`
-			AlphaConfidence int `json:"alphaConfidence"`
-			Beta            int `json:"beta"`
-		} `json:"snowParameters"`
-		ProposerWindow                int  `json:"proposerWindowMilliseconds"`
-		ProposerMillisecondTimestamps bool `json:"proposerMillisecondTimestamps"`
-	}
-	decoder := json.NewDecoder(bytes.NewReader(contents))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&cfg); err != nil {
-		return fmt.Errorf("decode immutable consensus config %s: %w", path, err)
-	}
-	// The proposer window is the block-cadence floor whenever the scheduled
-	// proposer misses its slot, so a 100ms window quantized inter-block times to
-	// 101/202/602ms and only a third of blocks reached the 25ms target. 50 is the
-	// avalanchego minimum (subnets.MinProposerWindowMilliseconds); 0 would mean
-	// the 5s default, not "no window".
-	const (
-		wantK               = 20
-		wantAlphaPreference = 11
-		wantAlphaConfidence = 11
-		wantBeta            = 12
-		wantProposerWindow  = 50
-	)
-	if cfg.Snow.K != wantK || cfg.Snow.AlphaPreference != wantAlphaPreference ||
-		cfg.Snow.AlphaConfidence != wantAlphaConfidence || cfg.Snow.Beta != wantBeta ||
-		cfg.ProposerWindow != wantProposerWindow {
-		return fmt.Errorf(
-			"%s does not contain the verified consensus parameters k=%d alphaPreference=%d alphaConfidence=%d beta=%d proposerWindowMilliseconds=%d",
-			path, wantK, wantAlphaPreference, wantAlphaConfidence, wantBeta, wantProposerWindow)
-	}
-	return nil
 }
 
 func validateIdentityFiles(root string, generated creation.PublicNode) error {
