@@ -89,9 +89,10 @@ func (d *Deployer) lifecycleTargets(selectors []string) (deployment, inventory, 
 		return deployment{}, inventory{}, err
 	}
 	state := deployment{
-		environment: inv.environment,
-		chainID:     inv.chainID,
-		subnetID:    inv.subnetID,
+		environment:   inv.environment,
+		chainID:       inv.chainID,
+		subnetID:      inv.subnetID,
+		oracleChainID: inv.oracleChainID,
 	}
 	for _, node := range chosen {
 		target, err := inv.target(node)
@@ -228,7 +229,8 @@ func (d *Deployer) removeChainData(ctx context.Context, deployment deployment, n
 	// AvalancheGo derives chain-data-dir from data-dir and gives every chain its
 	// own <chain-id> subdirectory. Only this L1's directory is removed, so the
 	// P-chain database, identity, logs, configuration, and binaries survive.
+	nodeChainID, _ := deployment.l1For(node.node.Role)
 	return d.runSSH(ctx, deployment, node, fmt.Sprintf(
 		"sudo rm -rf %s/%d/chainData/%s",
-		remoteDataDir, node.node.Number, deployment.chainID))
+		remoteDataDir, node.node.Number, nodeChainID))
 }

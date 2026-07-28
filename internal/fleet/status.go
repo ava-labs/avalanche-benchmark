@@ -371,7 +371,7 @@ func (d *Deployer) probeNodeStatus(ctx context.Context, inv inventory, remote de
 		probe.failures = append(probe.failures, fmt.Sprintf("node %d (%s): L1 is not created yet, height unavailable", node.Number, node.Host))
 		return probe
 	}
-	height, err := d.statusL1Height(ctx, fmt.Sprintf("%s/ext/bc/%s/rpc", base, inv.chainID))
+	height, err := d.statusL1Height(ctx, fmt.Sprintf("%s/ext/bc/%s/rpc", base, inv.l1ChainFor(node.Role)))
 	if err != nil {
 		probe.apiAnswered = false
 		probe.failures = append(probe.failures, fmt.Sprintf("node %d (%s): read L1 height: %v", node.Number, node.Host, err))

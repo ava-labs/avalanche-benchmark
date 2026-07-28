@@ -31,6 +31,16 @@ type inventory struct {
 	chainID         ids.ID
 	subnetID        ids.ID
 	managerSubnetID ids.ID
+	oracleChainID   ids.ID
+}
+
+// l1ChainFor returns the chain a node serves: oracle roles live on the oracle
+// L1, every other L1 role on the main one.
+func (i inventory) l1ChainFor(role config.Role) ids.ID {
+	if role == config.RoleOracleValidator || role == config.RoleOracleRPC {
+		return i.oracleChainID
+	}
+	return i.chainID
 }
 
 func (d *Deployer) inventory() (inventory, error) {
@@ -88,6 +98,10 @@ func (d *Deployer) inventory() (inventory, error) {
 	result.chainID = chainID
 	result.subnetID = subnetID
 	result.managerSubnetID = managerSubnetID
+	// Optional: only present when the deployment includes the oracle L1.
+	if oracleChainID, err := requiredID(state, "ORACLE_CHAIN_ID"); err == nil {
+		result.oracleChainID = oracleChainID
+	}
 	return result, nil
 }
 
