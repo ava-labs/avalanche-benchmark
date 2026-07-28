@@ -83,20 +83,20 @@ func (m *responseMux) deliver(requestID uint32, reply signatureReply) {
 
 // HandleInbound implements router.InboundHandler over the raw peer connection.
 // Everything except signature responses (pings, gossip) is discarded.
-func (m *responseMux) HandleInbound(_ context.Context, msg message.InboundMessage) {
+func (m *responseMux) HandleInbound(_ context.Context, msg *message.InboundMessage) {
 	defer msg.OnFinishedHandling()
-	switch payload := msg.Message().(type) {
+	switch payload := msg.Message.(type) {
 	case *p2ppb.AppResponse:
-		m.deliver(payload.RequestId, signatureReply{nodeID: msg.NodeID(), responseData: payload.AppBytes})
+		m.deliver(payload.RequestId, signatureReply{nodeID: msg.NodeID, responseData: payload.AppBytes})
 	case *p2ppb.AppError:
-		m.deliver(payload.RequestId, signatureReply{nodeID: msg.NodeID(), errorMessage: payload.ErrorMessage})
+		m.deliver(payload.RequestId, signatureReply{nodeID: msg.NodeID, errorMessage: payload.ErrorMessage})
 	}
 }
 
 // p2pSigner requests each oracle validator's BLS signature over p2p and
 // aggregates replies into a BitSetSignature once the quorum weight is reached.
 type p2pSigner struct {
-	peers         []peer.Peer
+	peers         []*peer.Peer
 	creator       message.Creator
 	chainID       ids.ID
 	warpSet       validators.WarpSet
