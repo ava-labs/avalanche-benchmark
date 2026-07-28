@@ -786,6 +786,10 @@ func renderNode(
 	cfg["staking-port"] = ports[1]
 	cfg["public-ip"] = node.Host
 	cfg["partial-sync-primary-network"] = true
+	// Isolated fleets address each other by private IPs, which AvalancheGo
+	// refuses to dial on public networks unless told otherwise. Nodes with
+	// public inventory addresses are unaffected.
+	cfg["network-allow-private-ips"] = true
 	cfg["staking-tls-cert-file"] = filepath.Join(stakingDir, "staker.crt")
 	cfg["staking-tls-key-file"] = filepath.Join(stakingDir, "staker.key")
 	if node.Role == config.RolePChain {
