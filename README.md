@@ -103,8 +103,8 @@ Issue weight changes while the P-chain node is following. A transaction submitte
 9  host=10.0.0.15 role=rpc       dc=A
 13 host=10.2.0.10 role=pchain
 14 host=10.0.0.17 role=archive   dc=A
-15 host=10.0.0.18 role=oracle-validator dc=A
-19 host=10.0.0.15 role=oracle-rpc       dc=A
+16 host=10.0.0.18 role=oracle-validator dc=A
+17 host=10.0.0.15 role=oracle-rpc       dc=A
 ```
 
 | Rule | Detail |
