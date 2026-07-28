@@ -1090,7 +1090,7 @@ func (d *Deployer) installIdentity(ctx context.Context, deployment deployment, n
 	}
 	target := fmt.Sprintf("%s/%d/staking", remoteConfigDir, node.node.Number)
 	files := "staker.crt staker.key"
-	if node.node.Role == config.RoleValidator {
+	if node.node.Role == config.RoleValidator || node.node.Role == config.RoleOracleValidator {
 		files += " signer.key"
 	}
 	command := fmt.Sprintf(
