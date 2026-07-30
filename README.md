@@ -363,8 +363,16 @@ relayer is the airgap-friendly demo equivalent.
 Fixed benchmark input, identical for every topology including a single validator. Fleet commands never derive consensus settings from inventory.
 
 ```
-k=20  alphaPreference=11  alphaConfidence=11  beta=12  proposerWindow=100ms
+k=20  alphaPreference=11  alphaConfidence=13  beta=25  proposerWindow=100ms
 ```
+
+`alphaConfidence` deliberately sits above `alphaPreference`: with both at 11,
+a sustained tip-race under saturation load let different nodes finalize
+different siblings of the same parent (reproduced at 2x overload on the test
+fleet: two 100k validators continued on one branch while the rest of the
+fleet wedged on the other). Preference can flip cheaply; confidence, which
+feeds finality, demands the stronger majority, and the higher `beta` requires
+that majority to hold across more consecutive polls before a block is final.
 
 Block cadence is 25ms: `min-delay-target` in `chain-config.json` and `initialMinDelayMS` in the genesis. The genesis is stamped with creation time; a genesis stamped `0` would sit before the network's Granite activation, leaving Granite inactive at block zero, silently discarding `initialMinDelayMS`, and starting the chain at the 2000ms ACP-226 default.
 
