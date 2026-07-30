@@ -89,7 +89,7 @@ Issue weight changes while the P-chain node is following. A transaction submitte
 | `deployment/genesis.json` | `create` | rendered genesis, stamped with creation time |
 | `deployment/network.env` | `create` | subnet, chain, and conversion transaction IDs |
 | `deployment/genesis-oracle.json` | `create` | rendered oracle genesis (only with oracle roles) |
-| `deployment/oracle-feeder.key` | `keygen` | EVM key funded on both chains, drives `oracle feed`/`relay` |
+| `deployment/oracle-feeder.key` | `keygen` | EVM key funded on every price-feed chain, drives `oracle feed`/`relay` |
 | `pchain.tar.gz` | `pchain archive` | certified P-chain `db/` snapshot |
 
 `deployment/` holds private keys. It is never in the pack artifact and never committed.
@@ -159,8 +159,8 @@ Unknown fields, missing fields, and malformed values fail the command before it 
 | `fleet destroy [sel...]` | SIGKILL + delete `chainData/<chain-id>` only. Simulates abrupt loss. |
 | `fleet place <letter> <node>` | reconcile, swap placement, reconcile again. The only placement verb. |
 | `bombard -rps N -duration D` | load generator, fans across all `role=rpc` nodes |
-| `oracle feed <oracle-rpc-url>` | foreground mock price feeder (oracle L1 only) |
-| `oracle relay <oracle-rpc-url> <rpc-url> <staking-ip:port,...>` | foreground Warp price relayer; signatures collected from the validators over ACP-118 |
+| `oracle feed <node-url>` | foreground mock price feeder. With an oracle L1: submits to the aggregator there. Without one: publishes directly to the main chain's PriceFeedOracle with type-2 priority-fee transactions |
+| `oracle relay <oracle-rpc-url> <rpc-url> <staking-ip:port,...>` | foreground Warp price relayer; signatures collected from the validators over ACP-118 (oracle L1 deployments only) |
 
 Selector is a node number or `dc=<tag>`; multiple form a union; none means all. Separate arguments and comma-separated both work (`fleet stop 1 11 12` = `fleet stop 1,11,12`). `status` takes no selectors.
 
@@ -288,13 +288,37 @@ It fetches the validationID and nonce, builds the `L1ValidatorWeight` Warp paylo
 
 Warp admission verifies against the P-chain height pinned in the current ACP-181 epoch, not the latest state. `set-weight` derives the management conversion height from its recorded transaction ID and requires `currentEpoch.pChainHeight >= managementConversionHeight`. If the epoch is older it prints the JST boundary, sleeps to it, submits a visible no-op `BaseTx` to nudge the epoch, and rechecks. A quiet P-chain may need a second nudge.
 
+## The direct price feed
+
+Every main chain genesis bakes a `PriceFeedOracle` contract at
+`0x00000000000000000000000000000000FeedF00d`, authorized to the generated
+`deployment/oracle-feeder.key`. On a deployment without oracle roles this is
+the whole price pipeline: one process, no extra chain, no relay.
+
+```bash
+./bin/oracle feed http://<rpc>:9650
+```
+
+`feed` publishes a mocked USDC-USD price ten times a second as type-2
+(EIP-1559) transactions. The priority fee is what keeps updates at the front
+of each block under load: the block builder orders by effective tip and
+`bombard`'s flood pays none, so the feed bids
+`max(2 * eth_maxPriorityFeePerGas, 10 wei)` and wins ordering while paying
+only `baseFee + tip`. The feeder also reads `latestPrice` back every 500ms and
+exports feed price, on-chain price, their delta, and submit-to-mined latency
+(`monitoring/dashboards/oracle-direct-dashboard.json` charts all four).
+Consumers read prices with three views on the same contract: current
+(`latestPrice`), current with its round number (`latestRound`), historical
+(`priceAt`); see `docs/oracle-consumer.md`.
+
 ## The oracle L1
 
 Optional third L1, declared purely through `oracle-validator` / `oracle-rpc`
-inventory roles: it ingests mocked price feeds (BTC-USD, USDC-USD) and exports
-every update to the main L1 as a Warp message signed by the oracle validator
-set. Both contracts ship pre-deployed in genesis; there is nothing to deploy
-at runtime.
+inventory roles, for when the feed itself must be attested by a validator set
+instead of trusted key-to-contract: it ingests mocked price feeds (BTC-USD,
+USDC-USD) and exports every update to the main L1 as a Warp message signed by
+the oracle validator set. All contracts ship pre-deployed in genesis; there is
+nothing to deploy at runtime.
 
 ```bash
 ./bin/oracle feed http://<oracle-rpc>:9650                                        # terminal 1
