@@ -21,7 +21,7 @@ Two minimal Solidity contracts for the subnet-evm price-oracle demo.
   aggregator, shaped after Chainlink's EACAggregatorProxy: the stable consumer
   address, phase-packed round ids, owner-gated two-step aggregator swaps. See
   `../docs/oracle-consumer.md`.
-- **`src/examples/UsdcSettlement.sol`**: example consumer, a peg-guard
+- **`src/examples/Settlement.sol`**: example consumer, a peg-guard
   settlement gate over the proxy (band check + staleness check).
 - **`src/interfaces/IPriceFeed.sol`**: the consumer read interface,
   signature-identical to Chainlink's `AggregatorV3Interface` so selectors

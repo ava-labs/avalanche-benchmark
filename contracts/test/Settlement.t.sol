@@ -4,16 +4,16 @@ pragma solidity ^0.8.25;
 import {Test} from "forge-std/Test.sol";
 import {PriceAggregator} from "../src/PriceAggregator.sol";
 import {PriceFeedProxy} from "../src/PriceFeedProxy.sol";
-import {UsdcSettlement} from "../src/examples/UsdcSettlement.sol";
+import {Settlement} from "../src/examples/Settlement.sol";
 
-contract UsdcSettlementTest is Test {
+contract SettlementTest is Test {
     // The consumer hardcodes the genesis proxy address, so the test etches
     // the proxy there instead of deploying at a fresh address.
     address constant PROXY_ADDR = 0x00000000000000000000000000000000FeedF00D;
 
     PriceAggregator agg;
     PriceFeedProxy proxy;
-    UsdcSettlement settlement;
+    Settlement settlement;
 
     address publisher = address(0xF33D);
 
@@ -35,7 +35,7 @@ contract UsdcSettlementTest is Test {
         vm.store(PROXY_ADDR, bytes32(uint256(2)), bytes32(uint256(1)));
         vm.store(PROXY_ADDR, keccak256(abi.encode(uint256(1), uint256(4))), bytes32(uint256(uint160(address(agg)))));
 
-        settlement = new UsdcSettlement();
+        settlement = new Settlement();
     }
 
     function test_settlesOnHealthyFeed() public {

@@ -66,7 +66,7 @@ event AnswerUpdated(int256 indexed current, uint256 indexed roundId, uint256 upd
 
 ## Example: a peg guard
 
-`contracts/src/examples/UsdcSettlement.sol` is a complete consumer: a
+`contracts/src/examples/Settlement.sol` is a complete consumer: a
 settlement gate that proceeds only while USDC / USD is inside the $0.99 to
 $1.01 band and the feed is at most 60 seconds old.
 

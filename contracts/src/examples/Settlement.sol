@@ -3,7 +3,7 @@ pragma solidity ^0.8.25;
 
 import {IPriceFeed} from "../interfaces/IPriceFeed.sol";
 
-/// @title UsdcSettlement
+/// @title Settlement
 /// @notice Example consumer: a settlement gate that only proceeds while the
 ///         USDC / USD feed is healthy. "Healthy" is two independent checks a
 ///         consumer should always make:
@@ -14,7 +14,7 @@ import {IPriceFeed} from "../interfaces/IPriceFeed.sol";
 ///         netting step.
 /// @dev The feed proxy lives at a fixed genesis address, so the reference can
 ///      be a constant: nothing to configure, nothing to deploy but this file.
-contract UsdcSettlement {
+contract Settlement {
     IPriceFeed public constant FEED =
         IPriceFeed(0x00000000000000000000000000000000FeedF00D);
 
