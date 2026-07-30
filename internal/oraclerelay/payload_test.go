@@ -128,3 +128,41 @@ func TestPackReceivePrice(t *testing.T) {
 		t.Fatalf("index word = %s, want 0", got)
 	}
 }
+
+func TestDecodeCanSettle(t *testing.T) {
+	pad := func(b []byte) []byte { return append(make([]byte, 32-len(b)), b...) }
+	word := func(n int64) []byte { return pad(big.NewInt(n).Bytes()) }
+
+	// (true, "")
+	output := append(append(word(1), word(64)...), word(0)...)
+	ok, reason, err := decodeCanSettle(output)
+	if err != nil || !ok || reason != "" {
+		t.Fatalf("open gate decoded as ok=%v reason=%q err=%v", ok, reason, err)
+	}
+
+	// (false, "stale price")
+	text := []byte("stale price")
+	padded := make([]byte, 32)
+	copy(padded, text)
+	output = append(append(append(word(0), word(64)...), word(int64(len(text)))...), padded...)
+	ok, reason, err = decodeCanSettle(output)
+	if err != nil || ok || reason != "stale price" {
+		t.Fatalf("closed gate decoded as ok=%v reason=%q err=%v", ok, reason, err)
+	}
+
+	if _, _, err := decodeCanSettle(word(1)); err == nil {
+		t.Fatal("truncated canSettle output was accepted")
+	}
+}
+
+func TestDecodeSettled(t *testing.T) {
+	value := make([]byte, 32)
+	value[31] = 42
+	total, err := decodeSettled(value)
+	if err != nil || total.Int64() != 42 {
+		t.Fatalf("settled decoded as %v err=%v", total, err)
+	}
+	if _, err := decodeSettled(value[:16]); err == nil {
+		t.Fatal("truncated settled output was accepted")
+	}
+}

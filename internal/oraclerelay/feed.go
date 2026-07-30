@@ -109,10 +109,18 @@ type feedMetrics struct {
 	onchainPrice   *prometheus.GaugeVec
 	priceDelta     *prometheus.GaugeVec
 	confirmLatency *prometheus.HistogramVec
+	settlementOpen prometheus.Gauge
+	settlementGate *prometheus.GaugeVec
+	settledTotal   prometheus.Gauge
 
 	mu            sync.Mutex
 	lastSubmitted map[string]*big.Int
 }
+
+// settlementGateStates are the one-hot states the Settlement example reports:
+// the contract's two refusal reasons, plus "no data" for the pre-first-round
+// revert, plus "open".
+var settlementGateStates = []string{"open", "depegged", "stale price", "no data"}
 
 func newFeedMetrics() *feedMetrics {
 	registry := prometheus.NewRegistry()
@@ -159,6 +167,21 @@ func newFeedMetrics() *feedMetrics {
 			Buckets:   []float64{0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.2, 0.25, 0.35, 0.5, 1, 2},
 		}, []string{"asset"}),
 	}
+	m.settlementOpen = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: feedMetricsNamespace,
+		Name:      "settlement_open",
+		Help:      "1 while the Settlement example's canSettle() allows settlement, else 0.",
+	})
+	m.settlementGate = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: feedMetricsNamespace,
+		Name:      "settlement_gate",
+		Help:      "One-hot settlement gate state from canSettle(): open, depegged, stale price, or no data.",
+	}, []string{"state"})
+	m.settledTotal = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: feedMetricsNamespace,
+		Name:      "settled_total",
+		Help:      "The Settlement example's settled() accumulator, read from chain.",
+	})
 	registry.MustRegister(
 		m.submitted,
 		m.confirmed,
@@ -167,8 +190,37 @@ func newFeedMetrics() *feedMetrics {
 		m.onchainPrice,
 		m.priceDelta,
 		m.confirmLatency,
+		m.settlementOpen,
+		m.settlementGate,
+		m.settledTotal,
 	)
 	return m
+}
+
+// recordSettlement one-hots the gate state so the dashboard can both light a
+// single OPEN/CLOSED stat and chart which refusal reason is active.
+func (m *feedMetrics) recordSettlement(open bool, reason string) {
+	state := "open"
+	if !open {
+		state = reason
+	}
+	if open {
+		m.settlementOpen.Set(1)
+	} else {
+		m.settlementOpen.Set(0)
+	}
+	for _, known := range settlementGateStates {
+		value := 0.0
+		if known == state {
+			value = 1
+		}
+		m.settlementGate.WithLabelValues(known).Set(value)
+	}
+}
+
+func (m *feedMetrics) recordSettled(total *big.Int) {
+	value, _ := new(big.Float).SetInt(total).Float64()
+	m.settledTotal.Set(value)
 }
 
 func (m *feedMetrics) serve(address string) error {
@@ -221,15 +273,20 @@ type feedPending struct {
 // both modes submissions pipeline: each is signed and sent while a background
 // goroutine confirms receipts. Any RPC error, reverted receipt, or unconfirmed
 // delivery is fatal; the operator restarts.
-func Feed(ctx context.Context, deployment Deployment, deploymentDirectory, nodeURL string, output io.Writer) error {
+// settlement, when non-zero, is a deployed Settlement example whose gate the
+// direct feed's poller watches read-only for the dashboard.
+func Feed(ctx context.Context, deployment Deployment, deploymentDirectory, nodeURL string, settlement ethcommon.Address, output io.Writer) error {
 	feederKey, feederAddress, err := loadFeederKey(filepath.Join(deploymentDirectory, "oracle-feeder.key"), deployment.FeederAddress)
 	if err != nil {
 		return err
 	}
 	if deployment.HasOracle() {
+		if settlement != (ethcommon.Address{}) {
+			return fmt.Errorf("the settlement watch reads the main chain's direct feed; it is not available with an oracle L1")
+		}
 		return feedOracleChain(ctx, deployment, feederKey, feederAddress, nodeURL, output)
 	}
-	return feedDirect(ctx, deployment, feederKey, feederAddress, nodeURL, output)
+	return feedDirect(ctx, deployment, feederKey, feederAddress, nodeURL, settlement, output)
 }
 
 // feedOracleChain is the oracle-L1 feed path: legacy-priced submissions to the
@@ -355,7 +412,7 @@ var directAssets = []assetRef{{"USDC-USD", assetUSDC}}
 // the Chainlink-shaped aggregator on the main chain, plus a poller that reads
 // latestRoundData back through the consumer-facing proxy so the dashboard
 // charts exactly what a consumer contract would see.
-func feedDirect(ctx context.Context, deployment Deployment, feederKey *ecdsa.PrivateKey, feederAddress ethcommon.Address, mainNodeURL string, output io.Writer) error {
+func feedDirect(ctx context.Context, deployment Deployment, feederKey *ecdsa.PrivateKey, feederAddress ethcommon.Address, mainNodeURL string, settlement ethcommon.Address, output io.Writer) error {
 	main := newEVMClient(mainNodeURL, deployment.MainChainID)
 	chainID, err := main.ChainID(ctx)
 	if err != nil {
@@ -389,8 +446,11 @@ func feedDirect(ctx context.Context, deployment Deployment, feederKey *ecdsa.Pri
 		}
 		cancel()
 	}
+	if settlement != (ethcommon.Address{}) {
+		fmt.Fprintf(output, "watching Settlement example gate at %s\n", settlement.Hex())
+	}
 	go confirmSubmissions(runCtx, main, pending, fail, meters)
-	go pollOnChainPrices(runCtx, main, proxy, directAssets, fail, meters)
+	go pollOnChainPrices(runCtx, main, proxy, settlement, directAssets, fail, meters)
 
 	walk := newPriceWalk()
 	ticker := time.NewTicker(feedInterval)
@@ -486,10 +546,11 @@ func submitPriceDirect(
 
 // pollOnChainPrices reads latestRoundData through the consumer-facing proxy on
 // a fixed cadence, so the exported on-chain series is exactly a consumer
-// contract's view. A revert before the first round ("No data present") is
-// expected at startup and skipped; other errors are fatal through fail,
-// matching the feed's fail-fast posture.
-func pollOnChainPrices(ctx context.Context, main *evmClient, proxy ethcommon.Address, assets []assetRef, fail func(error), meters *feedMetrics) {
+// contract's view, and, when a Settlement example address is configured, its
+// canSettle()/settled() beside it. A revert before the first round ("No data
+// present") is expected at startup and skipped; other errors are fatal through
+// fail, matching the feed's fail-fast posture.
+func pollOnChainPrices(ctx context.Context, main *evmClient, proxy, settlement ethcommon.Address, assets []assetRef, fail func(error), meters *feedMetrics) {
 	ticker := time.NewTicker(onChainPollInterval)
 	defer ticker.Stop()
 	for {
@@ -517,7 +578,47 @@ func pollOnChainPrices(ctx context.Context, main *evmClient, proxy ethcommon.Add
 			}
 			meters.recordOnChain(asset.name, answer)
 		}
+		if settlement == (ethcommon.Address{}) {
+			continue
+		}
+		if err := pollSettlementGate(ctx, main, settlement, meters); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			fail(err)
+			return
+		}
 	}
+}
+
+// pollSettlementGate reads the Settlement example's view surface. canSettle
+// reverting means the feed has no round yet, which the gate reports as the
+// closed "no data" state rather than an error.
+func pollSettlementGate(ctx context.Context, main *evmClient, settlement ethcommon.Address, meters *feedMetrics) error {
+	result, err := main.CallContract(ctx, settlement, packCanSettle())
+	switch {
+	case err != nil && strings.Contains(err.Error(), "No data present"):
+		meters.recordSettlement(false, "no data")
+		return nil
+	case err != nil:
+		return fmt.Errorf("read settlement gate: %w", err)
+	}
+	open, reason, err := decodeCanSettle(result)
+	if err != nil {
+		return fmt.Errorf("decode settlement gate: %w", err)
+	}
+	meters.recordSettlement(open, reason)
+
+	result, err = main.CallContract(ctx, settlement, packSettled())
+	if err != nil {
+		return fmt.Errorf("read settled total: %w", err)
+	}
+	total, err := decodeSettled(result)
+	if err != nil {
+		return fmt.Errorf("decode settled total: %w", err)
+	}
+	meters.recordSettled(total)
+	return nil
 }
 
 // confirmSubmissions confirms sent submissions in order. A reverted or

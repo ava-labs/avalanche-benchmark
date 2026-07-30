@@ -34,6 +34,10 @@ var (
 	// AggregatorV3Interface selector).
 	submitSelector          = [4]byte{0x9b, 0x25, 0xdf, 0x0b}
 	latestRoundDataSelector = [4]byte{0xfe, 0xaf, 0x96, 0x8c}
+	// The Settlement example consumer's read-only surface, polled when the
+	// operator passes the deployed contract to `oracle feed`.
+	canSettleSelector = [4]byte{0xfa, 0xf7, 0xba, 0x6a}
+	settledSelector   = [4]byte{0x8f, 0x77, 0x58, 0x39}
 )
 
 // Mock feed assets. assetId is the keccak256 of the human-readable symbol, the
@@ -186,6 +190,42 @@ func decodeLatestRoundData(output []byte) (*big.Int, uint64, error) {
 	answer := new(big.Int).SetBytes(output[32:64])
 	updatedAt := new(big.Int).SetBytes(output[96:128]).Uint64()
 	return answer, updatedAt, nil
+}
+
+// packCanSettle builds calldata for the Settlement example's canSettle().
+func packCanSettle() []byte {
+	return canSettleSelector[:]
+}
+
+// packSettled builds calldata for the Settlement example's settled().
+func packSettled() []byte {
+	return settledSelector[:]
+}
+
+// decodeCanSettle reads canSettle's (bool ok, string reason): a bool word, a
+// string offset word, then the string's length word and padded bytes.
+func decodeCanSettle(output []byte) (bool, string, error) {
+	if len(output) < 96 {
+		return false, "", fmt.Errorf("canSettle returned %d bytes, want at least 96", len(output))
+	}
+	ok := new(big.Int).SetBytes(output[0:32]).Sign() != 0
+	offset := new(big.Int).SetBytes(output[32:64]).Uint64()
+	if offset != 64 {
+		return false, "", fmt.Errorf("canSettle reason has unexpected offset %d, want 64", offset)
+	}
+	length := new(big.Int).SetBytes(output[64:96]).Uint64()
+	if uint64(len(output)) < 96+length {
+		return false, "", fmt.Errorf("canSettle reason claims %d bytes but only %d remain", length, len(output)-96)
+	}
+	return ok, string(output[96 : 96+length]), nil
+}
+
+// decodeSettled reads settled's single uint256 word.
+func decodeSettled(output []byte) (*big.Int, error) {
+	if len(output) != 32 {
+		return nil, fmt.Errorf("settled returned %d bytes, want 32", len(output))
+	}
+	return new(big.Int).SetBytes(output), nil
 }
 
 // packLatestPrice builds calldata for latestPrice(bytes32 assetId).
