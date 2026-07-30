@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-/// @notice Chainlink's AggregatorV3Interface, vendored verbatim (function
-///         signatures and return shapes) so consumers written against
-///         Chainlink price feeds work against this kit's feeds unchanged.
+/// @notice Chainlink's AggregatorV3Interface, from smartcontractkit/chainlink-evm
+///         (contracts/src/v0.8/shared/interfaces/AggregatorV3Interface.sol,
+///         MIT licensed there as here). Signature-identical so consumers
+///         written against Chainlink price feeds work against this kit's
+///         feeds unchanged; only formatting differs.
 interface AggregatorV3Interface {
     function decimals() external view returns (uint8);
 
