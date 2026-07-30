@@ -16,13 +16,14 @@ Two minimal Solidity contracts for the subnet-evm price-oracle demo.
 - **`src/PriceAggregator.sol`**: deployed on the **main L1** in every
   deployment shape, one instance per pair. The Chainlink-shaped writer for the
   direct-publish feed: a single authorized publisher calls `submit(int256)`,
-  every round is stored, reads are `AggregatorV3Interface`.
+  every round is stored, reads are `IPriceFeed` (Chainlink-ABI-compatible).
 - **`src/PriceFeedProxy.sol`**: deployed on the **main L1** in front of the
   aggregator, shaped after Chainlink's EACAggregatorProxy: the stable consumer
   address, phase-packed round ids, owner-gated two-step aggregator swaps. See
   `../docs/oracle-consumer.md`.
-- **`src/interfaces/AggregatorV3Interface.sol`**: Chainlink's consumer
-  interface, vendored so the selectors match Chainlink's exactly.
+- **`src/interfaces/IPriceFeed.sol`**: the consumer read interface,
+  signature-identical to Chainlink's `AggregatorV3Interface` so selectors
+  match exactly; original file, only the ABI shape is shared.
 - **`src/interfaces/IWarpMessenger.sol`** — vendored verbatim from
   `ava-labs/subnet-evm` (`precompile/contracts/warp/warpbindings/IWarpMessenger.sol`).
   The precompile lives at `0x0200000000000000000000000000000000000005`.

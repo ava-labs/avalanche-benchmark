@@ -1,7 +1,8 @@
 # Consuming oracle prices on-chain
 
-The direct price feed is Chainlink-compatible: consumers read
-`AggregatorV3Interface` from a proxy address, exactly as they would read a
+The direct price feed is Chainlink-compatible: consumers read the kit's
+`IPriceFeed` interface, signature-identical to Chainlink's
+`AggregatorV3Interface`, from a proxy address, exactly as they would read a
 Chainlink feed on mainnet. Code, libraries, and habits built against Chainlink
 feeds work unchanged.
 
@@ -11,7 +12,7 @@ feeds work unchanged.
 | Pair | USDC / USD (`description()` returns it) |
 | Decimals | 8 (`decimals()` returns it): `100000000` = $1.00000000 |
 | Writer | `PriceAggregator` at `0x00000000000000000000000000000000FeedFacE`, single authorized publisher |
-| Sources | `contracts/src/PriceFeedProxy.sol`, `contracts/src/PriceAggregator.sol`, `contracts/src/interfaces/AggregatorV3Interface.sol` |
+| Sources | `contracts/src/PriceFeedProxy.sol`, `contracts/src/PriceAggregator.sol`, `contracts/src/interfaces/IPriceFeed.sol` |
 
 Always point consumers at the proxy, never the aggregator. The proxy address
 is permanent; the aggregator behind it can be swapped (mock feed to real feed,
@@ -22,11 +23,11 @@ or a new publisher model) without consumers noticing.
 Identical to the Chainlink consumer example:
 
 ```solidity
-import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
+import {IPriceFeed} from "./interfaces/IPriceFeed.sol";
 
 contract Consumer {
-    AggregatorV3Interface constant FEED =
-        AggregatorV3Interface(0x00000000000000000000000000000000FeedF00d);
+    IPriceFeed constant FEED =
+        IPriceFeed(0x00000000000000000000000000000000FeedF00d);
 
     function usdcPrice() external view returns (int256 answer) {
         uint256 updatedAt;

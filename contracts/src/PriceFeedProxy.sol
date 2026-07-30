@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
+import {IPriceFeed} from "./interfaces/IPriceFeed.sol";
 
 /// @title PriceFeedProxy
 /// @notice The stable per-pair address consumers point at, shaped after
@@ -18,7 +18,7 @@ import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
 ///                 phase-1 entry (keccak256(pad32(1) . pad32(4)))
 ///      Adding a constructor or immutables would move config into bytecode and
 ///      break genesis-alloc deployment.
-contract PriceFeedProxy is AggregatorV3Interface {
+contract PriceFeedProxy is IPriceFeed {
     uint256 private constant PHASE_OFFSET = 64;
 
     // slot 0: owner (may propose/confirm aggregator swaps). Genesis-seeded.
@@ -71,15 +71,15 @@ contract PriceFeedProxy is AggregatorV3Interface {
     }
 
     function decimals() external view returns (uint8) {
-        return AggregatorV3Interface(currentAggregator).decimals();
+        return IPriceFeed(currentAggregator).decimals();
     }
 
     function description() external view returns (string memory) {
-        return AggregatorV3Interface(currentAggregator).description();
+        return IPriceFeed(currentAggregator).description();
     }
 
     function version() external view returns (uint256) {
-        return AggregatorV3Interface(currentAggregator).version();
+        return IPriceFeed(currentAggregator).version();
     }
 
     function getRoundData(
@@ -104,7 +104,7 @@ contract PriceFeedProxy is AggregatorV3Interface {
             uint256 innerStartedAt,
             uint256 innerUpdatedAt,
             uint80 innerAnswered
-        ) = AggregatorV3Interface(phaseAggregator).getRoundData(
+        ) = IPriceFeed(phaseAggregator).getRoundData(
                 uint80(uint64(_roundId))
             );
         return (
@@ -134,7 +134,7 @@ contract PriceFeedProxy is AggregatorV3Interface {
             uint256 innerStartedAt,
             uint256 innerUpdatedAt,
             uint80 innerAnswered
-        ) = AggregatorV3Interface(currentAggregator).latestRoundData();
+        ) = IPriceFeed(currentAggregator).latestRoundData();
         return (
             _packRound(phase, innerRound),
             innerAnswer,

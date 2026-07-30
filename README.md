@@ -294,8 +294,9 @@ Every main chain genesis bakes a Chainlink-compatible feed for USDC / USD:
 a `PriceAggregator` at `0x00000000000000000000000000000000FeedFacE` that the
 generated `deployment/oracle-feeder.key` publishes to, behind a
 `PriceFeedProxy` at `0x00000000000000000000000000000000FeedF00d` that
-consumers read `AggregatorV3Interface` from, exactly as they would read a
-Chainlink feed (`latestRoundData`, `getRoundData`, `decimals`, `description`).
+consumers read from, ABI-identical to a Chainlink feed (`latestRoundData`,
+`getRoundData`, `decimals`, `description`; the kit's `IPriceFeed` interface
+matches Chainlink's `AggregatorV3Interface` signature for signature).
 On a deployment without oracle roles this is the whole price pipeline: one
 process, no extra chain, no relay.
 

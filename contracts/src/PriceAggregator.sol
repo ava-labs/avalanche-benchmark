@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
+import {IPriceFeed} from "./interfaces/IPriceFeed.sol";
 
 /// @title PriceAggregator
 /// @notice Deployed on the main L1, one instance per pair, behind a
 ///         PriceFeedProxy. The Chainlink-shaped writer for the direct-publish
 ///         feed: a single authorized publisher pushes rounds, consumers read
-///         AggregatorV3Interface. The aggregation is in the name and the
+///         IPriceFeed. The aggregation is in the name and the
 ///         interface only; there is deliberately no multi-oracle consensus
 ///         here, that is the publisher's off-chain concern.
 /// @dev No constructor. Config lives in fixed storage slots so the runtime
@@ -17,7 +17,7 @@ import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
 ///                 byte length in the final byte (max 31 bytes)
 ///      Adding a constructor or immutables would move config into bytecode and
 ///      break genesis-alloc deployment.
-contract PriceAggregator is AggregatorV3Interface {
+contract PriceAggregator is IPriceFeed {
     struct Round {
         int256 answer;
         uint64 updatedAt;

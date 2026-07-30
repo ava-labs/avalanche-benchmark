@@ -4,7 +4,7 @@ pragma solidity ^0.8.25;
 import {Test} from "forge-std/Test.sol";
 import {PriceAggregator} from "../src/PriceAggregator.sol";
 import {PriceFeedProxy} from "../src/PriceFeedProxy.sol";
-import {AggregatorV3Interface} from "../src/interfaces/AggregatorV3Interface.sol";
+import {IPriceFeed} from "../src/interfaces/IPriceFeed.sol";
 
 contract ChainlinkFeedTest is Test {
     PriceAggregator agg;
@@ -107,7 +107,7 @@ contract ChainlinkFeedTest is Test {
         vm.prank(publisher);
         agg.submit(99_990_000);
 
-        AggregatorV3Interface feed = AggregatorV3Interface(address(proxy));
+        IPriceFeed feed = IPriceFeed(address(proxy));
         (uint80 roundId, int256 answer,, uint256 updatedAt, uint80 answeredIn) =
             feed.latestRoundData();
 
