@@ -13,11 +13,16 @@ Two minimal Solidity contracts for the subnet-evm price-oracle demo.
   Warp messages from the aggregator and stores the latest price per asset,
   rejecting stale (out-of-order/replayed) updates and messages from the wrong
   source chain or origin sender.
-- **`src/PriceFeedOracle.sol`** — deployed on the **main L1** in every
-  deployment shape. The direct-publish variant: same `submitPrice`/`latestPrice`
-  ABI as the aggregator, no Warp broadcast, plus per-`seq` round history
-  (`latestRound`, `priceAt`) so consumers can read historical values on-chain.
-  See `../docs/oracle-consumer.md`.
+- **`src/PriceAggregator.sol`**: deployed on the **main L1** in every
+  deployment shape, one instance per pair. The Chainlink-shaped writer for the
+  direct-publish feed: a single authorized publisher calls `submit(int256)`,
+  every round is stored, reads are `AggregatorV3Interface`.
+- **`src/PriceFeedProxy.sol`**: deployed on the **main L1** in front of the
+  aggregator, shaped after Chainlink's EACAggregatorProxy: the stable consumer
+  address, phase-packed round ids, owner-gated two-step aggregator swaps. See
+  `../docs/oracle-consumer.md`.
+- **`src/interfaces/AggregatorV3Interface.sol`**: Chainlink's consumer
+  interface, vendored so the selectors match Chainlink's exactly.
 - **`src/interfaces/IWarpMessenger.sol`** — vendored verbatim from
   `ava-labs/subnet-evm` (`precompile/contracts/warp/warpbindings/IWarpMessenger.sol`).
   The precompile lives at `0x0200000000000000000000000000000000000005`.
@@ -33,7 +38,11 @@ which are seeded via genesis alloc `storage` entries:
 | --------------------- | ------------------------------ | ---------------------------- |
 | `PriceFeedAggregator` | authorized feeder address      | (prices mapping base)        |
 | `PriceFeedReceiver`   | expected source blockchain ID  | expected origin sender addr  |
-| `PriceFeedOracle`     | authorized feeder address      | (prices mapping base)        |
+| `PriceAggregator`     | authorized publisher address   | short-string description     |
+| `PriceFeedProxy`      | owner                          | current aggregator address   |
+
+(`PriceFeedProxy` additionally seeds slot 2 = phase id 1 and the
+`phaseAggregators[1]` mapping entry at `keccak256(pad32(1) . pad32(4))`.)
 
 (`PriceFeedAggregator` slot 2 is the per-asset `sequences` mapping base;
 `PriceFeedReceiver` slot 2 is its prices mapping base. Genesis seeding only
@@ -46,11 +55,11 @@ Checked in so the Go build never needs `solc`/`forge`:
 - `artifacts/PriceFeedAggregator.runtime.hex` — deployed (runtime) bytecode, one
   `0x`-prefixed line. Bake into the oracle chain's genesis alloc.
 - `artifacts/PriceFeedReceiver.runtime.hex` — same, for the main L1.
-- `artifacts/PriceFeedOracle.runtime.hex` — same, for the main L1's
-  direct-publish contract.
+- `artifacts/PriceAggregator.runtime.hex` / `artifacts/PriceFeedProxy.runtime.hex`:
+  same, for the main L1's Chainlink-shaped direct feed.
 - `artifacts/selectors.json` — 4-byte selectors for `submitPrice`,
   `receivePrice`, `receivePrices` (batched, up to 32/call), `latestPrice`,
-  `latestRound`, `priceAt`.
+  `submit`, `latestRoundData`, `getRoundData`.
 
 ## Regenerate
 
@@ -63,7 +72,8 @@ forge build
 forge test -vv
 forge inspect src/PriceFeedAggregator.sol:PriceFeedAggregator deployedBytecode > artifacts/PriceFeedAggregator.runtime.hex
 forge inspect src/PriceFeedReceiver.sol:PriceFeedReceiver deployedBytecode > artifacts/PriceFeedReceiver.runtime.hex
-forge inspect src/PriceFeedOracle.sol:PriceFeedOracle deployedBytecode > artifacts/PriceFeedOracle.runtime.hex
+forge inspect src/PriceAggregator.sol:PriceAggregator deployedBytecode > artifacts/PriceAggregator.runtime.hex
+forge inspect src/PriceFeedProxy.sol:PriceFeedProxy deployedBytecode > artifacts/PriceFeedProxy.runtime.hex
 cp artifacts/*.runtime.hex artifacts/selectors.json ../internal/oraclecontracts/
 ```
 

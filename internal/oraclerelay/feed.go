@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"math/rand"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -212,7 +213,8 @@ type feedPending struct {
 // Feed submits mock prices every tick until the context is cancelled. With an
 // oracle L1 it submits every known asset to the aggregator on the oracle
 // chain; without one it publishes the direct asset set straight to the
-// PriceFeedOracle on the main chain with type-2 priority-fee transactions. In
+// Chainlink-shaped aggregator on the main chain with type-2 priority-fee
+// transactions. In
 // both modes submissions pipeline: each is signed and sent while a background
 // goroutine confirms receipts. Any RPC error, reverted receipt, or unconfirmed
 // delivery is fatal; the operator restarts.
@@ -347,8 +349,9 @@ func submitPrice(
 var directAssets = []assetRef{{"USDC-USD", assetUSDC}}
 
 // feedDirect is the no-oracle-chain feed path: type-2 submissions straight to
-// the PriceFeedOracle on the main chain, plus a poller that reads the stored
-// price back so the dashboard can chart feed vs on-chain and their delta.
+// the Chainlink-shaped aggregator on the main chain, plus a poller that reads
+// latestRoundData back through the consumer-facing proxy so the dashboard
+// charts exactly what a consumer contract would see.
 func feedDirect(ctx context.Context, deployment Deployment, feederKey *ecdsa.PrivateKey, feederAddress ethcommon.Address, mainNodeURL string, output io.Writer) error {
 	main := newEVMClient(mainNodeURL, deployment.MainChainID)
 	chainID, err := main.ChainID(ctx)
@@ -362,14 +365,15 @@ func feedDirect(ctx context.Context, deployment Deployment, feederKey *ecdsa.Pri
 	if err != nil {
 		return fmt.Errorf("read feeder nonce: %w", err)
 	}
-	priceFeed := deployment.PriceFeedAddress
+	proxy := deployment.PriceFeedAddress
+	aggregator := deployment.PriceFeedAggregatorAddress
 
 	meters := newFeedMetrics()
 	if err := meters.serve(FeedMetricsListenAddress); err != nil {
 		return err
 	}
 	fmt.Fprintf(output, "serving Prometheus metrics at http://%s/metrics (fixed port)\n", FeedMetricsListenAddress)
-	fmt.Fprintf(output, "publishing prices directly to main chain %s at %s as %s (PriceFeedOracle %s)\n", deployment.MainChainID, main.url, feederAddress.Hex(), priceFeed.Hex())
+	fmt.Fprintf(output, "publishing prices directly to main chain %s at %s as %s (aggregator %s, consumer proxy %s)\n", deployment.MainChainID, main.url, feederAddress.Hex(), aggregator.Hex(), proxy.Hex())
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -383,7 +387,7 @@ func feedDirect(ctx context.Context, deployment Deployment, feederKey *ecdsa.Pri
 		cancel()
 	}
 	go confirmSubmissions(runCtx, main, pending, fail, meters)
-	go pollOnChainPrices(runCtx, main, priceFeed, directAssets, fail, meters)
+	go pollOnChainPrices(runCtx, main, proxy, directAssets, fail, meters)
 
 	walk := newPriceWalk()
 	ticker := time.NewTicker(feedInterval)
@@ -408,7 +412,7 @@ func feedDirect(ctx context.Context, deployment Deployment, feederKey *ecdsa.Pri
 		for _, asset := range directAssets {
 			price := walk.next(asset.name)
 			sentAt := time.Now()
-			hash, err := submitPriceDirect(ctx, main, signer, feederKey, priceFeed, &nonce, chainID, asset.id, price, tipCap, feeCap)
+			hash, err := submitPriceDirect(ctx, main, signer, feederKey, aggregator, &nonce, chainID, asset.name, price, tipCap, feeCap)
 			if err != nil {
 				return err
 			}
@@ -436,31 +440,30 @@ func directFees(suggestedTip, suggestedGasPrice *big.Int) (tipCap, feeCap *big.I
 	return tipCap, feeCap
 }
 
-// submitPriceDirect signs and sends one type-2 submitPrice tx, bumping the
-// local nonce.
+// submitPriceDirect signs and sends one type-2 submit tx to the aggregator,
+// bumping the local nonce.
 func submitPriceDirect(
 	ctx context.Context,
 	main *evmClient,
 	signer ethtypes.Signer,
 	feederKey *ecdsa.PrivateKey,
-	priceFeed ethcommon.Address,
+	aggregator ethcommon.Address,
 	nonce *uint64,
 	chainID *big.Int,
-	assetID ethcommon.Hash,
+	name string,
 	price int64,
 	tipCap *big.Int,
 	feeCap *big.Int,
 ) (ethcommon.Hash, error) {
-	name := AssetName(assetID)
 	tx := ethtypes.NewTx(&ethtypes.DynamicFeeTx{
 		ChainID:   chainID,
 		Nonce:     *nonce,
 		GasTipCap: tipCap,
 		GasFeeCap: feeCap,
 		Gas:       feedGasLimit,
-		To:        &priceFeed,
+		To:        &aggregator,
 		Value:     big.NewInt(0),
-		Data:      packSubmitPrice(assetID, big.NewInt(price)),
+		Data:      packSubmit(big.NewInt(price)),
 	})
 	signed, err := ethtypes.SignTx(tx, signer, feederKey)
 	if err != nil {
@@ -478,11 +481,12 @@ func submitPriceDirect(
 	return hash, nil
 }
 
-// pollOnChainPrices reads the contract's stored latestPrice for every direct
-// asset on a fixed cadence. Its errors are fatal through fail, matching the
-// feed's fail-fast posture: the poller uses the same node as the submit path,
-// so a failing read means the whole pipeline is unhealthy.
-func pollOnChainPrices(ctx context.Context, main *evmClient, priceFeed ethcommon.Address, assets []assetRef, fail func(error), meters *feedMetrics) {
+// pollOnChainPrices reads latestRoundData through the consumer-facing proxy on
+// a fixed cadence, so the exported on-chain series is exactly a consumer
+// contract's view. A revert before the first round ("No data present") is
+// expected at startup and skipped; other errors are fatal through fail,
+// matching the feed's fail-fast posture.
+func pollOnChainPrices(ctx context.Context, main *evmClient, proxy ethcommon.Address, assets []assetRef, fail func(error), meters *feedMetrics) {
 	ticker := time.NewTicker(onChainPollInterval)
 	defer ticker.Stop()
 	for {
@@ -492,20 +496,23 @@ func pollOnChainPrices(ctx context.Context, main *evmClient, priceFeed ethcommon
 		case <-ticker.C:
 		}
 		for _, asset := range assets {
-			result, err := main.CallContract(ctx, priceFeed, packLatestPrice(asset.id))
+			result, err := main.CallContract(ctx, proxy, packLatestRoundData())
 			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
+				if strings.Contains(err.Error(), "No data present") {
+					continue
+				}
 				fail(fmt.Errorf("read on-chain %s price: %w", asset.name, err))
 				return
 			}
-			price, _, err := decodeLatestPrice(result)
+			answer, _, err := decodeLatestRoundData(result)
 			if err != nil {
 				fail(fmt.Errorf("decode on-chain %s price: %w", asset.name, err))
 				return
 			}
-			meters.recordOnChain(asset.name, price)
+			meters.recordOnChain(asset.name, answer)
 		}
 	}
 }

@@ -3,6 +3,7 @@
   "receivePrice": "0xb8c12758",
   "receivePrices": "0x0fb57cdd",
   "latestPrice": "0x4eec7c2b",
-  "latestRound": "0x34a50861",
-  "priceAt": "0x7ccd4f7c"
+  "submit": "0x9b25df0b",
+  "latestRoundData": "0xfeaf968c",
+  "getRoundData": "0x9a6fc8f5"
 }

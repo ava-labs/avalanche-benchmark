@@ -26,7 +26,7 @@ const (
 type Public struct {
 	GenesisAddress string `json:"genesisAddress"`
 	// FeederAddress is the EVM address of the price feed key. It signs the
-	// direct price submissions to the main chain's PriceFeedOracle and, when
+	// direct price submissions to the main chain's price aggregator and, when
 	// the inventory declares an oracle L1, that chain's feed transactions and
 	// the main chain's Warp deliveries.
 	FeederAddress string          `json:"feederAddress"`

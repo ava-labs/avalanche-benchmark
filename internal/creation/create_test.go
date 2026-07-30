@@ -190,10 +190,7 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	if err := json.Unmarshal(mainGenesis, &mainDocument); err != nil {
 		t.Fatal(err)
 	}
-	priceFeed := mainDocument.Alloc[allocKey(PriceFeedAddress)]
-	if priceFeed.Code == "" || priceFeed.Storage[ethcommon.Hash{}.Hex()] != ethcommon.BytesToHash(feeder.Bytes()).Hex() {
-		t.Fatalf("direct price feed not baked into main genesis: %+v", priceFeed)
-	}
+	assertDirectFeedBaked(t, mainDocument, feeder)
 	if mainDocument.Alloc[allocKey(feeder)].Balance != genesisBalance {
 		t.Fatal("feeder not funded on the main chain")
 	}
@@ -344,9 +341,36 @@ func TestCreateWithOracleRunsManagerOracleMain(t *testing.T) {
 	}
 	// The direct price feed rides along even when an oracle chain exists, so
 	// either consumption path is available on main.
-	priceFeed := mainDocument.Alloc[allocKey(PriceFeedAddress)]
-	if priceFeed.Code == "" || priceFeed.Storage[ethcommon.Hash{}.Hex()] != ethcommon.BytesToHash(feeder.Bytes()).Hex() {
-		t.Fatalf("direct price feed not baked into main genesis: %+v", priceFeed)
+	assertDirectFeedBaked(t, mainDocument, feeder)
+}
+
+// assertDirectFeedBaked checks the Chainlink-shaped pair: the aggregator with
+// the publisher and description seeded, and the proxy pointing at it from
+// phase 1 (including the seeded phaseAggregators[1] mapping entry).
+func assertDirectFeedBaked(t *testing.T, mainDocument genesisDocument, feeder ethcommon.Address) {
+	t.Helper()
+	aggregatorHash := ethcommon.BytesToHash(PriceFeedAggregatorAddress.Bytes()).Hex()
+
+	aggregator := mainDocument.Alloc[allocKey(PriceFeedAggregatorAddress)]
+	if aggregator.Code == "" || aggregator.Storage[ethcommon.Hash{}.Hex()] != ethcommon.BytesToHash(feeder.Bytes()).Hex() {
+		t.Fatalf("price aggregator not baked into main genesis: %+v", aggregator)
+	}
+	if aggregator.Storage[ethcommon.BigToHash(ethcommon.Big1).Hex()] != shortString(priceFeedPair).Hex() {
+		t.Fatalf("aggregator description not seeded: %+v", aggregator.Storage)
+	}
+
+	proxy := mainDocument.Alloc[allocKey(PriceFeedAddress)]
+	if proxy.Code == "" || proxy.Storage[ethcommon.Hash{}.Hex()] != ethcommon.BytesToHash(feeder.Bytes()).Hex() {
+		t.Fatalf("price feed proxy not baked into main genesis: %+v", proxy)
+	}
+	if proxy.Storage[ethcommon.BigToHash(ethcommon.Big1).Hex()] != aggregatorHash {
+		t.Fatalf("proxy does not point at the aggregator: %+v", proxy.Storage)
+	}
+	if proxy.Storage[ethcommon.BigToHash(ethcommon.Big2).Hex()] != ethcommon.BigToHash(ethcommon.Big1).Hex() {
+		t.Fatalf("proxy phase not seeded to 1: %+v", proxy.Storage)
+	}
+	if proxy.Storage[phaseAggregatorsSlot(1).Hex()] != aggregatorHash {
+		t.Fatalf("phaseAggregators[1] not seeded: %+v", proxy.Storage)
 	}
 }
 

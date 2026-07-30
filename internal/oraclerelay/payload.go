@@ -29,6 +29,11 @@ var (
 	// other entries with the same method. Hardcoded until the contracts agent
 	// lands it in selectors.json.
 	receivePricesSelector = [4]byte{0x0f, 0xb5, 0x7c, 0xdd}
+	// The Chainlink-shaped direct feed: submit(int256) on the aggregator,
+	// latestRoundData() on the proxy (0xfeaf968c is Chainlink's canonical
+	// AggregatorV3Interface selector).
+	submitSelector          = [4]byte{0x9b, 0x25, 0xdf, 0x0b}
+	latestRoundDataSelector = [4]byte{0xfe, 0xaf, 0x96, 0x8c}
 )
 
 // Mock feed assets. assetId is the keccak256 of the human-readable symbol, the
@@ -154,6 +159,33 @@ func packReceivePrices(count uint32) []byte {
 	data = append(data, receivePricesSelector[:]...)
 	data = append(data, leftPad32(new(big.Int).SetUint64(uint64(count)).Bytes())...)
 	return data
+}
+
+// packSubmit builds calldata for the direct aggregator's submit(int256).
+// Prices are non-negative 8-decimal fixed point, so the int256 word is the
+// plain big-endian value.
+func packSubmit(answer *big.Int) []byte {
+	data := make([]byte, 0, 4+32)
+	data = append(data, submitSelector[:]...)
+	data = append(data, leftPad32(answer.Bytes())...)
+	return data
+}
+
+// packLatestRoundData builds calldata for latestRoundData().
+func packLatestRoundData() []byte {
+	return latestRoundDataSelector[:]
+}
+
+// decodeLatestRoundData reads AggregatorV3Interface's five return words:
+// (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt,
+// uint80 answeredInRound). The feed only charts the answer and updatedAt.
+func decodeLatestRoundData(output []byte) (*big.Int, uint64, error) {
+	if len(output) != 160 {
+		return nil, 0, fmt.Errorf("latestRoundData returned %d bytes, want 160", len(output))
+	}
+	answer := new(big.Int).SetBytes(output[32:64])
+	updatedAt := new(big.Int).SetBytes(output[96:128]).Uint64()
+	return answer, updatedAt, nil
 }
 
 // packLatestPrice builds calldata for latestPrice(bytes32 assetId).

@@ -45,7 +45,7 @@ func Generate(outputDirectory string, nodes []config.Node, managerCount int) (Re
 	}
 
 	// The feeder key always exists: it signs the direct price submissions to
-	// the main chain's PriceFeedOracle and, when the inventory declares an
+	// the main chain's price aggregator and, when the inventory declares an
 	// oracle L1, that chain's feed transactions and the main chain's Warp
 	// deliveries. Every chain that hosts a price contract funds it at Genesis.
 	feederKey, err := secp256k1.NewPrivateKey()

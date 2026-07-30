@@ -18,6 +18,7 @@ MANAGER_ADDRESS=0x0000000000000000000000000000000000000001
 GENESIS_EVM_ADDRESS=0x1234567890123456789012345678901234567890
 FEEDER_EVM_ADDRESS=0xAbcDef0123456789abCDef0123456789ABcdEF01
 ORACLE_PRICEFEED_ADDRESS=0x00000000000000000000000000000000FeedF00d
+ORACLE_PRICEFEED_AGGREGATOR_ADDRESS=0x00000000000000000000000000000000FeedFacE
 `
 
 func writeState(t *testing.T, contents string) string {
@@ -39,6 +40,9 @@ func TestLoadDeploymentDirectMode(t *testing.T) {
 	}
 	if deployment.PriceFeedAddress.Hex() != "0x00000000000000000000000000000000FeedF00D" {
 		t.Fatalf("unexpected price feed address %s", deployment.PriceFeedAddress)
+	}
+	if deployment.PriceFeedAggregatorAddress.Hex() != "0x00000000000000000000000000000000FEeDfAce" {
+		t.Fatalf("unexpected price feed aggregator address %s", deployment.PriceFeedAggregatorAddress)
 	}
 	if deployment.FeederAddress.Hex() != "0xabCDeF0123456789AbcdEf0123456789aBCDEF01" {
 		t.Fatalf("unexpected feeder address %s", deployment.FeederAddress)

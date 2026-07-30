@@ -3,7 +3,7 @@
 // the aggregator on the oracle L1, and a control-host Warp relayer that signs
 // each aggregator broadcast with the oracle validators' BLS keys and delivers
 // it to the receiver on the main L1. A deployment without an oracle L1 runs
-// the feeder alone: it publishes prices directly to the PriceFeedOracle baked
+// the feeder alone: it publishes rounds directly to the Chainlink-shaped aggregator baked
 // into the main chain's genesis, using type-2 (EIP-1559) transactions whose
 // priority fee keeps updates ahead of benchmark flood traffic.
 //
@@ -27,7 +27,7 @@ import (
 // Deployment holds the price feed fields of deployment/network.env. The
 // oracle L1 is opt-in: ORACLE_CONVERT_TX_ID missing means the deployment has
 // no oracle chain and the feeder publishes directly to the main chain's
-// PriceFeedOracle instead.
+// price aggregator instead.
 type Deployment struct {
 	Network           string
 	OracleChainID     ids.ID
@@ -36,8 +36,12 @@ type Deployment struct {
 	MainChainID       ids.ID
 	AggregatorAddress ethcommon.Address
 	ReceiverAddress   ethcommon.Address
-	PriceFeedAddress  ethcommon.Address
-	FeederAddress     ethcommon.Address
+	// PriceFeedAddress is the Chainlink-shaped proxy consumers read;
+	// PriceFeedAggregatorAddress is the aggregator behind it that the direct
+	// feed publishes to.
+	PriceFeedAddress           ethcommon.Address
+	PriceFeedAggregatorAddress ethcommon.Address
+	FeederAddress              ethcommon.Address
 }
 
 // HasOracle reports whether the deployment created an oracle L1. Without one
@@ -82,10 +86,16 @@ func LoadDeployment(path, network string) (Deployment, error) {
 		}
 	}
 	// Deployments created before the direct price feed have no
-	// ORACLE_PRICEFEED_ADDRESS; that is only an error when the deployment has
-	// no oracle chain, because then direct publication is the only feed path.
+	// ORACLE_PRICEFEED_* fields; that is only an error when the deployment
+	// has no oracle chain, because then direct publication is the only feed
+	// path.
 	if raw := strings.TrimSpace(values["ORACLE_PRICEFEED_ADDRESS"]); raw != "" || !hasOracle {
 		if deployment.PriceFeedAddress, err = requiredAddress(path, values, "ORACLE_PRICEFEED_ADDRESS"); err != nil {
+			return Deployment{}, err
+		}
+	}
+	if raw := strings.TrimSpace(values["ORACLE_PRICEFEED_AGGREGATOR_ADDRESS"]); raw != "" || !hasOracle {
+		if deployment.PriceFeedAggregatorAddress, err = requiredAddress(path, values, "ORACLE_PRICEFEED_AGGREGATOR_ADDRESS"); err != nil {
 			return Deployment{}, err
 		}
 	}
