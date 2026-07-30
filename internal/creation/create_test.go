@@ -121,7 +121,8 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	public := NewPublic(generated, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"), nil)
+	feeder := ethcommon.HexToAddress("0xAbcDef0123456789abCDef0123456789ABcdEF01")
+	public := NewPublic(generated, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"), feeder)
 	if _, err := SavePublic(filepath.Join(output, "public.json"), public); err != nil {
 		t.Fatal(err)
 	}
@@ -180,6 +181,21 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	}
 	if highCount != 3 || lowCount != 1 {
 		t.Fatalf("unexpected weight split: high=%d low=%d", highCount, lowCount)
+	}
+	mainGenesis, err := os.ReadFile(filepath.Join(output, "genesis.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mainDocument genesisDocument
+	if err := json.Unmarshal(mainGenesis, &mainDocument); err != nil {
+		t.Fatal(err)
+	}
+	priceFeed := mainDocument.Alloc[allocKey(PriceFeedAddress)]
+	if priceFeed.Code == "" || priceFeed.Storage[ethcommon.Hash{}.Hex()] != ethcommon.BytesToHash(feeder.Bytes()).Hex() {
+		t.Fatalf("direct price feed not baked into main genesis: %+v", priceFeed)
+	}
+	if mainDocument.Alloc[allocKey(feeder)].Balance != genesisBalance {
+		t.Fatal("feeder not funded on the main chain")
 	}
 	if _, err := os.Stat(filepath.Join(output, "identities")); !os.IsNotExist(err) {
 		t.Fatalf("creation output must not need private identities, got %v", err)
@@ -253,7 +269,7 @@ func TestCreateWithOracleRunsManagerOracleMain(t *testing.T) {
 		t.Fatal(err)
 	}
 	feeder := ethcommon.HexToAddress("0xAbcDef0123456789abCDef0123456789ABcdEF01")
-	public := NewPublic(generated, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"), &feeder)
+	public := NewPublic(generated, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"), feeder)
 	if _, err := SavePublic(filepath.Join(output, "public.json"), public); err != nil {
 		t.Fatal(err)
 	}
@@ -325,6 +341,12 @@ func TestCreateWithOracleRunsManagerOracleMain(t *testing.T) {
 	}
 	if mainDocument.Alloc[allocKey(feeder)].Balance != genesisBalance {
 		t.Fatal("feeder not funded on the main chain")
+	}
+	// The direct price feed rides along even when an oracle chain exists, so
+	// either consumption path is available on main.
+	priceFeed := mainDocument.Alloc[allocKey(PriceFeedAddress)]
+	if priceFeed.Code == "" || priceFeed.Storage[ethcommon.Hash{}.Hex()] != ethcommon.BytesToHash(feeder.Bytes()).Hex() {
+		t.Fatalf("direct price feed not baked into main genesis: %+v", priceFeed)
 	}
 }
 

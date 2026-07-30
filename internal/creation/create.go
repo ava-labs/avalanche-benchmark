@@ -39,6 +39,7 @@ var (
 	// entirely through explicit storage slots.
 	AggregatorAddress = ethcommon.HexToAddress("0x000000000000000000000000000000000000FEED")
 	ReceiverAddress   = ethcommon.HexToAddress("0x0000000000000000000000000000000000FeedED")
+	PriceFeedAddress  = ethcommon.HexToAddress("0x00000000000000000000000000000000FeedF00d")
 )
 
 type Result struct {
@@ -69,7 +70,7 @@ func Create(ctx context.Context, environment config.Environment, outputDirectory
 	if err := requireMissing(filepath.Join(outputDirectory, "genesis.json")); err != nil {
 		return Result{}, err
 	}
-	if public.FeederAddress != "" {
+	if public.HasOracle() {
 		if err := requireMissing(filepath.Join(outputDirectory, "genesis-oracle.json")); err != nil {
 			return Result{}, err
 		}
@@ -133,9 +134,7 @@ func printPublic(public Public, path, digest string) {
 			fmt.Printf("oracle identity %s: %s weight %d\n", node.Identity, node.NodeID, node.Weight)
 		}
 	}
-	if public.FeederAddress != "" {
-		fmt.Printf("oracle feeder EVM address: %s\n", public.FeederAddress)
-	}
+	fmt.Printf("price feeder EVM address: %s\n", public.FeederAddress)
 }
 
 func create(
@@ -167,8 +166,18 @@ func create(
 	if err != nil {
 		return Result{}, err
 	}
-	hasOracle := public.FeederAddress != ""
+	hasOracle := public.HasOracle()
 	feederAddress := ethcommon.HexToAddress(public.FeederAddress)
+	// The direct-publish price feed lives on the main chain in every
+	// deployment shape. When an oracle L1 exists the Warp receiver joins it,
+	// but that render must wait for the oracle chain ID below.
+	mainContracts := []ContractAllocation{{
+		Address:     PriceFeedAddress,
+		RuntimeCode: oraclecontracts.OracleRuntime,
+		Storage: map[ethcommon.Hash]ethcommon.Hash{
+			{}: ethcommon.BytesToHash(feederAddress.Bytes()),
+		},
+	}}
 	var oracleGenesis []byte
 	if hasOracle {
 		oracleTemplate, err := os.ReadFile(oracleGenesisTemplatePath)
@@ -206,10 +215,15 @@ func create(
 	if err := requireMissing(oracleGenesisPath); err != nil {
 		return Result{}, err
 	}
+	var mainGenesis []byte
 	if !hasOracle {
 		// Without an oracle the main genesis has no chain-dependent content,
 		// so it is published before the first transaction, exactly as before.
-		if err := os.WriteFile(genesisPath, managementGenesis, 0o644); err != nil {
+		mainGenesis, err = RenderGenesis(template, []ethcommon.Address{genesisAddress, feederAddress}, mainContracts, nil, createdAt)
+		if err != nil {
+			return Result{}, err
+		}
+		if err := os.WriteFile(genesisPath, mainGenesis, 0o644); err != nil {
 			return Result{}, fmt.Errorf("write generated genesis %s: %w", genesisPath, err)
 		}
 		fmt.Printf("generated %s\n", genesisPath)
@@ -220,9 +234,10 @@ func create(
 		Network:           environment.Network,
 		ManagerAddress:    managerAddress.Hex(),
 		GenesisEVMAddress: public.GenesisAddress,
+		FeederEVMAddress:  public.FeederAddress,
+		PriceFeedAddress:  PriceFeedAddress.Hex(),
 	}
 	if hasOracle {
-		state.FeederEVMAddress = public.FeederAddress
 		state.OracleAggregatorAddress = AggregatorAddress.Hex()
 		state.OracleReceiverAddress = ReceiverAddress.Hex()
 	}
@@ -359,7 +374,6 @@ func create(
 		}
 	}
 
-	mainGenesis := managementGenesis
 	if hasOracle {
 		// The receiver contract only trusts Warp messages whose source is the
 		// oracle chain, so the main genesis can be rendered only after the
@@ -367,14 +381,14 @@ func create(
 		mainGenesis, err = RenderGenesis(
 			template,
 			[]ethcommon.Address{genesisAddress, feederAddress},
-			[]ContractAllocation{{
+			append(mainContracts, ContractAllocation{
 				Address:     ReceiverAddress,
 				RuntimeCode: oraclecontracts.ReceiverRuntime,
 				Storage: map[ethcommon.Hash]ethcommon.Hash{
 					{}:                                  ethcommon.Hash(state.OracleChainID),
 					ethcommon.BigToHash(ethcommon.Big1): ethcommon.BytesToHash(AggregatorAddress.Bytes()),
 				},
-			}},
+			}),
 			nil,
 			createdAt,
 		)

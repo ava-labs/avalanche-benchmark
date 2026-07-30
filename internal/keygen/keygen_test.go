@@ -77,11 +77,22 @@ func TestGenerateWritesPrivateBundleAndPublicHandover(t *testing.T) {
 	if _, err := Generate(output, nodes, 1); err == nil {
 		t.Fatal("key generation must reject existing output")
 	}
-	if loaded.FeederAddress != "" {
-		t.Fatalf("feeder address must be empty without oracle nodes, got %q", loaded.FeederAddress)
+	// The feeder key exists in every deployment shape: without an oracle L1 it
+	// signs the direct price submissions to the main chain.
+	feederHex, err := os.ReadFile(filepath.Join(output, "oracle-feeder.key"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(output, "oracle-feeder.key")); !os.IsNotExist(err) {
-		t.Fatalf("oracle feeder key must not exist without oracle nodes, got %v", err)
+	feederBytes, err := hex.DecodeString(strings.TrimSpace(string(feederHex)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	feederKey, err := secp256k1.ToPrivateKey(feederBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if feederKey.EthAddress().Hex() != loaded.FeederAddress {
+		t.Fatalf("feeder address %s does not match private key %s", loaded.FeederAddress, feederKey.EthAddress())
 	}
 }
 

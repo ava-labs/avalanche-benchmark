@@ -11,7 +11,6 @@ import (
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/placement"
 	"github.com/ava-labs/avalanchego/utils/crypto/secp256k1"
-	ethcommon "github.com/ava-labs/libevm/common"
 )
 
 type Result struct {
@@ -45,28 +44,20 @@ func Generate(outputDirectory string, nodes []config.Node, managerCount int) (Re
 		return Result{}, fmt.Errorf("write Genesis funds key %s: %w", genesisKeyPath, err)
 	}
 
-	// The feeder key exists exactly when the inventory declares an oracle L1.
-	// It signs the oracle chain's feed transactions and the main chain's
-	// delivery transactions, so both chains fund it at Genesis.
-	var feederAddress *ethcommon.Address
-	for _, node := range nodes {
-		if node.Role != config.RoleOracleValidator {
-			continue
-		}
-		feederKey, err := secp256k1.NewPrivateKey()
-		if err != nil {
-			return Result{}, fmt.Errorf("generate oracle feeder key: %w", err)
-		}
-		feederKeyPath := filepath.Join(outputDirectory, "oracle-feeder.key")
-		if err := os.WriteFile(feederKeyPath, []byte(hex.EncodeToString(feederKey.Bytes())+"\n"), 0o600); err != nil {
-			return Result{}, fmt.Errorf("write oracle feeder key %s: %w", feederKeyPath, err)
-		}
-		address := feederKey.EthAddress()
-		feederAddress = &address
-		break
+	// The feeder key always exists: it signs the direct price submissions to
+	// the main chain's PriceFeedOracle and, when the inventory declares an
+	// oracle L1, that chain's feed transactions and the main chain's Warp
+	// deliveries. Every chain that hosts a price contract funds it at Genesis.
+	feederKey, err := secp256k1.NewPrivateKey()
+	if err != nil {
+		return Result{}, fmt.Errorf("generate oracle feeder key: %w", err)
+	}
+	feederKeyPath := filepath.Join(outputDirectory, "oracle-feeder.key")
+	if err := os.WriteFile(feederKeyPath, []byte(hex.EncodeToString(feederKey.Bytes())+"\n"), 0o600); err != nil {
+		return Result{}, fmt.Errorf("write oracle feeder key %s: %w", feederKeyPath, err)
 	}
 
-	public := creation.NewPublic(generated, genesisKey.EthAddress(), feederAddress)
+	public := creation.NewPublic(generated, genesisKey.EthAddress(), feederKey.EthAddress())
 	publicPath := filepath.Join(outputDirectory, "public.json")
 	digest, err := creation.SavePublic(publicPath, public)
 	if err != nil {
