@@ -64,6 +64,23 @@ calling `getRoundData` in a loop:
 event AnswerUpdated(int256 indexed current, uint256 indexed roundId, uint256 updatedAt);
 ```
 
+## Example: a peg guard
+
+`contracts/src/examples/UsdcSettlement.sol` is a complete consumer: a
+settlement gate that proceeds only while USDC / USD is inside the $0.99 to
+$1.01 band and the feed is at most 60 seconds old.
+
+```solidity
+(uint80 roundId, int256 price,, uint256 updatedAt,) = FEED.latestRoundData();
+require(price >= MIN_PRICE && price <= MAX_PRICE, "depegged");
+require(block.timestamp - updatedAt <= MAX_AGE, "stale price");
+```
+
+It also exposes the same checks as a non-reverting `canSettle()` view for UIs.
+Both failure modes matter independently: "depegged" means the market moved,
+"stale price" means the publisher stopped, and a consumer that checks only one
+of them is unsafe against the other.
+
 ## From the command line
 
 ```bash
