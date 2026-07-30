@@ -1,7 +1,11 @@
-// Package oraclerelay implements the two oracle-chain processes: a mock price
-// feeder that submits prices to the aggregator on the oracle L1, and a
-// control-host Warp relayer that signs each aggregator broadcast with the oracle
-// validators' BLS keys and delivers it to the receiver on the main L1.
+// Package oraclerelay implements the price feed processes. A deployment with
+// an oracle L1 runs two of them: a mock price feeder that submits prices to
+// the aggregator on the oracle L1, and a control-host Warp relayer that signs
+// each aggregator broadcast with the oracle validators' BLS keys and delivers
+// it to the receiver on the main L1. A deployment without an oracle L1 runs
+// the feeder alone: it publishes prices directly to the PriceFeedOracle baked
+// into the main chain's genesis, using type-2 (EIP-1559) transactions whose
+// priority fee keeps updates ahead of benchmark flood traffic.
 //
 // It reuses the machinery of internal/setweight: control holds every BLS key and
 // signs off-node, canonical bit positions index the P-chain validator set the
@@ -20,9 +24,10 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// Deployment holds the oracle-specific fields of deployment/network.env. The
-// oracle L1 is opt-in, so ORACLE_CONVERT_TX_ID missing means the deployment has
-// no oracle and both commands must fail before doing any work.
+// Deployment holds the price feed fields of deployment/network.env. The
+// oracle L1 is opt-in: ORACLE_CONVERT_TX_ID missing means the deployment has
+// no oracle chain and the feeder publishes directly to the main chain's
+// PriceFeedOracle instead.
 type Deployment struct {
 	Network           string
 	OracleChainID     ids.ID
@@ -31,11 +36,18 @@ type Deployment struct {
 	MainChainID       ids.ID
 	AggregatorAddress ethcommon.Address
 	ReceiverAddress   ethcommon.Address
+	PriceFeedAddress  ethcommon.Address
 	FeederAddress     ethcommon.Address
 }
 
-// LoadDeployment reads the oracle fields from network.env and requires NETWORK
-// to match .env, mirroring weights.loadDeployment's cross-file check.
+// HasOracle reports whether the deployment created an oracle L1. Without one
+// the only feed path is direct publication on the main chain.
+func (d Deployment) HasOracle() bool {
+	return d.OracleConvertTxID != ids.Empty
+}
+
+// LoadDeployment reads the price feed fields from network.env and requires
+// NETWORK to match .env, mirroring weights.loadDeployment's cross-file check.
 func LoadDeployment(path, network string) (Deployment, error) {
 	values, err := godotenv.Read(path)
 	if err != nil {
@@ -44,30 +56,38 @@ func LoadDeployment(path, network string) (Deployment, error) {
 	if got := strings.TrimSpace(values["NETWORK"]); got != network {
 		return Deployment{}, fmt.Errorf("%s: NETWORK must match .env (%q), got %q", path, network, got)
 	}
-	if strings.TrimSpace(values["ORACLE_CONVERT_TX_ID"]) == "" {
-		return Deployment{}, fmt.Errorf("%s: this deployment has no oracle L1 (ORACLE_CONVERT_TX_ID is not provided)", path)
-	}
 	deployment := Deployment{Network: network}
-	if deployment.OracleConvertTxID, err = requiredID(path, values, "ORACLE_CONVERT_TX_ID"); err != nil {
-		return Deployment{}, err
-	}
-	if deployment.OracleChainID, err = requiredID(path, values, "ORACLE_CHAIN_ID"); err != nil {
-		return Deployment{}, err
-	}
-	if deployment.OracleSubnetID, err = requiredID(path, values, "ORACLE_SUBNET_ID"); err != nil {
-		return Deployment{}, err
-	}
 	if deployment.MainChainID, err = requiredID(path, values, "CHAIN_ID"); err != nil {
-		return Deployment{}, err
-	}
-	if deployment.AggregatorAddress, err = requiredAddress(path, values, "ORACLE_AGGREGATOR_ADDRESS"); err != nil {
-		return Deployment{}, err
-	}
-	if deployment.ReceiverAddress, err = requiredAddress(path, values, "ORACLE_RECEIVER_ADDRESS"); err != nil {
 		return Deployment{}, err
 	}
 	if deployment.FeederAddress, err = requiredAddress(path, values, "FEEDER_EVM_ADDRESS"); err != nil {
 		return Deployment{}, err
+	}
+	hasOracle := strings.TrimSpace(values["ORACLE_CONVERT_TX_ID"]) != ""
+	if hasOracle {
+		if deployment.OracleConvertTxID, err = requiredID(path, values, "ORACLE_CONVERT_TX_ID"); err != nil {
+			return Deployment{}, err
+		}
+		if deployment.OracleChainID, err = requiredID(path, values, "ORACLE_CHAIN_ID"); err != nil {
+			return Deployment{}, err
+		}
+		if deployment.OracleSubnetID, err = requiredID(path, values, "ORACLE_SUBNET_ID"); err != nil {
+			return Deployment{}, err
+		}
+		if deployment.AggregatorAddress, err = requiredAddress(path, values, "ORACLE_AGGREGATOR_ADDRESS"); err != nil {
+			return Deployment{}, err
+		}
+		if deployment.ReceiverAddress, err = requiredAddress(path, values, "ORACLE_RECEIVER_ADDRESS"); err != nil {
+			return Deployment{}, err
+		}
+	}
+	// Deployments created before the direct price feed have no
+	// ORACLE_PRICEFEED_ADDRESS; that is only an error when the deployment has
+	// no oracle chain, because then direct publication is the only feed path.
+	if raw := strings.TrimSpace(values["ORACLE_PRICEFEED_ADDRESS"]); raw != "" || !hasOracle {
+		if deployment.PriceFeedAddress, err = requiredAddress(path, values, "ORACLE_PRICEFEED_ADDRESS"); err != nil {
+			return Deployment{}, err
+		}
 	}
 	return deployment, nil
 }

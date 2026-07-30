@@ -140,6 +140,16 @@ func (c *evmClient) GasPrice(ctx context.Context) (*big.Int, error) {
 	return (*big.Int)(&raw), nil
 }
 
+// MaxPriorityFeePerGas returns the node's suggested priority fee (tip) for
+// type-2 (EIP-1559) transactions.
+func (c *evmClient) MaxPriorityFeePerGas(ctx context.Context) (*big.Int, error) {
+	var raw hexutil.Big
+	if err := c.call(ctx, "eth_maxPriorityFeePerGas", nil, &raw); err != nil {
+		return nil, err
+	}
+	return (*big.Int)(&raw), nil
+}
+
 // CallContract executes a read-only eth_call against the latest block.
 func (c *evmClient) CallContract(ctx context.Context, to ethcommon.Address, data []byte) ([]byte, error) {
 	var raw hexutil.Bytes

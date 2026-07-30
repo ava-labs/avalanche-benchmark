@@ -36,7 +36,7 @@ func run() error {
 
 func usage(program string) string {
 	return fmt.Sprintf(
-		"  %s feed <oracle-node-url>                        foreground mock price feeder\n  %s relay <oracle-node-url> <main-node-url> <staking-ip:port,...>\n                                                   foreground Warp price relayer; collects each\n                                                   signature from the oracle validators over\n                                                   ACP-118 on their staking ports",
+		"  %s feed <node-url>                               foreground mock price feeder. With an oracle\n                                                   L1 it submits to the aggregator on the oracle\n                                                   chain (pass an oracle node URL); without one it\n                                                   publishes directly to the PriceFeedOracle on the\n                                                   main chain with type-2 priority-fee transactions\n                                                   (pass a main-chain RPC node URL)\n  %s relay <oracle-node-url> <main-node-url> <staking-ip:port,...>\n                                                   foreground Warp price relayer; collects each\n                                                   signature from the oracle validators over\n                                                   ACP-118 on their staking ports",
 		program,
 		program,
 	)
