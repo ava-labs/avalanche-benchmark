@@ -16,7 +16,10 @@ var (
 	aggregatorRuntime string
 	//go:embed PriceFeedReceiver.runtime.hex
 	receiverRuntime string
+	//go:embed PriceFeedOracle.runtime.hex
+	oracleRuntime string
 
 	AggregatorRuntime = strings.TrimSpace(aggregatorRuntime)
 	ReceiverRuntime   = strings.TrimSpace(receiverRuntime)
+	OracleRuntime     = strings.TrimSpace(oracleRuntime)
 )
