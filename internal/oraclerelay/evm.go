@@ -194,8 +194,13 @@ func (c *evmClient) TransactionReceipt(ctx context.Context, hash ethcommon.Hash)
 	return &receipt{Status: uint64(raw.Status), BlockNumber: uint64(raw.BlockNumber)}, nil
 }
 
-// WaitReceipt polls until the transaction is mined or ctx is cancelled.
-func (c *evmClient) WaitReceipt(ctx context.Context, hash ethcommon.Hash) (*receipt, error) {
+// WaitReceipt polls every `poll` until the transaction is mined or ctx is
+// cancelled. The interval is the caller's latency-measurement floor: the
+// confirmer drains FIFO, so by the time an item is dequeued its receipt is
+// usually already available, but a long poll caps confirm throughput (250ms
+// capped it at ~4/s and backed up the whole pipeline) and a coarse one
+// inflates the confirm-latency histogram by up to one interval.
+func (c *evmClient) WaitReceipt(ctx context.Context, hash ethcommon.Hash, poll time.Duration) (*receipt, error) {
 	for {
 		r, err := c.TransactionReceipt(ctx, hash)
 		if err != nil {
@@ -204,10 +209,7 @@ func (c *evmClient) WaitReceipt(ctx context.Context, hash ethcommon.Hash) (*rece
 		if r != nil {
 			return r, nil
 		}
-		// 50ms: the confirmer drains FIFO, so by the time an item is dequeued its
-		// receipt is usually already available; a long poll here caps confirm
-		// throughput (250ms capped it at ~4/s and backed up the whole pipeline).
-		if err := sleep(ctx, 50*time.Millisecond); err != nil {
+		if err := sleep(ctx, poll); err != nil {
 			return nil, err
 		}
 	}

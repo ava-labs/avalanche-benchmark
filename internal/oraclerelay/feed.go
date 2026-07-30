@@ -153,7 +153,10 @@ func newFeedMetrics() *feedMetrics {
 			Namespace: feedMetricsNamespace,
 			Name:      "confirm_latency_seconds",
 			Help:      "Submit-to-mined latency per submitPrice transaction, by asset.",
-			Buckets:   []float64{0.025, 0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1, 2, 5},
+			// Fine-grained through the expected 50-300ms range: quantile
+			// panels interpolate inside a bucket, so coarse buckets there
+			// overstate p95 by up to half a bucket width.
+			Buckets:   []float64{0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.2, 0.25, 0.35, 0.5, 1, 2},
 		}, []string{"asset"}),
 	}
 	registry.MustRegister(
@@ -526,7 +529,10 @@ func confirmSubmissions(ctx context.Context, oracle *evmClient, pending <-chan f
 			return
 		case item := <-pending:
 			receiptCtx, cancel := context.WithTimeout(ctx, confirmTimeout)
-			r, err := oracle.WaitReceipt(receiptCtx, item.hash)
+			// 10ms: the poll interval is the floor of the confirm-latency
+			// histogram's resolution, and at 10 submits/s the extra receipt
+			// queries are negligible next to bombard's load.
+			r, err := oracle.WaitReceipt(receiptCtx, item.hash, 10*time.Millisecond)
 			cancel()
 			if err != nil {
 				if ctx.Err() != nil {

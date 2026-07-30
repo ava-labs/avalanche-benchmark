@@ -460,7 +460,7 @@ func confirmDeliveries(ctx context.Context, main *evmClient, pending <-chan pend
 			return
 		case item := <-pending:
 			receiptCtx, cancel := context.WithTimeout(ctx, confirmTimeout)
-			r, err := main.WaitReceipt(receiptCtx, item.hash)
+			r, err := main.WaitReceipt(receiptCtx, item.hash, 50*time.Millisecond)
 			cancel()
 			if err != nil {
 				if ctx.Err() != nil {
