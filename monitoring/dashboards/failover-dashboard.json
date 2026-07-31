@@ -224,13 +224,13 @@
     {
       "id": 5,
       "type": "state-timeline",
-      "title": "avalanchego up/down",
+      "title": "avalanchego up/down - DC A",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
-        "h": 10,
+        "h": 9,
         "w": 12,
         "x": 0,
         "y": 5
@@ -241,7 +241,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=\"avalanche-l1\"}",
+          "expr": "up{job=\"avalanche-l1\",dc=\"A\"}",
           "refId": "A",
           "legendFormat": "{{node}} ({{role}})"
         }
@@ -283,13 +283,13 @@
     {
       "id": 6,
       "type": "state-timeline",
-      "title": "Weight per machine (placement x registered weight)",
+      "title": "avalanchego up/down - DC B",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
-        "h": 10,
+        "h": 9,
         "w": 12,
         "x": 12,
         "y": 5
@@ -300,7 +300,129 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "fleet_actual_weight",
+          "expr": "up{job=\"avalanche-l1\",dc=\"B\"}",
+          "refId": "A",
+          "legendFormat": "{{node}} ({{role}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 0
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "serving",
+                  "color": "green"
+                },
+                "0": {
+                  "text": "down",
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "rowHeight": 0.85,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "state-timeline",
+      "title": "Weight per machine - DC A",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "fleet_actual_weight{dc=\"A\"}",
+          "refId": "A",
+          "legendFormat": "machine {{machine}} ({{identity}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 0
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "100000": {
+                  "text": "100000",
+                  "color": "green"
+                },
+                "1000": {
+                  "text": "1000",
+                  "color": "yellow"
+                },
+                "1": {
+                  "text": "1",
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "rowHeight": 0.85,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "state-timeline",
+      "title": "Weight per machine - DC B",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "fleet_actual_weight{dc=\"B\"}",
           "refId": "A",
           "legendFormat": "machine {{machine}} ({{identity}})"
         }
@@ -355,7 +477,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 15
+        "y": 22
       },
       "targets": [
         {
@@ -386,7 +508,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 15
+        "y": 22
       },
       "targets": [
         {
@@ -419,7 +541,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 23
+        "y": 30
       },
       "targets": [
         {
@@ -452,7 +574,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 23
+        "y": 30
       },
       "targets": [
         {
