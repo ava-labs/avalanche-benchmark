@@ -260,3 +260,14 @@ func TestPlanStartOnlyRestartsWhatIsBroken(t *testing.T) {
 		})
 	}
 }
+
+// destroy deletes chain data, so it must never have a bare form meaning
+// "every node". The error must arrive even when the inventory cannot be read,
+// because the whole-fleet hint is a convenience, not a precondition.
+func TestDestroyRequiresExplicitNodes(t *testing.T) {
+	deployer := NewDeployer(t.TempDir(), io.Discard)
+	err := deployer.Destroy(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "requires explicit node numbers") {
+		t.Fatalf("bare destroy error = %v, want a demand for explicit node numbers", err)
+	}
+}

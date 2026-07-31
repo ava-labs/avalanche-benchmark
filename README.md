@@ -149,11 +149,11 @@ Unknown fields, missing fields, and malformed values fail the command before it 
 | `fleet status` | read-only, whole inventory, no selectors |
 | `fleet start [sel...]` | idempotent: restarts only nodes that are down, on the wrong identity, or not answering. Returns immediately, does NOT wait for serving |
 | `fleet stop [sel...]` | graceful, preserves data, keys, logs |
-| `fleet destroy [sel...]` | SIGKILL + delete `chainData/<chain-id>` only. Simulates abrupt loss. |
+| `fleet destroy <sel...>` | SIGKILL + delete `chainData/<chain-id>` only. Simulates abrupt loss. Node numbers are REQUIRED. |
 | `fleet place <letter> <node>` | reconcile, swap placement, reconcile again. The only placement verb. |
 | `bombard -rps N -duration D` | load generator, fans across all `role=rpc` nodes |
 
-Selector is a NODE NUMBER; multiple form a union; none means all. Separate arguments and comma-separated both work (`fleet stop 1 11 12` = `fleet stop 1,11,12`). `status` takes no selectors.
+Selector is a NODE NUMBER; multiple form a union; none means all, except for `destroy`, which refuses to run without explicit node numbers because its blast radius is data. It prints the whole-fleet command so you can copy it if you truly mean every machine. Separate arguments and comma-separated both work (`fleet stop 1 11 12` = `fleet stop 1,11,12`). `status` takes no selectors.
 
 There is deliberately no `dc=<tag>` selector, and passing one is a loud error. One `destroy dc=A` takes down half a two-site fleet in a single keystroke, and half is the worst possible number: the state-sync beacon list carries weight 1 per entry with `alpha = count/2 + 1`, so losing half leaves every survivor exactly one beacon short of alpha and NO node can state-sync for the rest of the incident, even one whose local data is already at the network's height. Write a site drill out as node numbers, which also forces you to think about the RPC nodes separately from the validators.
 

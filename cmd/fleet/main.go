@@ -83,7 +83,7 @@ func usage(program string) string {
 		"status",
 		"start [<node> ...]",
 		"stop [<node> ...]",
-		"destroy [<node> ...]",
+		"destroy <node> [<node> ...]",
 		"place <identity-letter> <node>",
 	}
 	text := ""

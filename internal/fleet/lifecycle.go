@@ -237,7 +237,15 @@ func (d *Deployer) Stop(ctx context.Context, selectors []string) error {
 // Destroy simulates abrupt machine loss on the selected L1 machines and then
 // removes only this L1's chain data. It is local to the L1 and unrelated to
 // l1 destroy, which reclaims P-chain balances.
+//
+// Node numbers are REQUIRED. There is deliberately no bare form meaning "every
+// node", because the blast radius of this verb is data: an operator who means to
+// lose the whole fleet must name every machine, which is exactly the pause a
+// destructive command should impose. Same reasoning as removing dc= selectors.
 func (d *Deployer) Destroy(ctx context.Context, selectors []string) error {
+	if len(selectors) == 0 {
+		return fmt.Errorf("fleet destroy requires explicit node numbers: it deletes this L1's chain data and has no bare form meaning \"every node\"; name the machines you intend to lose%s", d.everyL1NodeHint())
+	}
 	state, inv, err := d.lifecycleTargets(selectors)
 	if err != nil {
 		return err
@@ -250,6 +258,25 @@ func (d *Deployer) Destroy(ctx context.Context, selectors []string) error {
 	}
 	fmt.Fprintf(d.out, "destroyed L1 chain data on %d node(s)\n", len(state.selected))
 	return nil
+}
+
+// everyL1NodeHint spells out the whole-fleet selector so an operator who really
+// means every machine can copy it, best effort: the hint is a convenience and
+// must never turn a missing-selector error into an inventory error.
+func (d *Deployer) everyL1NodeHint() string {
+	inv, err := d.inventory()
+	if err != nil {
+		return ""
+	}
+	nodes := inv.l1Nodes()
+	if len(nodes) == 0 {
+		return ""
+	}
+	numbers := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		numbers = append(numbers, strconv.Itoa(node.Number))
+	}
+	return fmt.Sprintf(".\nTo destroy the whole L1 fleet, say so explicitly:\n  fleet destroy %s", strings.Join(numbers, " "))
 }
 
 // destroyPhases keeps the safety gate structural: the kill phase must succeed
