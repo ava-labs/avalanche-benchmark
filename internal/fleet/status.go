@@ -94,6 +94,18 @@ type statusPChainRow struct {
 	ready    string
 }
 
+// intendedUpCount counts machines whose unit is enabled, the same signal the
+// address book is rendered from.
+func intendedUpCount(rows []statusRow) int {
+	count := 0
+	for _, row := range rows {
+		if row.state == "up" {
+			count++
+		}
+	}
+	return count
+}
+
 func renderStatusPChain(row statusPChainRow) string {
 	var buffer bytes.Buffer
 	writer := tabwriter.NewWriter(&buffer, 0, 0, 2, ' ', 0)
@@ -296,6 +308,11 @@ func (d *Deployer) Status(ctx context.Context) error {
 
 	fmt.Fprint(d.out, renderStatusTable(rows))
 	fmt.Fprintln(d.out)
+	// The address book each machine holds is rendered from fleet-wide systemd
+	// intent, which lives on the machines rather than in a file on control, so
+	// report the count that intent produced. Without it the only way to answer
+	// "why does this node list four peers" is to read node.json on every box.
+	fmt.Fprintf(d.out, "ADDRESS BOOK  %d of %d L1 machines intended up\n\n", intendedUpCount(rows), len(rows))
 	fmt.Fprint(d.out, renderStatusPChain(pchainStatusRow(pchain)))
 	if pchain.watchHint != "" {
 		fmt.Fprintln(d.out, pchain.watchHint)

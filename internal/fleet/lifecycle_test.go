@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 	"github.com/ava-labs/avalanchego/ids"
 )
 
@@ -30,20 +31,22 @@ func TestSelectNodes(t *testing.T) {
 	}{
 		{name: "no selector is every node", want: []int{1, 2, 3, 4}},
 		{name: "node number", selectors: []string{"3"}, want: []int{3}},
-		{name: "dc tag", selectors: []string{"dc=A"}, want: []int{1, 2}},
-		{name: "union in inventory order", selectors: []string{"4", "dc=B"}, want: []int{3, 4}},
-		{name: "overlapping selectors do not duplicate", selectors: []string{"dc=A", "1", "2"}, want: []int{1, 2}},
+		{name: "union in inventory order", selectors: []string{"4", "3"}, want: []int{3, 4}},
+		{name: "overlapping selectors do not duplicate", selectors: []string{"1", "1", "2"}, want: []int{1, 2}},
 		{name: "untagged node is only reachable by number", selectors: []string{"4"}, want: []int{4}},
 		{name: "unknown node number", selectors: []string{"9"}, wantError: `selector "9" matches no L1 node`},
-		{name: "unknown dc tag", selectors: []string{"dc=Z"}, wantError: `selector "dc=Z" matches no L1 node`},
-		{name: "empty dc tag", selectors: []string{"dc="}, wantError: "empty dc tag"},
-		{name: "malformed selector", selectors: []string{"validator"}, wantError: "must be a node number or dc=<tag>"},
+		// dc= is gone on purpose: one command must not be able to take a whole
+		// site down. The rejection is explicit rather than "not a number", so an
+		// operator reaching for the old syntax learns why.
+		{name: "dc tag is rejected", selectors: []string{"dc=A"}, wantError: "dc= selectors were removed"},
+		{name: "empty dc tag is rejected", selectors: []string{"dc="}, wantError: "dc= selectors were removed"},
+		{name: "dc tag inside a comma list is rejected", selectors: []string{"1,dc=B"}, wantError: "dc= selectors were removed"},
+		{name: "malformed selector", selectors: []string{"validator"}, wantError: "must be a node number"},
 		{name: "comma separated", selectors: []string{"1,3,4"}, want: []int{1, 3, 4}},
-		{name: "comma mixed with separate args", selectors: []string{"1,2", "dc=B"}, want: []int{1, 2, 3}},
+		{name: "comma mixed with separate args", selectors: []string{"1,2", "3"}, want: []int{1, 2, 3}},
 		{name: "comma with spaces and trailing comma", selectors: []string{" 1 , 3 ,"}, want: []int{1, 3}},
-		{name: "comma preserves dc tags", selectors: []string{"dc=A,4"}, want: []int{1, 2, 4}},
 		{name: "only commas", selectors: []string{",,"}, wantError: "contain no node number"},
-		{name: "comma still rejects garbage", selectors: []string{"1,validator"}, wantError: "must be a node number or dc=<tag>"},
+		{name: "comma still rejects garbage", selectors: []string{"1,validator"}, wantError: "must be a node number"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			got, err := selectNodes(nodes, testCase.selectors)
@@ -213,5 +216,58 @@ func TestStopDisablesGracefullyAndPreservesData(t *testing.T) {
 		if strings.Contains(joined, "SIGKILL") || strings.Contains(joined, "rm -rf") {
 			t.Fatalf("stop killed or deleted something: %q", joined)
 		}
+	}
+}
+
+// start must be idempotent: a node already serving its assigned identity is
+// left strictly alone. Restarting a healthy node drops its peers and sends it
+// back behind the 75% connected-stake gate for nothing.
+func TestPlanStartOnlyRestartsWhatIsBroken(t *testing.T) {
+	target := nodeDeployment{
+		node:     config.Node{Number: 5},
+		identity: creation.PublicNode{Identity: "a", NodeID: "NodeID-A"},
+	}
+	for _, testCase := range []struct {
+		name        string
+		active      bool
+		runtimeID   string
+		wantRestart bool
+		wantNoteHas string
+	}{
+		{name: "running the right identity is untouched", active: true, runtimeID: "NodeID-A",
+			wantRestart: false, wantNoteHas: "leaving it alone"},
+		{name: "running the wrong identity restarts", active: true, runtimeID: "NodeID-B",
+			wantRestart: true, wantNoteHas: "placement assigns identity a"},
+		{name: "running but API silent restarts", active: true, runtimeID: "",
+			wantRestart: true, wantNoteHas: "does not answer"},
+		{name: "down starts without a note", active: false, runtimeID: "",
+			wantRestart: true, wantNoteHas: ""},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			restart, note := planStart(target, testCase.active, testCase.runtimeID)
+			if restart != testCase.wantRestart {
+				t.Fatalf("restart = %v, want %v", restart, testCase.wantRestart)
+			}
+			if testCase.wantNoteHas == "" {
+				if note != "" {
+					t.Fatalf("note = %q, want empty", note)
+				}
+				return
+			}
+			if !strings.Contains(note, testCase.wantNoteHas) {
+				t.Fatalf("note = %q, want it to contain %q", note, testCase.wantNoteHas)
+			}
+		})
+	}
+}
+
+// destroy deletes chain data, so it must never have a bare form meaning
+// "every node". The error must arrive even when the inventory cannot be read,
+// because the whole-fleet hint is a convenience, not a precondition.
+func TestDestroyRequiresExplicitNodes(t *testing.T) {
+	deployer := NewDeployer(t.TempDir(), io.Discard)
+	err := deployer.Destroy(context.Background(), nil)
+	if err == nil || !strings.Contains(err.Error(), "requires explicit node numbers") {
+		t.Fatalf("bare destroy error = %v, want a demand for explicit node numbers", err)
 	}
 }

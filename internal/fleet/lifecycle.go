@@ -11,9 +11,18 @@ import (
 )
 
 // selectNodes resolves maintenance selectors against a candidate machine list.
-// A selector is either a node number or dc=<tag>; multiple selectors are a
-// union; no selector means every candidate. A selector that matches nothing is
-// a loud error, because silently doing less than asked is how a drill lies.
+// A selector is a NODE NUMBER, nothing else; multiple selectors are a union; no
+// selector means every candidate. A selector that matches nothing is a loud
+// error, because silently doing less than asked is how a drill lies.
+//
+// There is deliberately no dc=<tag> selector. One `destroy dc=A` wipes half a
+// two-site fleet in a single keystroke, and half is the worst possible number:
+// the state-sync beacon list is weight 1 per entry with alpha = count/2 + 1, so
+// losing half leaves every survivor exactly one beacon short of alpha and no
+// node can state-sync for the rest of the incident (measured 2026-07-31: three
+// validators stuck in an infinite frontier loop with local data already at the
+// network's height). A DC drill is written out as node numbers instead. The
+// dc= tag in nodes.ini stays, for the status column.
 func selectNodes(candidates []config.Node, selectors []string) ([]config.Node, error) {
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("inventory has no L1 node to operate on")
@@ -33,32 +42,23 @@ func selectNodes(candidates []config.Node, selectors []string) ([]config.Node, e
 		}
 	}
 	if len(expanded) == 0 {
-		return nil, fmt.Errorf("selectors %q contain no node number or dc=<tag>", strings.Join(selectors, " "))
+		return nil, fmt.Errorf("selectors %q contain no node number", strings.Join(selectors, " "))
 	}
 
 	chosen := make(map[int]struct{}, len(candidates))
 	for _, selector := range expanded {
 		matched := 0
-		if tag, isDC := strings.CutPrefix(selector, "dc="); isDC {
-			if tag == "" {
-				return nil, fmt.Errorf("selector %q has an empty dc tag", selector)
-			}
-			for _, node := range candidates {
-				if node.DC == tag {
-					chosen[node.Number] = struct{}{}
-					matched++
-				}
-			}
-		} else {
-			number, err := strconv.Atoi(selector)
-			if err != nil {
-				return nil, fmt.Errorf("selector %q must be a node number or dc=<tag>", selector)
-			}
-			for _, node := range candidates {
-				if node.Number == number {
-					chosen[node.Number] = struct{}{}
-					matched++
-				}
+		if strings.HasPrefix(selector, "dc=") {
+			return nil, fmt.Errorf("selector %q is not supported: dc= selectors were removed because one command must not be able to take a whole site down; list the node numbers instead", selector)
+		}
+		number, err := strconv.Atoi(selector)
+		if err != nil {
+			return nil, fmt.Errorf("selector %q must be a node number", selector)
+		}
+		for _, node := range candidates {
+			if node.Number == number {
+				chosen[node.Number] = struct{}{}
+				matched++
 			}
 		}
 		if matched == 0 {
@@ -118,10 +118,18 @@ func (d *Deployer) runPhases(ctx context.Context, state deployment, phases []lif
 	return nil
 }
 
-// Start converges the selected L1 machines: stop everything, re-push the
-// currently assigned identity, then start everything. The identity push is not
-// an optimization opportunity: placement is authoritative and a stale remote
-// key must never survive a restart.
+// Start converges the selected L1 machines and touches NOTHING ELSE. A node that
+// is already running the identity placement assigns to it is left strictly alone:
+// not stopped, not restarted, not even re-pushed. Only a node that is down, or up
+// serving the wrong identity, or up but not answering its API, is taken through
+// stop, identity, config, start.
+//
+// That restraint is the point. Start used to stop every selected machine
+// unconditionally, so `fleet start 5 6 7` took three healthy boxes down at once
+// to fix nothing, which is indistinguishable from an outage on a fleet that only
+// tolerates losing a quarter of its stake. Restarting a healthy node is never
+// free: it drops its peers, re-enters bootstrap behind the 75% connected-stake
+// gate, and on a degraded fleet may not come back at all.
 //
 // Start deliberately does NOT wait for readiness. A node finishes bootstrapping
 // only once 75% of stake is connected (avalanchego builds its startup tracker as
@@ -138,22 +146,138 @@ func (d *Deployer) Start(ctx context.Context, selectors []string) error {
 	if !inv.created {
 		return fmt.Errorf("fleet start requires a complete deployment/network.env; run l1 create first")
 	}
+
+	converge := make([]nodeDeployment, 0, len(state.selected))
+	for _, target := range state.selected {
+		active, runtimeID, err := d.probeRuntimeIdentity(ctx, inv, target)
+		if err != nil {
+			return err
+		}
+		needsRestart, note := planStart(target, active, runtimeID)
+		if note != "" {
+			fmt.Fprintln(d.out, note)
+		}
+		if needsRestart {
+			converge = append(converge, target)
+		}
+	}
+	if len(converge) == 0 {
+		fmt.Fprintln(d.out, "every selected node already serves its assigned identity; nothing to do")
+		return nil
+	}
+
+	bringingUp := make([]int, 0, len(converge))
+	for _, target := range converge {
+		bringingUp = append(bringingUp, target.node.Number)
+	}
+	up, err := d.intendedUp(ctx, inv, bringingUp, nil)
+	if err != nil {
+		return err
+	}
+	rendered, cleanup, err := d.renderConfigs(inv, converge, up)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	state.selected = rendered
 	if err := d.runPhases(ctx, state, []lifecyclePhase{
 		{"stop", d.stop},
 		{"identity", d.installIdentity},
+		{"config", d.installConfig},
 		{"start", d.enableAndStart},
 	}); err != nil {
 		return err
 	}
 	fmt.Fprintf(d.out, "started %d L1 node(s); not waiting for readiness (needs 75%% of stake connected)\n", len(state.selected))
 	fmt.Fprintln(d.out, "watch convergence with: fleet status")
+	return d.refreshAddressBook(ctx, inv, bringingUp, nil)
+}
+
+// planStart is the pure half of Start: given what a machine is actually doing, it
+// decides whether that machine must be restarted, plus the line to print. Kept
+// separate so the idempotence rule is testable without a fleet.
+//
+// A running node serving its assigned identity needs NOTHING, and saying so is
+// the whole contract: repeating a start must be a no-op.
+func planStart(target nodeDeployment, active bool, runtimeNodeID string) (bool, string) {
+	switch {
+	case active && runtimeNodeID == target.identity.NodeID:
+		return false, fmt.Sprintf("node %d already serves identity %s; leaving it alone",
+			target.node.Number, target.identity.Identity)
+	case active && runtimeNodeID == "":
+		return true, fmt.Sprintf("node %d is running but its API does not answer; restarting it with identity %s",
+			target.node.Number, target.identity.Identity)
+	case active:
+		return true, fmt.Sprintf("node %d runs %s but placement assigns identity %s; restarting it",
+			target.node.Number, runtimeNodeID, target.identity.Identity)
+	default:
+		return true, ""
+	}
+}
+
+// probeRuntimeIdentity reports whether a node's service is active and which identity it
+// is actually serving. An active service whose API does not answer yields
+// ("", true) rather than an error: that node needs fixing, which is precisely
+// what the caller is about to do, so failing the command would be perverse.
+func (d *Deployer) probeRuntimeIdentity(ctx context.Context, inv inventory, target nodeDeployment) (bool, string, error) {
+	output, err := d.runSSHOutput(ctx, deployment{environment: inv.environment}, target,
+		fmt.Sprintf("sudo systemctl is-active %s 2>/dev/null || true", serviceName(target)))
+	if err != nil {
+		return false, "", fmt.Errorf("node %d (%s) service state: %w", target.node.Number, target.node.Host, err)
+	}
+	if strings.TrimSpace(string(output)) != "active" {
+		return false, "", nil
+	}
+	runtimeID, err := d.runtimeNodeID(ctx, target.node.Host, target.httpPort)
+	if err != nil {
+		return true, "", nil
+	}
+	return true, runtimeID, nil
+}
+
+// refreshAddressBook re-renders node.json for every reachable L1 machine and
+// pushes it, in parallel. It runs AFTER a lifecycle command has changed the
+// up-set, so the book each machine holds names the machines that are meant to be
+// running now.
+//
+// Pushing to already-running machines is the point, not an optimization: the
+// systemd unit is Restart=on-failure, so a crash reloads node.json without the
+// kit ever being involved. A machine left holding a book full of dead peers would
+// come back from a crash unable to state-sync, with nobody having typed anything.
+// Best effort per machine: a host that cannot be reached is one whose next start
+// re-renders anyway.
+func (d *Deployer) refreshAddressBook(ctx context.Context, inv inventory, bringingUp, takingDown []int) error {
+	up, err := d.intendedUp(ctx, inv, bringingUp, takingDown)
+	if err != nil {
+		return err
+	}
+	all, err := d.placementTargets(inv, inv.l1Nodes())
+	if err != nil {
+		return err
+	}
+	rendered, cleanup, err := d.renderConfigs(inv, all.selected, up)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	all.selected = rendered
+	listed := 0
+	for _, node := range inv.l1Nodes() {
+		if up[node.Number] {
+			listed++
+		}
+	}
+	fmt.Fprintf(d.out, "address book: %d of %d L1 machines intended up\n", listed, len(inv.l1Nodes()))
+	if err := d.phaseParallel(ctx, all, "address book", d.installConfig); err != nil {
+		fmt.Fprintf(d.out, "address book: some machines were not updated: %v\n", err)
+	}
 	return nil
 }
 
 // Stop disables and gracefully stops the selected services. Databases, logs,
 // installed artifacts, and the current remote key are all preserved.
 func (d *Deployer) Stop(ctx context.Context, selectors []string) error {
-	state, _, err := d.lifecycleTargets(selectors)
+	state, inv, err := d.lifecycleTargets(selectors)
 	if err != nil {
 		return err
 	}
@@ -161,13 +285,21 @@ func (d *Deployer) Stop(ctx context.Context, selectors []string) error {
 		return err
 	}
 	fmt.Fprintf(d.out, "stopped %d L1 node(s)\n", len(state.selected))
-	return nil
+	return d.refreshAddressBook(ctx, inv, nil, selectedNumbers(state))
 }
 
 // Destroy simulates abrupt machine loss on the selected L1 machines and then
 // removes only this L1's chain data. It is local to the L1 and unrelated to
 // l1 destroy, which reclaims P-chain balances.
+//
+// Node numbers are REQUIRED. There is deliberately no bare form meaning "every
+// node", because the blast radius of this verb is data: an operator who means to
+// lose the whole fleet must name every machine, which is exactly the pause a
+// destructive command should impose. Same reasoning as removing dc= selectors.
 func (d *Deployer) Destroy(ctx context.Context, selectors []string) error {
+	if len(selectors) == 0 {
+		return fmt.Errorf("fleet destroy requires explicit node numbers: it deletes this L1's chain data and has no bare form meaning \"every node\"; name the machines you intend to lose%s", d.everyL1NodeHint())
+	}
 	state, inv, err := d.lifecycleTargets(selectors)
 	if err != nil {
 		return err
@@ -179,7 +311,26 @@ func (d *Deployer) Destroy(ctx context.Context, selectors []string) error {
 		return err
 	}
 	fmt.Fprintf(d.out, "destroyed L1 chain data on %d node(s)\n", len(state.selected))
-	return nil
+	return d.refreshAddressBook(ctx, inv, nil, selectedNumbers(state))
+}
+
+// everyL1NodeHint spells out the whole-fleet selector so an operator who really
+// means every machine can copy it, best effort: the hint is a convenience and
+// must never turn a missing-selector error into an inventory error.
+func (d *Deployer) everyL1NodeHint() string {
+	inv, err := d.inventory()
+	if err != nil {
+		return ""
+	}
+	nodes := inv.l1Nodes()
+	if len(nodes) == 0 {
+		return ""
+	}
+	numbers := make([]string, 0, len(nodes))
+	for _, node := range nodes {
+		numbers = append(numbers, strconv.Itoa(node.Number))
+	}
+	return fmt.Sprintf(".\nTo destroy the whole L1 fleet, say so explicitly:\n  fleet destroy %s", strings.Join(numbers, " "))
 }
 
 // destroyPhases keeps the safety gate structural: the kill phase must succeed
@@ -233,4 +384,13 @@ func (d *Deployer) removeChainData(ctx context.Context, deployment deployment, n
 	return d.runSSH(ctx, deployment, node, fmt.Sprintf(
 		"sudo rm -rf %s/%d/chainData/%s",
 		remoteDataDir, node.node.Number, nodeChainID))
+}
+
+// selectedNumbers lists the machine numbers a lifecycle command acted on.
+func selectedNumbers(state deployment) []int {
+	numbers := make([]int, 0, len(state.selected))
+	for _, target := range state.selected {
+		numbers = append(numbers, target.node.Number)
+	}
+	return numbers
 }
