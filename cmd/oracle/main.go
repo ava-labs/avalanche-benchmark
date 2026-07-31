@@ -10,6 +10,7 @@ import (
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/oraclerelay"
+	ethcommon "github.com/ava-labs/libevm/common"
 )
 
 func main() {
@@ -26,7 +27,9 @@ func run() error {
 	}
 	switch {
 	case len(os.Args) == 3 && os.Args[1] == "feed":
-		return feed(root, os.Args[2])
+		return feed(root, os.Args[2], "")
+	case len(os.Args) == 4 && os.Args[1] == "feed":
+		return feed(root, os.Args[2], os.Args[3])
 	case len(os.Args) == 5 && os.Args[1] == "relay":
 		return relay(root, os.Args[2], os.Args[3], os.Args[4])
 	default:
@@ -36,16 +39,23 @@ func run() error {
 
 func usage(program string) string {
 	return fmt.Sprintf(
-		"  %s feed <oracle-node-url>                        foreground mock price feeder\n  %s relay <oracle-node-url> <main-node-url> <staking-ip:port,...>\n                                                   foreground Warp price relayer; collects each\n                                                   signature from the oracle validators over\n                                                   ACP-118 on their staking ports",
+		"  %s feed <node-url> [settlement-contract]         foreground mock price feeder. With an oracle\n                                                   L1 it submits to the aggregator on the oracle\n                                                   chain (pass an oracle node URL); without one it\n                                                   publishes rounds to the price aggregator on the\n                                                   main chain with type-2 priority-fee transactions\n                                                   (pass a main-chain RPC node URL). An optional\n                                                   deployed Settlement example address adds its\n                                                   canSettle gate to the exported metrics\n  %s relay <oracle-node-url> <main-node-url> <staking-ip:port,...>\n                                                   foreground Warp price relayer; collects each\n                                                   signature from the oracle validators over\n                                                   ACP-118 on their staking ports",
 		program,
 		program,
 	)
 }
 
-func feed(root, oracleNodeURL string) error {
+func feed(root, nodeURL, settlementHex string) error {
 	environment, err := config.LoadNetworkEnvironment(filepath.Join(root, ".env"))
 	if err != nil {
 		return err
+	}
+	var settlement ethcommon.Address
+	if settlementHex != "" {
+		if !ethcommon.IsHexAddress(settlementHex) {
+			return fmt.Errorf("settlement contract must be a hex address, got %q", settlementHex)
+		}
+		settlement = ethcommon.HexToAddress(settlementHex)
 	}
 	deploymentDirectory := filepath.Join(root, "deployment")
 	deployment, err := oraclerelay.LoadDeployment(filepath.Join(deploymentDirectory, "network.env"), environment.Network)
@@ -54,7 +64,7 @@ func feed(root, oracleNodeURL string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return oraclerelay.Feed(ctx, deployment, deploymentDirectory, oracleNodeURL, os.Stdout)
+	return oraclerelay.Feed(ctx, deployment, deploymentDirectory, nodeURL, settlement, os.Stdout)
 }
 
 func relay(root, oracleNodeURL, mainNodeURL, stakingList string) error {

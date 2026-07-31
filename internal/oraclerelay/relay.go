@@ -85,6 +85,9 @@ type pendingDelivery struct {
 // arrive while a background goroutine confirms receipts. Foreground until ctx
 // cancels; a failed or unconfirmed delivery is fatal.
 func Relay(ctx context.Context, pChainAPI string, deployment Deployment, deploymentDirectory, oracleNodeURL, mainNodeURL string, stakingAddresses []netip.AddrPort, output io.Writer) error {
+	if !deployment.HasOracle() {
+		return fmt.Errorf("this deployment has no oracle L1 (ORACLE_CONVERT_TX_ID is not provided); the feed publishes directly to the main chain and needs no relay")
+	}
 	if len(stakingAddresses) == 0 {
 		return fmt.Errorf("relay requires every oracle validator's staking address")
 	}
@@ -457,7 +460,7 @@ func confirmDeliveries(ctx context.Context, main *evmClient, pending <-chan pend
 			return
 		case item := <-pending:
 			receiptCtx, cancel := context.WithTimeout(ctx, confirmTimeout)
-			r, err := main.WaitReceipt(receiptCtx, item.hash)
+			r, err := main.WaitReceipt(receiptCtx, item.hash, 50*time.Millisecond)
 			cancel()
 			if err != nil {
 				if ctx.Err() != nil {

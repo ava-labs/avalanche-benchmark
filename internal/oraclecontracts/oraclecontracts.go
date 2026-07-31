@@ -16,7 +16,13 @@ var (
 	aggregatorRuntime string
 	//go:embed PriceFeedReceiver.runtime.hex
 	receiverRuntime string
+	//go:embed PriceAggregator.runtime.hex
+	priceAggregatorRuntime string
+	//go:embed PriceFeedProxy.runtime.hex
+	priceFeedProxyRuntime string
 
-	AggregatorRuntime = strings.TrimSpace(aggregatorRuntime)
-	ReceiverRuntime   = strings.TrimSpace(receiverRuntime)
+	AggregatorRuntime      = strings.TrimSpace(aggregatorRuntime)
+	ReceiverRuntime        = strings.TrimSpace(receiverRuntime)
+	PriceAggregatorRuntime = strings.TrimSpace(priceAggregatorRuntime)
+	PriceFeedProxyRuntime  = strings.TrimSpace(priceFeedProxyRuntime)
 )

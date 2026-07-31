@@ -24,8 +24,10 @@ type State struct {
 	ManagerAddress          string
 	GenesisEVMAddress       string
 	FeederEVMAddress        string
-	OracleAggregatorAddress string
-	OracleReceiverAddress   string
+	OracleAggregatorAddress    string
+	OracleReceiverAddress      string
+	PriceFeedAddress           string
+	PriceFeedAggregatorAddress string
 }
 
 func (s State) Save() error {
@@ -48,6 +50,8 @@ func (s State) Save() error {
 		{"FEEDER_EVM_ADDRESS", s.FeederEVMAddress},
 		{"ORACLE_AGGREGATOR_ADDRESS", s.OracleAggregatorAddress},
 		{"ORACLE_RECEIVER_ADDRESS", s.OracleReceiverAddress},
+		{"ORACLE_PRICEFEED_ADDRESS", s.PriceFeedAddress},
+		{"ORACLE_PRICEFEED_AGGREGATOR_ADDRESS", s.PriceFeedAggregatorAddress},
 	}
 	var contents strings.Builder
 	for _, field := range fields {

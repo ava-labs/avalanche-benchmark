@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"sort"
@@ -25,6 +26,7 @@ import (
 	pwallet "github.com/ava-labs/avalanchego/wallet/chain/p/wallet"
 	"github.com/ava-labs/avalanchego/wallet/subnet/primary"
 	ethcommon "github.com/ava-labs/libevm/common"
+	ethcrypto "github.com/ava-labs/libevm/crypto"
 )
 
 const (
@@ -39,7 +41,34 @@ var (
 	// entirely through explicit storage slots.
 	AggregatorAddress = ethcommon.HexToAddress("0x000000000000000000000000000000000000FEED")
 	ReceiverAddress   = ethcommon.HexToAddress("0x0000000000000000000000000000000000FeedED")
+	// The direct feed is Chainlink-shaped: consumers point at the proxy, the
+	// publisher writes to the aggregator behind it.
+	PriceFeedAddress           = ethcommon.HexToAddress("0x00000000000000000000000000000000FeedF00d")
+	PriceFeedAggregatorAddress = ethcommon.HexToAddress("0x00000000000000000000000000000000FeedFacE")
 )
+
+// priceFeedPair is the aggregator's description(). One pair for now; more
+// pairs mean more aggregator+proxy instances at their own addresses.
+const priceFeedPair = "USDC / USD"
+
+func shortString(value string) ethcommon.Hash {
+	if len(value) > 31 {
+		panic("short-string slot encoding holds at most 31 bytes")
+	}
+	var out ethcommon.Hash
+	copy(out[:], value)
+	out[31] = byte(len(value))
+	return out
+}
+
+// phaseAggregatorsSlot returns the storage slot of phaseAggregators[phase] in
+// PriceFeedProxy: keccak256(pad32(phase) . pad32(4)), mapping base slot 4.
+func phaseAggregatorsSlot(phase uint64) ethcommon.Hash {
+	var key [64]byte
+	copy(key[0:32], ethcommon.BigToHash(new(big.Int).SetUint64(phase)).Bytes())
+	copy(key[32:64], ethcommon.BigToHash(big.NewInt(4)).Bytes())
+	return ethcrypto.Keccak256Hash(key[:])
+}
 
 type Result struct {
 	OutputDirectory string
@@ -69,7 +98,7 @@ func Create(ctx context.Context, environment config.Environment, outputDirectory
 	if err := requireMissing(filepath.Join(outputDirectory, "genesis.json")); err != nil {
 		return Result{}, err
 	}
-	if public.FeederAddress != "" {
+	if public.HasOracle() {
 		if err := requireMissing(filepath.Join(outputDirectory, "genesis-oracle.json")); err != nil {
 			return Result{}, err
 		}
@@ -133,9 +162,7 @@ func printPublic(public Public, path, digest string) {
 			fmt.Printf("oracle identity %s: %s weight %d\n", node.Identity, node.NodeID, node.Weight)
 		}
 	}
-	if public.FeederAddress != "" {
-		fmt.Printf("oracle feeder EVM address: %s\n", public.FeederAddress)
-	}
+	fmt.Printf("price feeder EVM address: %s\n", public.FeederAddress)
 }
 
 func create(
@@ -167,8 +194,33 @@ func create(
 	if err != nil {
 		return Result{}, err
 	}
-	hasOracle := public.FeederAddress != ""
+	hasOracle := public.HasOracle()
 	feederAddress := ethcommon.HexToAddress(public.FeederAddress)
+	// The direct-publish price feed lives on the main chain in every
+	// deployment shape: a Chainlink-shaped aggregator the feeder publishes to
+	// and a proxy consumers read through, seeded at phase 1. When an oracle
+	// L1 exists the Warp receiver joins them, but that render must wait for
+	// the oracle chain ID below.
+	mainContracts := []ContractAllocation{
+		{
+			Address:     PriceFeedAggregatorAddress,
+			RuntimeCode: oraclecontracts.PriceAggregatorRuntime,
+			Storage: map[ethcommon.Hash]ethcommon.Hash{
+				{}:                                  ethcommon.BytesToHash(feederAddress.Bytes()),
+				ethcommon.BigToHash(ethcommon.Big1): shortString(priceFeedPair),
+			},
+		},
+		{
+			Address:     PriceFeedAddress,
+			RuntimeCode: oraclecontracts.PriceFeedProxyRuntime,
+			Storage: map[ethcommon.Hash]ethcommon.Hash{
+				{}:                                  ethcommon.BytesToHash(feederAddress.Bytes()),
+				ethcommon.BigToHash(ethcommon.Big1): ethcommon.BytesToHash(PriceFeedAggregatorAddress.Bytes()),
+				ethcommon.BigToHash(ethcommon.Big2): ethcommon.BigToHash(ethcommon.Big1),
+				phaseAggregatorsSlot(1):             ethcommon.BytesToHash(PriceFeedAggregatorAddress.Bytes()),
+			},
+		},
+	}
 	var oracleGenesis []byte
 	if hasOracle {
 		oracleTemplate, err := os.ReadFile(oracleGenesisTemplatePath)
@@ -206,23 +258,30 @@ func create(
 	if err := requireMissing(oracleGenesisPath); err != nil {
 		return Result{}, err
 	}
+	var mainGenesis []byte
 	if !hasOracle {
 		// Without an oracle the main genesis has no chain-dependent content,
 		// so it is published before the first transaction, exactly as before.
-		if err := os.WriteFile(genesisPath, managementGenesis, 0o644); err != nil {
+		mainGenesis, err = RenderGenesis(template, []ethcommon.Address{genesisAddress, feederAddress}, mainContracts, nil, createdAt)
+		if err != nil {
+			return Result{}, err
+		}
+		if err := os.WriteFile(genesisPath, mainGenesis, 0o644); err != nil {
 			return Result{}, fmt.Errorf("write generated genesis %s: %w", genesisPath, err)
 		}
 		fmt.Printf("generated %s\n", genesisPath)
 	}
 
 	state := State{
-		Path:              filepath.Join(outputDirectory, "network.env"),
-		Network:           environment.Network,
-		ManagerAddress:    managerAddress.Hex(),
-		GenesisEVMAddress: public.GenesisAddress,
+		Path:                       filepath.Join(outputDirectory, "network.env"),
+		Network:                    environment.Network,
+		ManagerAddress:             managerAddress.Hex(),
+		GenesisEVMAddress:          public.GenesisAddress,
+		FeederEVMAddress:           public.FeederAddress,
+		PriceFeedAddress:           PriceFeedAddress.Hex(),
+		PriceFeedAggregatorAddress: PriceFeedAggregatorAddress.Hex(),
 	}
 	if hasOracle {
-		state.FeederEVMAddress = public.FeederAddress
 		state.OracleAggregatorAddress = AggregatorAddress.Hex()
 		state.OracleReceiverAddress = ReceiverAddress.Hex()
 	}
@@ -359,7 +418,6 @@ func create(
 		}
 	}
 
-	mainGenesis := managementGenesis
 	if hasOracle {
 		// The receiver contract only trusts Warp messages whose source is the
 		// oracle chain, so the main genesis can be rendered only after the
@@ -367,14 +425,14 @@ func create(
 		mainGenesis, err = RenderGenesis(
 			template,
 			[]ethcommon.Address{genesisAddress, feederAddress},
-			[]ContractAllocation{{
+			append(mainContracts, ContractAllocation{
 				Address:     ReceiverAddress,
 				RuntimeCode: oraclecontracts.ReceiverRuntime,
 				Storage: map[ethcommon.Hash]ethcommon.Hash{
 					{}:                                  ethcommon.Hash(state.OracleChainID),
 					ethcommon.BigToHash(ethcommon.Big1): ethcommon.BytesToHash(AggregatorAddress.Bytes()),
 				},
-			}},
+			}),
 			nil,
 			createdAt,
 		)

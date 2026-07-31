@@ -25,9 +25,11 @@ const (
 
 type Public struct {
 	GenesisAddress string `json:"genesisAddress"`
-	// FeederAddress is the EVM address of the oracle feed key. It is present
-	// exactly when the inventory declares an oracle L1.
-	FeederAddress string          `json:"feederAddress,omitempty"`
+	// FeederAddress is the EVM address of the price feed key. It signs the
+	// direct price submissions to the main chain's price aggregator and, when
+	// the inventory declares an oracle L1, that chain's feed transactions and
+	// the main chain's Warp deliveries.
+	FeederAddress string          `json:"feederAddress"`
 	Nodes         []PublicNode    `json:"nodes"`
 	Managers      []PublicManager `json:"managers"`
 }
@@ -48,14 +50,12 @@ type PublicManager struct {
 	Signer   *platformsigner.ProofOfPossession `json:"signer"`
 }
 
-func NewPublic(generated identity.Set, genesisAddress ethcommon.Address, feederAddress *ethcommon.Address) Public {
+func NewPublic(generated identity.Set, genesisAddress ethcommon.Address, feederAddress ethcommon.Address) Public {
 	public := Public{
 		GenesisAddress: genesisAddress.Hex(),
+		FeederAddress:  feederAddress.Hex(),
 		Nodes:          make([]PublicNode, 0, len(generated.Nodes)),
 		Managers:       make([]PublicManager, 0, len(generated.Manager)),
-	}
-	if feederAddress != nil {
-		public.FeederAddress = feederAddress.Hex()
 	}
 	validatorIndex := 0
 	for _, generated := range generated.Nodes {
@@ -130,6 +130,9 @@ func LoadPublic(path string) (Public, string, error) {
 func (p Public) Validate() error {
 	if !ethcommon.IsHexAddress(p.GenesisAddress) {
 		return fmt.Errorf("genesisAddress must be an EVM address, got %q", p.GenesisAddress)
+	}
+	if !ethcommon.IsHexAddress(p.FeederAddress) {
+		return fmt.Errorf("feederAddress must be an EVM address, got %q", p.FeederAddress)
 	}
 	if len(p.Nodes) == 0 {
 		return fmt.Errorf("nodes must not be empty")
@@ -227,12 +230,6 @@ func (p Public) Validate() error {
 	if oracleRPCCount > 0 && oracleValidatorCount == 0 {
 		return fmt.Errorf("oracle-rpc nodes require at least 1 oracle-validator")
 	}
-	if oracleValidatorCount > 0 && !ethcommon.IsHexAddress(p.FeederAddress) {
-		return fmt.Errorf("feederAddress must be an EVM address when oracle validators exist, got %q", p.FeederAddress)
-	}
-	if oracleValidatorCount == 0 && p.FeederAddress != "" {
-		return fmt.Errorf("feederAddress must be empty without oracle validators, got %q", p.FeederAddress)
-	}
 	if len(p.Managers) != 1 && len(p.Managers) != 4 {
 		return fmt.Errorf("manager count must be 1 or 4, got %d", len(p.Managers))
 	}
@@ -260,6 +257,16 @@ func (p Public) Validate() error {
 		}
 	}
 	return nil
+}
+
+// HasOracle reports whether the inventory declares an oracle L1.
+func (p Public) HasOracle() bool {
+	for _, node := range p.Nodes {
+		if node.Role == config.RoleOracleValidator {
+			return true
+		}
+	}
+	return false
 }
 
 func (p Public) IdentitySet() (identity.Set, error) {

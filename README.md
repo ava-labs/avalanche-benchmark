@@ -89,7 +89,7 @@ Issue weight changes while the P-chain node is following. A transaction submitte
 | `deployment/genesis.json` | `create` | rendered genesis, stamped with creation time |
 | `deployment/network.env` | `create` | subnet, chain, and conversion transaction IDs |
 | `deployment/genesis-oracle.json` | `create` | rendered oracle genesis (only with oracle roles) |
-| `deployment/oracle-feeder.key` | `keygen` | EVM key funded on both chains, drives `oracle feed`/`relay` |
+| `deployment/oracle-feeder.key` | `keygen` | EVM key funded on every price-feed chain, drives `oracle feed`/`relay` |
 | `pchain.tar.gz` | `pchain archive` | certified P-chain `db/` snapshot |
 
 `deployment/` holds private keys. It is never in the pack artifact and never committed.
@@ -159,8 +159,8 @@ Unknown fields, missing fields, and malformed values fail the command before it 
 | `fleet destroy <sel...>` | SIGKILL + delete `chainData/<chain-id>` only. Simulates abrupt loss. Node numbers are REQUIRED. |
 | `fleet place <letter> <node>` | reconcile, swap placement, reconcile again. One move per call, does NOT wait for readiness. The only placement verb. |
 | `bombard -rps N -duration D` | load generator, fans across all `role=rpc` nodes |
-| `oracle feed <oracle-rpc-url>` | foreground mock price feeder (oracle L1 only) |
-| `oracle relay <oracle-rpc-url> <rpc-url> <staking-ip:port,...>` | foreground Warp price relayer; signatures collected from the validators over ACP-118 |
+| `oracle feed <node-url>` | foreground mock price feeder. With an oracle L1: submits to the aggregator there. Without one: publishes rounds directly to the main chain's Chainlink-shaped aggregator with type-2 priority-fee transactions |
+| `oracle relay <oracle-rpc-url> <rpc-url> <staking-ip:port,...>` | foreground Warp price relayer; signatures collected from the validators over ACP-118 (oracle L1 deployments only) |
 
 Selector is a NODE NUMBER; multiple form a union; none means all, except for `destroy`, which refuses to run without explicit node numbers because its blast radius is data. It prints the whole-fleet command so you can copy it if you truly mean every machine. Separate arguments and comma-separated both work (`fleet stop 1 11 12` = `fleet stop 1,11,12`). `status` takes no selectors.
 
@@ -296,13 +296,42 @@ It fetches the validationID and nonce, builds the `L1ValidatorWeight` Warp paylo
 
 Warp admission verifies against the P-chain height pinned in the current ACP-181 epoch, not the latest state. `set-weight` derives the management conversion height from its recorded transaction ID and requires `currentEpoch.pChainHeight >= managementConversionHeight`. If the epoch is older it prints the JST boundary, sleeps to it, submits a visible no-op `BaseTx` to nudge the epoch, and rechecks. A quiet P-chain may need a second nudge.
 
+## The direct price feed
+
+Every main chain genesis bakes a Chainlink-compatible feed for USDC / USD:
+a `PriceAggregator` at `0x00000000000000000000000000000000FeedFacE` that the
+generated `deployment/oracle-feeder.key` publishes to, behind a
+`PriceFeedProxy` at `0x00000000000000000000000000000000FeedF00d` that
+consumers read from, ABI-identical to a Chainlink feed (`latestRoundData`,
+`getRoundData`, `decimals`, `description`; the kit's `IPriceFeed` interface
+matches Chainlink's `AggregatorV3Interface` signature for signature).
+On a deployment without oracle roles this is the whole price pipeline: one
+process, no extra chain, no relay.
+
+```bash
+./bin/oracle feed http://<rpc>:9650
+```
+
+`feed` publishes ten rounds a second as type-2 (EIP-1559) transactions. The
+priority fee is what keeps updates at the front of each block under load: the
+block builder orders by effective tip and `bombard`'s flood pays none, so the
+feed bids `max(2 * eth_maxPriorityFeePerGas, 10 wei)` and wins ordering while
+paying only `baseFee + tip`. The feeder also reads `latestRoundData` back
+through the proxy every 500ms, so the exported on-chain series is exactly a
+consumer contract's view, and exports feed price, on-chain price, their delta,
+and submit-to-mined latency
+(`monitoring/dashboards/oracle-direct-dashboard.json` charts all four). The
+proxy owner can swap the aggregator behind the stable consumer address with
+Chainlink's propose/confirm flow; see `docs/oracle-consumer.md`.
+
 ## The oracle L1
 
 Optional third L1, declared purely through `oracle-validator` / `oracle-rpc`
-inventory roles: it ingests mocked price feeds (BTC-USD, USDC-USD) and exports
-every update to the main L1 as a Warp message signed by the oracle validator
-set. Both contracts ship pre-deployed in genesis; there is nothing to deploy
-at runtime.
+inventory roles, for when the feed itself must be attested by a validator set
+instead of trusted key-to-contract: it ingests mocked price feeds (BTC-USD,
+USDC-USD) and exports every update to the main L1 as a Warp message signed by
+the oracle validator set. All contracts ship pre-deployed in genesis; there is
+nothing to deploy at runtime.
 
 ```bash
 ./bin/oracle feed http://<oracle-rpc>:9650                                        # terminal 1
@@ -342,8 +371,16 @@ relayer is the airgap-friendly demo equivalent.
 Fixed benchmark input, identical for every topology including a single validator. Fleet commands never derive consensus settings from inventory.
 
 ```
-k=20  alphaPreference=11  alphaConfidence=11  beta=12  proposerWindow=100ms
+k=20  alphaPreference=11  alphaConfidence=13  beta=25  proposerWindow=100ms
 ```
+
+`alphaConfidence` deliberately sits above `alphaPreference`: with both at 11,
+a sustained tip-race under saturation load let different nodes finalize
+different siblings of the same parent (reproduced at 2x overload on the test
+fleet: two 100k validators continued on one branch while the rest of the
+fleet wedged on the other). Preference can flip cheaply; confidence, which
+feeds finality, demands the stronger majority, and the higher `beta` requires
+that majority to hold across more consecutive polls before a block is final.
 
 Block cadence is 25ms: `min-delay-target` in `chain-config.json` and `initialMinDelayMS` in the genesis. The genesis is stamped with creation time; a genesis stamped `0` would sit before the network's Granite activation, leaving Granite inactive at block zero, silently discarding `initialMinDelayMS`, and starting the chain at the 2000ms ACP-226 default.
 
