@@ -37,11 +37,21 @@ func TestFeedMetricsRecording(t *testing.T) {
 	m := newFeedMetrics()
 
 	m.recordSubmit("BTC-USD", 6000012345678) // 60000.12345678
-	if got := metricValue(t, m.price.WithLabelValues("BTC-USD")); got != 60000.12345678 {
-		t.Fatalf("price gauge = %v, want 60000.12345678", got)
+	// The feed price gauge is deliberately NOT set on submit: it publishes
+	// together with onchain_price and price_delta from the same read-back
+	// instant, so the three exported values are always coherent.
+	if got := metricValue(t, m.price.WithLabelValues("BTC-USD")); got != 0 {
+		t.Fatalf("price gauge set on submit = %v, want 0 until read-back", got)
 	}
 	if got := metricValue(t, m.submitted.WithLabelValues("BTC-USD")); got != 1 {
 		t.Fatalf("submitted = %v, want 1", got)
+	}
+	m.recordOnChain("BTC-USD", big.NewInt(6000012345678))
+	if got := metricValue(t, m.price.WithLabelValues("BTC-USD")); got != 60000.12345678 {
+		t.Fatalf("price gauge after read-back = %v, want 60000.12345678", got)
+	}
+	if got := metricValue(t, m.priceDelta.WithLabelValues("BTC-USD")); got != 0 {
+		t.Fatalf("delta with matching prices = %v, want 0", got)
 	}
 
 	m.recordEnqueued()

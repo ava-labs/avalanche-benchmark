@@ -145,7 +145,7 @@ func newFeedMetrics() *feedMetrics {
 		price: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: feedMetricsNamespace,
 			Name:      "price",
-			Help:      "Latest submitted mock price scaled to whole units (raw / 1e8), by asset.",
+			Help:      "Last submitted mock price as of the same on-chain read-back that sets onchain_price and price_delta, scaled to whole units (raw / 1e8), by asset.",
 		}, []string{"asset"}),
 		onchainPrice: prometheus.NewGaugeVec(prometheus.GaugeOpts{
 			Namespace: feedMetricsNamespace,
@@ -229,7 +229,6 @@ func (m *feedMetrics) serve(address string) error {
 
 func (m *feedMetrics) recordSubmit(asset string, price int64) {
 	m.submitted.WithLabelValues(asset).Inc()
-	m.price.WithLabelValues(asset).Set(scaledPrice(big.NewInt(price)))
 	m.mu.Lock()
 	m.lastSubmitted[asset] = big.NewInt(price)
 	m.mu.Unlock()
@@ -237,13 +236,17 @@ func (m *feedMetrics) recordSubmit(asset string, price int64) {
 
 // recordOnChain exports the contract's latest stored price beside the feed's
 // own submission, and their difference, so the dashboard shows both series and
-// the delta from one scrape target.
+// the delta from one scrape target. All three gauges are set here, from the
+// same instant: publishing the feed gauge on submit instead would let the two
+// price stats show values a few hundred milliseconds apart while the delta
+// between them reads zero, which is confusing even though it is not wrong.
 func (m *feedMetrics) recordOnChain(asset string, price *big.Int) {
 	m.onchainPrice.WithLabelValues(asset).Set(scaledPrice(price))
 	m.mu.Lock()
 	submitted, ok := m.lastSubmitted[asset]
 	m.mu.Unlock()
 	if ok {
+		m.price.WithLabelValues(asset).Set(scaledPrice(submitted))
 		m.priceDelta.WithLabelValues(asset).Set(scaledPrice(submitted) - scaledPrice(price))
 	}
 }
