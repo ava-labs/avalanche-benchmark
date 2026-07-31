@@ -165,10 +165,16 @@ func (d *Deployer) Start(ctx context.Context, selectors []string) error {
 		return nil
 	}
 
-	state.selected = converge
+	rendered, cleanup, err := d.renderConfigs(inv, converge)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	state.selected = rendered
 	if err := d.runPhases(ctx, state, []lifecyclePhase{
 		{"stop", d.stop},
 		{"identity", d.installIdentity},
+		{"config", d.installConfig},
 		{"start", d.enableAndStart},
 	}); err != nil {
 		return err

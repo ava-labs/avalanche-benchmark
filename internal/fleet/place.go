@@ -103,6 +103,29 @@ func (d *Deployer) reconcilePlacement(ctx context.Context) error {
 		fmt.Fprintln(d.out, note)
 	}
 
+	// EVERY L1 machine gets the new address book, not just the ones that
+	// swapped. state-sync-ips/ids pairs each peer's address with the NodeID it
+	// runs, and node.go hands that list to Net.ManuallyTrack, so it is the only
+	// way these nodes learn where their siblings are: they run
+	// partial-sync-primary-network and the sole bootstrapper does not track the
+	// L1, so nothing gossips their addresses. One moved identity therefore
+	// invalidates every other machine's copy. Machines that are deliberately
+	// down are skipped by placementTargets' caller set below but still receive
+	// config here, so their next start cannot come up with a pre-swap view.
+	allTargets, err := d.placementTargets(inv, l1)
+	if err != nil {
+		return err
+	}
+	renderedAll, cleanup, err := d.renderConfigs(inv, allTargets.selected)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	allTargets.selected = renderedAll
+	if err := d.phase(ctx, allTargets, "config", d.installConfig); err != nil {
+		return err
+	}
+
 	prepared, err := d.placementTargets(inv, restart)
 	if err != nil {
 		return err
@@ -126,7 +149,6 @@ func (d *Deployer) reconcilePlacement(ctx context.Context) error {
 		{"stop", d.stop},
 		{"start", d.start},
 	} {
-
 		if err := d.phase(ctx, prepared, phase.name, phase.action); err != nil {
 			return err
 		}

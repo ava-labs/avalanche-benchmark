@@ -188,33 +188,13 @@ func TestRenderPChainFollowsDefaultsAndL1UsesPChain(t *testing.T) {
 	if validatorConfig["bootstrap-ips"] != "pchain:9651" || validatorConfig["bootstrap-ids"] != "NodeID-pchain" {
 		t.Fatalf("validator does not use sole P-chain node for bootstrap: %v", validatorConfig)
 	}
+	// This list is the L1 address book (node.go hands it to ManuallyTrack), not
+	// just a beacon override: without it a node knows only the P-chain node.
 	if validatorConfig["state-sync-ips"] != "sibling:9651" || validatorConfig["state-sync-ids"] != "NodeID-sibling" {
 		t.Fatalf("validator does not use L1 sibling for state sync: %v", validatorConfig)
 	}
 	if validatorConfig["staking-signer-key-file"] == nil {
 		t.Fatal("validator signer path missing")
-	}
-}
-
-func TestStateSyncPeersExcludePChainAndSelf(t *testing.T) {
-	nodes := []config.Node{
-		{Number: 1, Host: "validator-a", Role: config.RoleValidator},
-		{Number: 2, Host: "validator-b", Role: config.RoleValidator},
-		{Number: 3, Host: "rpc", Role: config.RoleRPC},
-		{Number: 4, Host: "pchain", Role: config.RolePChain},
-	}
-	public := map[int]creation.PublicNode{
-		1: {NodeID: "NodeID-a"},
-		2: {NodeID: "NodeID-b"},
-		3: {NodeID: "NodeID-rpc"},
-		4: {NodeID: "NodeID-pchain"},
-	}
-	ips, nodeIDs := stateSyncPeers(nodes[0], nodes, public, portsByNode(nodes))
-	if ips != "validator-b:9651,rpc:9651" {
-		t.Fatalf("state sync IPs = %q", ips)
-	}
-	if nodeIDs != "NodeID-b,NodeID-rpc" {
-		t.Fatalf("state sync IDs = %q", nodeIDs)
 	}
 }
 
@@ -475,6 +455,79 @@ func writeTestFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStateSyncPeersExcludePChainAndSelf(t *testing.T) {
+	nodes := []config.Node{
+		{Number: 1, Host: "validator-a", Role: config.RoleValidator},
+		{Number: 2, Host: "validator-b", Role: config.RoleValidator},
+		{Number: 3, Host: "rpc", Role: config.RoleRPC},
+		{Number: 4, Host: "pchain", Role: config.RolePChain},
+	}
+	assigned := map[int]creation.PublicNode{
+		1: {NodeID: "NodeID-a"},
+		2: {NodeID: "NodeID-b"},
+		3: {NodeID: "NodeID-rpc"},
+		4: {NodeID: "NodeID-pchain"},
+	}
+	ips, nodeIDs := stateSyncPeers(nodes[0], nodes, assigned, portsByNode(nodes))
+	if ips != "validator-b:9651,rpc:9651" {
+		t.Fatalf("state sync IPs = %q", ips)
+	}
+	if nodeIDs != "NodeID-b,NodeID-rpc" {
+		t.Fatalf("state sync IDs = %q", nodeIDs)
+	}
+}
+
+// A key swap must land in EVERY node's address book, resolved through
+// placement. Rendering peers from public.json (the original keygen mapping)
+// leaves each entry naming the identity that machine used to run: the dial
+// fails TLS verification, the peer is unreachable, and a wiped node cannot
+// reach the connected-stake gate or find a state-sync summary.
+func TestRenderConfigsPairsPeersFromPlacementNotKeygen(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"node-config.json", "chain-config.json", "chain-config-rpc.json", "subnet-config.json"} {
+		writeTestFile(t, filepath.Join(root, name), "{}")
+	}
+
+	inv := placementTestInventory(t)
+	inv.environment = config.FleetEnvironment{Network: "fuji", SSHUser: "ubuntu"}
+	inv.ports = portsByNode(inv.nodes)
+	inv.pchain = inv.nodes[5]
+	swapped, _, err := planPlace(inv, "a", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inv.placement = swapped
+
+	deployer := &Deployer{root: root, out: io.Discard}
+	target, err := inv.target(inv.nodes[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, cleanup, err := deployer.renderConfigs(inv, []nodeDeployment{target})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+
+	config := readTestJSON(t, filepath.Join(rendered[0].renderDir, "node.json"))
+	addresses := strings.Split(config["state-sync-ips"].(string), ",")
+	nodeIDs := strings.Split(config["state-sync-ids"].(string), ",")
+	if len(addresses) != len(nodeIDs) {
+		t.Fatalf("address book lists disagree: %v vs %v", addresses, nodeIDs)
+	}
+	book := make(map[string]string, len(addresses))
+	for i := range addresses {
+		book[strings.Split(addresses[i], ":")[0]] = nodeIDs[i]
+	}
+	// a and c swapped machines, so v1 must now name c and v3 must name a.
+	if book["v1"] != "NodeID-C" || book["v3"] != "NodeID-A" {
+		t.Fatalf("address book follows the keygen mapping, not placement: %v", book)
+	}
+	if config["bootstrap-ids"] != "NodeID-F" {
+		t.Fatalf("bootstrap = %v, want the pinned pchain identity NodeID-F", config["bootstrap-ids"])
 	}
 }
 
