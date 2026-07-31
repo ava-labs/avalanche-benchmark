@@ -116,7 +116,11 @@ func (d *Deployer) reconcilePlacement(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	renderedAll, cleanup, err := d.renderConfigs(inv, allTargets.selected)
+	up, err := d.intendedUp(ctx, inv, nil, nil)
+	if err != nil {
+		return err
+	}
+	renderedAll, cleanup, err := d.renderConfigs(inv, allTargets.selected, up)
 	if err != nil {
 		return err
 	}

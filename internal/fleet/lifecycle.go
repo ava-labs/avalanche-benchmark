@@ -165,7 +165,15 @@ func (d *Deployer) Start(ctx context.Context, selectors []string) error {
 		return nil
 	}
 
-	rendered, cleanup, err := d.renderConfigs(inv, converge)
+	bringingUp := make([]int, 0, len(converge))
+	for _, target := range converge {
+		bringingUp = append(bringingUp, target.node.Number)
+	}
+	up, err := d.intendedUp(ctx, inv, bringingUp, nil)
+	if err != nil {
+		return err
+	}
+	rendered, cleanup, err := d.renderConfigs(inv, converge, up)
 	if err != nil {
 		return err
 	}
@@ -181,7 +189,7 @@ func (d *Deployer) Start(ctx context.Context, selectors []string) error {
 	}
 	fmt.Fprintf(d.out, "started %d L1 node(s); not waiting for readiness (needs 75%% of stake connected)\n", len(state.selected))
 	fmt.Fprintln(d.out, "watch convergence with: fleet status")
-	return nil
+	return d.refreshAddressBook(ctx, inv, bringingUp, nil)
 }
 
 // planStart is the pure half of Start: given what a machine is actually doing, it
@@ -226,10 +234,49 @@ func (d *Deployer) probeRuntimeIdentity(ctx context.Context, inv inventory, targ
 	return true, runtimeID, nil
 }
 
+// refreshAddressBook re-renders node.json for every reachable L1 machine and
+// pushes it, in parallel. It runs AFTER a lifecycle command has changed the
+// up-set, so the book each machine holds names the machines that are meant to be
+// running now.
+//
+// Pushing to already-running machines is the point, not an optimization: the
+// systemd unit is Restart=on-failure, so a crash reloads node.json without the
+// kit ever being involved. A machine left holding a book full of dead peers would
+// come back from a crash unable to state-sync, with nobody having typed anything.
+// Best effort per machine: a host that cannot be reached is one whose next start
+// re-renders anyway.
+func (d *Deployer) refreshAddressBook(ctx context.Context, inv inventory, bringingUp, takingDown []int) error {
+	up, err := d.intendedUp(ctx, inv, bringingUp, takingDown)
+	if err != nil {
+		return err
+	}
+	all, err := d.placementTargets(inv, inv.l1Nodes())
+	if err != nil {
+		return err
+	}
+	rendered, cleanup, err := d.renderConfigs(inv, all.selected, up)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	all.selected = rendered
+	listed := 0
+	for _, node := range inv.l1Nodes() {
+		if up[node.Number] {
+			listed++
+		}
+	}
+	fmt.Fprintf(d.out, "address book: %d of %d L1 machines intended up\n", listed, len(inv.l1Nodes()))
+	if err := d.phaseParallel(ctx, all, "address book", d.installConfig); err != nil {
+		fmt.Fprintf(d.out, "address book: some machines were not updated: %v\n", err)
+	}
+	return nil
+}
+
 // Stop disables and gracefully stops the selected services. Databases, logs,
 // installed artifacts, and the current remote key are all preserved.
 func (d *Deployer) Stop(ctx context.Context, selectors []string) error {
-	state, _, err := d.lifecycleTargets(selectors)
+	state, inv, err := d.lifecycleTargets(selectors)
 	if err != nil {
 		return err
 	}
@@ -237,7 +284,7 @@ func (d *Deployer) Stop(ctx context.Context, selectors []string) error {
 		return err
 	}
 	fmt.Fprintf(d.out, "stopped %d L1 node(s)\n", len(state.selected))
-	return nil
+	return d.refreshAddressBook(ctx, inv, nil, selectedNumbers(state))
 }
 
 // Destroy simulates abrupt machine loss on the selected L1 machines and then
@@ -263,7 +310,7 @@ func (d *Deployer) Destroy(ctx context.Context, selectors []string) error {
 		return err
 	}
 	fmt.Fprintf(d.out, "destroyed L1 chain data on %d node(s)\n", len(state.selected))
-	return nil
+	return d.refreshAddressBook(ctx, inv, nil, selectedNumbers(state))
 }
 
 // everyL1NodeHint spells out the whole-fleet selector so an operator who really
@@ -335,4 +382,13 @@ func (d *Deployer) removeChainData(ctx context.Context, deployment deployment, n
 	return d.runSSH(ctx, deployment, node, fmt.Sprintf(
 		"sudo rm -rf %s/%d/chainData/%s",
 		remoteDataDir, node.node.Number, deployment.chainID))
+}
+
+// selectedNumbers lists the machine numbers a lifecycle command acted on.
+func selectedNumbers(state deployment) []int {
+	numbers := make([]int, 0, len(state.selected))
+	for _, target := range state.selected {
+		numbers = append(numbers, target.node.Number)
+	}
+	return numbers
 }

@@ -458,6 +458,16 @@ func writeTestFile(t *testing.T, path, contents string) {
 	}
 }
 
+// allUp is the address book of a fully running fleet, which is what the pairing
+// test is about; the liveness filter has its own test.
+func allUp(inv inventory) map[int]bool {
+	up := make(map[int]bool, len(inv.nodes))
+	for _, node := range inv.l1Nodes() {
+		up[node.Number] = true
+	}
+	return up
+}
+
 func TestStateSyncPeersExcludePChainAndSelf(t *testing.T) {
 	nodes := []config.Node{
 		{Number: 1, Host: "validator-a", Role: config.RoleValidator},
@@ -471,7 +481,8 @@ func TestStateSyncPeersExcludePChainAndSelf(t *testing.T) {
 		3: {NodeID: "NodeID-rpc"},
 		4: {NodeID: "NodeID-pchain"},
 	}
-	ips, nodeIDs := stateSyncPeers(nodes[0], nodes, assigned, portsByNode(nodes))
+	up := map[int]bool{1: true, 2: true, 3: true, 4: true}
+	ips, nodeIDs := stateSyncPeers(nodes[0], nodes, assigned, portsByNode(nodes), up)
 	if ips != "validator-b:9651,rpc:9651" {
 		t.Fatalf("state sync IPs = %q", ips)
 	}
@@ -506,7 +517,7 @@ func TestRenderConfigsPairsPeersFromPlacementNotKeygen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rendered, cleanup, err := deployer.renderConfigs(inv, []nodeDeployment{target})
+	rendered, cleanup, err := deployer.renderConfigs(inv, []nodeDeployment{target}, allUp(inv))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -583,5 +594,36 @@ func writeArchive(t *testing.T, path string, files map[string]string) {
 	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The address book must name only machines meant to be up. It doubles as the
+// state-sync beacon set with alpha = count/2 + 1 over the LIST, so listing a
+// machine that is down raises the bar without adding anyone who can clear it:
+// twelve entries with six down leaves five reachable against an alpha of six and
+// nobody can state-sync.
+func TestStateSyncPeersListOnlyMachinesMeantToBeUp(t *testing.T) {
+	nodes := []config.Node{
+		{Number: 1, Host: "v1", Role: config.RoleValidator},
+		{Number: 2, Host: "v2", Role: config.RoleValidator},
+		{Number: 3, Host: "v3", Role: config.RoleValidator},
+		{Number: 4, Host: "pchain", Role: config.RolePChain},
+	}
+	assigned := map[int]creation.PublicNode{
+		1: {NodeID: "NodeID-a"}, 2: {NodeID: "NodeID-b"},
+		3: {NodeID: "NodeID-c"}, 4: {NodeID: "NodeID-pchain"},
+	}
+	ports := portsByNode(nodes)
+
+	ips, nodeIDs := stateSyncPeers(nodes[0], nodes, assigned, ports, map[int]bool{1: true, 2: true, 3: false})
+	if ips != "v2:9651" || nodeIDs != "NodeID-b" {
+		t.Fatalf("down peer is still listed: ips=%q ids=%q", ips, nodeIDs)
+	}
+
+	// Every peer down leaves an empty override, which falls back to the
+	// stake-weighted validator set rather than pinning an unusable list.
+	ips, nodeIDs = stateSyncPeers(nodes[0], nodes, assigned, ports, map[int]bool{1: true})
+	if ips != "" || nodeIDs != "" {
+		t.Fatalf("expected an empty address book, got ips=%q ids=%q", ips, nodeIDs)
 	}
 }
