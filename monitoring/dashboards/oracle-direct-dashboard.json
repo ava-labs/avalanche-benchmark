@@ -101,7 +101,7 @@
     {
       "id": 4,
       "type": "stat",
-      "title": "Feed minus on-chain delta",
+      "title": "Feed vs on-chain delta (0 = in sync)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -226,7 +226,7 @@
     {
       "id": 7,
       "type": "timeseries",
-      "title": "Feed minus on-chain delta",
+      "title": "Feed vs on-chain delta (0 = in sync)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -251,7 +251,11 @@
       "fieldConfig": {
         "defaults": {
           "unit": "currencyUSD",
-          "decimals": 6
+          "decimals": 6,
+          "custom": {
+            "axisSoftMin": -0.001,
+            "axisSoftMax": 0.001
+          }
         },
         "overrides": []
       },
@@ -370,6 +374,98 @@
       "options": {}
     },
     {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Chain transactions per second (all traffic)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 24
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(rate(avalanche_subnetevm_vm_eth_chain_txs_accepted[1m]))",
+          "refId": "A",
+          "legendFormat": "accepted tx/s"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 16,
+      "type": "stat",
+      "title": "Node height spread (max minus min)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 24
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(avalanche_snowman_last_accepted_height{chain!~\"P\"}) - min(avalanche_snowman_last_accepted_height{chain!~\"P\"})",
+          "refId": "A",
+          "legendFormat": "spread"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 200
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "value_and_name",
+        "colorMode": "background"
+      }
+    },
+    {
       "id": 11,
       "type": "row",
       "title": "Settlement example (consumer gate)",
@@ -377,7 +473,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 24
+        "y": 32
       },
       "panels": []
     },
@@ -393,7 +489,7 @@
         "h": 6,
         "w": 5,
         "x": 0,
-        "y": 25
+        "y": 33
       },
       "targets": [
         {
@@ -461,7 +557,7 @@
         "h": 6,
         "w": 5,
         "x": 5,
-        "y": 25
+        "y": 33
       },
       "targets": [
         {
@@ -501,7 +597,7 @@
         "h": 6,
         "w": 14,
         "x": 10,
-        "y": 25
+        "y": 33
       },
       "targets": [
         {
