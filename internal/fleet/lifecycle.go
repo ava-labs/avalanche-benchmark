@@ -117,10 +117,18 @@ func (d *Deployer) runPhases(ctx context.Context, state deployment, phases []lif
 	return nil
 }
 
-// Start converges the selected L1 machines: stop everything, re-push the
-// currently assigned identity, then start everything. The identity push is not
-// an optimization opportunity: placement is authoritative and a stale remote
-// key must never survive a restart.
+// Start converges the selected L1 machines and touches NOTHING ELSE. A node that
+// is already running the identity placement assigns to it is left strictly alone:
+// not stopped, not restarted, not even re-pushed. Only a node that is down, or up
+// serving the wrong identity, or up but not answering its API, is taken through
+// stop, identity, config, start.
+//
+// That restraint is the point. Start used to stop every selected machine
+// unconditionally, so `fleet start 5 6 7` took three healthy boxes down at once
+// to fix nothing, which is indistinguishable from an outage on a fleet that only
+// tolerates losing a quarter of its stake. Restarting a healthy node is never
+// free: it drops its peers, re-enters bootstrap behind the 75% connected-stake
+// gate, and on a degraded fleet may not come back at all.
 //
 // Start deliberately does NOT wait for readiness. A node finishes bootstrapping
 // only once 75% of stake is connected (avalanchego builds its startup tracker as
@@ -137,6 +145,27 @@ func (d *Deployer) Start(ctx context.Context, selectors []string) error {
 	if !inv.created {
 		return fmt.Errorf("fleet start requires a complete deployment/network.env; run l1 create first")
 	}
+
+	converge := make([]nodeDeployment, 0, len(state.selected))
+	for _, target := range state.selected {
+		active, runtimeID, err := d.probeRuntimeIdentity(ctx, inv, target)
+		if err != nil {
+			return err
+		}
+		needsRestart, note := planStart(target, active, runtimeID)
+		if note != "" {
+			fmt.Fprintln(d.out, note)
+		}
+		if needsRestart {
+			converge = append(converge, target)
+		}
+	}
+	if len(converge) == 0 {
+		fmt.Fprintln(d.out, "every selected node already serves its assigned identity; nothing to do")
+		return nil
+	}
+
+	state.selected = converge
 	if err := d.runPhases(ctx, state, []lifecyclePhase{
 		{"stop", d.stop},
 		{"identity", d.installIdentity},
@@ -147,6 +176,48 @@ func (d *Deployer) Start(ctx context.Context, selectors []string) error {
 	fmt.Fprintf(d.out, "started %d L1 node(s); not waiting for readiness (needs 75%% of stake connected)\n", len(state.selected))
 	fmt.Fprintln(d.out, "watch convergence with: fleet status")
 	return nil
+}
+
+// planStart is the pure half of Start: given what a machine is actually doing, it
+// decides whether that machine must be restarted, plus the line to print. Kept
+// separate so the idempotence rule is testable without a fleet.
+//
+// A running node serving its assigned identity needs NOTHING, and saying so is
+// the whole contract: repeating a start must be a no-op.
+func planStart(target nodeDeployment, active bool, runtimeNodeID string) (bool, string) {
+	switch {
+	case active && runtimeNodeID == target.identity.NodeID:
+		return false, fmt.Sprintf("node %d already serves identity %s; leaving it alone",
+			target.node.Number, target.identity.Identity)
+	case active && runtimeNodeID == "":
+		return true, fmt.Sprintf("node %d is running but its API does not answer; restarting it with identity %s",
+			target.node.Number, target.identity.Identity)
+	case active:
+		return true, fmt.Sprintf("node %d runs %s but placement assigns identity %s; restarting it",
+			target.node.Number, runtimeNodeID, target.identity.Identity)
+	default:
+		return true, ""
+	}
+}
+
+// probeRuntimeIdentity reports whether a node's service is active and which identity it
+// is actually serving. An active service whose API does not answer yields
+// ("", true) rather than an error: that node needs fixing, which is precisely
+// what the caller is about to do, so failing the command would be perverse.
+func (d *Deployer) probeRuntimeIdentity(ctx context.Context, inv inventory, target nodeDeployment) (bool, string, error) {
+	output, err := d.runSSHOutput(ctx, deployment{environment: inv.environment}, target,
+		fmt.Sprintf("sudo systemctl is-active %s 2>/dev/null || true", serviceName(target)))
+	if err != nil {
+		return false, "", fmt.Errorf("node %d (%s) service state: %w", target.node.Number, target.node.Host, err)
+	}
+	if strings.TrimSpace(string(output)) != "active" {
+		return false, "", nil
+	}
+	runtimeID, err := d.runtimeNodeID(ctx, target.node.Host, target.httpPort)
+	if err != nil {
+		return true, "", nil
+	}
+	return true, runtimeID, nil
 }
 
 // Stop disables and gracefully stops the selected services. Databases, logs,

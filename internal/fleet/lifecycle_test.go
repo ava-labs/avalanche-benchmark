@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 	"github.com/ava-labs/avalanchego/ids"
 )
 
@@ -215,5 +216,47 @@ func TestStopDisablesGracefullyAndPreservesData(t *testing.T) {
 		if strings.Contains(joined, "SIGKILL") || strings.Contains(joined, "rm -rf") {
 			t.Fatalf("stop killed or deleted something: %q", joined)
 		}
+	}
+}
+
+// start must be idempotent: a node already serving its assigned identity is
+// left strictly alone. Restarting a healthy node drops its peers and sends it
+// back behind the 75% connected-stake gate for nothing.
+func TestPlanStartOnlyRestartsWhatIsBroken(t *testing.T) {
+	target := nodeDeployment{
+		node:     config.Node{Number: 5},
+		identity: creation.PublicNode{Identity: "a", NodeID: "NodeID-A"},
+	}
+	for _, testCase := range []struct {
+		name        string
+		active      bool
+		runtimeID   string
+		wantRestart bool
+		wantNoteHas string
+	}{
+		{name: "running the right identity is untouched", active: true, runtimeID: "NodeID-A",
+			wantRestart: false, wantNoteHas: "leaving it alone"},
+		{name: "running the wrong identity restarts", active: true, runtimeID: "NodeID-B",
+			wantRestart: true, wantNoteHas: "placement assigns identity a"},
+		{name: "running but API silent restarts", active: true, runtimeID: "",
+			wantRestart: true, wantNoteHas: "does not answer"},
+		{name: "down starts without a note", active: false, runtimeID: "",
+			wantRestart: true, wantNoteHas: ""},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			restart, note := planStart(target, testCase.active, testCase.runtimeID)
+			if restart != testCase.wantRestart {
+				t.Fatalf("restart = %v, want %v", restart, testCase.wantRestart)
+			}
+			if testCase.wantNoteHas == "" {
+				if note != "" {
+					t.Fatalf("note = %q, want empty", note)
+				}
+				return
+			}
+			if !strings.Contains(note, testCase.wantNoteHas) {
+				t.Fatalf("note = %q, want it to contain %q", note, testCase.wantNoteHas)
+			}
+		})
 	}
 }
