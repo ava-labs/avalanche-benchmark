@@ -11,9 +11,18 @@ import (
 )
 
 // selectNodes resolves maintenance selectors against a candidate machine list.
-// A selector is either a node number or dc=<tag>; multiple selectors are a
-// union; no selector means every candidate. A selector that matches nothing is
-// a loud error, because silently doing less than asked is how a drill lies.
+// A selector is a NODE NUMBER, nothing else; multiple selectors are a union; no
+// selector means every candidate. A selector that matches nothing is a loud
+// error, because silently doing less than asked is how a drill lies.
+//
+// There is deliberately no dc=<tag> selector. One `destroy dc=A` wipes half a
+// two-site fleet in a single keystroke, and half is the worst possible number:
+// the state-sync beacon list is weight 1 per entry with alpha = count/2 + 1, so
+// losing half leaves every survivor exactly one beacon short of alpha and no
+// node can state-sync for the rest of the incident (measured 2026-07-31: three
+// validators stuck in an infinite frontier loop with local data already at the
+// network's height). A DC drill is written out as node numbers instead. The
+// dc= tag in nodes.ini stays, for the status column.
 func selectNodes(candidates []config.Node, selectors []string) ([]config.Node, error) {
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("inventory has no L1 node to operate on")
@@ -33,32 +42,23 @@ func selectNodes(candidates []config.Node, selectors []string) ([]config.Node, e
 		}
 	}
 	if len(expanded) == 0 {
-		return nil, fmt.Errorf("selectors %q contain no node number or dc=<tag>", strings.Join(selectors, " "))
+		return nil, fmt.Errorf("selectors %q contain no node number", strings.Join(selectors, " "))
 	}
 
 	chosen := make(map[int]struct{}, len(candidates))
 	for _, selector := range expanded {
 		matched := 0
-		if tag, isDC := strings.CutPrefix(selector, "dc="); isDC {
-			if tag == "" {
-				return nil, fmt.Errorf("selector %q has an empty dc tag", selector)
-			}
-			for _, node := range candidates {
-				if node.DC == tag {
-					chosen[node.Number] = struct{}{}
-					matched++
-				}
-			}
-		} else {
-			number, err := strconv.Atoi(selector)
-			if err != nil {
-				return nil, fmt.Errorf("selector %q must be a node number or dc=<tag>", selector)
-			}
-			for _, node := range candidates {
-				if node.Number == number {
-					chosen[node.Number] = struct{}{}
-					matched++
-				}
+		if strings.HasPrefix(selector, "dc=") {
+			return nil, fmt.Errorf("selector %q is not supported: dc= selectors were removed because one command must not be able to take a whole site down; list the node numbers instead", selector)
+		}
+		number, err := strconv.Atoi(selector)
+		if err != nil {
+			return nil, fmt.Errorf("selector %q must be a node number", selector)
+		}
+		for _, node := range candidates {
+			if node.Number == number {
+				chosen[node.Number] = struct{}{}
+				matched++
 			}
 		}
 		if matched == 0 {

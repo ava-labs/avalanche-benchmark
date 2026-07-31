@@ -30,20 +30,22 @@ func TestSelectNodes(t *testing.T) {
 	}{
 		{name: "no selector is every node", want: []int{1, 2, 3, 4}},
 		{name: "node number", selectors: []string{"3"}, want: []int{3}},
-		{name: "dc tag", selectors: []string{"dc=A"}, want: []int{1, 2}},
-		{name: "union in inventory order", selectors: []string{"4", "dc=B"}, want: []int{3, 4}},
-		{name: "overlapping selectors do not duplicate", selectors: []string{"dc=A", "1", "2"}, want: []int{1, 2}},
+		{name: "union in inventory order", selectors: []string{"4", "3"}, want: []int{3, 4}},
+		{name: "overlapping selectors do not duplicate", selectors: []string{"1", "1", "2"}, want: []int{1, 2}},
 		{name: "untagged node is only reachable by number", selectors: []string{"4"}, want: []int{4}},
 		{name: "unknown node number", selectors: []string{"9"}, wantError: `selector "9" matches no L1 node`},
-		{name: "unknown dc tag", selectors: []string{"dc=Z"}, wantError: `selector "dc=Z" matches no L1 node`},
-		{name: "empty dc tag", selectors: []string{"dc="}, wantError: "empty dc tag"},
-		{name: "malformed selector", selectors: []string{"validator"}, wantError: "must be a node number or dc=<tag>"},
+		// dc= is gone on purpose: one command must not be able to take a whole
+		// site down. The rejection is explicit rather than "not a number", so an
+		// operator reaching for the old syntax learns why.
+		{name: "dc tag is rejected", selectors: []string{"dc=A"}, wantError: "dc= selectors were removed"},
+		{name: "empty dc tag is rejected", selectors: []string{"dc="}, wantError: "dc= selectors were removed"},
+		{name: "dc tag inside a comma list is rejected", selectors: []string{"1,dc=B"}, wantError: "dc= selectors were removed"},
+		{name: "malformed selector", selectors: []string{"validator"}, wantError: "must be a node number"},
 		{name: "comma separated", selectors: []string{"1,3,4"}, want: []int{1, 3, 4}},
-		{name: "comma mixed with separate args", selectors: []string{"1,2", "dc=B"}, want: []int{1, 2, 3}},
+		{name: "comma mixed with separate args", selectors: []string{"1,2", "3"}, want: []int{1, 2, 3}},
 		{name: "comma with spaces and trailing comma", selectors: []string{" 1 , 3 ,"}, want: []int{1, 3}},
-		{name: "comma preserves dc tags", selectors: []string{"dc=A,4"}, want: []int{1, 2, 4}},
 		{name: "only commas", selectors: []string{",,"}, wantError: "contain no node number"},
-		{name: "comma still rejects garbage", selectors: []string{"1,validator"}, wantError: "must be a node number or dc=<tag>"},
+		{name: "comma still rejects garbage", selectors: []string{"1,validator"}, wantError: "must be a node number"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			got, err := selectNodes(nodes, testCase.selectors)

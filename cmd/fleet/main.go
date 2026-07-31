@@ -78,12 +78,12 @@ func run() error {
 
 func usage(program string) string {
 	lines := []string{
-		"deploy <frozen|follow> [<node>|dc=<tag> ...]",
+		"deploy <frozen|follow> [<node> ...]",
 		"pchain <archive|follow|freeze>",
 		"status",
-		"start [<node>|dc=<tag> ...]",
-		"stop [<node>|dc=<tag> ...]",
-		"destroy [<node>|dc=<tag> ...]",
+		"start [<node> ...]",
+		"stop [<node> ...]",
+		"destroy [<node> ...]",
 		"place <identity-letter> <node>",
 	}
 	text := ""

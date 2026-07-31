@@ -8,7 +8,7 @@ Operator manual. Rationale and decision history: **[DESIGN.md](DESIGN.md)**.
 
 Linux hosts reachable from one control machine over ssh, and a P-chain API endpoint (public or your own) for chain creation and weight changes. Nothing else. There is no provisioning layer here: you bring the machines, `nodes.ini` describes them, and the toolset deploys onto them.
 
-The fleet we develop and test against is EC2 across two AWS regions, which is why some notes below cite AWS behaviour. That is our test bed, not a requirement, and none of the tooling knows about a cloud provider. Bare metal, two physical data centers, or twelve VMs on one hypervisor all work; the only thing `dc=` tags do is group nodes for display and selectors.
+The fleet we develop and test against is EC2 across two AWS regions, which is why some notes below cite AWS behaviour. That is our test bed, not a requirement, and none of the tooling knows about a cloud provider. Bare metal, two physical data centers, or twelve VMs on one hypervisor all work; the only thing `dc=` tags do is label nodes in the `fleet status` table.
 
 ## Runbooks
 
@@ -68,9 +68,9 @@ Issue weight changes while the P-chain node is following. A transaction submitte
 
 ```bash
 ./bin/fleet stop 5 6 7 8          # graceful node loss
-./bin/fleet stop dc=B             # graceful DC loss
-./bin/fleet destroy dc=B          # abrupt loss: SIGKILL plus L1 chain data wipe
-./bin/fleet start dc=B            # bring back, re-pushing assigned identities
+./bin/fleet stop 5 6 7 8 11 12    # graceful DC loss (site B, written out)
+./bin/fleet destroy 5 6 7 8       # abrupt loss: SIGKILL plus L1 chain data wipe
+./bin/fleet start 5 6 7 8 11 12   # bring back, re-pushing assigned identities
 ./bin/fleet place a 5             # key-swap failover: converge, move, restart the mismatched
 ./bin/l1 set-weight d 100000      # weight-change failover
 ```
@@ -109,7 +109,7 @@ Issue weight changes while the P-chain node is following. A transaction submitte
 | Valid shapes | 1 validator + 0 RPC (dev), or >= 4 validators + >= 1 RPC (failover). 2 or 3 validators are refused. |
 | Exactly one `pchain` | unregistered, stable TLS identity, no BLS signer, never key-swapped |
 | Initial weights | first three validators by node number get 100000, the rest 1000 |
-| `dc=` | display and maintenance-selector only. Nothing functional depends on it. |
+| `dc=` | display only, in the `fleet status` table. Nothing functional depends on it, and it is NOT a selector. |
 | Co-location | several nodes may share a host. Ports are positional by node order on that host: 9650/9651, 9652/9653, 9654/9655. |
 | Weights are not inventory | on-chain weight is the only truth |
 
@@ -153,7 +153,9 @@ Unknown fields, missing fields, and malformed values fail the command before it 
 | `fleet place <letter> <node>` | reconcile, swap placement, reconcile again. The only placement verb. |
 | `bombard -rps N -duration D` | load generator, fans across all `role=rpc` nodes |
 
-Selector is a node number or `dc=<tag>`; multiple form a union; none means all. Separate arguments and comma-separated both work (`fleet stop 1 11 12` = `fleet stop 1,11,12`). `status` takes no selectors.
+Selector is a NODE NUMBER; multiple form a union; none means all. Separate arguments and comma-separated both work (`fleet stop 1 11 12` = `fleet stop 1,11,12`). `status` takes no selectors.
+
+There is deliberately no `dc=<tag>` selector, and passing one is a loud error. One `destroy dc=A` takes down half a two-site fleet in a single keystroke, and half is the worst possible number: the state-sync beacon list carries weight 1 per entry with `alpha = count/2 + 1`, so losing half leaves every survivor exactly one beacon short of alpha and NO node can state-sync for the rest of the incident, even one whose local data is already at the network's height. Write a site drill out as node numbers, which also forces you to think about the RPC nodes separately from the validators.
 
 **Upgrading binaries on a live fleet**: `fleet deploy <mode> <node>` one node at a time, and `fleet pchain freeze` (or `follow`) for the P-chain node, which reinstalls its package too. Never redeploy the whole fleet at once for an upgrade: restarting several nodes together removes the peers that serve state-sync summaries, and a node that cannot obtain one replays the entire chain from genesis instead of syncing in seconds.
 
