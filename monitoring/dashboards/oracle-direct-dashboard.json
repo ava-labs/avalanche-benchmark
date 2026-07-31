@@ -383,7 +383,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 24,
         "x": 0,
         "y": 24
       },
@@ -406,64 +406,6 @@
         "overrides": []
       },
       "options": {}
-    },
-    {
-      "id": 16,
-      "type": "stat",
-      "title": "Node height spread (max minus min)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 24
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "max(avalanche_snowman_last_accepted_height{chain!~\"P\"}) - min(avalanche_snowman_last_accepted_height{chain!~\"P\"})",
-          "refId": "A",
-          "legendFormat": "spread"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "decimals": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 200
-              },
-              {
-                "color": "red",
-                "value": 1000
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ]
-        },
-        "textMode": "value_and_name",
-        "colorMode": "background"
-      }
     },
     {
       "id": 11,
