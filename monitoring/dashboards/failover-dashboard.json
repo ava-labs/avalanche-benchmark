@@ -147,8 +147,8 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
           "decimals": 1,
+          "unit": "percentunit",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -206,8 +206,8 @@
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "s",
-          "decimals": 3
+          "decimals": 3,
+          "unit": "s"
         },
         "overrides": []
       },
@@ -217,52 +217,22 @@
             "lastNotNull"
           ]
         },
-        "textMode": "value_and_name"
+        "textMode": "value_and_name",
+        "colorMode": "value"
       }
     },
     {
       "id": 5,
-      "type": "timeseries",
-      "title": "Accepted height by node (a dead node flatlines, the chain does not)",
+      "type": "state-timeline",
+      "title": "avalanchego up/down",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
-        "h": 9,
+        "h": 10,
         "w": 12,
         "x": 0,
-        "y": 5
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "expr": "max by (instance) (avalanche_snowman_last_accepted_height{chain!~\"P|C|X|all\"})",
-          "refId": "A",
-          "legendFormat": "{{instance}}"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "options": {}
-    },
-    {
-      "id": 6,
-      "type": "timeseries",
-      "title": "Node up/down",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "gridPos": {
-        "h": 9,
-        "w": 12,
-        "x": 12,
         "y": 5
       },
       "targets": [
@@ -273,34 +243,56 @@
           },
           "expr": "up{job=\"avalanche-l1\"}",
           "refId": "A",
-          "legendFormat": "{{instance}}"
+          "legendFormat": "{{node}} ({{role}})"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "max": 1,
-          "min": 0,
           "custom": {
-            "fillOpacity": 12
-          }
+            "fillOpacity": 70,
+            "lineWidth": 0
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "serving",
+                  "color": "green"
+                },
+                "0": {
+                  "text": "down",
+                  "color": "red"
+                }
+              }
+            }
+          ]
         },
         "overrides": []
       },
-      "options": {}
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "rowHeight": 0.85,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     },
     {
-      "id": 7,
-      "type": "timeseries",
-      "title": "Block production (blocks/s)",
+      "id": 6,
+      "type": "state-timeline",
+      "title": "Weight per machine (placement x registered weight)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 14
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 5
       },
       "targets": [
         {
@@ -308,9 +300,72 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(rate(avalanche_snowman_blks_accepted_count{chain!~\"P|C|X|all\"}[1m]))",
+          "expr": "fleet_actual_weight",
           "refId": "A",
-          "legendFormat": "blocks/s"
+          "legendFormat": "machine {{machine}} ({{identity}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 0
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "100000": {
+                  "text": "100000",
+                  "color": "green"
+                },
+                "1000": {
+                  "text": "1000",
+                  "color": "yellow"
+                },
+                "1": {
+                  "text": "1",
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "rowHeight": 0.85,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Accepted height by node (a dead node flatlines, the chain does not)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max by (node) (avalanche_snowman_last_accepted_height{chain!~\"P|C|X|all\"})",
+          "refId": "A",
+          "legendFormat": "{{node}}"
         }
       ],
       "fieldConfig": {
@@ -322,16 +377,49 @@
     {
       "id": 8,
       "type": "timeseries",
-      "title": "Chain transactions per second",
+      "title": "Successful polls by node",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 14
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (node) (increase(avalanche_snowman_polls_successful{chain!~\"P|C|X|all\"}[1m])) / (sum by (node) (increase(avalanche_snowman_polls_successful{chain!~\"P|C|X|all\"}[1m])) + sum by (node) (increase(avalanche_snowman_polls_failed{chain!~\"P|C|X|all\"}[1m])))",
+          "refId": "A",
+          "legendFormat": "{{node}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Chain TPS (accepted)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 23
       },
       "targets": [
         {
@@ -353,18 +441,18 @@
       "options": {}
     },
     {
-      "id": 9,
+      "id": 10,
       "type": "timeseries",
-      "title": "Successful polls by node",
+      "title": "Blocks per second (accepted)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 14
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 23
       },
       "targets": [
         {
@@ -372,15 +460,13 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (instance) (increase(avalanche_snowman_polls_successful{chain!~\"P|C|X|all\"}[1m])) / (sum by (instance) (increase(avalanche_snowman_polls_successful{chain!~\"P|C|X|all\"}[1m])) + sum by (instance) (increase(avalanche_snowman_polls_failed{chain!~\"P|C|X|all\"}[1m])))",
+          "expr": "max(rate(avalanche_snowman_blks_accepted_count{chain!~\"P|C|X|all\"}[1m]))",
           "refId": "A",
-          "legendFormat": "{{instance}}"
+          "legendFormat": "blocks/s"
         }
       ],
       "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit"
-        },
+        "defaults": {},
         "overrides": []
       },
       "options": {}
