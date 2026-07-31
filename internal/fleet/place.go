@@ -27,6 +27,12 @@ import (
 //
 // Placement is a bijection, so moving identity X onto machine N necessarily
 // swaps: whatever machine N held goes to the machine X came from.
+//
+// ONE move per invocation, deliberately. A batched place would restart every
+// affected machine in the same pass, taking several boxes offline at once, which
+// is exactly the disruption an identity failover exists to avoid. Moving a whole
+// quorum is therefore a sequence of single places, which is safe because the
+// after phase does not wait for readiness.
 func (d *Deployer) Place(ctx context.Context, identityLetter string, node int) error {
 	if err := d.reconcilePlacement(ctx); err != nil {
 		return fmt.Errorf("converging the fleet before placing: %w", err)
@@ -97,12 +103,48 @@ func (d *Deployer) reconcilePlacement(ctx context.Context) error {
 		fmt.Fprintln(d.out, note)
 	}
 
+	// EVERY L1 machine gets the new address book, not just the ones that
+	// swapped. state-sync-ips/ids pairs each peer's address with the NodeID it
+	// runs, and node.go hands that list to Net.ManuallyTrack, so it is the only
+	// way these nodes learn where their siblings are: they run
+	// partial-sync-primary-network and the sole bootstrapper does not track the
+	// L1, so nothing gossips their addresses. One moved identity therefore
+	// invalidates every other machine's copy. Machines that are deliberately
+	// down are skipped by placementTargets' caller set below but still receive
+	// config here, so their next start cannot come up with a pre-swap view.
+	allTargets, err := d.placementTargets(inv, l1)
+	if err != nil {
+		return err
+	}
+	up, err := d.intendedUp(ctx, inv, nil, nil)
+	if err != nil {
+		return err
+	}
+	renderedAll, cleanup, err := d.renderConfigs(inv, allTargets.selected, up)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	allTargets.selected = renderedAll
+	if err := d.phase(ctx, allTargets, "config", d.installConfig); err != nil {
+		return err
+	}
+
 	prepared, err := d.placementTargets(inv, restart)
 	if err != nil {
 		return err
 	}
 	// The identity phase makes a rerun converge after an interrupted place:
 	// a restart alone would just reload the same stale key from disk.
+	//
+	// Deliberately NO readiness phase. A restarted node finishes bootstrapping
+	// only once 75% of stake is connected, so waiting here deadlocks the exact
+	// case place exists for: relocating a quorum one identity at a time passes
+	// through intermediate placements where the surviving side is below that
+	// gate, and move N would block forever on stake that only arrives with move
+	// N+1. Chaining places cannot escape it either, because the next command's
+	// BEFORE reconcile would wait on the same un-ready node. Like start, place
+	// is a state change; observe convergence with fleet status.
 	for _, phase := range []struct {
 		name   string
 		action func(context.Context, deployment, nodeDeployment) error
@@ -110,13 +152,13 @@ func (d *Deployer) reconcilePlacement(ctx context.Context) error {
 		{"identity", d.installIdentity},
 		{"stop", d.stop},
 		{"start", d.start},
-		{"readiness", d.waitL1Ready},
 	} {
 		if err := d.phase(ctx, prepared, phase.name, phase.action); err != nil {
 			return err
 		}
 	}
-	fmt.Fprintf(d.out, "applied placement to %d node(s)\n", len(restart))
+	fmt.Fprintf(d.out, "applied placement to %d node(s); not waiting for readiness (needs 75%% of stake connected)\n", len(restart))
+	fmt.Fprintln(d.out, "watch convergence with: fleet status")
 	return nil
 }
 

@@ -8,7 +8,7 @@ Operator manual. Rationale and decision history: **[DESIGN.md](DESIGN.md)**.
 
 Linux hosts reachable from one control machine over ssh, and a P-chain API endpoint (public or your own) for chain creation and weight changes. Nothing else. There is no provisioning layer here: you bring the machines, `nodes.ini` describes them, and the toolset deploys onto them.
 
-The fleet we develop and test against is EC2 across two AWS regions, which is why some notes below cite AWS behaviour. That is our test bed, not a requirement, and none of the tooling knows about a cloud provider. Bare metal, two physical data centers, or twelve VMs on one hypervisor all work; the only thing `dc=` tags do is group nodes for display and selectors.
+The fleet we develop and test against is EC2 across two AWS regions, which is why some notes below cite AWS behaviour. That is our test bed, not a requirement, and none of the tooling knows about a cloud provider. Bare metal, two physical data centers, or twelve VMs on one hypervisor all work; the only thing `dc=` tags do is label nodes in the `fleet status` table.
 
 ## Runbooks
 
@@ -68,9 +68,9 @@ Issue weight changes while the P-chain node is following. A transaction submitte
 
 ```bash
 ./bin/fleet stop 5 6 7 8          # graceful node loss
-./bin/fleet stop dc=B             # graceful DC loss
-./bin/fleet destroy dc=B          # abrupt loss: SIGKILL plus L1 chain data wipe
-./bin/fleet start dc=B            # bring back, re-pushing assigned identities
+./bin/fleet stop 5 6 7 8 11 12    # graceful DC loss (site B, written out)
+./bin/fleet destroy 5 6 7 8       # abrupt loss: SIGKILL plus L1 chain data wipe
+./bin/fleet start 5 6 7 8 11 12   # bring back, re-pushing assigned identities
 ./bin/fleet place a 5             # key-swap failover: converge, move, restart the mismatched
 ./bin/l1 set-weight d 100000      # weight-change failover
 ```
@@ -109,7 +109,7 @@ Issue weight changes while the P-chain node is following. A transaction submitte
 | Valid shapes | 1 validator + 0 RPC (dev), or >= 4 validators + >= 1 RPC (failover). 2 or 3 validators are refused. |
 | Exactly one `pchain` | unregistered, stable TLS identity, no BLS signer, never key-swapped |
 | Initial weights | first three validators by node number get 100000, the rest 1000 |
-| `dc=` | display and maintenance-selector only. Nothing functional depends on it. |
+| `dc=` | display only, in the `fleet status` table. Nothing functional depends on it, and it is NOT a selector. |
 | Co-location | several nodes may share a host. Ports are positional by node order on that host: 9650/9651, 9652/9653, 9654/9655. |
 | Weights are not inventory | on-chain weight is the only truth |
 
@@ -147,17 +147,21 @@ Unknown fields, missing fields, and malformed values fail the command before it 
 | `fleet pchain freeze` | gate on synced + both validator sets, then switch to empty bootstrap lists |
 | `fleet pchain archive` | stop, snapshot `db/`, restart, download, validate, publish `./pchain.tar.gz` |
 | `fleet status` | read-only, whole inventory, no selectors |
-| `fleet start [sel...]` | stop, re-push identities, start. Returns immediately, does NOT wait for serving |
+| `fleet start [sel...]` | idempotent: restarts only nodes that are down, on the wrong identity, or not answering. Returns immediately, does NOT wait for serving |
 | `fleet stop [sel...]` | graceful, preserves data, keys, logs |
-| `fleet destroy [sel...]` | SIGKILL + delete `chainData/<chain-id>` only. Simulates abrupt loss. |
-| `fleet place <letter> <node>` | reconcile, swap placement, reconcile again. The only placement verb. |
+| `fleet destroy <sel...>` | SIGKILL + delete `chainData/<chain-id>` only. Simulates abrupt loss. Node numbers are REQUIRED. |
+| `fleet place <letter> <node>` | reconcile, swap placement, reconcile again. One move per call, does NOT wait for readiness. The only placement verb. |
 | `bombard -rps N -duration D` | load generator, fans across all `role=rpc` nodes |
 
-Selector is a node number or `dc=<tag>`; multiple form a union; none means all. Separate arguments and comma-separated both work (`fleet stop 1 11 12` = `fleet stop 1,11,12`). `status` takes no selectors.
+Selector is a NODE NUMBER; multiple form a union; none means all, except for `destroy`, which refuses to run without explicit node numbers because its blast radius is data. It prints the whole-fleet command so you can copy it if you truly mean every machine. Separate arguments and comma-separated both work (`fleet stop 1 11 12` = `fleet stop 1,11,12`). `status` takes no selectors.
+
+There is deliberately no `dc=<tag>` selector, and passing one is a loud error. One `destroy dc=A` takes down half a two-site fleet in a single keystroke, and half is the worst possible number: the state-sync beacon list carries weight 1 per entry with `alpha = count/2 + 1`, so losing half leaves every survivor exactly one beacon short of alpha and NO node can state-sync for the rest of the incident, even one whose local data is already at the network's height. Write a site drill out as node numbers, which also forces you to think about the RPC nodes separately from the validators.
 
 **Upgrading binaries on a live fleet**: `fleet deploy <mode> <node>` one node at a time, and `fleet pchain freeze` (or `follow`) for the P-chain node, which reinstalls its package too. Never redeploy the whole fleet at once for an upgrade: restarting several nodes together removes the peers that serve state-sync summaries, and a node that cannot obtain one replays the entire chain from genesis instead of syncing in seconds.
 
-`fleet start` returns as soon as the services are up and deliberately does not wait for them to serve. A node only finishes bootstrapping once 75% of stake is connected (avalanchego's startup tracker is `(3*bootstrapWeight+3)/4`), so during a multi-node recovery no node can become ready until the others are also running. A blocking start would deadlock: restarting node A waits on node B, which has not been started because the command is still blocked on A. Start the whole set, then watch `fleet status` converge. `deploy` and `place` still block, since they bring up a coordinated set.
+`fleet start` is IDEMPOTENT. It probes each selected machine first and leaves any node that is already serving its assigned identity strictly alone: not stopped, not restarted, not re-pushed. Only a node that is down, running the wrong identity, or running but not answering its API is taken through stop, identity, config, start. Running it twice is a no-op. Restarting a healthy node is never free, since it drops its peers and re-enters bootstrap behind the 75% stake gate, so `fleet start 5 6 7` must never take three healthy boxes down to fix nothing.
+
+`fleet start` returns as soon as the services are up and deliberately does not wait for them to serve. A node only finishes bootstrapping once 75% of stake is connected (avalanchego's startup tracker is `(3*bootstrapWeight+3)/4`), so during a multi-node recovery no node can become ready until the others are also running. A blocking start would deadlock: restarting node A waits on node B, which has not been started because the command is still blocked on A. Start the whole set, then watch `fleet status` converge. `deploy` still blocks, since it brings up a coordinated set. `place` does not: it restarts the mismatched machines and returns.
 
 Every mutating fleet command runs fleet-wide phases and aborts before the next phase if any node fails. Rerunning converges. Control-side state is written atomically before remote work.
 
@@ -265,7 +269,11 @@ Solid lines carry chain traffic, dashed lines are control-plane. The P-chain nod
 | write | update `placement.json` atomically |
 | after | reconcile again, activating the move |
 
-Reconcile means: read each running node's NodeID, compare with placement, restart only the mismatched set, pushing the assigned key before each restart. Nodes already correct are untouched. Nodes deliberately down (inactive and disabled) stay down; inactive but enabled means an interrupted run and gets brought back.
+One move per call, and the after phase does NOT wait for the restarted node to serve. Both are deliberate. Batching moves would restart several machines in the same pass, taking multiple boxes offline at once, which is the disruption a key-swap failover exists to avoid. And waiting for readiness would deadlock the case place exists for: a node finishes bootstrapping only once 75% of stake is connected, so relocating a quorum one identity at a time passes through placements where the surviving side is below that gate, and the wait would block forever on stake that only arrives with the next move. Chaining places would not escape it either, since the next command's before phase would wait on the same un-ready node. Move a quorum as a sequence of single places and watch `fleet status` converge.
+
+Reconcile means: read each running node's NodeID, compare with placement, restart only the mismatched set, pushing the assigned key before each restart. A fresh `node.json` goes to EVERY L1 machine, not only the restarted ones, and lists only the machines the fleet is meant to be running: its `state-sync-ips`/`state-sync-ids` is the address book each node uses to find its siblings (nothing gossips these addresses, since the nodes are not primary-network validators and the sole bootstrapper does not track the L1), so one moved identity invalidates every other machine's copy. `start`, `stop`, and `destroy` re-render it fleet-wide the same way.
+
+Listing only the intended-up machines is what keeps state sync working through a site loss. The list doubles as the state-sync beacon set at weight 1 per entry with `alpha = count/2 + 1` computed over the list, not over who answers, so naming a machine that is down raises the bar without adding anybody who can clear it: twelve entries with six down leaves five reachable against an alpha of six and no node can state-sync at all. Intent comes from systemd's enabled flag, so `stop` and `destroy` record it for free, and a machine that does not answer counts as down. `deploy` does not consult liveness at all: it installs and brings up what it is given, so it renders the whole inventory. The refresh reaches running machines on purpose: the unit is `Restart=on-failure`, so a crash reloads `node.json` without the kit involved, and a machine holding a book full of dead peers would come back unable to sync. `fleet status` reports the intended-up count, since that input lives on the machines rather than in a file on control. Nodes already correct are untouched. Nodes deliberately down (inactive and disabled) stay down; inactive but enabled means an interrupted run and gets brought back.
 
 The before phase is why there is no separate apply step. Placing onto a fleet that had not been applied yet would bundle the pending move into this one, so a single restart would carry two identity changes and a failure would leave neither attributable. Converging first makes every `place` an isolated transition. A `place` that changes nothing skips the after phase entirely.
 
