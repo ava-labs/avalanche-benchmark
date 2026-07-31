@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
@@ -446,6 +447,38 @@ func (d *Deployer) phase(
 	return nil
 }
 
+// phaseParallel runs an action on every selected machine concurrently and
+// reports the first failure by machine number, so a fleet-wide push costs one
+// round trip instead of twelve. Use it only for actions that are independent per
+// machine: anything that must be ordered, or gated on all nodes reaching a state
+// first, belongs in phase.
+func (d *Deployer) phaseParallel(
+	ctx context.Context,
+	deployment deployment,
+	name string,
+	action func(context.Context, deployment, nodeDeployment) error,
+) error {
+	if len(deployment.selected) == 0 {
+		return nil
+	}
+	fmt.Fprintf(d.out, "%s phase\n", name)
+	failures := make([]error, len(deployment.selected))
+	var wait sync.WaitGroup
+	for i, node := range deployment.selected {
+		wait.Add(1)
+		go func(i int, node nodeDeployment) {
+			defer wait.Done()
+			if err := action(ctx, deployment, node); err != nil {
+				failures[i] = fmt.Errorf("%s phase node %d (%s): %w", name, node.node.Number, node.node.Host, err)
+			}
+		}(i, node)
+	}
+	wait.Wait()
+	// Report in machine order, not completion order, so the same fleet state
+	// always produces the same error.
+	return errors.Join(failures...)
+}
+
 func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(), error) {
 	noCleanup := func() {}
 	if pchainMode != frozenMode && pchainMode != followMode {
@@ -504,6 +537,18 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 			return creation.PublicNode{}, fmt.Errorf("deployment/placement.json assigns unknown identity %q to node %d", letter, node.Number)
 		}
 		return identity, nil
+	}
+
+	// Peer pairings resolve through placement, exactly like a node's own
+	// identity. Rendering them from publicByNode, the original keygen mapping,
+	// is what silently broke after the first key swap.
+	assignedByNode := make(map[int]creation.PublicNode, len(nodes))
+	for _, node := range nodes {
+		identity, err := assignedIdentity(node)
+		if err != nil {
+			return deployment{}, noCleanup, err
+		}
+		assignedByNode[node.Number] = identity
 	}
 
 	state, err := godotenv.Read(filepath.Join(d.root, "deployment", "network.env"))
@@ -642,6 +687,14 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 	if !includeL1 {
 		return result, cleanup, nil
 	}
+	// deploy is declarative: it installs and brings up the machines it is given,
+	// so it renders the whole inventory into the address book and does not care
+	// which machines happen to be up right now. Narrowing the book to what is
+	// live is a lifecycle concern, handled by start, stop, destroy and place.
+	deployUp := make(map[int]bool, len(nodes))
+	for _, node := range nodes {
+		deployUp[node.Number] = node.Role != config.RolePChain
+	}
 	for _, node := range nodes {
 		if node.Role == config.RolePChain {
 			continue
@@ -657,7 +710,7 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 		}
 		renderDir := filepath.Join(renderRoot, strconv.Itoa(node.Number))
 		bootstrapIP := fmt.Sprintf("%s:%d", pchain.Host, ports[pchain.Number][1])
-		stateSyncIPs, stateSyncIDs := stateSyncPeers(node, nodes, publicByNode, ports)
+		stateSyncIPs, stateSyncIDs := stateSyncPeers(node, nodes, assignedByNode, ports, deployUp)
 		nodeChainID, nodeSubnetID := result.l1For(node.Role)
 		if err := renderNode(
 			renderDir,
@@ -707,16 +760,32 @@ func (d *Deployer) loadFleet() (config.FleetEnvironment, []config.Node, error) {
 	return environment, nodes, nil
 }
 
+// stateSyncPeers builds a node's L1 address book: every other L1 machine paired
+// with the identity placement currently assigns to it. The P-chain machine is
+// excluded because it does not track the L1.
+// stateSyncPeers builds a node's L1 address book: every other L1 machine that is
+// MEANT TO BE UP, paired with the identity placement currently assigns to it. The
+// P-chain machine is excluded because it does not track the L1.
+//
+// Listing only the intended-up machines is what keeps state sync usable through a
+// site loss. The list doubles as the state-sync beacon set at weight 1 per entry
+// with alpha = count/2 + 1, computed over the LIST rather than over who answers,
+// so a list naming machines that are down raises the bar without adding anybody
+// who can clear it. Twelve entries with six down leaves five reachable against an
+// alpha of six and NO node can state-sync; five entries with all five reachable
+// needs three and works. An empty list drops the override entirely, which falls
+// back to the stake-weighted subnet validator set, a fine default.
 func stateSyncPeers(
 	node config.Node,
 	nodes []config.Node,
-	public map[int]creation.PublicNode,
+	assigned map[int]creation.PublicNode,
 	ports map[int][2]int,
+	up map[int]bool,
 ) (string, string) {
 	var peerIPs []string
 	var peerIDs []string
 	for _, peer := range nodes {
-		if peer.Number == node.Number || peer.Role == config.RolePChain {
+		if peer.Number == node.Number || peer.Role == config.RolePChain || !up[peer.Number] {
 			continue
 		}
 		// Only a node on the same L1 holds that chain's state-sync summaries.
@@ -724,9 +793,51 @@ func stateSyncPeers(
 			continue
 		}
 		peerIPs = append(peerIPs, fmt.Sprintf("%s:%d", peer.Host, ports[peer.Number][1]))
-		peerIDs = append(peerIDs, public[peer.Number].NodeID)
+		peerIDs = append(peerIDs, assigned[peer.Number].NodeID)
 	}
 	return strings.Join(peerIPs, ","), strings.Join(peerIDs, ",")
+}
+
+// intendedUp reports which L1 machines the fleet is meant to be running, then
+// applies this command's own effect: `bringingUp` counts as up even though it has
+// not started yet, `takingDown` counts as down even though it is still running.
+// Without that adjustment every command would render the address book for the
+// fleet as it was before the command rather than after it.
+//
+// Intent is systemd's enabled flag, the same single source of up/down truth the
+// rest of the kit uses, so `stop` and `destroy` record it for free by disabling
+// the unit. A machine that does not answer counts as DOWN: a lost site never gets
+// to record its intent, and that is precisely the case this exists for.
+func (d *Deployer) intendedUp(ctx context.Context, inv inventory, bringingUp, takingDown []int) (map[int]bool, error) {
+	l1 := inv.l1Nodes()
+	enabled := make([]bool, len(l1))
+	var wait sync.WaitGroup
+	for i, node := range l1 {
+		target, err := inv.target(node)
+		if err != nil {
+			return nil, err
+		}
+		wait.Add(1)
+		go func(i int, target nodeDeployment) {
+			defer wait.Done()
+			output, err := d.runSSHOutput(ctx, deployment{environment: inv.environment}, target,
+				fmt.Sprintf("sudo systemctl is-enabled %s 2>/dev/null || true", serviceName(target)))
+			enabled[i] = err == nil && strings.TrimSpace(string(output)) == "enabled"
+		}(i, target)
+	}
+	wait.Wait()
+
+	up := make(map[int]bool, len(l1))
+	for i, node := range l1 {
+		up[node.Number] = enabled[i]
+	}
+	for _, number := range takingDown {
+		up[number] = false
+	}
+	for _, number := range bringingUp {
+		up[number] = true
+	}
+	return up, nil
 }
 
 func requiredID(values map[string]string, field string) (ids.ID, error) {
@@ -809,8 +920,22 @@ func renderNode(
 		cfg["plugin-dir"] = filepath.Join(nodePackage, "plugins")
 		cfg["chain-config-dir"] = filepath.Join(remoteConfigDir, strconv.Itoa(node.Number), "chains")
 		cfg["subnet-config-dir"] = filepath.Join(remoteConfigDir, strconv.Itoa(node.Number), "subnets")
+		// The P-chain node is the sole bootstrap: a peer-to-peer rendezvous
+		// point for P-chain state, which it serves without tracking the L1.
 		cfg["bootstrap-ips"] = bootstrapIP
 		cfg["bootstrap-ids"] = bootstrapID
+		// state-sync-ips/ids is ALSO the L1 address book, not just a beacon
+		// override: node.go feeds both it and the bootstrappers to
+		// Net.ManuallyTrack. Nothing else can introduce these nodes to each
+		// other, because they run partial-sync-primary-network (so they are not
+		// primary-network validators whose IPs get gossiped) and the sole
+		// bootstrapper does not track the L1. Drop this list and every node
+		// comes back from a restart holding exactly one peer, the P-chain node,
+		// and never reaches the 75% connected-stake gate. Measured 2026-07-31.
+		//
+		// The pairing therefore resolves through placement, never public.json:
+		// the entry must name the identity the machine runs NOW, or the dial
+		// fails TLS verification and the peer is silently unreachable.
 		cfg["state-sync-ips"] = stateSyncIPs
 		cfg["state-sync-ids"] = stateSyncIDs
 		if node.Role == config.RoleValidator || node.Role == config.RoleOracleValidator {
@@ -1081,6 +1206,66 @@ func (d *Deployer) installUnit(ctx context.Context, deployment deployment, node 
 		"sudo install -m 0644 %s/node.service /etc/systemd/system/%s && sudo systemctl daemon-reload && sudo systemctl enable %s",
 		stage, unit, unit)
 	return d.runSSH(ctx, deployment, node, command)
+}
+
+// renderConfigs renders node.json for each target from the CURRENT inventory,
+// resolving every identity through placement, and returns the targets with
+// renderDir populated. start and place use it to refresh identity-derived
+// configuration without a full deploy.
+func (d *Deployer) renderConfigs(inv inventory, targets []nodeDeployment, up map[int]bool) ([]nodeDeployment, func(), error) {
+	noCleanup := func() {}
+	pchainIdentity, err := inv.assigned(inv.pchain)
+	if err != nil {
+		return nil, noCleanup, err
+	}
+	assignedByNode := make(map[int]creation.PublicNode, len(inv.nodes))
+	for _, node := range inv.nodes {
+		identity, err := inv.assigned(node)
+		if err != nil {
+			return nil, noCleanup, err
+		}
+		assignedByNode[node.Number] = identity
+	}
+	renderRoot, err := os.MkdirTemp("", "fleet-config-")
+	if err != nil {
+		return nil, noCleanup, fmt.Errorf("create config render directory: %w", err)
+	}
+	cleanup := func() { os.RemoveAll(renderRoot) }
+	bootstrapIP := fmt.Sprintf("%s:%d", inv.pchain.Host, inv.ports[inv.pchain.Number][1])
+	rendered := make([]nodeDeployment, 0, len(targets))
+	for _, target := range targets {
+		renderDir := filepath.Join(renderRoot, strconv.Itoa(target.node.Number))
+		stateSyncIPs, stateSyncIDs := stateSyncPeers(target.node, inv.nodes, assignedByNode, inv.ports, up)
+		// The mode argument only reaches the P-chain branch, and every target
+		// here is an L1 machine.
+		if err := renderNode(
+			renderDir, d.root, inv.environment, target.node, target.identity,
+			inv.chainID, inv.subnetID, inv.ports[target.node.Number],
+			frozenMode, bootstrapIP, pchainIdentity.NodeID,
+			stateSyncIPs, stateSyncIDs,
+		); err != nil {
+			cleanup()
+			return nil, noCleanup, err
+		}
+		target.renderDir = renderDir
+		rendered = append(rendered, target)
+	}
+	return rendered, cleanup, nil
+}
+
+// installConfig pushes the freshly rendered node.json and nothing else:
+// binaries, chain configs, and units stay deploy's job.
+func (d *Deployer) installConfig(ctx context.Context, deployment deployment, node nodeDeployment) error {
+	stage := stagingDir(node, "config")
+	if err := d.runSSH(ctx, deployment, node, "rm -rf "+stage+" && mkdir -m 700 "+stage); err != nil {
+		return err
+	}
+	if err := d.rsyncFile(ctx, deployment, node, filepath.Join(node.renderDir, "node.json"), stage); err != nil {
+		return err
+	}
+	return d.runSSH(ctx, deployment, node, fmt.Sprintf(
+		"sudo install -d -m 0755 %[2]s/%[3]d && sudo install -m 0644 %[1]s/node.json %[2]s/%[3]d/node.json && rm -rf %[1]s",
+		stage, remoteConfigDir, node.node.Number))
 }
 
 func (d *Deployer) installIdentity(ctx context.Context, deployment deployment, node nodeDeployment) error {
