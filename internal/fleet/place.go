@@ -27,6 +27,12 @@ import (
 //
 // Placement is a bijection, so moving identity X onto machine N necessarily
 // swaps: whatever machine N held goes to the machine X came from.
+//
+// ONE move per invocation, deliberately. A batched place would restart every
+// affected machine in the same pass, taking several boxes offline at once, which
+// is exactly the disruption an identity failover exists to avoid. Moving a whole
+// quorum is therefore a sequence of single places, which is safe because the
+// after phase does not wait for readiness.
 func (d *Deployer) Place(ctx context.Context, identityLetter string, node int) error {
 	if err := d.reconcilePlacement(ctx); err != nil {
 		return fmt.Errorf("converging the fleet before placing: %w", err)
@@ -103,6 +109,15 @@ func (d *Deployer) reconcilePlacement(ctx context.Context) error {
 	}
 	// The identity phase makes a rerun converge after an interrupted place:
 	// a restart alone would just reload the same stale key from disk.
+	//
+	// Deliberately NO readiness phase. A restarted node finishes bootstrapping
+	// only once 75% of stake is connected, so waiting here deadlocks the exact
+	// case place exists for: relocating a quorum one identity at a time passes
+	// through intermediate placements where the surviving side is below that
+	// gate, and move N would block forever on stake that only arrives with move
+	// N+1. Chaining places cannot escape it either, because the next command's
+	// BEFORE reconcile would wait on the same un-ready node. Like start, place
+	// is a state change; observe convergence with fleet status.
 	for _, phase := range []struct {
 		name   string
 		action func(context.Context, deployment, nodeDeployment) error
@@ -110,13 +125,14 @@ func (d *Deployer) reconcilePlacement(ctx context.Context) error {
 		{"identity", d.installIdentity},
 		{"stop", d.stop},
 		{"start", d.start},
-		{"readiness", d.waitL1Ready},
 	} {
+
 		if err := d.phase(ctx, prepared, phase.name, phase.action); err != nil {
 			return err
 		}
 	}
-	fmt.Fprintf(d.out, "applied placement to %d node(s)\n", len(restart))
+	fmt.Fprintf(d.out, "applied placement to %d node(s); not waiting for readiness (needs 75%% of stake connected)\n", len(restart))
+	fmt.Fprintln(d.out, "watch convergence with: fleet status")
 	return nil
 }
 

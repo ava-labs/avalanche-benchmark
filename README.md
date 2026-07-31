@@ -150,7 +150,7 @@ Unknown fields, missing fields, and malformed values fail the command before it 
 | `fleet start [sel...]` | idempotent: restarts only nodes that are down, on the wrong identity, or not answering. Returns immediately, does NOT wait for serving |
 | `fleet stop [sel...]` | graceful, preserves data, keys, logs |
 | `fleet destroy <sel...>` | SIGKILL + delete `chainData/<chain-id>` only. Simulates abrupt loss. Node numbers are REQUIRED. |
-| `fleet place <letter> <node>` | reconcile, swap placement, reconcile again. The only placement verb. |
+| `fleet place <letter> <node>` | reconcile, swap placement, reconcile again. One move per call, does NOT wait for readiness. The only placement verb. |
 | `bombard -rps N -duration D` | load generator, fans across all `role=rpc` nodes |
 
 Selector is a NODE NUMBER; multiple form a union; none means all, except for `destroy`, which refuses to run without explicit node numbers because its blast radius is data. It prints the whole-fleet command so you can copy it if you truly mean every machine. Separate arguments and comma-separated both work (`fleet stop 1 11 12` = `fleet stop 1,11,12`). `status` takes no selectors.
@@ -161,7 +161,7 @@ There is deliberately no `dc=<tag>` selector, and passing one is a loud error. O
 
 `fleet start` is IDEMPOTENT. It probes each selected machine first and leaves any node that is already serving its assigned identity strictly alone: not stopped, not restarted, not re-pushed. Only a node that is down, running the wrong identity, or running but not answering its API is taken through stop, identity, start. Running it twice is a no-op. Restarting a healthy node is never free, since it drops its peers and re-enters bootstrap behind the 75% stake gate, so `fleet start 5 6 7` must never take three healthy boxes down to fix nothing.
 
-`fleet start` returns as soon as the services are up and deliberately does not wait for them to serve. A node only finishes bootstrapping once 75% of stake is connected (avalanchego's startup tracker is `(3*bootstrapWeight+3)/4`), so during a multi-node recovery no node can become ready until the others are also running. A blocking start would deadlock: restarting node A waits on node B, which has not been started because the command is still blocked on A. Start the whole set, then watch `fleet status` converge. `deploy` and `place` still block, since they bring up a coordinated set.
+`fleet start` returns as soon as the services are up and deliberately does not wait for them to serve. A node only finishes bootstrapping once 75% of stake is connected (avalanchego's startup tracker is `(3*bootstrapWeight+3)/4`), so during a multi-node recovery no node can become ready until the others are also running. A blocking start would deadlock: restarting node A waits on node B, which has not been started because the command is still blocked on A. Start the whole set, then watch `fleet status` converge. `deploy` still blocks, since it brings up a coordinated set. `place` does not: it restarts the mismatched machines and returns.
 
 Every mutating fleet command runs fleet-wide phases and aborts before the next phase if any node fails. Rerunning converges. Control-side state is written atomically before remote work.
 
@@ -268,6 +268,8 @@ Solid lines carry chain traffic, dashed lines are control-plane. The P-chain nod
 | before | reconcile the fleet to `placement.json`. Silent when already converged. |
 | write | update `placement.json` atomically |
 | after | reconcile again, activating the move |
+
+One move per call, and the after phase does NOT wait for the restarted node to serve. Both are deliberate. Batching moves would restart several machines in the same pass, taking multiple boxes offline at once, which is the disruption a key-swap failover exists to avoid. And waiting for readiness would deadlock the case place exists for: a node finishes bootstrapping only once 75% of stake is connected, so relocating a quorum one identity at a time passes through placements where the surviving side is below that gate, and the wait would block forever on stake that only arrives with the next move. Chaining places would not escape it either, since the next command's before phase would wait on the same un-ready node. Move a quorum as a sequence of single places and watch `fleet status` converge.
 
 Reconcile means: read each running node's NodeID, compare with placement, restart only the mismatched set, pushing the assigned key before each restart. Nodes already correct are untouched. Nodes deliberately down (inactive and disabled) stay down; inactive but enabled means an interrupted run and gets brought back.
 
