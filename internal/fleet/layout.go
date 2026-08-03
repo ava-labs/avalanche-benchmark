@@ -54,9 +54,21 @@ func (l layout) sudo(command string) string {
 	return "sudo " + command
 }
 
-// pidFile is the user-mode process handle for a node.
+// pidFile is the user-mode process handle for a node. It lives beside the
+// run script, NOT in the data directory: the data directory is the one path
+// an operator legitimately re-points (REMOTE_DATA_DIR), and a pidfile that
+// moves with it orphans every running process, which stop can then not find
+// (observed 2026-08-03: a re-deploy with a changed data dir left the old
+// P-chain node holding its port and the new one died at start).
 func (l layout) pidFile(number int) string {
-	return fmt.Sprintf("%s/%d/avalanchego.pid", l.data, number)
+	return fmt.Sprintf("%s/%d/avalanchego.pid", l.cfg, number)
+}
+
+// processPattern matches a node's avalanchego by the config file it was
+// started with, as a pidfile-independent fallback for stop and kill. The
+// bracket keeps the pattern from matching the pkill shell's own argv.
+func (l layout) processPattern(number int) string {
+	return fmt.Sprintf("[c]onfig/%d/node.json", number)
 }
 
 // runScript is the user-mode replacement for a systemd unit.
@@ -99,8 +111,11 @@ func (l layout) stopCommand(node nodeDeployment) string {
 		"if [ -f %[1]s ]; then kill \"$(cat %[1]s)\" 2>/dev/null || true; "+
 			"for i in $(seq 1 40); do kill -0 \"$(cat %[1]s)\" 2>/dev/null || break; sleep 0.25; done; "+
 			"kill -KILL \"$(cat %[1]s)\" 2>/dev/null || true; rm -f %[1]s; fi; "+
+			"pkill -f '%[3]s' 2>/dev/null || true; "+
+			"for i in $(seq 1 40); do pgrep -f '%[3]s' >/dev/null 2>&1 || break; sleep 0.25; done; "+
+			"pkill -KILL -f '%[3]s' 2>/dev/null || true; "+
 			"pkill -KILL -f '%[2]s' 2>/dev/null || true",
-		l.pidFile(number), l.pluginPattern(number))
+		l.pidFile(number), l.pluginPattern(number), l.processPattern(number))
 }
 
 // isActiveCommand exits zero when the node process is running.
@@ -185,8 +200,9 @@ func (l layout) killCommand(node nodeDeployment) string {
 	number := node.node.Number
 	return fmt.Sprintf(
 		"if [ -f %[1]s ]; then kill -KILL \"$(cat %[1]s)\" 2>/dev/null || true; rm -f %[1]s; fi; "+
+			"pkill -KILL -f '%[3]s' 2>/dev/null || true; "+
 			"pkill -KILL -f '%[2]s' 2>/dev/null || true",
-		l.pidFile(number), l.pluginPattern(number))
+		l.pidFile(number), l.pluginPattern(number), l.processPattern(number))
 }
 
 // isActiveProbe prints the node's activity state; callers compare the output

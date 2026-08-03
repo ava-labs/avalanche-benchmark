@@ -963,8 +963,8 @@ func renderNode(
 # Avalanche benchmark node %[1]d (%[2]s, %[3]s), user-level install.
 mkdir -p %[4]s/logs
 setsid nohup %[5]s/bin/avalanchego --config-file=%[6]s/node.json >> %[4]s/logs/console.log 2>&1 &
-echo $! > %[4]s/avalanchego.pid
-`, node.Number, generated.Identity, node.Role, nodeRoot, nodePackage, nodeConfig)
+echo $! > %[7]s
+`, node.Number, generated.Identity, node.Role, nodeRoot, nodePackage, nodeConfig, l.pidFile(node.Number))
 		return os.WriteFile(filepath.Join(renderDir, "run.sh"), []byte(run), 0o700)
 	}
 	unit := fmt.Sprintf(`[Unit]
