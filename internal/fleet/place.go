@@ -267,10 +267,8 @@ func (d *Deployer) probePlacement(ctx context.Context, inv inventory, node confi
 	if err != nil {
 		return placementProbe{}, err
 	}
-	unit := serviceName(target)
-	output, err := d.runSSHOutput(ctx, deployment{environment: inv.environment}, target, fmt.Sprintf(
-		"printf '%%s %%s' \"$(sudo systemctl is-active %[1]s 2>/dev/null)\" \"$(sudo systemctl is-enabled %[1]s 2>/dev/null)\"",
-		unit))
+	output, err := d.runSSHOutput(ctx, deployment{environment: inv.environment}, target,
+		layoutFor(inv.environment).activeEnabledProbe(target))
 	if err != nil {
 		return placementProbe{}, fmt.Errorf("node %d (%s) service state: %w", node.Number, node.Host, err)
 	}

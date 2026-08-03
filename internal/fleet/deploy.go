@@ -316,38 +316,23 @@ func (d *Deployer) ArchivePChain(ctx context.Context) error {
 	}
 	pchain := nodeDeployment{node: pchainNode}
 	state := deployment{environment: environment}
+	l := layoutFor(environment)
 	unit := serviceName(pchain)
-	if err := d.runSSH(ctx, state, pchain, "sudo systemctl is-active --quiet "+unit); err != nil {
+	if err := d.runSSH(ctx, state, pchain, l.isActiveCommand(pchain)); err != nil {
 		return fmt.Errorf("P-chain node service %s must be running: %w", unit, err)
 	}
-	stopErr := d.runSSH(
-		ctx,
-		state,
-		pchain,
-		fmt.Sprintf(
-			"sudo systemctl stop %[1]s && test \"$(sudo systemctl is-active %[1]s)\" = inactive",
-			unit,
-		),
-	)
+	stopErr := d.runSSH(ctx, state, pchain, l.stopCommand(pchain))
 	if stopErr != nil {
 		recoveryCtx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		restartErr := d.runSSH(
-			recoveryCtx,
-			state,
-			pchain,
-			fmt.Sprintf(
-				"sudo systemctl start %[1]s && sudo systemctl is-active --quiet %[1]s",
-				unit,
-			),
-		)
+		restartErr := d.runSSH(recoveryCtx, state, pchain, l.startCommand(pchain))
 		return errors.Join(
 			fmt.Errorf("stop P-chain node: %w", stopErr),
 			wrapIfError("restore P-chain node after uncertain stop", restartErr),
 		)
 	}
 
-	dataDir := fmt.Sprintf("%s/%d", remoteDataDir, pchainNode.Number)
+	dataDir := fmt.Sprintf("%s/%d", l.data, pchainNode.Number)
 	remoteArchive := dataDir + "/.pchain-export.tar.gz"
 	archiveErr := d.runSSH(
 		ctx,
@@ -361,15 +346,7 @@ func (d *Deployer) ArchivePChain(ctx context.Context) error {
 		),
 	)
 	recoveryCtx, cancelRecovery := context.WithTimeout(context.Background(), time.Minute)
-	restartErr := d.runSSH(
-		recoveryCtx,
-		state,
-		pchain,
-		fmt.Sprintf(
-			"sudo systemctl start %[1]s && sudo systemctl is-active --quiet %[1]s",
-			unit,
-		),
-	)
+	restartErr := d.runSSH(recoveryCtx, state, pchain, l.startCommand(pchain))
 	cancelRecovery()
 	if archiveErr != nil || restartErr != nil {
 		cleanupCtx, cancelCleanup := context.WithTimeout(context.Background(), time.Minute)
@@ -809,6 +786,7 @@ func stateSyncPeers(
 // the unit. A machine that does not answer counts as DOWN: a lost site never gets
 // to record its intent, and that is precisely the case this exists for.
 func (d *Deployer) intendedUp(ctx context.Context, inv inventory, bringingUp, takingDown []int) (map[int]bool, error) {
+	l := layoutFor(inv.environment)
 	l1 := inv.l1Nodes()
 	enabled := make([]bool, len(l1))
 	var wait sync.WaitGroup
@@ -821,8 +799,11 @@ func (d *Deployer) intendedUp(ctx context.Context, inv inventory, bringingUp, ta
 		go func(i int, target nodeDeployment) {
 			defer wait.Done()
 			output, err := d.runSSHOutput(ctx, deployment{environment: inv.environment}, target,
-				fmt.Sprintf("sudo systemctl is-enabled %s 2>/dev/null || true", serviceName(target)))
-			enabled[i] = err == nil && strings.TrimSpace(string(output)) == "enabled"
+				l.enabledProbe(target))
+			// "enabled" is systemd's answer, "installed" the user layout's:
+			// both mean this machine is meant to be up.
+			state := strings.TrimSpace(string(output))
+			enabled[i] = err == nil && (state == "enabled" || state == "installed")
 		}(i, target)
 	}
 	wait.Wait()
@@ -885,9 +866,11 @@ func renderNode(
 	if err := json.Unmarshal(baseConfig, &cfg); err != nil {
 		return fmt.Errorf("decode node-config.json: %w", err)
 	}
-	nodeRoot := filepath.Join(remoteDataDir, strconv.Itoa(node.Number))
-	nodePackage := filepath.Join(remotePackageDir, strconv.Itoa(node.Number))
-	stakingDir := filepath.Join(remoteConfigDir, strconv.Itoa(node.Number), "staking")
+	l := layoutFor(environment)
+	nodeRoot := filepath.Join(l.data, strconv.Itoa(node.Number))
+	nodePackage := filepath.Join(l.pkg, strconv.Itoa(node.Number))
+	nodeConfig := filepath.Join(l.cfg, strconv.Itoa(node.Number))
+	stakingDir := filepath.Join(nodeConfig, "staking")
 	cfg["network-id"] = environment.Network
 	cfg["data-dir"] = nodeRoot
 	cfg["db-dir"] = filepath.Join(nodeRoot, "db")
@@ -918,8 +901,8 @@ func renderNode(
 	} else {
 		cfg["track-subnets"] = subnetID.String()
 		cfg["plugin-dir"] = filepath.Join(nodePackage, "plugins")
-		cfg["chain-config-dir"] = filepath.Join(remoteConfigDir, strconv.Itoa(node.Number), "chains")
-		cfg["subnet-config-dir"] = filepath.Join(remoteConfigDir, strconv.Itoa(node.Number), "subnets")
+		cfg["chain-config-dir"] = filepath.Join(nodeConfig, "chains")
+		cfg["subnet-config-dir"] = filepath.Join(nodeConfig, "subnets")
 		// The P-chain node is the sole bootstrap: a peer-to-peer rendezvous
 		// point for P-chain state, which it serves without tracking the L1.
 		cfg["bootstrap-ips"] = bootstrapIP
@@ -972,6 +955,18 @@ func renderNode(
 			}
 		}
 	}
+	if l.user {
+		// A user install has no systemd: the node is a plain process started by
+		// this script, with the pidfile as its handle. No boot persistence and no
+		// auto-restart; the operator owns the lifecycle.
+		run := fmt.Sprintf(`#!/bin/sh
+# Avalanche benchmark node %[1]d (%[2]s, %[3]s), user-level install.
+mkdir -p %[4]s/logs
+setsid nohup %[5]s/bin/avalanchego --config-file=%[6]s/node.json >> %[4]s/logs/console.log 2>&1 &
+echo $! > %[4]s/avalanchego.pid
+`, node.Number, generated.Identity, node.Role, nodeRoot, nodePackage, nodeConfig)
+		return os.WriteFile(filepath.Join(renderDir, "run.sh"), []byte(run), 0o700)
+	}
 	unit := fmt.Sprintf(`[Unit]
 Description=Avalanche benchmark node %d (%s, %s)
 After=network-online.target
@@ -988,7 +983,7 @@ KillMode=control-group
 
 [Install]
 WantedBy=multi-user.target
-`, node.Number, generated.Identity, node.Role, environment.SSHUser, nodePackage, remoteConfigDir, node.Number)
+`, node.Number, generated.Identity, node.Role, environment.SSHUser, nodePackage, l.cfg, node.Number)
 	return os.WriteFile(filepath.Join(renderDir, "node.service"), []byte(unit), 0o600)
 }
 
@@ -1154,11 +1149,7 @@ func stagingDir(node nodeDeployment, suffix string) string {
 }
 
 func (d *Deployer) stop(ctx context.Context, deployment deployment, node nodeDeployment) error {
-	unit := serviceName(node)
-	command := fmt.Sprintf(
-		"if sudo systemctl cat %s >/dev/null 2>&1; then sudo systemctl stop %s && test \"$(sudo systemctl is-active %s)\" = inactive; fi",
-		unit, unit, unit)
-	return d.runSSH(ctx, deployment, node, command)
+	return d.runSSH(ctx, deployment, node, layoutFor(deployment.environment).stopCommand(node))
 }
 
 func (d *Deployer) installPackage(ctx context.Context, deployment deployment, node nodeDeployment) error {
@@ -1179,33 +1170,35 @@ func (d *Deployer) installPackage(ctx context.Context, deployment deployment, no
 			return err
 		}
 	}
-	install := fmt.Sprintf(
-		"sudo install -d -m 0755 %[1]s/%[3]d/bin %[2]s/%[3]d %[4]s/%[3]d/db %[4]s/%[3]d/logs && "+
-			"sudo install -m 0755 %[5]s/avalanchego %[1]s/%[3]d/bin/avalanchego && "+
-			"sudo install -m 0644 %[6]s/node.json %[2]s/%[3]d/node.json && "+
-			"sudo chown -R %[7]s:%[7]s %[4]s/%[3]d %[2]s/%[3]d",
-		remotePackageDir, remoteConfigDir, node.node.Number, remoteDataDir,
-		binaryStage, packageStage, deployment.environment.SSHUser)
+	l := layoutFor(deployment.environment)
+	number := node.node.Number
+	segments := []string{
+		l.sudo(fmt.Sprintf("install -d -m 0755 %[1]s/%[3]d/bin %[2]s/%[3]d %[4]s/%[3]d/db %[4]s/%[3]d/logs",
+			l.pkg, l.cfg, number, l.data)),
+		l.sudo(fmt.Sprintf("install -m 0755 %s/avalanchego %s/%d/bin/avalanchego", binaryStage, l.pkg, number)),
+		l.sudo(fmt.Sprintf("install -m 0644 %s/node.json %s/%d/node.json", packageStage, l.cfg, number)),
+	}
+	// A user install already owns its files; only a root install has ownership
+	// to hand over to the service user.
+	if !l.user {
+		segments = append(segments, l.sudo(fmt.Sprintf("chown -R %[1]s:%[1]s %[2]s/%[4]d %[3]s/%[4]d",
+			deployment.environment.SSHUser, l.data, l.cfg, number)))
+	}
 	if node.node.Role != config.RolePChain {
 		nodeChainID, nodeSubnetID := deployment.l1For(node.node.Role)
-		install += fmt.Sprintf(
-			" && sudo install -d -m 0755 %[1]s/%[2]d/plugins %[3]s/%[2]d/chains/%[4]s %[3]s/%[2]d/subnets && "+
-				"sudo install -m 0755 %[5]s/%[6]s %[1]s/%[2]d/plugins/%[6]s && "+
-				"sudo install -m 0644 %[7]s/chain.json %[3]s/%[2]d/chains/%[4]s/config.json && "+
-				"sudo install -m 0644 %[7]s/subnet.json %[3]s/%[2]d/subnets/%[8]s.json",
-			remotePackageDir, node.node.Number, remoteConfigDir, nodeChainID,
-			binaryStage, pluginID, packageStage, nodeSubnetID)
+		segments = append(segments,
+			l.sudo(fmt.Sprintf("install -d -m 0755 %[1]s/%[2]d/plugins %[3]s/%[2]d/chains/%[4]s %[3]s/%[2]d/subnets",
+				l.pkg, number, l.cfg, nodeChainID)),
+			l.sudo(fmt.Sprintf("install -m 0755 %[1]s/%[2]s %[3]s/%[4]d/plugins/%[2]s", binaryStage, pluginID, l.pkg, number)),
+			l.sudo(fmt.Sprintf("install -m 0644 %s/chain.json %s/%d/chains/%s/config.json", packageStage, l.cfg, number, nodeChainID)),
+			l.sudo(fmt.Sprintf("install -m 0644 %s/subnet.json %s/%d/subnets/%s.json", packageStage, l.cfg, number, nodeSubnetID)),
+		)
 	}
-	return d.runSSH(ctx, deployment, node, install)
+	return d.runSSH(ctx, deployment, node, strings.Join(segments, " && "))
 }
 
 func (d *Deployer) installUnit(ctx context.Context, deployment deployment, node nodeDeployment) error {
-	stage := stagingDir(node, "package")
-	unit := serviceName(node)
-	command := fmt.Sprintf(
-		"sudo install -m 0644 %s/node.service /etc/systemd/system/%s && sudo systemctl daemon-reload && sudo systemctl enable %s",
-		stage, unit, unit)
-	return d.runSSH(ctx, deployment, node, command)
+	return d.runSSH(ctx, deployment, node, layoutFor(deployment.environment).installUnitCommand(stagingDir(node, "package"), node))
 }
 
 // renderConfigs renders node.json for each target from the CURRENT inventory,
@@ -1263,9 +1256,12 @@ func (d *Deployer) installConfig(ctx context.Context, deployment deployment, nod
 	if err := d.rsyncFile(ctx, deployment, node, filepath.Join(node.renderDir, "node.json"), stage); err != nil {
 		return err
 	}
-	return d.runSSH(ctx, deployment, node, fmt.Sprintf(
-		"sudo install -d -m 0755 %[2]s/%[3]d && sudo install -m 0644 %[1]s/node.json %[2]s/%[3]d/node.json && rm -rf %[1]s",
-		stage, remoteConfigDir, node.node.Number))
+	l := layoutFor(deployment.environment)
+	return d.runSSH(ctx, deployment, node, strings.Join([]string{
+		l.sudo(fmt.Sprintf("install -d -m 0755 %s/%d", l.cfg, node.node.Number)),
+		l.sudo(fmt.Sprintf("install -m 0644 %s/node.json %s/%d/node.json", stage, l.cfg, node.node.Number)),
+		"rm -rf " + stage,
+	}, " && "))
 }
 
 func (d *Deployer) installIdentity(ctx context.Context, deployment deployment, node nodeDeployment) error {
@@ -1277,21 +1273,18 @@ func (d *Deployer) installIdentity(ctx context.Context, deployment deployment, n
 	if err := d.rsync(ctx, deployment, node, local, stage); err != nil {
 		return err
 	}
-	target := fmt.Sprintf("%s/%d/staking", remoteConfigDir, node.node.Number)
 	files := "staker.crt staker.key"
 	if node.node.Role == config.RoleValidator || node.node.Role == config.RoleOracleValidator {
 		files += " signer.key"
 	}
-	command := fmt.Sprintf(
-		"sudo rm -rf %[1]s && sudo install -d -o %[2]s -g %[2]s -m 0700 %[1]s && "+
-			"for file in %[3]s; do sudo install -o %[2]s -g %[2]s -m 0600 %[4]s/$file %[1]s/$file; done && "+
-			"rm -rf %[4]s",
-		target, deployment.environment.SSHUser, files, stage)
+	command := layoutFor(deployment.environment).installIdentityCommand(
+		stage, files, deployment.environment.SSHUser, node.node.Number)
 	return d.runSSH(ctx, deployment, node, command)
 }
 
 func (d *Deployer) seedPChain(ctx context.Context, deployment deployment, node nodeDeployment) error {
-	dataDir := fmt.Sprintf("%s/%d", remoteDataDir, node.node.Number)
+	l := layoutFor(deployment.environment)
+	dataDir := fmt.Sprintf("%s/%d", l.data, node.node.Number)
 	databaseDir := dataDir + "/db"
 	output, err := d.runSSHOutput(
 		ctx,
@@ -1312,34 +1305,27 @@ func (d *Deployer) seedPChain(ctx context.Context, deployment deployment, node n
 	}
 
 	stage := dataDir + "/.pchain-import"
+	owner := deployment.environment.SSHUser
 	if err := d.runSSH(
 		ctx,
 		deployment,
 		node,
-		fmt.Sprintf(
-			"sudo rm -rf %[1]s && sudo install -d -o %[2]s -g %[2]s -m 0700 %[1]s",
-			stage,
-			deployment.environment.SSHUser,
-		),
+		l.sudo("rm -rf "+stage)+" && "+l.sudo(fmt.Sprintf("install -d -o %[1]s -g %[1]s -m 0700 %[2]s", owner, stage)),
 	); err != nil {
 		return err
 	}
 	if err := d.rsyncFile(ctx, deployment, node, filepath.Join(d.root, pchainArchive), stage); err != nil {
 		return err
 	}
-	command := fmt.Sprintf(
-		"mkdir -m 700 %[1]s/unpacked && "+
-			"tar -xzf %[1]s/%[2]s -C %[1]s/unpacked && "+
-			"test -n \"$(find %[1]s/unpacked/db -mindepth 1 -print -quit 2>/dev/null)\" && "+
-			"test -z \"$(find %[3]s -mindepth 1 -print -quit 2>/dev/null)\" && "+
-			"sudo chown -R %[4]s:%[4]s %[1]s/unpacked/db && "+
-			"sudo mv -T %[1]s/unpacked/db %[3]s && "+
-			"sudo rm -rf %[1]s",
-		stage,
-		pchainArchive,
-		databaseDir,
-		deployment.environment.SSHUser,
-	)
+	command := strings.Join([]string{
+		fmt.Sprintf("mkdir -m 700 %s/unpacked", stage),
+		fmt.Sprintf("tar -xzf %[1]s/%[2]s -C %[1]s/unpacked", stage, pchainArchive),
+		fmt.Sprintf("test -n \"$(find %s/unpacked/db -mindepth 1 -print -quit 2>/dev/null)\"", stage),
+		fmt.Sprintf("test -z \"$(find %s -mindepth 1 -print -quit 2>/dev/null)\"", databaseDir),
+		l.sudo(fmt.Sprintf("chown -R %[1]s:%[1]s %[2]s/unpacked/db", owner, stage)),
+		l.sudo(fmt.Sprintf("mv -T %s/unpacked/db %s", stage, databaseDir)),
+		l.sudo("rm -rf " + stage),
+	}, " && ")
 	if err := d.runSSH(ctx, deployment, node, command); err != nil {
 		return fmt.Errorf("%s must contain a non-empty db/ directory: %w", pchainArchive, err)
 	}
@@ -1348,17 +1334,11 @@ func (d *Deployer) seedPChain(ctx context.Context, deployment deployment, node n
 }
 
 func (d *Deployer) start(ctx context.Context, deployment deployment, node nodeDeployment) error {
-	return d.runSSH(ctx, deployment, node, "sudo systemctl start "+serviceName(node))
+	return d.runSSH(ctx, deployment, node, layoutFor(deployment.environment).startOnlyCommand(node))
 }
 
 func (d *Deployer) startAndVerify(ctx context.Context, deployment deployment, node nodeDeployment) error {
-	unit := serviceName(node)
-	return d.runSSH(
-		ctx,
-		deployment,
-		node,
-		fmt.Sprintf("sudo systemctl start %[1]s && sudo systemctl is-active --quiet %[1]s", unit),
-	)
+	return d.runSSH(ctx, deployment, node, layoutFor(deployment.environment).startCommand(node))
 }
 
 // waitPChainReady blocks until the P-chain node passes the gate for its mode.

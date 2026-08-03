@@ -45,16 +45,17 @@ type pchainObservation struct {
 	progress string
 }
 
-func pchainLogPath(node nodeDeployment) string {
-	return fmt.Sprintf("%s/%d/logs/P.log", remoteDataDir, node.node.Number)
+func pchainLogPath(l layout, node nodeDeployment) string {
+	return fmt.Sprintf("%s/%d/logs/P.log", l.data, node.node.Number)
 }
 
 // pchainWatchHint names the exact command that watches a replaying node, so a
 // reported "bootstrapping" is never a dead end for the operator.
 func pchainWatchHint(environment config.FleetEnvironment, node nodeDeployment) string {
+	l := layoutFor(environment)
 	return fmt.Sprintf(
-		"watch: ssh -i %s %s@%s 'sudo tail -f %s'",
-		environment.SSHKeyPath, environment.SSHUser, node.node.Host, pchainLogPath(node),
+		"watch: ssh -i %s %s@%s '%s'",
+		environment.SSHKeyPath, environment.SSHUser, node.node.Host, l.sudo("tail -f "+pchainLogPath(l, node)),
 	)
 }
 
@@ -62,16 +63,15 @@ func pchainWatchHint(environment config.FleetEnvironment, node nodeDeployment) s
 // error means a read failed; an observation with heightOK false means the reads
 // succeeded but carry no derivable height.
 func (d *Deployer) observePChain(ctx context.Context, remote deployment, node nodeDeployment) (pchainObservation, error) {
-	logPath := pchainLogPath(node)
+	l := layoutFor(remote.environment)
+	logPath := pchainLogPath(l, node)
 	// One round trip for both log signals. The startup line and the progress
 	// line share no fields, so the combined output needs no separator.
 	// ponytail: only the live P.log is read. A startup entry that has already
 	// rotated away reports as an unobservable height rather than a wrong one.
-	logs, err := d.runSSHOutput(ctx, remote, node, fmt.Sprintf(
-		"sudo grep -a 'starting bootstrapper' %[1]s 2>/dev/null | tail -1; "+
-			"sudo grep -aE 'fetching blocks|executing blocks' %[1]s 2>/dev/null | tail -1",
-		logPath,
-	))
+	logs, err := d.runSSHOutput(ctx, remote, node,
+		l.sudo(fmt.Sprintf("grep -a 'starting bootstrapper' %s 2>/dev/null | tail -1", logPath))+"; "+
+			l.sudo(fmt.Sprintf("grep -aE 'fetching blocks|executing blocks' %s 2>/dev/null | tail -1", logPath)))
 	if err != nil {
 		return pchainObservation{}, fmt.Errorf("read %s: %w", logPath, err)
 	}
@@ -128,7 +128,7 @@ func (d *Deployer) pchainReadyOnce(ctx context.Context, prepared deployment) (st
 			return "", fmt.Errorf("bootstrapped health check is not passing yet")
 		}
 		if !observation.heightOK || observation.height == 0 {
-			return "", fmt.Errorf("local P-chain height is not observable in %s", pchainLogPath(prepared.pchain))
+			return "", fmt.Errorf("local P-chain height is not observable in %s", pchainLogPath(layoutFor(prepared.environment), prepared.pchain))
 		}
 		// A frozen node deliberately does not track the upstream, so there is no
 		// upstream height to compare it against, and nothing observable on the

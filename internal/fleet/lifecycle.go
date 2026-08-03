@@ -221,7 +221,7 @@ func planStart(target nodeDeployment, active bool, runtimeNodeID string) (bool, 
 // what the caller is about to do, so failing the command would be perverse.
 func (d *Deployer) probeRuntimeIdentity(ctx context.Context, inv inventory, target nodeDeployment) (bool, string, error) {
 	output, err := d.runSSHOutput(ctx, deployment{environment: inv.environment}, target,
-		fmt.Sprintf("sudo systemctl is-active %s 2>/dev/null || true", serviceName(target)))
+		layoutFor(inv.environment).isActiveProbe(target))
 	if err != nil {
 		return false, "", fmt.Errorf("node %d (%s) service state: %w", target.node.Number, target.node.Host, err)
 	}
@@ -345,35 +345,18 @@ func (d *Deployer) destroyPhases(ctx context.Context, state deployment) error {
 // enableAndStart mirrors disableAndStop: systemd is the only up/down intent, so
 // start restores boot intent that a previous stop or destroy removed.
 func (d *Deployer) enableAndStart(ctx context.Context, deployment deployment, node nodeDeployment) error {
-	unit := serviceName(node)
-	return d.runSSH(ctx, deployment, node, fmt.Sprintf(
-		"sudo systemctl enable %[1]s && sudo systemctl start %[1]s", unit))
+	return d.runSSH(ctx, deployment, node, layoutFor(deployment.environment).enableAndStartCommand(node))
 }
 
 func (d *Deployer) disableAndStop(ctx context.Context, deployment deployment, node nodeDeployment) error {
-	unit := serviceName(node)
-	return d.runSSH(ctx, deployment, node, fmt.Sprintf(
-		"if sudo systemctl cat %[1]s >/dev/null 2>&1; then "+
-			"sudo systemctl disable %[1]s && sudo systemctl stop %[1]s && "+
-			"test \"$(sudo systemctl is-active %[1]s)\" = inactive; fi",
-		unit))
+	return d.runSSH(ctx, deployment, node, layoutFor(deployment.environment).disableAndStopCommand(node))
 }
 
-// killService prevents a systemd restart, SIGKILLs the process, and proves the
-// unit is inactive. The trailing stop cancels the pending auto-restart that
-// Restart=on-failure schedules for a killed process.
+// killService prevents any restart, SIGKILLs the process, and proves the node
+// is gone. Every step is best effort; the single hard gate is the final
+// inactivity check, so an already-stopped node is still destroyable.
 func (d *Deployer) killService(ctx context.Context, deployment deployment, node nodeDeployment) error {
-	unit := serviceName(node)
-	// Every step is best effort; the single hard gate is the final inactivity
-	// check, so an already-stopped or already-failed unit is still destroyable.
-	return d.runSSH(ctx, deployment, node, fmt.Sprintf(
-		"if sudo systemctl cat %[1]s >/dev/null 2>&1; then "+
-			"sudo systemctl disable %[1]s || true; "+
-			"sudo systemctl kill -s SIGKILL %[1]s || true; "+
-			"sudo systemctl stop %[1]s || true; "+
-			"sudo systemctl reset-failed %[1]s >/dev/null 2>&1 || true; "+
-			"test \"$(sudo systemctl is-active %[1]s)\" = inactive; fi",
-		unit))
+	return d.runSSH(ctx, deployment, node, layoutFor(deployment.environment).killCommand(node))
 }
 
 func (d *Deployer) removeChainData(ctx context.Context, deployment deployment, node nodeDeployment) error {
@@ -381,9 +364,10 @@ func (d *Deployer) removeChainData(ctx context.Context, deployment deployment, n
 	// own <chain-id> subdirectory. Only this L1's directory is removed, so the
 	// P-chain database, identity, logs, configuration, and binaries survive.
 	nodeChainID, _ := deployment.l1For(node.node.Role)
-	return d.runSSH(ctx, deployment, node, fmt.Sprintf(
-		"sudo rm -rf %s/%d/chainData/%s",
-		remoteDataDir, node.node.Number, nodeChainID))
+	l := layoutFor(deployment.environment)
+	return d.runSSH(ctx, deployment, node, l.sudo(fmt.Sprintf(
+		"rm -rf %s/%d/chainData/%s",
+		l.data, node.node.Number, nodeChainID)))
 }
 
 // selectedNumbers lists the machine numbers a lifecycle command acted on.

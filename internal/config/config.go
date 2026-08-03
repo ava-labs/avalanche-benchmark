@@ -52,6 +52,15 @@ type FleetEnvironment struct {
 	Network    string
 	SSHUser    string
 	SSHKeyPath string
+	// RemoteDir switches deploy to a user-level install: every fleet file
+	// lives under this directory on the machines, nothing needs root, and
+	// nodes run as plain processes instead of systemd units. Empty means the
+	// system install (/opt, /etc, /var/lib + systemd), which needs sudo.
+	RemoteDir string
+	// RemoteDataDir overrides where chain databases and logs live, so data
+	// can sit on a faster disk than the install. Empty means RemoteDir/data
+	// in a user-level install and /var/lib/avalanche-benchmark otherwise.
+	RemoteDataDir string
 }
 
 type Config struct {
@@ -137,6 +146,8 @@ func validateEnvironmentFields(path string, values map[string]string) error {
 		"FUNDING_PRIVATE_KEY": {},
 		"SSH_USER":            {},
 		"SSH_KEY_PATH":        {},
+		"REMOTE_DIR":          {},
+		"REMOTE_DATA_DIR":     {},
 	}
 	var unknown []string
 	for key := range values {
@@ -185,10 +196,16 @@ func LoadFleetEnvironment(path string) (FleetEnvironment, error) {
 	} else if info.IsDir() {
 		return FleetEnvironment{}, fmt.Errorf("%s: SSH_KEY_PATH %s is a directory", path, sshKeyPath)
 	}
+	remoteDataDir := strings.TrimSpace(values["REMOTE_DATA_DIR"])
+	if remoteDataDir != "" && strings.TrimSpace(values["REMOTE_DIR"]) == "" {
+		return FleetEnvironment{}, fmt.Errorf("%s: REMOTE_DATA_DIR requires REMOTE_DIR (user-level install)", path)
+	}
 	return FleetEnvironment{
-		Network:    networkEnvironment.Network,
-		SSHUser:    sshUser,
-		SSHKeyPath: sshKeyPath,
+		Network:       networkEnvironment.Network,
+		SSHUser:       sshUser,
+		SSHKeyPath:    sshKeyPath,
+		RemoteDir:     strings.TrimSpace(values["REMOTE_DIR"]),
+		RemoteDataDir: remoteDataDir,
 	}, nil
 }
 

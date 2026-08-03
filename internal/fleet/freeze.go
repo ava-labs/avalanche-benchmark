@@ -119,7 +119,7 @@ func (d *Deployer) freezeGateState(ctx context.Context, prepared deployment) (fr
 	if !observation.heightOK {
 		return freezeGate{}, fmt.Errorf(
 			"P-chain node %d (%s): local height is not observable in %s",
-			prepared.pchain.node.Number, prepared.pchain.node.Host, pchainLogPath(prepared.pchain),
+			prepared.pchain.node.Number, prepared.pchain.node.Host, pchainLogPath(layoutFor(prepared.environment), prepared.pchain),
 		)
 	}
 

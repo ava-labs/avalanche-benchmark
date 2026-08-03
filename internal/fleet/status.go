@@ -468,7 +468,7 @@ func (d *Deployer) probePChainStatus(ctx context.Context, inv inventory, remote 
 	if !observation.heightOK {
 		probe.failures = append(probe.failures, fmt.Sprintf(
 			"P-chain node %d (%s): no startup height in %s, local height not observable",
-			inv.pchain.Number, inv.pchain.Host, pchainLogPath(target)))
+			inv.pchain.Number, inv.pchain.Host, pchainLogPath(layoutFor(inv.environment), target)))
 	}
 	if !probe.bootstrapped {
 		probe.watchHint = pchainWatchHint(inv.environment, target)
@@ -524,12 +524,7 @@ func (d *Deployer) probePublicValidatorSets(
 // probeService is the single ssh round trip per machine: unit presence plus
 // is-active and is-enabled.
 func (d *Deployer) probeService(ctx context.Context, remote deployment, node nodeDeployment) (bool, string, string, error) {
-	unit := serviceName(node)
-	command := fmt.Sprintf(
-		"if sudo systemctl cat %[1]s >/dev/null 2>&1; then printf 'present '; else printf 'missing '; fi; "+
-			"printf '%%s ' \"$(sudo systemctl is-active %[1]s)\"; "+
-			"printf '%%s' \"$(sudo systemctl is-enabled %[1]s 2>/dev/null)\"",
-		unit)
+	command := layoutFor(remote.environment).serviceProbe(node)
 	output, err := d.runSSHOutput(ctx, remote, node, command)
 	if err != nil {
 		return false, "", "", err
@@ -549,7 +544,7 @@ func (d *Deployer) probeService(ctx context.Context, remote deployment, node nod
 // frozen render writes explicit empty bootstrap lists, a following render omits
 // them entirely.
 func (d *Deployer) probePChainMode(ctx context.Context, remote deployment, node nodeDeployment) (string, error) {
-	path := filepath.Join(remoteConfigDir, strconv.Itoa(node.node.Number), "node.json")
+	path := filepath.Join(layoutFor(remote.environment).cfg, strconv.Itoa(node.node.Number), "node.json")
 	output, err := d.runSSHOutput(ctx, remote, node, "cat "+path)
 	if err != nil {
 		return "", err

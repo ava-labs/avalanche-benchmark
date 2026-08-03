@@ -678,6 +678,81 @@ func TestRenderOracleAndArchiveRoles(t *testing.T) {
 	}
 }
 
+// REMOTE_DIR switches renderNode to a user-level install: the node is a plain
+// process started by run.sh, so no systemd unit and no sudo anywhere.
+func TestRenderNodeUserLayoutWritesRunScriptInsteadOfUnit(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "node-config.json"), `{}`)
+	writeTestFile(t, filepath.Join(root, "chain-config.json"), `{}`)
+	writeTestFile(t, filepath.Join(root, "subnet-config.json"), `{}`)
+	environment := config.FleetEnvironment{Network: "fuji", SSHUser: "op", RemoteDir: "/home/op/bench"}
+	renderDir := filepath.Join(root, "render")
+	if err := renderNode(
+		renderDir,
+		root,
+		environment,
+		config.Node{Number: 3, Role: config.RoleValidator},
+		creation.PublicNode{Identity: "c", Role: config.RoleValidator},
+		ids.GenerateTestID(),
+		ids.GenerateTestID(),
+		[2]int{9650, 9651},
+		followMode,
+		"pchain:9651",
+		"NodeID-pchain",
+		"",
+		"",
+	); err != nil {
+		t.Fatal(err)
+	}
+	run, err := os.ReadFile(filepath.Join(renderDir, "run.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(run, []byte("/home/op/bench/pkg")) {
+		t.Fatalf("run.sh does not start the user-level binary: %s", run)
+	}
+	if bytes.Contains(run, []byte("sudo")) {
+		t.Fatalf("user-level run.sh must not use sudo: %s", run)
+	}
+	if _, err := os.Stat(filepath.Join(renderDir, "node.service")); !os.IsNotExist(err) {
+		t.Fatalf("user-level render must not produce a systemd unit: stat = %v", err)
+	}
+}
+
+// The layout is the single seam between the two install modes: system commands
+// keep their sudo systemctl shape, user commands never reach for either.
+func TestLayoutSeparatesUserAndSystemInstalls(t *testing.T) {
+	node := nodeDeployment{node: config.Node{Number: 4}}
+
+	user := layoutFor(config.FleetEnvironment{RemoteDir: "/home/op/bench", RemoteDataDir: "/nvme/data"})
+	if user.pkg != "/home/op/bench/pkg" || user.cfg != "/home/op/bench/config" || user.data != "/nvme/data" {
+		t.Fatalf("user layout paths = %+v", user)
+	}
+	for name, command := range map[string]string{
+		"start":        user.startCommand(node),
+		"stop":         user.stopCommand(node),
+		"install unit": user.installUnitCommand("/tmp/stage", node),
+	} {
+		if strings.Contains(command, "sudo") || strings.Contains(command, "systemctl") {
+			t.Fatalf("user-level %s command reaches for root: %q", name, command)
+		}
+	}
+
+	system := layoutFor(config.FleetEnvironment{})
+	if system.pkg != remotePackageDir || system.cfg != remoteConfigDir || system.data != remoteDataDir {
+		t.Fatalf("system layout paths = %+v", system)
+	}
+	for name, command := range map[string]string{
+		"start":        system.startCommand(node),
+		"stop":         system.stopCommand(node),
+		"install unit": system.installUnitCommand("/tmp/stage", node),
+	} {
+		if !strings.Contains(command, "sudo systemctl") {
+			t.Fatalf("system %s command lost its sudo systemctl shape: %q", name, command)
+		}
+	}
+}
+
 func TestStateSyncPeersStayWithinTheirL1(t *testing.T) {
 	nodes := []config.Node{
 		{Number: 1, Host: "v1", Role: config.RoleValidator},
