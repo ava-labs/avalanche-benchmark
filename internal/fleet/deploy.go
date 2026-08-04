@@ -1310,22 +1310,30 @@ func (d *Deployer) seedPChain(ctx context.Context, deployment deployment, node n
 		ctx,
 		deployment,
 		node,
-		l.sudo("rm -rf "+stage)+" && "+l.sudo(fmt.Sprintf("install -d -o %[1]s -g %[1]s -m 0700 %[2]s", owner, stage)),
+		l.sudo("rm -rf "+stage)+" && "+l.sudo(seedStageInstall(l, owner, stage)),
 	); err != nil {
 		return err
 	}
 	if err := d.rsyncFile(ctx, deployment, node, filepath.Join(d.root, pchainArchive), stage); err != nil {
 		return err
 	}
-	command := strings.Join([]string{
+	segments := []string{
 		fmt.Sprintf("mkdir -m 700 %s/unpacked", stage),
 		fmt.Sprintf("tar -xzf %[1]s/%[2]s -C %[1]s/unpacked", stage, pchainArchive),
 		fmt.Sprintf("test -n \"$(find %s/unpacked/db -mindepth 1 -print -quit 2>/dev/null)\"", stage),
 		fmt.Sprintf("test -z \"$(find %s -mindepth 1 -print -quit 2>/dev/null)\"", databaseDir),
-		l.sudo(fmt.Sprintf("chown -R %[1]s:%[1]s %[2]s/unpacked/db", owner, stage)),
+	}
+	// A user install extracted the archive as itself; there is no ownership to
+	// hand over, and naming a group would wrongly assume one matching the
+	// user's name exists (a Debian convention RHEL hosts do not follow).
+	if !l.user {
+		segments = append(segments, l.sudo(fmt.Sprintf("chown -R %[1]s:%[1]s %[2]s/unpacked/db", owner, stage)))
+	}
+	segments = append(segments,
 		l.sudo(fmt.Sprintf("mv -T %s/unpacked/db %s", stage, databaseDir)),
-		l.sudo("rm -rf " + stage),
-	}, " && ")
+		l.sudo("rm -rf "+stage),
+	)
+	command := strings.Join(segments, " && ")
 	if err := d.runSSH(ctx, deployment, node, command); err != nil {
 		return fmt.Errorf("%s must contain a non-empty db/ directory: %w", pchainArchive, err)
 	}

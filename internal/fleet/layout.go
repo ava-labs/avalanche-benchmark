@@ -136,6 +136,16 @@ func (l layout) enabledProbe(node nodeDeployment) string {
 	return fmt.Sprintf("test -f %s && echo installed || true", l.runScript(node.node.Number))
 }
 
+// seedStageInstall creates the P-chain import staging directory. Only a root
+// install names an owner; a user install must not pass -o/-g, because a group
+// named after the user is a Debian convention that RHEL hosts do not follow.
+func seedStageInstall(l layout, owner, stage string) string {
+	if l.user {
+		return fmt.Sprintf("install -d -m 0700 %s", stage)
+	}
+	return fmt.Sprintf("install -d -o %[1]s -g %[1]s -m 0700 %[2]s", owner, stage)
+}
+
 // installUnitCommand wires up process management from the staged render:
 // a systemd unit in the system layout, the run script in a user install.
 func (l layout) installUnitCommand(stage string, node nodeDeployment) string {
