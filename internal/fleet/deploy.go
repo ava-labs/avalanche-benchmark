@@ -1144,8 +1144,11 @@ func serviceName(node nodeDeployment) string {
 	return servicePrefix + strconv.Itoa(node.node.Number) + ".service"
 }
 
-func stagingDir(node nodeDeployment, suffix string) string {
-	return fmt.Sprintf("/tmp/avalanche-benchmark-%d-%s", node.node.Number, suffix)
+// stagingDir keys the upload staging path on the remote user: /tmp is shared
+// and sticky, so a fixed name left behind by one operator is undeletable by
+// the next (observed 2026-08-04 on shared dev hosts).
+func stagingDir(user string, node nodeDeployment, suffix string) string {
+	return fmt.Sprintf("/tmp/avalanche-benchmark-%s-%d-%s", user, node.node.Number, suffix)
 }
 
 func (d *Deployer) stop(ctx context.Context, deployment deployment, node nodeDeployment) error {
@@ -1153,8 +1156,8 @@ func (d *Deployer) stop(ctx context.Context, deployment deployment, node nodeDep
 }
 
 func (d *Deployer) installPackage(ctx context.Context, deployment deployment, node nodeDeployment) error {
-	packageStage := stagingDir(node, "package")
-	binaryStage := stagingDir(node, "binary")
+	packageStage := stagingDir(deployment.environment.SSHUser, node, "package")
+	binaryStage := stagingDir(deployment.environment.SSHUser, node, "binary")
 	command := fmt.Sprintf("rm -rf %s %s && mkdir -m 700 %s %s", packageStage, binaryStage, packageStage, binaryStage)
 	if err := d.runSSH(ctx, deployment, node, command); err != nil {
 		return err
@@ -1198,7 +1201,7 @@ func (d *Deployer) installPackage(ctx context.Context, deployment deployment, no
 }
 
 func (d *Deployer) installUnit(ctx context.Context, deployment deployment, node nodeDeployment) error {
-	return d.runSSH(ctx, deployment, node, layoutFor(deployment.environment).installUnitCommand(stagingDir(node, "package"), node))
+	return d.runSSH(ctx, deployment, node, layoutFor(deployment.environment).installUnitCommand(stagingDir(deployment.environment.SSHUser, node, "package"), node))
 }
 
 // renderConfigs renders node.json for each target from the CURRENT inventory,
@@ -1249,7 +1252,7 @@ func (d *Deployer) renderConfigs(inv inventory, targets []nodeDeployment, up map
 // installConfig pushes the freshly rendered node.json and nothing else:
 // binaries, chain configs, and units stay deploy's job.
 func (d *Deployer) installConfig(ctx context.Context, deployment deployment, node nodeDeployment) error {
-	stage := stagingDir(node, "config")
+	stage := stagingDir(deployment.environment.SSHUser, node, "config")
 	if err := d.runSSH(ctx, deployment, node, "rm -rf "+stage+" && mkdir -m 700 "+stage); err != nil {
 		return err
 	}
@@ -1265,7 +1268,7 @@ func (d *Deployer) installConfig(ctx context.Context, deployment deployment, nod
 }
 
 func (d *Deployer) installIdentity(ctx context.Context, deployment deployment, node nodeDeployment) error {
-	stage := stagingDir(node, "identity")
+	stage := stagingDir(deployment.environment.SSHUser, node, "identity")
 	if err := d.runSSH(ctx, deployment, node, "rm -rf "+stage+" && mkdir -m 700 "+stage); err != nil {
 		return err
 	}
