@@ -146,6 +146,7 @@ and RPC node bootstraps from the P-chain node.
 | `deployment/network.env` | `create` | subnet, chain, and conversion transaction IDs |
 | `deployment/genesis-oracle.json` | `create` | rendered oracle genesis (only with oracle roles) |
 | `deployment/oracle-feeder.key` | `keygen` | EVM key funded on every price-feed chain, used by `oracle feed`/`relay` |
+| `deployment/upgrades.json` | `fleet upgrade` | the chain's append-only upgrade history; every deploy installs it |
 | `pchain.tar.gz` | `pchain archive` | validated P-chain `db/` snapshot |
 
 `deployment/` contains private keys. It is never in the pack artifact. It is
@@ -233,7 +234,7 @@ restart-on-crash, start-on-boot; needs passwordless sudo). See
 | `fleet start [sel...]` | safe to repeat: restarts only nodes that are down, on the wrong identity, or not answering. Returns immediately. Does not wait for the nodes to serve. |
 | `fleet stop [sel...]` | controlled stop. Data, keys, and logs stay. |
 | `fleet destroy <sel...>` | SIGKILL, then delete `chainData/<chain-id>` only. Simulates sudden loss. Node numbers are required. |
-| `fleet upgrade <upgrade.json>` | install a subnet-evm upgrade file on every main-L1 node, then a rolling restart. The file reaches every node before the first restart. Explicit zero values are refused: they stop a node on the restart after activation. |
+| `fleet upgrade <fragment.json>` | append a subnet-evm upgrade fragment to the history in `deployment/upgrades.json`, install the full history on every main-L1 node, then a rolling restart. The history reaches every node before the first restart, and every later deploy carries it. Explicit zero values are refused: they stop a node on the restart after activation. |
 | `fleet place <letter> <node>` | reconcile, swap the placement, reconcile again. One move per call. Does not wait for readiness. The only placement verb. |
 | `bombard -rps N -duration D` | the load generator. Sends to all `role=rpc` nodes. |
 | `oracle feed <node-url>` | the foreground mock price feeder. With an oracle L1, it submits to the aggregator there. Without one, it publishes rounds to the main chain's Chainlink-shaped aggregator with type-2 priority-fee transactions. |

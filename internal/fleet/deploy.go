@@ -983,6 +983,18 @@ func renderNode(
 				return err
 			}
 		}
+		// The main chain's upgrade history rides along on every deploy: the
+		// upgrade file is append-only, and a fresh machine deployed after an
+		// activation cannot join the chain without the activated entries.
+		if !oracleRole(node.Role) {
+			if history, err := os.ReadFile(upgradesPath(root)); err == nil {
+				if err := os.WriteFile(filepath.Join(renderDir, "upgrade.json"), history, 0o600); err != nil {
+					return err
+				}
+			} else if !os.IsNotExist(err) {
+				return err
+			}
+		}
 	}
 	if l.user {
 		// A user install has no systemd: the node is a plain process started by
@@ -1225,6 +1237,13 @@ func (d *Deployer) installPackage(ctx context.Context, deployment deployment, no
 			l.sudo(fmt.Sprintf("install -m 0644 %s/chain.json %s/%d/chains/%s/config.json", packageStage, l.cfg, number, nodeChainID)),
 			l.sudo(fmt.Sprintf("install -m 0644 %s/subnet.json %s/%d/subnets/%s.json", packageStage, l.cfg, number, nodeSubnetID)),
 		)
+		// Present only when the deployment has recorded upgrade history; a
+		// node without the activated entries cannot join the chain.
+		if _, err := os.Stat(filepath.Join(node.renderDir, "upgrade.json")); err == nil {
+			segments = append(segments,
+				l.sudo(fmt.Sprintf("install -m 0644 %s/upgrade.json %s/%d/chains/%s/upgrade.json", packageStage, l.cfg, number, nodeChainID)),
+			)
+		}
 	}
 	return d.runSSH(ctx, deployment, node, strings.Join(segments, " && "))
 }

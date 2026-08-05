@@ -37,10 +37,28 @@ cast call $FEED "decimals()(uint8)" --rpc-url http://<rpc>:9650/ext/bc/<chain-id
 
 Then start the publisher: `./bin/oracle feed http://<rpc>:9650`.
 
+## The upgrade history
+
+The chain's upgrade file is append-only. An entry that has activated must
+stay in the file, unchanged, forever. A file that lost an activated entry
+stops every node that loads it.
+
+The toolset therefore keeps the history on the control machine, in
+`deployment/upgrades.json`. `fleet upgrade` treats your file as a FRAGMENT:
+it appends the fragment to the history, installs the full history on every
+node, and records it before any remote work. Every later deploy also
+carries the history, so a fresh machine that joins after an activation
+gets the activated entries automatically.
+
+More apps stack the same way. Each app renders its own fragment, and each
+`fleet upgrade` call appends one more entry. Nothing about the first app's
+entry changes when the second app arrives.
+
 ## Rules that the toolset enforces
 
-- The activation timestamp must be in the future. Every node must restart
-  with the file before that time. The default delay is 15 minutes.
+- The activation timestamp must be in the future, and it must be later
+  than every entry already in the history. Every node must restart with
+  the file before the activation time. The default delay is 15 minutes.
 - An explicit zero value (empty code, or a storage slot set to zero) is
   refused. A zero value passes the first restart and stops the node on
   the next restart after activation, because the database reads the zero
@@ -50,6 +68,7 @@ Then start the publisher: `./bin/oracle feed http://<rpc>:9650`.
 
 ## Custom upgrades
 
-`fleet upgrade` installs any valid subnet-evm `upgrade.json`, not only the
-one `oracle upgrade` renders. Write your own for precompile changes or for
-your own contracts, and the same validation and rolling restart apply.
+`fleet upgrade` installs any valid subnet-evm upgrade fragment, not only
+the one `oracle upgrade` renders. Write your own for precompile changes or
+for your own contracts, and the same merge, validation, and rolling
+restart apply.

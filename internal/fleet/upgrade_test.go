@@ -2,11 +2,16 @@ package fleet
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
+	"github.com/ava-labs/avalanchego/ids"
 	ethcommon "github.com/ava-labs/libevm/common"
 )
 
@@ -100,6 +105,135 @@ func TestValidateUpgradeContentsRefusesTheRestartBrick(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), testCase.wantErr) {
 				t.Fatalf("error = %v, want it to contain %q", err, testCase.wantErr)
+			}
+		})
+	}
+}
+
+// The history is append-only because subnet-evm refuses a file that lost or
+// changed an activated entry. The merge must preserve existing entries byte
+// for byte, order every new entry strictly after them, and never let a
+// fragment rewrite history.
+func TestMergeUpgradesIsAppendOnly(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	first := upgradeJSON(t, now.Add(time.Hour).Unix(), map[string]any{
+		"0xAAA0000000000000000000000000000000000001": map[string]any{"code": "0x6001"},
+	})
+
+	// First fragment with no history: the history IS the fragment.
+	merged, err := mergeUpgrades(nil, first, 14, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mergedFile rawUpgradeFile
+	if err := json.Unmarshal(merged, &mergedFile); err != nil {
+		t.Fatal(err)
+	}
+	if len(mergedFile.StateUpgrades) != 1 {
+		t.Fatalf("state upgrades = %d, want 1", len(mergedFile.StateUpgrades))
+	}
+
+	// A later second fragment appends, and the first entry survives verbatim.
+	second := upgradeJSON(t, now.Add(2*time.Hour).Unix(), map[string]any{
+		"0xBBB0000000000000000000000000000000000002": map[string]any{"code": "0x6002"},
+	})
+	twice, err := mergeUpgrades(merged, second, 14, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var twiceFile rawUpgradeFile
+	if err := json.Unmarshal(twice, &twiceFile); err != nil {
+		t.Fatal(err)
+	}
+	if len(twiceFile.StateUpgrades) != 2 {
+		t.Fatalf("state upgrades = %d, want 2", len(twiceFile.StateUpgrades))
+	}
+	var original, kept map[string]any
+	if err := json.Unmarshal(mergedFile.StateUpgrades[0], &original); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(twiceFile.StateUpgrades[0], &kept); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(kept) != fmt.Sprint(original) {
+		t.Fatalf("merge changed an existing entry:\nbefore %v\nafter  %v", original, kept)
+	}
+
+	// A fragment that does not activate strictly after the history is refused.
+	stale := upgradeJSON(t, now.Add(time.Hour).Unix(), map[string]any{
+		"0xCCC0000000000000000000000000000000000003": map[string]any{"code": "0x6003"},
+	})
+	if _, err := mergeUpgrades(twice, stale, 14, now); err == nil || !strings.Contains(err.Error(), "strictly after") {
+		t.Fatalf("stale fragment error = %v, want a strictly-after refusal", err)
+	}
+}
+
+// A history with an already-activated (past) entry must still accept a new
+// future fragment: the past entries belong to the chain now and only the
+// fragment is held to the future-timestamp rule.
+func TestMergeUpgradesKeepsActivatedHistory(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	activated := upgradeJSON(t, now.Add(-time.Hour).Unix(), map[string]any{
+		"0xAAA0000000000000000000000000000000000001": map[string]any{"code": "0x6001"},
+	})
+	fragment := upgradeJSON(t, now.Add(time.Hour).Unix(), map[string]any{
+		"0xBBB0000000000000000000000000000000000002": map[string]any{"code": "0x6002"},
+	})
+	merged, err := mergeUpgrades(activated, fragment, 14, now)
+	if err != nil {
+		t.Fatalf("a past entry in the HISTORY must not block a future fragment: %v", err)
+	}
+	var mergedFile rawUpgradeFile
+	if err := json.Unmarshal(merged, &mergedFile); err != nil {
+		t.Fatal(err)
+	}
+	if len(mergedFile.StateUpgrades) != 2 {
+		t.Fatalf("state upgrades = %d, want 2", len(mergedFile.StateUpgrades))
+	}
+}
+
+// Every deploy must carry the recorded upgrade history to main-L1 nodes: a
+// fresh machine deployed after an activation cannot join the chain without
+// the activated entries. The pchain and oracle renders must not carry it
+// (wrong chain).
+func TestRenderNodeCarriesUpgradeHistory(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "node-config.json"), "{}")
+	writeTestFile(t, filepath.Join(root, "chain-config.json"), "{}")
+	writeTestFile(t, filepath.Join(root, "chain-config-rpc.json"), "{}")
+	writeTestFile(t, filepath.Join(root, "subnet-config.json"), "{}")
+	writeTestFile(t, filepath.Join(root, "subnet-config-oracle.json"), "{}")
+	if err := os.MkdirAll(filepath.Join(root, "deployment"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, upgradesPath(root), `{"stateUpgrades":[{"blockTimestamp":1,"accounts":{}}]}`)
+
+	environment := config.FleetEnvironment{SSHUser: "op"}
+	for name, testCase := range map[string]struct {
+		node config.Node
+		want bool
+	}{
+		"validator carries the history": {config.Node{Number: 1, Host: "v1", Role: config.RoleValidator}, true},
+		"rpc carries the history":       {config.Node{Number: 9, Host: "r1", Role: config.RoleRPC}, true},
+		"oracle node does not":          {config.Node{Number: 16, Host: "o1", Role: config.RoleOracleValidator}, false},
+		"pchain does not":               {config.Node{Number: 13, Host: "p1", Role: config.RolePChain}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			renderDir := filepath.Join(t.TempDir(), "render")
+			if err := renderNode(
+				renderDir, root, environment, testCase.node,
+				creation.PublicNode{Identity: "a", Role: testCase.node.Role},
+				ids.GenerateTestID(), ids.GenerateTestID(), [2]int{9650, 9651},
+				frozenMode, "", "", "", "",
+			); err != nil {
+				t.Fatal(err)
+			}
+			_, err := os.Stat(filepath.Join(renderDir, "upgrade.json"))
+			if testCase.want && err != nil {
+				t.Fatalf("render did not carry the upgrade history: %v", err)
+			}
+			if !testCase.want && err == nil {
+				t.Fatal("render carried the upgrade history to the wrong chain")
 			}
 		})
 	}

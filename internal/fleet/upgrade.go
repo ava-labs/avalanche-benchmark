@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -70,16 +71,106 @@ func validateUpgradeContents(contents []byte, nodeCount int, now time.Time) erro
 	return nil
 }
 
-// UpgradeChain installs a subnet-evm upgrade.json on every main-L1 node and
-// restarts them one at a time. The file lands on EVERY node before the first
-// restart, so a failure in the push phase changes no running process. The
-// restarts are sequential with a readiness wait, the same discipline as a
-// rolling deploy: restarting several nodes together removes the peers that
-// serve state-sync summaries.
-func (d *Deployer) UpgradeChain(ctx context.Context, path string) error {
-	contents, err := os.ReadFile(path)
+// rawUpgradeFile carries upgrade entries as raw JSON, so a merge preserves
+// already-activated entries byte for byte. subnet-evm treats the file as
+// append-only history: an entry that has activated must stay in the file
+// unchanged forever, or every node refuses to start.
+type rawUpgradeFile struct {
+	StateUpgrades      []json.RawMessage `json:"stateUpgrades,omitempty"`
+	PrecompileUpgrades []json.RawMessage `json:"precompileUpgrades,omitempty"`
+}
+
+// upgradesPath is the control-side canonical upgrade history for the main
+// L1. Apps emit FRAGMENTS (one new upgrade each); this file accumulates
+// them, fleet upgrade distributes it whole, and fleet deploy installs it on
+// every fresh node so a machine deployed after an activation still carries
+// the full history.
+func upgradesPath(root string) string {
+	return filepath.Join(root, "deployment", "upgrades.json")
+}
+
+// stateUpgradeTimestamps extracts blockTimestamp from each raw entry.
+func stateUpgradeTimestamps(entries []json.RawMessage) ([]int64, error) {
+	timestamps := make([]int64, 0, len(entries))
+	for index, entry := range entries {
+		var head struct {
+			BlockTimestamp int64 `json:"blockTimestamp"`
+		}
+		if err := json.Unmarshal(entry, &head); err != nil {
+			return nil, fmt.Errorf("stateUpgrades[%d] is not an object: %w", index, err)
+		}
+		timestamps = append(timestamps, head.BlockTimestamp)
+	}
+	return timestamps, nil
+}
+
+// mergeUpgrades appends a validated fragment to the existing history.
+// Existing entries pass through untouched (they may be activated already, so
+// their timestamps are allowed to be in the past); every fragment entry must
+// activate strictly after every existing entry, because subnet-evm requires
+// the file ordered by timestamp and refuses changes behind the head.
+func mergeUpgrades(existing, fragment []byte, nodeCount int, now time.Time) ([]byte, error) {
+	if err := validateUpgradeContents(fragment, nodeCount, now); err != nil {
+		return nil, err
+	}
+	var fragmentFile rawUpgradeFile
+	if err := json.Unmarshal(fragment, &fragmentFile); err != nil {
+		return nil, fmt.Errorf("upgrade fragment is not valid JSON: %w", err)
+	}
+	merged := fragmentFile
+	if len(existing) > 0 {
+		var existingFile rawUpgradeFile
+		if err := json.Unmarshal(existing, &existingFile); err != nil {
+			return nil, fmt.Errorf("deployment/upgrades.json is not valid JSON: %w", err)
+		}
+		existingTimestamps, err := stateUpgradeTimestamps(existingFile.StateUpgrades)
+		if err != nil {
+			return nil, fmt.Errorf("deployment/upgrades.json: %w", err)
+		}
+		fragmentTimestamps, err := stateUpgradeTimestamps(fragmentFile.StateUpgrades)
+		if err != nil {
+			return nil, fmt.Errorf("upgrade fragment: %w", err)
+		}
+		for _, existingTimestamp := range existingTimestamps {
+			for _, fragmentTimestamp := range fragmentTimestamps {
+				if fragmentTimestamp <= existingTimestamp {
+					return nil, fmt.Errorf(
+						"fragment activates at %d, but the history already has an entry at %d; a new upgrade must activate strictly after every recorded one",
+						fragmentTimestamp, existingTimestamp)
+				}
+			}
+		}
+		merged = rawUpgradeFile{
+			StateUpgrades:      append(existingFile.StateUpgrades, fragmentFile.StateUpgrades...),
+			PrecompileUpgrades: append(existingFile.PrecompileUpgrades, fragmentFile.PrecompileUpgrades...),
+		}
+	}
+	contents, err := json.MarshalIndent(merged, "", "  ")
 	if err != nil {
-		return fmt.Errorf("read upgrade file: %w", err)
+		return nil, err
+	}
+	return append(contents, '\n'), nil
+}
+
+// UpgradeChain appends an upgrade fragment to the canonical history in
+// deployment/upgrades.json, installs the FULL history on every main-L1
+// node, and restarts them one at a time. The history, not the fragment, is
+// what lands on the nodes: subnet-evm's upgrade file is append-only, and a
+// file missing an already-activated entry stops every node it reaches. The
+// history reaches EVERY node before the first restart, so a failure in the
+// push phase changes no running process; the restarts are sequential with a
+// readiness wait, the same discipline as a rolling deploy.
+func (d *Deployer) UpgradeChain(ctx context.Context, path string) error {
+	fragment, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read upgrade fragment: %w", err)
+	}
+	var existing []byte
+	canonical := upgradesPath(d.root)
+	if contents, err := os.ReadFile(canonical); err == nil {
+		existing = contents
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", canonical, err)
 	}
 
 	state, inv, err := d.lifecycleTargets(nil)
@@ -89,7 +180,7 @@ func (d *Deployer) UpgradeChain(ctx context.Context, path string) error {
 	if !inv.created {
 		return fmt.Errorf("fleet upgrade requires a complete deployment/network.env; run l1 create first")
 	}
-	// upgrade.json is per chain. This command targets the main L1; the
+	// The upgrade file is per chain. This command targets the main L1; the
 	// optional oracle chain keeps its own file and is out of scope here.
 	targets := make([]nodeDeployment, 0, len(state.selected))
 	for _, target := range state.selected {
@@ -98,11 +189,24 @@ func (d *Deployer) UpgradeChain(ctx context.Context, path string) error {
 		}
 		targets = append(targets, target)
 	}
-	if err := validateUpgradeContents(contents, len(targets), time.Now()); err != nil {
+	merged, err := mergeUpgrades(existing, fragment, len(targets), time.Now())
+	if err != nil {
 		return err
 	}
 
-	// Push phase: the file reaches every node before any node restarts.
+	// Control-side state is recorded atomically before any remote work, the
+	// same convention as every other mutating command: a rerun after a
+	// mid-push failure converges from the history.
+	temporary := canonical + ".tmp"
+	if err := os.WriteFile(temporary, merged, 0o600); err != nil {
+		return err
+	}
+	if err := os.Rename(temporary, canonical); err != nil {
+		return err
+	}
+	fmt.Fprintf(d.out, "recorded the upgrade in %s\n", canonical)
+
+	// Push phase: the full history reaches every node before any restart.
 	l := layoutFor(inv.environment)
 	push := state
 	push.selected = targets
@@ -111,19 +215,19 @@ func (d *Deployer) UpgradeChain(ctx context.Context, path string) error {
 		if err := d.runSSH(ctx, dep, node, "rm -rf "+stage+" && mkdir -m 700 "+stage); err != nil {
 			return err
 		}
-		if err := d.rsyncFile(ctx, dep, node, path, stage); err != nil {
+		if err := d.rsyncFile(ctx, dep, node, canonical, stage); err != nil {
 			return err
 		}
 		chainDir := fmt.Sprintf("%s/%d/chains/%s", l.cfg, node.node.Number, inv.chainID)
 		return d.runSSH(ctx, dep, node, strings.Join([]string{
 			l.sudo(fmt.Sprintf("install -d -m 0755 %s", chainDir)),
-			l.sudo(fmt.Sprintf("install -m 0644 %s/upgrade.json %s/upgrade.json", stage, chainDir)),
+			l.sudo(fmt.Sprintf("install -m 0644 %s/upgrades.json %s/upgrade.json", stage, chainDir)),
 			"rm -rf " + stage,
 		}, " && "))
 	}); err != nil {
 		return fmt.Errorf("upgrade push failed and no node was restarted: %w", err)
 	}
-	fmt.Fprintf(d.out, "upgrade.json installed on %d node(s); rolling restart\n", len(targets))
+	fmt.Fprintf(d.out, "upgrade history installed on %d node(s); rolling restart\n", len(targets))
 
 	// Restart phase: one node fully back before the next goes down.
 	for _, target := range targets {
