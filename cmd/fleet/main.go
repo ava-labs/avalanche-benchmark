@@ -36,19 +36,26 @@ func run() error {
 
 	switch arguments[0] {
 	case "deploy":
-		if len(arguments) < 2 {
-			return fmt.Errorf("usage:\n%s", usage(program))
+		// The mode is optional and defaults to frozen, the isolated shape.
+		// "follow" keeps the P-chain connected to the public network; see
+		// playbooks/07-connected-pchain.md. A node number is never a mode,
+		// so the forms stay unambiguous.
+		mode := "frozen"
+		rest := arguments[1:]
+		if len(rest) > 0 && (rest[0] == "frozen" || rest[0] == "follow") {
+			mode = rest[0]
+			rest = rest[1:]
 		}
 		dryRun := false
-		selectors := make([]string, 0, len(arguments)-2)
-		for _, argument := range arguments[2:] {
+		selectors := make([]string, 0, len(rest))
+		for _, argument := range rest {
 			if argument == "--dry-run" {
 				dryRun = true
 				continue
 			}
 			selectors = append(selectors, argument)
 		}
-		return deployer.Deploy(ctx, arguments[1], selectors, dryRun)
+		return deployer.Deploy(ctx, mode, selectors, dryRun)
 	case "pchain":
 		if len(arguments) != 2 {
 			return fmt.Errorf("usage:\n%s", usage(program))
@@ -91,7 +98,7 @@ func run() error {
 
 func usage(program string) string {
 	lines := []string{
-		"deploy <frozen|follow> [--dry-run] [<node> ...]",
+		"deploy [frozen|follow] [--dry-run] [<node> ...]   (default: frozen)",
 		"pchain <archive|follow|freeze|start|stop>",
 		"status",
 		"start [<node> ...]",

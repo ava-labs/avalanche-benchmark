@@ -14,9 +14,10 @@ This document is the operator manual. For the consensus parameters, see
 
 You need Linux machines with ssh access from one control machine. You need a
 P-chain API endpoint, public or your own, for chain creation and weight
-changes. You need nothing else. The toolset has no provisioning layer. You
-supply the machines, `nodes.ini` describes them, and the toolset deploys
-onto them.
+changes. You need nothing else. You do not need root: the default install
+runs fully under the ssh user, and it works on locked-down RHEL hosts. The
+toolset has no provisioning layer. You supply the machines, `nodes.ini`
+describes them, and the toolset deploys onto them.
 
 Our test fleet is EC2 in two AWS regions. Some notes below therefore refer
 to AWS behavior. AWS is not a requirement. The toolset does not know about
@@ -37,10 +38,20 @@ runbook. Apps do not depend on each other. The first app is
 `apps/settlement-feed/`.
 
 Operational procedures are in `playbooks/`: provision, load test, failover
-drill, validator swap, rootless install, and monitoring. Ready-made
-inventory shapes are in `examples/`.
+drill, validator swap, rootless install, monitoring, and the connected
+P-chain mode. Ready-made inventory shapes are in `examples/`.
 
 ## Runbooks
+
+The P-chain node has two modes, and every deployment picks one:
+
+- **frozen** (the default): the P-chain node runs from a captured snapshot
+  with no upstream connection. The fleet is fully isolated after the
+  deploy. Weight changes need an unfreeze cycle. This is the mode the
+  toolset exists for.
+- **follow**: the P-chain node tracks the public network continuously. The
+  fleet needs egress to `PCHAIN_API`, and `l1 set-weight` works live. See
+  [playbooks/07-connected-pchain.md](playbooks/07-connected-pchain.md).
 
 ### Fresh chain on a fresh fleet
 
@@ -174,6 +185,9 @@ PCHAIN_API_TOKEN=                         # optional rate-limit bypass, secret, 
 FUNDING_PRIVATE_KEY=                      # 64 hex chars, no 0x, pays P-chain fees
 SSH_USER=ubuntu
 SSH_KEY_PATH=/home/ubuntu/.ssh/fleet
+REMOTE_DIR=                               # install root; empty = /home/<SSH_USER>/avalanche-benchmark
+REMOTE_DATA_DIR=                          # optional: databases on a faster disk
+SYSTEM_INSTALL=false                      # true = legacy root install (systemd, sudo)
 ```
 
 An unknown field, a missing field, or a malformed value stops the command
@@ -189,8 +203,11 @@ there is silently dropped.
 `FUNDING_PRIVATE_KEY`. It sets `.env` to mode 0600. It refuses to run when
 `deployment/network.env` exists.
 
-For an install without root, also set `REMOTE_DIR`, and optionally
-`REMOTE_DATA_DIR`. See
+The install is user-level by default: everything under
+`/home/<SSH_USER>/avalanche-benchmark`, no sudo anywhere. `REMOTE_DIR`
+overrides the root, `REMOTE_DATA_DIR` puts the databases on a faster disk,
+and `SYSTEM_INSTALL=true` selects the legacy root install (systemd,
+restart-on-crash, start-on-boot; needs passwordless sudo). See
 [playbooks/05-rootless-install.md](playbooks/05-rootless-install.md).
 
 ## Commands
@@ -205,7 +222,7 @@ For an install without root, also set `REMOTE_DIR`, and optionally
 | `l1 topup <days>` | raise every registered validator to `<days>` of fee runway |
 | `l1 set-weight <letter> <1\|1000\|100000>` | weight-change failover through the committee |
 | `l1 destroy` | disable every validator, reclaim the balances, remove `deployment/` |
-| `fleet deploy <frozen\|follow> [--dry-run] [sel...]` | without selectors: the full inventory, P-chain first. With selectors: a rolling upgrade, one node through all phases before the next. A preflight tests every machine (ssh, tools, writable paths, disk) before any node stops. It changes nothing. `--dry-run` stops after the preflight. |
+| `fleet deploy [frozen\|follow] [--dry-run] [sel...]` | the mode is optional; the default is `frozen`. Without selectors: the full inventory, P-chain first. With selectors: a rolling upgrade, one node through all phases before the next. A preflight tests every machine (ssh, tools, writable paths, disk) before any node stops. It changes nothing. `--dry-run` stops after the preflight. |
 | `fleet pchain follow` | the first-run initializer, and the unfreeze. P-chain node only. |
 | `fleet pchain freeze` | require synced + both validator sets, then switch to empty bootstrap lists |
 | `fleet pchain archive` | stop, snapshot `db/`, restart, download, validate, write `./pchain.tar.gz` |
@@ -322,9 +339,13 @@ anything on them:
 | validator sets, weights | the public P-chain API |
 
 ```bash
-ssh -i ~/.ssh/fleet ubuntu@<pchain-host> \
-  'sudo tail -f /var/lib/avalanche-benchmark/<n>/logs/P.log | grep --line-buffered "blocks"'
+ssh -i ~/.ssh/fleet <user>@<pchain-host> \
+  'tail -f /home/<user>/avalanche-benchmark/data/<n>/logs/P.log | grep --line-buffered "blocks"'
 ```
+
+On a `SYSTEM_INSTALL=true` fleet, the log is at
+`/var/lib/avalanche-benchmark/<n>/logs/P.log` and the read needs sudo.
+`fleet status` prints the exact watch command for your install.
 
 ## Topology
 

@@ -52,15 +52,22 @@ type FleetEnvironment struct {
 	Network    string
 	SSHUser    string
 	SSHKeyPath string
-	// RemoteDir switches deploy to a user-level install: every fleet file
+	// RemoteDir is the root of the user-level install: every fleet file
 	// lives under this directory on the machines, nothing needs root, and
-	// nodes run as plain processes instead of systemd units. Empty means the
-	// system install (/opt, /etc, /var/lib + systemd), which needs sudo.
+	// nodes run as plain processes. Empty means the default root,
+	// /home/<SSH_USER>/avalanche-benchmark. The user-level install is the
+	// DEFAULT; nothing in it assumes sudo, systemd, or a Linux group named
+	// after the user, so it runs on locked-down RHEL hosts as-is.
 	RemoteDir string
 	// RemoteDataDir overrides where chain databases and logs live, so data
-	// can sit on a faster disk than the install. Empty means RemoteDir/data
-	// in a user-level install and /var/lib/avalanche-benchmark otherwise.
+	// can sit on a faster disk than the install. Empty means the install
+	// root's data/ subdirectory.
 	RemoteDataDir string
+	// SystemInstall selects the legacy root install: /opt, /etc, /var/lib,
+	// systemd units, sudo everywhere, restart on failure and on boot. It
+	// exists for hosts where boot persistence matters more than running
+	// without root, and it cannot be combined with REMOTE_DIR.
+	SystemInstall bool
 }
 
 type Config struct {
@@ -148,6 +155,7 @@ func validateEnvironmentFields(path string, values map[string]string) error {
 		"SSH_KEY_PATH":        {},
 		"REMOTE_DIR":          {},
 		"REMOTE_DATA_DIR":     {},
+		"SYSTEM_INSTALL":      {},
 	}
 	var unknown []string
 	for key := range values {
@@ -196,16 +204,29 @@ func LoadFleetEnvironment(path string) (FleetEnvironment, error) {
 	} else if info.IsDir() {
 		return FleetEnvironment{}, fmt.Errorf("%s: SSH_KEY_PATH %s is a directory", path, sshKeyPath)
 	}
+	remoteDir := strings.TrimSpace(values["REMOTE_DIR"])
 	remoteDataDir := strings.TrimSpace(values["REMOTE_DATA_DIR"])
-	if remoteDataDir != "" && strings.TrimSpace(values["REMOTE_DIR"]) == "" {
-		return FleetEnvironment{}, fmt.Errorf("%s: REMOTE_DATA_DIR requires REMOTE_DIR (user-level install)", path)
+	systemInstall := false
+	switch strings.TrimSpace(values["SYSTEM_INSTALL"]) {
+	case "", "false":
+	case "true":
+		systemInstall = true
+	default:
+		return FleetEnvironment{}, fmt.Errorf("%s: SYSTEM_INSTALL must be true or false, got %q", path, values["SYSTEM_INSTALL"])
+	}
+	if systemInstall && remoteDir != "" {
+		return FleetEnvironment{}, fmt.Errorf("%s: SYSTEM_INSTALL=true cannot be combined with REMOTE_DIR; a system install has fixed paths", path)
+	}
+	if systemInstall && remoteDataDir != "" {
+		return FleetEnvironment{}, fmt.Errorf("%s: SYSTEM_INSTALL=true cannot be combined with REMOTE_DATA_DIR; a system install has fixed paths", path)
 	}
 	return FleetEnvironment{
 		Network:       networkEnvironment.Network,
 		SSHUser:       sshUser,
 		SSHKeyPath:    sshKeyPath,
-		RemoteDir:     strings.TrimSpace(values["REMOTE_DIR"]),
+		RemoteDir:     remoteDir,
 		RemoteDataDir: remoteDataDir,
+		SystemInstall: systemInstall,
 	}, nil
 }
 

@@ -11,13 +11,16 @@ import (
 // layout answers where fleet files live on the machines and how node
 // processes are managed there. Two modes:
 //
-//   - system (default): /opt, /etc, /var/lib + systemd units. Every install
-//     and lifecycle command runs under sudo, and nodes restart on failure and
-//     on boot.
-//   - user (REMOTE_DIR set): everything under one user-owned directory, no
-//     sudo anywhere, nodes run as plain processes started by a rendered
-//     run.sh with a pidfile. No boot persistence and no auto-restart; the
-//     operator owns the lifecycle, as in the original REMOTE_DIR toolset.
+//   - user (DEFAULT): everything under one user-owned directory, no sudo
+//     anywhere, nodes run as plain processes started by a rendered run.sh
+//     with a pidfile. No boot persistence and no auto-restart; the operator
+//     owns the lifecycle. The root is REMOTE_DIR, or
+//     /home/<SSH_USER>/avalanche-benchmark when REMOTE_DIR is empty. The
+//     preflight fails loudly on a host whose home is elsewhere; set
+//     REMOTE_DIR there.
+//   - system (SYSTEM_INSTALL=true): /opt, /etc, /var/lib + systemd units.
+//     Every install and lifecycle command runs under sudo, and nodes restart
+//     on failure and on boot.
 type layout struct {
 	pkg  string // binaries and plugins, per node number
 	cfg  string // node.json, chain/subnet configs, staking keys
@@ -26,7 +29,7 @@ type layout struct {
 }
 
 func layoutFor(environment config.FleetEnvironment) layout {
-	if environment.RemoteDir == "" {
+	if environment.SystemInstall {
 		return layout{
 			pkg:  remotePackageDir,
 			cfg:  remoteConfigDir,
@@ -34,6 +37,9 @@ func layoutFor(environment config.FleetEnvironment) layout {
 		}
 	}
 	root := strings.TrimRight(environment.RemoteDir, "/")
+	if root == "" {
+		root = "/home/" + environment.SSHUser + "/avalanche-benchmark"
+	}
 	data := environment.RemoteDataDir
 	if data == "" {
 		data = root + "/data"

@@ -1,23 +1,31 @@
 # Playbook 05: rootless install
 
-This playbook runs the full fleet under a normal user account. No command
-uses sudo.
+The fleet runs under a normal user account by default. No command uses
+sudo. This playbook describes the defaults, the overrides, and the legacy
+root install.
 
 ## Configuration
 
-Set these values in `.env` on the control machine:
+The default install root is `/home/<SSH_USER>/avalanche-benchmark`. You
+configure nothing for it. In the user install, all files are under that
+directory. Each node runs as a normal process. A run script starts it, and
+a pidfile identifies it.
+
+Two optional overrides exist in `.env` on the control machine:
 
 ```bash
-REMOTE_DIR=/home/youruser/avalanche     # all fleet files go under this directory
-REMOTE_DATA_DIR=/nvme/youruser/data     # optional: databases on a faster disk
+REMOTE_DIR=/home/youruser/avalanche     # a different install root
+REMOTE_DATA_DIR=/nvme/youruser/data     # databases and logs on a faster disk
 ```
 
-An empty `REMOTE_DIR` selects the system install. The system install uses
-/opt, /etc, /var/lib, systemd, and sudo. A set `REMOTE_DIR` selects the
-user install. In the user install, all files are under your directory.
-Each node runs as a normal process. A run script starts it, and a pidfile
-identifies it. `REMOTE_DATA_DIR` is optional. Its default is
-`REMOTE_DIR/data`.
+`REMOTE_DATA_DIR` defaults to the `data/` subdirectory of the install
+root. Set `REMOTE_DIR` when the ssh user's home is not under `/home`, for
+example for root.
+
+`SYSTEM_INSTALL=true` selects the legacy root install instead: /opt, /etc,
+/var/lib, systemd units, and sudo everywhere. It gives restart-on-crash
+and start-on-boot, and it needs passwordless sudo on every machine. It
+cannot be combined with `REMOTE_DIR` or `REMOTE_DATA_DIR`.
 
 ## Test the hosts first
 
@@ -35,7 +43,7 @@ your group name is not your user name, for example on RHEL. The staging
 paths in /tmp include your user name, so two operators on one host do not
 collide.
 
-## Differences from the system install
+## Differences from the legacy root install
 
 - No node starts at boot. No node restarts after a crash. After a host
   reboot, run `./bin/fleet pchain start`, then `./bin/fleet start`. If

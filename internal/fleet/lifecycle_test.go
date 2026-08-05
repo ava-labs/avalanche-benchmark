@@ -92,7 +92,7 @@ func TestSelectNodesCannotReachPChain(t *testing.T) {
 
 func destroyState(chainID ids.ID) deployment {
 	return deployment{
-		environment: config.FleetEnvironment{SSHUser: "ubuntu", SSHKeyPath: "/key"},
+		environment: config.FleetEnvironment{SSHUser: "ubuntu", SSHKeyPath: "/key", SystemInstall: true},
 		chainID:     chainID,
 		selected: []nodeDeployment{
 			{node: config.Node{Number: 1, Host: "v1", Role: config.RoleValidator}},
@@ -166,7 +166,7 @@ func TestStartRepushesIdentityBetweenStopAndStart(t *testing.T) {
 	runner := &recordingRunner{}
 	deployer := &Deployer{root: t.TempDir(), out: io.Discard, runner: runner}
 	state := deployment{
-		environment: config.FleetEnvironment{SSHUser: "ubuntu", SSHKeyPath: "/key"},
+		environment: config.FleetEnvironment{SSHUser: "ubuntu", SSHKeyPath: "/key", SystemInstall: true},
 		selected: []nodeDeployment{
 			{node: config.Node{Number: 1, Host: "v1", Role: config.RoleValidator}},
 		},
@@ -281,7 +281,7 @@ func pchainLifecycleInventory(t *testing.T, environment config.FleetEnvironment)
 // API, no reinstall, no other host.
 func TestPChainStartAndStopTouchOnlyThePChainMachine(t *testing.T) {
 	for name, environment := range map[string]config.FleetEnvironment{
-		"system": {SSHUser: "ubuntu", SSHKeyPath: "/key"},
+		"system": {SSHUser: "ubuntu", SSHKeyPath: "/key", SystemInstall: true},
 		"user":   {SSHUser: "op", SSHKeyPath: "/key", RemoteDir: "/home/op/kit"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -330,7 +330,7 @@ func TestPChainStartAndStopTouchOnlyThePChainMachine(t *testing.T) {
 // A failed liveness check must be an error: "started" with a dead process is
 // how a reboot recovery silently fails.
 func TestPChainStartFailsWhenTheProcessDoesNotStayUp(t *testing.T) {
-	inv := pchainLifecycleInventory(t, config.FleetEnvironment{SSHUser: "ubuntu", SSHKeyPath: "/key"})
+	inv := pchainLifecycleInventory(t, config.FleetEnvironment{SSHUser: "ubuntu", SSHKeyPath: "/key", SystemInstall: true})
 	runner := &recordingRunner{runErrors: map[int]error{1: errors.New("inactive")}}
 	deployer := &Deployer{root: t.TempDir(), out: io.Discard, runner: runner}
 	err := deployer.startPChain(context.Background(), inv)

@@ -60,7 +60,7 @@ cp pchain.tar.gz "$STAGE/$NAME/"
 sed -E 's/^(FUNDING_PRIVATE_KEY)=.*/\1=/; s/^(PCHAIN_API_TOKEN)=.*/\1=/' \
   .env > "$STAGE/$NAME/.env"
 grep -q '^REMOTE_DIR=' "$STAGE/$NAME/.env" || {
-  printf '\n# User-level install (no root): set both or neither.\nREMOTE_DIR=\nREMOTE_DATA_DIR=\n' \
+  printf '\n# Install root. Empty means /home/<SSH_USER>/avalanche-benchmark (user-level, no root).\nREMOTE_DIR=\nREMOTE_DATA_DIR=\n' \
     >> "$STAGE/$NAME/.env"
 }
 if grep -qE '^(FUNDING_PRIVATE_KEY|PCHAIN_API_TOKEN)=..' "$STAGE/$NAME/.env"; then

@@ -11,9 +11,9 @@ Make sure that these conditions are true:
 - Each machine has a fast disk. NVMe is good. A disk with fsync latency
   above one millisecond is not good for benchmark work.
 - The file `.env` exists. Copy it from `.env.example`. Set the network, the
-  P-chain API, the funded key, and the ssh values. If you do not have root
-  on the machines, also set `REMOTE_DIR`. See
-  [05-rootless-install.md](05-rootless-install.md).
+  P-chain API, the funded key, and the ssh values. Root is not necessary:
+  the install runs under the ssh user by default. See
+  [05-rootless-install.md](05-rootless-install.md) for the install options.
 - The file `nodes.ini` exists. Copy a shape from `examples/` and set your
   hosts. Do not change the node numbers or the roles.
 - The binaries exist in `bin/`. Run `make package-build` to build them.

@@ -103,7 +103,7 @@ func TestRenderPChainFollowsDefaultsAndL1UsesPChain(t *testing.T) {
 	writeTestFile(t, filepath.Join(root, "chain-config.json"), `{}`)
 	writeTestFile(t, filepath.Join(root, "chain-config-rpc.json"), `{}`)
 	writeTestFile(t, filepath.Join(root, "subnet-config.json"), `{"snowParameters":{"k":20,"alphaPreference":11,"alphaConfidence":11,"beta":12},"proposerWindowMilliseconds":50,"proposerMillisecondTimestamps":true}`)
-	environment := config.FleetEnvironment{Network: "fuji", SSHUser: "ubuntu"}
+	environment := config.FleetEnvironment{Network: "fuji", SSHUser: "ubuntu", SystemInstall: true}
 	chainID := ids.GenerateTestID()
 	subnetID := ids.GenerateTestID()
 
@@ -208,7 +208,7 @@ func TestFrozenDeployPreservesExistingPChainDatabase(t *testing.T) {
 	runner := &recordingRunner{output: []byte("present")}
 	var output bytes.Buffer
 	deployer := &Deployer{root: t.TempDir(), out: &output, runner: runner}
-	deployment := deployment{environment: config.FleetEnvironment{SSHUser: "ubuntu"}}
+	deployment := deployment{environment: config.FleetEnvironment{SSHUser: "ubuntu", SystemInstall: true}}
 	pchain := nodeDeployment{node: config.Node{Number: 13, Host: "pchain"}}
 	if err := deployer.seedPChain(context.Background(), deployment, pchain); err != nil {
 		t.Fatal(err)
@@ -228,8 +228,9 @@ func TestFrozenDeployRestoresArchiveIntoEmptyPChainDatabase(t *testing.T) {
 	deployer := &Deployer{root: root, out: io.Discard, runner: runner}
 	deployment := deployment{
 		environment: config.FleetEnvironment{
-			SSHUser:    "ubuntu",
-			SSHKeyPath: "/key",
+			SSHUser:       "ubuntu",
+			SSHKeyPath:    "/key",
+			SystemInstall: true,
 		},
 	}
 	pchain := nodeDeployment{node: config.Node{Number: 13, Host: "pchain"}}
@@ -263,7 +264,7 @@ func TestPChainPackageDoesNotTransferL1Plugin(t *testing.T) {
 	writeTestFile(t, filepath.Join(renderDir, "node.json"), "{}")
 	runner := &recordingRunner{}
 	deployer := &Deployer{root: root, out: io.Discard, runner: runner}
-	state := deployment{environment: config.FleetEnvironment{SSHUser: "ubuntu"}}
+	state := deployment{environment: config.FleetEnvironment{SSHUser: "ubuntu", SystemInstall: true}}
 	node := nodeDeployment{
 		node:      config.Node{Number: 6, Host: "pchain", Role: config.RolePChain},
 		renderDir: renderDir,
@@ -298,7 +299,7 @@ func TestL1PackageTransfersAndInstallsPlugin(t *testing.T) {
 	runner := &recordingRunner{}
 	deployer := &Deployer{root: root, out: io.Discard, runner: runner}
 	state := deployment{
-		environment: config.FleetEnvironment{SSHUser: "ubuntu"},
+		environment: config.FleetEnvironment{SSHUser: "ubuntu", SystemInstall: true},
 		chainID:     ids.GenerateTestID(),
 		subnetID:    ids.GenerateTestID(),
 	}
@@ -347,7 +348,7 @@ func TestReconcilePChainTouchesOnlyPChainAndVerifiesService(t *testing.T) {
 		renderDir: renderDir,
 	}
 	state := deployment{
-		environment: config.FleetEnvironment{SSHUser: "ubuntu"},
+		environment: config.FleetEnvironment{SSHUser: "ubuntu", SystemInstall: true},
 		pchain:      pchain,
 		selected: []nodeDeployment{{
 			node: config.Node{Number: 1, Host: "validator-host", Role: config.RoleValidator},
@@ -509,7 +510,7 @@ func TestRenderConfigsPairsPeersFromPlacementNotKeygen(t *testing.T) {
 	}
 
 	inv := placementTestInventory(t)
-	inv.environment = config.FleetEnvironment{Network: "fuji", SSHUser: "ubuntu"}
+	inv.environment = config.FleetEnvironment{Network: "fuji", SSHUser: "ubuntu", SystemInstall: true}
 	inv.ports = portsByNode(inv.nodes)
 	inv.pchain = inv.nodes[5]
 	swapped, _, err := planPlace(inv, "a", 3)
@@ -558,6 +559,7 @@ func writeFleetInputs(t *testing.T, root string) {
 		"FUNDING_PRIVATE_KEY=",
 		"SSH_USER=ubuntu",
 		"SSH_KEY_PATH=" + keyPath,
+		"SYSTEM_INSTALL=true",
 	}, "\n"))
 	writeTestFile(t, filepath.Join(root, "nodes.ini"), strings.Join([]string{
 		"1 host=v1 role=validator",
@@ -611,7 +613,7 @@ func TestRenderOracleAndArchiveRoles(t *testing.T) {
 	writeTestFile(t, filepath.Join(root, "chain-config-archive.json"), `{"archive":true}`)
 	writeTestFile(t, filepath.Join(root, "subnet-config.json"), `{"l1":"main"}`)
 	writeTestFile(t, filepath.Join(root, "subnet-config-oracle.json"), `{"l1":"oracle"}`)
-	environment := config.FleetEnvironment{Network: "fuji", SSHUser: "ubuntu"}
+	environment := config.FleetEnvironment{Network: "fuji", SSHUser: "ubuntu", SystemInstall: true}
 	oracleChainID := ids.GenerateTestID()
 	oracleSubnetID := ids.GenerateTestID()
 
@@ -733,6 +735,15 @@ func TestLayoutSeparatesUserAndSystemInstalls(t *testing.T) {
 	if user.pkg != "/home/op/bench/pkg" || user.cfg != "/home/op/bench/config" || user.data != "/nvme/data" {
 		t.Fatalf("user layout paths = %+v", user)
 	}
+
+	// The user install is the DEFAULT: an empty REMOTE_DIR roots it in the
+	// ssh user's home, and nothing selects the system install implicitly.
+	fallback := layoutFor(config.FleetEnvironment{SSHUser: "op"})
+	if !fallback.user || fallback.pkg != "/home/op/avalanche-benchmark/pkg" ||
+		fallback.cfg != "/home/op/avalanche-benchmark/config" ||
+		fallback.data != "/home/op/avalanche-benchmark/data" {
+		t.Fatalf("default layout = %+v, want a user install under /home/op/avalanche-benchmark", fallback)
+	}
 	for name, command := range map[string]string{
 		"start":        user.startCommand(node),
 		"stop":         user.stopCommand(node),
@@ -743,7 +754,7 @@ func TestLayoutSeparatesUserAndSystemInstalls(t *testing.T) {
 		}
 	}
 
-	system := layoutFor(config.FleetEnvironment{})
+	system := layoutFor(config.FleetEnvironment{SystemInstall: true})
 	if system.pkg != remotePackageDir || system.cfg != remoteConfigDir || system.data != remoteDataDir {
 		t.Fatalf("system layout paths = %+v", system)
 	}
@@ -804,7 +815,7 @@ func TestProcessPatternsAreScopedToTheInstall(t *testing.T) {
 	}
 
 	// The system layout anchors to its own constants the same way.
-	system := layoutFor(config.FleetEnvironment{})
+	system := layoutFor(config.FleetEnvironment{SystemInstall: true})
 	if !strings.Contains(system.processPattern(13), remoteConfigDir) {
 		t.Fatalf("system process pattern %q is not anchored to %s", system.processPattern(13), remoteConfigDir)
 	}

@@ -195,7 +195,7 @@ func TestObservePChainDrivesTheFrozenGate(t *testing.T) {
 
 func TestPChainWatchHintNamesTheExactCommand(t *testing.T) {
 	hint := pchainWatchHint(
-		config.FleetEnvironment{SSHUser: "ubuntu", SSHKeyPath: "/home/me/key.pem"},
+		config.FleetEnvironment{SSHUser: "ubuntu", SSHKeyPath: "/home/me/key.pem", SystemInstall: true},
 		nodeDeployment{node: config.Node{Number: 13, Host: "54.67.148.21"}},
 	)
 	want := "watch: ssh -i /home/me/key.pem ubuntu@54.67.148.21 " +

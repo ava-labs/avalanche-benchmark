@@ -17,7 +17,7 @@ func TestUsageUsesExecutableName(t *testing.T) {
 	}
 	message := err.Error()
 	for _, expected := range []string{
-		"benchmark-fleet deploy <frozen|follow> [--dry-run]",
+		"benchmark-fleet deploy [frozen|follow] [--dry-run]",
 		"benchmark-fleet pchain <archive|follow|freeze|start|stop>",
 		"benchmark-fleet status",
 		"benchmark-fleet place <identity-letter> <node>",

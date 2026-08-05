@@ -21,7 +21,7 @@ func TestPreflightCommandMatchesTheInstallMode(t *testing.T) {
 		t.Fatalf("user preflight reaches for root: %s", user)
 	}
 
-	system := preflightCommand(layoutFor(config.FleetEnvironment{}))
+	system := preflightCommand(layoutFor(config.FleetEnvironment{SystemInstall: true}))
 	for _, want := range []string{"sudo -n true", "systemctl", "tar", "rsync", remoteDataDir, "exit $fail"} {
 		if !strings.Contains(system, want) {
 			t.Fatalf("system preflight lacks %q: %s", want, system)

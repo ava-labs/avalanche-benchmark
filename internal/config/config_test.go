@@ -116,6 +116,52 @@ func TestLoadFleetEnvironmentRequiresSSHButNotFundingKey(t *testing.T) {
 	if environment.Network != "fuji" || environment.SSHUser != "ubuntu" || environment.SSHKeyPath != keyPath {
 		t.Fatalf("unexpected fleet environment: %+v", environment)
 	}
+	if environment.SystemInstall {
+		t.Fatal("the user-level install must be the default")
+	}
+}
+
+// The system install is an explicit opt-in with fixed paths, so it cannot be
+// combined with the user-install directory overrides, and the flag itself
+// must parse strictly.
+func TestLoadFleetEnvironmentSystemInstallRules(t *testing.T) {
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "fleet-key")
+	writeFile(t, keyPath, "private")
+	base := []string{
+		"NETWORK=fuji",
+		"PCHAIN_API=https://api.avax-test.network",
+		"SSH_USER=ubuntu",
+		"SSH_KEY_PATH=" + keyPath,
+	}
+	load := func(t *testing.T, extra ...string) (FleetEnvironment, error) {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), ".env")
+		writeFile(t, path, strings.Join(append(append([]string{}, base...), extra...), "\n"))
+		return LoadFleetEnvironment(path)
+	}
+
+	environment, err := load(t, "SYSTEM_INSTALL=true")
+	if err != nil || !environment.SystemInstall {
+		t.Fatalf("SYSTEM_INSTALL=true: environment=%+v err=%v", environment, err)
+	}
+	if environment, err = load(t, "SYSTEM_INSTALL=false"); err != nil || environment.SystemInstall {
+		t.Fatalf("SYSTEM_INSTALL=false: environment=%+v err=%v", environment, err)
+	}
+	if _, err := load(t, "SYSTEM_INSTALL=yes"); err == nil {
+		t.Fatal("SYSTEM_INSTALL=yes must be rejected")
+	}
+	if _, err := load(t, "SYSTEM_INSTALL=true", "REMOTE_DIR=/home/op/kit"); err == nil {
+		t.Fatal("SYSTEM_INSTALL with REMOTE_DIR must be rejected")
+	}
+	if _, err := load(t, "SYSTEM_INSTALL=true", "REMOTE_DATA_DIR=/nvme/data"); err == nil {
+		t.Fatal("SYSTEM_INSTALL with REMOTE_DATA_DIR must be rejected")
+	}
+	// REMOTE_DATA_DIR alone is valid now: it re-points the data of the
+	// DEFAULT user install.
+	if environment, err = load(t, "REMOTE_DATA_DIR=/nvme/data"); err != nil || environment.RemoteDataDir != "/nvme/data" {
+		t.Fatalf("REMOTE_DATA_DIR alone: environment=%+v err=%v", environment, err)
+	}
 }
 
 func TestLoadNodesFailsLoudly(t *testing.T) {
