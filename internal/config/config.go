@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,11 +26,53 @@ const (
 	RoleOracleRPC       Role = "oracle-rpc"
 )
 
+// MainChain is the default chain of every L1 role and the one whose state
+// keeps the bare network.env keys (CHAIN_ID, SUBNET_ID, CONVERT_TX_ID).
+const MainChain = "main"
+
+// OracleChain is the chain the legacy oracle roles pin. The name is reserved:
+// the oracle L1's application behavior (Warp receiver, relay) keys on the
+// oracle roles, so a plain validator cannot join that chain.
+const OracleChain = "oracle"
+
+// chainNamePattern bounds chain names so they can name directories
+// (chains/<name>/) and network.env keys (CHAIN_<NAME>_ID) without escaping.
+var chainNamePattern = regexp.MustCompile(`^[a-z0-9-]{1,20}$`)
+
 type Node struct {
 	Number int
 	Host   string
 	Role   Role
 	DC     string
+	// Chain is the L1 this node serves, already resolved: "main" when the
+	// inventory omits chain=, "oracle" for the oracle roles, and empty for
+	// the P-chain node, which serves every chain and belongs to none.
+	Chain string
+}
+
+// Chains returns the unique chain names the inventory declares, main first
+// when present and the rest in name order. The P-chain node declares no
+// chain and is skipped.
+func Chains(nodes []Node) []string {
+	seen := make(map[string]struct{}, 4)
+	var names []string
+	for _, node := range nodes {
+		if node.Chain == "" {
+			continue
+		}
+		if _, exists := seen[node.Chain]; exists {
+			continue
+		}
+		seen[node.Chain] = struct{}{}
+		names = append(names, node.Chain)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if names[i] == MainChain || names[j] == MainChain {
+			return names[i] == MainChain
+		}
+		return names[i] < names[j]
+	})
+	return names
 }
 
 type Environment struct {
@@ -291,7 +334,7 @@ func LoadNodes(path string) ([]Node, error) {
 			continue
 		}
 		if len(fields) < 3 {
-			return nil, fmt.Errorf("%s:%d: expected <node-number> host=<address> role=validator|rpc|pchain|archive|oracle-validator|oracle-rpc [dc=<tag>]", path, lineNumber)
+			return nil, fmt.Errorf("%s:%d: expected <node-number> host=<address> role=validator|rpc|pchain|archive|oracle-validator|oracle-rpc [chain=<name>] [dc=<tag>]", path, lineNumber)
 		}
 
 		number, err := strconv.Atoi(fields[0])
@@ -309,7 +352,7 @@ func LoadNodes(path string) ([]Node, error) {
 			if !ok || key == "" || value == "" {
 				return nil, fmt.Errorf("%s:%d: expected key=value, got %q", path, lineNumber, field)
 			}
-			if key != "host" && key != "role" && key != "dc" {
+			if key != "host" && key != "role" && key != "dc" && key != "chain" {
 				return nil, fmt.Errorf("%s:%d: unknown node field %q", path, lineNumber, key)
 			}
 			if _, exists := values[key]; exists {
@@ -328,28 +371,66 @@ func LoadNodes(path string) ([]Node, error) {
 		default:
 			return nil, fmt.Errorf("%s:%d: role must be validator, rpc, pchain, archive, oracle-validator, or oracle-rpc, got %q", path, lineNumber, values["role"])
 		}
-		nodes = append(nodes, Node{Number: number, Host: host, Role: role, DC: values["dc"]})
+		chain := values["chain"]
+		if chain != "" && !chainNamePattern.MatchString(chain) {
+			return nil, fmt.Errorf("%s:%d: chain must be 1 to 20 characters of lowercase letters, digits, and hyphens, got %q", path, lineNumber, chain)
+		}
+		switch role {
+		case RolePChain:
+			// The P-chain node serves every chain: it is the bootstrap
+			// rendezvous for all of them and tracks none.
+			if chain != "" {
+				return nil, fmt.Errorf("%s:%d: the P-chain node serves every chain; chain= is not valid with role=pchain", path, lineNumber)
+			}
+		case RoleOracleValidator, RoleOracleRPC:
+			if chain != "" && chain != OracleChain {
+				return nil, fmt.Errorf("%s:%d: role %s always serves chain %q, got chain=%q", path, lineNumber, role, OracleChain, chain)
+			}
+			chain = OracleChain
+		default:
+			if chain == "" {
+				chain = MainChain
+			}
+			if chain == OracleChain {
+				return nil, fmt.Errorf("%s:%d: chain name %q is reserved for the oracle-validator and oracle-rpc roles", path, lineNumber, OracleChain)
+			}
+			if chain == "management" {
+				return nil, fmt.Errorf("%s:%d: chain name %q is reserved for the management chain", path, lineNumber, chain)
+			}
+		}
+		nodes = append(nodes, Node{Number: number, Host: host, Role: role, DC: values["dc"], Chain: chain})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read inventory %s: %w", path, err)
 	}
 
-	validatorCount := 0
-	rpcCount := 0
 	pchainCount := 0
-	archiveCount := 0
 	oracleValidatorCount := 0
 	oracleRPCCount := 0
+	type chainShape struct {
+		validators int
+		rpcs       int
+		archives   int
+	}
+	shapes := make(map[string]*chainShape, 2)
+	shapeOf := func(chain string) *chainShape {
+		shape, exists := shapes[chain]
+		if !exists {
+			shape = &chainShape{}
+			shapes[chain] = shape
+		}
+		return shape
+	}
 	for _, node := range nodes {
 		switch node.Role {
 		case RoleValidator:
-			validatorCount++
+			shapeOf(node.Chain).validators++
 		case RoleRPC:
-			rpcCount++
+			shapeOf(node.Chain).rpcs++
 		case RolePChain:
 			pchainCount++
 		case RoleArchive:
-			archiveCount++
+			shapeOf(node.Chain).archives++
 		case RoleOracleValidator:
 			oracleValidatorCount++
 		case RoleOracleRPC:
@@ -358,21 +439,32 @@ func LoadNodes(path string) ([]Node, error) {
 	}
 	// Structural rules stay hard errors: deploy cannot work without them.
 	// Shape opinions (validator count, RPC count, archive redundancy) are
-	// warnings, so an operator can experiment with any topology and still
-	// hears why the recommended shape is what it is.
+	// warnings per chain, so an operator can experiment with any topology and
+	// still hears why the recommended shape is what it is.
 	if pchainCount != 1 {
 		return nil, fmt.Errorf("%s: expected exactly 1 P-chain node, found %d", path, pchainCount)
 	}
-	if validatorCount < 4 {
-		fmt.Fprintf(os.Stderr, "warning: %s declares %d validator(s); the tested failover shape uses 4 or more (3 heavy + spares), and fewer validators tolerate less loss\n", path, validatorCount)
-	}
-	if rpcCount < 1 {
-		fmt.Fprintf(os.Stderr, "warning: %s declares no rpc node; bombard and transaction ingress need role=rpc, and serving transactions on a validator slows its block production\n", path)
-	}
-	// A single archive cannot cross-check its own answers and leaves no
-	// replica while it re-executes from genesis after a loss.
-	if archiveCount == 1 {
-		fmt.Fprintf(os.Stderr, "warning: %s declares a single archive node; it cannot cross-check its answers and re-executes from genesis alone after a loss\n", path)
+	for _, chain := range Chains(nodes) {
+		if chain == OracleChain {
+			continue
+		}
+		shape := shapeOf(chain)
+		// A chain with no validator cannot convert to an L1, so declaring one
+		// through rpc or archive lines alone is structurally impossible.
+		if shape.validators == 0 {
+			return nil, fmt.Errorf("%s: chain %q declares no validator; a chain needs at least 1 role=validator node", path, chain)
+		}
+		if shape.validators < 4 {
+			fmt.Fprintf(os.Stderr, "warning: %s declares %d validator(s) on chain %q; the tested failover shape uses 4 or more (3 heavy + spares), and fewer validators tolerate less loss\n", path, shape.validators, chain)
+		}
+		if shape.rpcs < 1 {
+			fmt.Fprintf(os.Stderr, "warning: %s declares no rpc node on chain %q; bombard and transaction ingress need role=rpc, and serving transactions on a validator slows its block production\n", path, chain)
+		}
+		// A single archive cannot cross-check its own answers and leaves no
+		// replica while it re-executes from genesis after a loss.
+		if shape.archives == 1 {
+			fmt.Fprintf(os.Stderr, "warning: %s declares a single archive node on chain %q; it cannot cross-check its answers and re-executes from genesis alone after a loss\n", path, chain)
+		}
 	}
 	// The oracle L1 is opt-in: no oracle nodes means no oracle chain. When it
 	// exists, its feed ingress must stay off its validators, same as main.

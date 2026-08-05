@@ -210,6 +210,91 @@ func TestLoadNodesAllowsUnconventionalShapes(t *testing.T) {
 	}
 }
 
+// The chain field defaults to main, oracle roles pin the oracle chain, and
+// the P-chain node belongs to no chain.
+func TestLoadNodesChainField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nodes.ini")
+	writeFile(t, path, strings.Join([]string{
+		"1 host=v1 role=validator",
+		"2 host=v2 role=validator",
+		"3 host=v3 role=validator",
+		"4 host=v4 role=validator",
+		"5 host=r1 role=rpc",
+		"6 host=p1 role=pchain",
+		"7 host=t1 role=validator chain=trading",
+		"8 host=t2 role=validator chain=trading",
+		"9 host=t3 role=validator chain=trading",
+		"10 host=t4 role=validator chain=trading",
+		"11 host=t5 role=rpc chain=trading",
+		"12 host=o1 role=oracle-validator",
+		"13 host=o2 role=oracle-rpc chain=oracle",
+	}, "\n"))
+
+	nodes, err := LoadNodes(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byNumber := make(map[int]Node, len(nodes))
+	for _, node := range nodes {
+		byNumber[node.Number] = node
+	}
+	for number, want := range map[int]string{
+		1: "main", 5: "main", 6: "", 7: "trading", 11: "trading", 12: "oracle", 13: "oracle",
+	} {
+		if byNumber[number].Chain != want {
+			t.Fatalf("node %d chain = %q, want %q", number, byNumber[number].Chain, want)
+		}
+	}
+	chains := Chains(nodes)
+	if len(chains) != 3 || chains[0] != "main" || chains[1] != "oracle" || chains[2] != "trading" {
+		t.Fatalf("Chains = %v, want [main oracle trading]", chains)
+	}
+}
+
+// Chains puts main first even when other chains sort before it, and skips
+// the P-chain node.
+func TestChainsOrdersMainFirst(t *testing.T) {
+	chains := Chains([]Node{
+		{Number: 1, Chain: "alpha"},
+		{Number: 2, Chain: "main"},
+		{Number: 3, Chain: "beta"},
+		{Number: 4, Chain: ""},
+		{Number: 5, Chain: "alpha"},
+	})
+	if len(chains) != 3 || chains[0] != "main" || chains[1] != "alpha" || chains[2] != "beta" {
+		t.Fatalf("Chains = %v, want [main alpha beta]", chains)
+	}
+}
+
+func TestLoadNodesChainErrors(t *testing.T) {
+	base := []string{
+		"1 host=v1 role=validator",
+		"2 host=v2 role=validator",
+		"3 host=v3 role=validator",
+		"4 host=v4 role=validator",
+		"5 host=r1 role=rpc",
+		"6 host=p1 role=pchain",
+	}
+	tests := map[string][]string{
+		"uppercase chain name":      append(append([]string{}, base...), "7 host=t1 role=validator chain=Trading"),
+		"chain name too long":       append(append([]string{}, base...), "7 host=t1 role=validator chain=aaaaaaaaaaaaaaaaaaaaa"),
+		"reserved oracle name":      append(append([]string{}, base...), "7 host=t1 role=validator chain=oracle"),
+		"reserved management name":  append(append([]string{}, base...), "7 host=t1 role=validator chain=management"),
+		"oracle role other chain":   append(append([]string{}, base...), "7 host=o1 role=oracle-validator chain=trading", "8 host=o2 role=oracle-rpc"),
+		"pchain with chain":         []string{"1 host=v1 role=validator", "2 host=v2 role=validator", "3 host=v3 role=validator", "4 host=v4 role=validator", "5 host=r1 role=rpc", "6 host=p1 role=pchain chain=main"},
+		"chain without a validator": append(append([]string{}, base...), "7 host=t1 role=rpc chain=trading"),
+	}
+	for name, lines := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "nodes.ini")
+			writeFile(t, path, strings.Join(lines, "\n"))
+			if _, err := LoadNodes(path); err == nil {
+				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
 func TestLoadNodesOracleAndArchiveRoles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nodes.ini")
 	writeFile(t, path, strings.Join([]string{
