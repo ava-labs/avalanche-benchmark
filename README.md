@@ -10,6 +10,18 @@ Linux hosts reachable from one control machine over ssh, and a P-chain API endpo
 
 The fleet we develop and test against is EC2 across two AWS regions, which is why some notes below cite AWS behaviour. That is our test bed, not a requirement, and none of the tooling knows about a cloud provider. Bare metal, two physical data centers, or twelve VMs on one hypervisor all work; the only thing `dc=` tags do is label nodes in the `fleet status` table.
 
+## Layout
+
+Two layers plus docs. The **base layer** (this README, `cmd/`, `internal/`,
+`monitoring/`) provisions and operates the chain: deploy, load (`bombard` is
+part of the base, since failover means nothing without load), failover,
+monitoring. **Apps** under `apps/` are self-contained business cases on top;
+each ships its own contracts, services, dashboards overlay, and runbook, and
+apps never depend on each other. First app: `apps/settlement-feed/`.
+Operational recipes live in `playbooks/` (provision, load test, failover
+drill, validator swap, rootless install, monitoring); ready-made inventory
+shapes in `examples/`.
+
 ## Runbooks
 
 ### Fresh chain on a fresh fleet
