@@ -96,5 +96,12 @@ pack-fast:
 	tar -czf remote-benchmark.tar.gz $(PACK_FILES)
 	tar -tzf remote-benchmark.tar.gz
 
+# Client handover: base + one app + this deployment's identities and frozen
+# P-chain, secrets stripped, denylist enforced. Run from a deployment root.
+APP ?= settlement-feed
+BUNDLE ?= avalanche-l1-bundle.zip
+bundle:
+	bash tools/bundle.sh $(APP) $(BUNDLE)
+
 clean:
 	rm -rf bin .build remote-benchmark.tar.gz

@@ -78,3 +78,4 @@ apps/*/contracts/out/
 .DS_Store
 .linux-build/
 /.questions/
+/.bundle-denylist
