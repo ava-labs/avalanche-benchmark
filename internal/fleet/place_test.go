@@ -105,6 +105,49 @@ func TestPlaceRejectsNonValidatorMachinesAndIdentities(t *testing.T) {
 	}
 }
 
+// An identity carries its chain's stake, so a place across chains is refused
+// in both directions, and the same file check refuses a hand-edited
+// placement.json that crosses chains.
+func TestPlaceRefusesCrossChainSwaps(t *testing.T) {
+	inv := placementTestInventory(t)
+	inv.nodes = append(inv.nodes,
+		config.Node{Number: 7, Host: "t1", Role: config.RoleValidator, Chain: "trading"},
+		config.Node{Number: 8, Host: "t2", Role: config.RoleValidator, Chain: "trading"},
+	)
+	inv.public.Nodes = append(inv.public.Nodes,
+		creation.PublicNode{Identity: "g", Node: 7, Role: config.RoleValidator, Chain: "trading", NodeID: "NodeID-G"},
+		creation.PublicNode{Identity: "h", Node: 8, Role: config.RoleValidator, Chain: "trading", NodeID: "NodeID-H"},
+	)
+	inv.placement = placement.Default(inv.public)
+	for _, node := range inv.public.Nodes {
+		inv.identityByLetter[node.Identity] = node
+	}
+
+	if _, _, err := planPlace(inv, "a", 7); err == nil || !strings.Contains(err.Error(), "one chain only") {
+		t.Fatalf("main identity moved onto a trading machine: %v", err)
+	}
+	if _, _, err := planPlace(inv, "g", 1); err == nil || !strings.Contains(err.Error(), "one chain only") {
+		t.Fatalf("trading identity moved onto a main machine: %v", err)
+	}
+	// Within its own chain the move stays legal.
+	next, _, err := planPlace(inv, "g", 8)
+	if err != nil {
+		t.Fatalf("same-chain place refused: %v", err)
+	}
+	if err := placement.Validate(next, inv.public, inv.nodes); err != nil {
+		t.Fatalf("same-chain swap broke validation: %v", err)
+	}
+
+	crossed := placement.Placement{}
+	for number, letter := range inv.placement {
+		crossed[number] = letter
+	}
+	crossed[1], crossed[7] = "g", "a"
+	if err := placement.Validate(crossed, inv.public, inv.nodes); err == nil || !strings.Contains(err.Error(), "chain") {
+		t.Fatalf("cross-chain placement.json accepted: %v", err)
+	}
+}
+
 func TestReconcilePlacementRestartsOnlyDriftedOrInterruptedNodes(t *testing.T) {
 	inv := placementTestInventory(t)
 	inv.placement = placement.Placement{1: "c", 2: "b", 3: "a", 4: "d", 5: "e", 6: "f"}

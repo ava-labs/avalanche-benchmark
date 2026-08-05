@@ -62,6 +62,7 @@ type statusRow struct {
 	number int
 	dc     string
 	role   string
+	chain  string
 	id     string
 	weight string
 	state  string
@@ -71,14 +72,18 @@ type statusRow struct {
 func renderStatusTable(rows []statusRow) string {
 	var buffer bytes.Buffer
 	writer := tabwriter.NewWriter(&buffer, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(writer, "NODE\tDC\tROLE\tID\tWEIGHT\tSTATE\tHEIGHT")
+	fmt.Fprintln(writer, "NODE\tDC\tROLE\tCHAIN\tID\tWEIGHT\tSTATE\tHEIGHT")
 	for _, row := range rows {
 		dc := row.dc
 		if strings.TrimSpace(dc) == "" {
 			dc = statusNA
 		}
-		fmt.Fprintf(writer, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			row.number, dc, row.role, row.id, row.weight, row.state, row.height)
+		chain := row.chain
+		if strings.TrimSpace(chain) == "" {
+			chain = statusNA
+		}
+		fmt.Fprintf(writer, "%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			row.number, dc, row.role, chain, row.id, row.weight, row.state, row.height)
 	}
 	writer.Flush()
 	return buffer.String()
@@ -147,10 +152,14 @@ type statusPChainProbe struct {
 	created        bool
 	setsOK         bool
 	setsSource     string
-	mainVisible    bool
 	managerVisible bool
-	mainWeights    map[string]uint64
-	failures       []string
+	// visibleByChain reports, per declared chain, whether the full expected
+	// validator set is visible on the P-chain.
+	visibleByChain map[string]bool
+	// weights is every L1 validator's weight, keyed by NodeID. NodeIDs are
+	// unique across chains, so one map covers them all.
+	weights  map[string]uint64
+	failures []string
 }
 
 // pchainStatusRow turns the raw P-chain observations into printable cells.
@@ -179,12 +188,21 @@ func pchainStatusRow(probe statusPChainProbe) statusPChainRow {
 		row.l1State = statusNA
 	case !probe.setsOK:
 		row.l1State = statusUnknown
-	case probe.mainVisible && probe.managerVisible:
-		row.l1State = "complete"
-	case probe.mainVisible || probe.managerVisible:
-		row.l1State = "partial"
 	default:
-		row.l1State = "missing"
+		visibleAll := probe.managerVisible
+		visibleAny := probe.managerVisible
+		for _, visible := range probe.visibleByChain {
+			visibleAll = visibleAll && visible
+			visibleAny = visibleAny || visible
+		}
+		switch {
+		case visibleAll:
+			row.l1State = "complete"
+		case visibleAny:
+			row.l1State = "partial"
+		default:
+			row.l1State = "missing"
+		}
 	}
 
 	switch probe.mode {
@@ -277,21 +295,22 @@ func (d *Deployer) Status(ctx context.Context) error {
 			number: probe.node.Number,
 			dc:     probe.node.DC,
 			role:   string(probe.node.Role),
+			chain:  chainOf(probe.node),
 			id:     probe.identity,
 			weight: statusNA,
 			state:  probe.state,
 			height: probe.height,
 		}
-		if probe.node.Role == config.RoleValidator {
+		if probe.node.Role == config.RoleValidator || probe.node.Role == config.RoleOracleValidator {
 			row.weight = statusNA
 			if inv.created {
 				row.weight = statusUnknown
-				if weight, known := pchain.mainWeights[probe.expectedNodeID]; known {
+				if weight, known := pchain.weights[probe.expectedNodeID]; known {
 					row.weight = strconv.FormatUint(weight, 10)
 				} else if pchain.setsOK {
 					failures = append(failures, fmt.Sprintf(
-						"node %d: identity %s (%s) is not in the public P-chain main validator set",
-						probe.node.Number, probe.identity, probe.expectedNodeID))
+						"node %d: identity %s (%s) is not in the public P-chain %s validator set",
+						probe.node.Number, probe.identity, probe.expectedNodeID, chainOf(probe.node)))
 				}
 			}
 		}
@@ -392,7 +411,7 @@ func (d *Deployer) probeNodeStatus(ctx context.Context, inv inventory, remote de
 		probe.failures = append(probe.failures, fmt.Sprintf("node %d (%s): L1 is not created yet, height unavailable", node.Number, node.Host))
 		return probe
 	}
-	height, err := d.statusL1Height(ctx, fmt.Sprintf("%s/ext/bc/%s/rpc", base, inv.l1ChainFor(node.Role)))
+	height, err := d.statusL1Height(ctx, fmt.Sprintf("%s/ext/bc/%s/rpc", base, inv.l1ChainFor(node)))
 	if err != nil {
 		probe.apiAnswered = false
 		probe.failures = append(probe.failures, fmt.Sprintf("node %d (%s): read L1 height: %v", node.Number, node.Host, err))
@@ -404,10 +423,11 @@ func (d *Deployer) probeNodeStatus(ctx context.Context, inv inventory, remote de
 
 func (d *Deployer) probePChainStatus(ctx context.Context, inv inventory, remote deployment) statusPChainProbe {
 	probe := statusPChainProbe{
-		number:       inv.pchain.Number,
-		serviceState: statusUnknown,
-		created:      inv.created,
-		mainWeights:  map[string]uint64{},
+		number:         inv.pchain.Number,
+		serviceState:   statusUnknown,
+		created:        inv.created,
+		visibleByChain: map[string]bool{},
+		weights:        map[string]uint64{},
 	}
 
 	// The deployed mode is read BEFORE any public API call, because the mode
@@ -503,7 +523,7 @@ func (d *Deployer) probePublicPChain(ctx context.Context, inv inventory, probe *
 // recordedValidatorSets answers the validator-set questions from the
 // deployment records instead of the public API. A frozen fleet's sets are
 // immutable: they are whatever the archive froze, and freezing was gated on
-// both sets being publicly visible. The recorded weights are the creation
+// every set being publicly visible. The recorded weights are the creation
 // weights, which match the archive unless a weight was changed on the live
 // P-chain between creation and freezing, a sequence the kit's workflow does
 // not produce.
@@ -513,18 +533,20 @@ func recordedValidatorSets(inv inventory, probe *statusPChainProbe) {
 	}
 	probe.setsOK = true
 	probe.setsSource = "deployment records (frozen fleet; upstream API not consulted)"
-	probe.mainVisible = true
 	probe.managerVisible = true
+	for _, chain := range inv.chains {
+		probe.visibleByChain[chain] = true
+	}
 	for _, node := range inv.public.Nodes {
-		if node.Role == config.RoleValidator {
-			probe.mainWeights[node.NodeID] = node.Weight
+		if node.Role == config.RoleValidator || node.Role == config.RoleOracleValidator {
+			probe.weights[node.NodeID] = node.Weight
 		}
 	}
 }
 
 // probePublicValidatorSets fills in everything the public P-chain API knows
-// about this L1: whether both validator sets are visible and what each main
-// validator weighs.
+// about the deployment's L1s: whether the management set and every chain's
+// validator set are visible, and what each validator weighs.
 func (d *Deployer) probePublicValidatorSets(
 	ctx context.Context,
 	inv inventory,
@@ -535,22 +557,36 @@ func (d *Deployer) probePublicValidatorSets(
 	setsCtx, cancel := context.WithTimeout(ctx, d.http.Timeout)
 	defer cancel()
 	manager, managerErr := public.GetCurrentValidators(setsCtx, inv.managerSubnetID, nil)
-	main, mainErr := public.GetCurrentValidators(setsCtx, inv.subnetID, nil)
-	if managerErr != nil || mainErr != nil {
+	if managerErr != nil {
 		probe.failures = append(probe.failures, fmt.Sprintf(
-			"P-chain API %s: read validator sets: management=%v main=%v", uri, managerErr, mainErr))
+			"P-chain API %s: read management validator set: %v", uri, managerErr))
 		return
 	}
-	probe.setsOK = true
-	expectedMain := make(map[ids.NodeID]struct{})
-	for _, node := range inv.public.Nodes {
-		if node.Role == config.RoleValidator {
-			nodeID, err := ids.NodeIDFromString(node.NodeID)
-			if err != nil {
-				continue
-			}
-			expectedMain[nodeID] = struct{}{}
+	chainValidators := make(map[string][]platformvm.ClientPermissionlessValidator, len(inv.chains))
+	for _, chain := range inv.chains {
+		validators, err := public.GetCurrentValidators(setsCtx, inv.subnetIDs[chain], nil)
+		if err != nil {
+			probe.failures = append(probe.failures, fmt.Sprintf(
+				"P-chain API %s: read %s validator set: %v", uri, chain, err))
+			return
 		}
+		chainValidators[chain] = validators
+	}
+	probe.setsOK = true
+	expectedByChain := make(map[string]map[ids.NodeID]struct{}, len(inv.chains))
+	for _, node := range inv.public.Nodes {
+		if node.Role != config.RoleValidator && node.Role != config.RoleOracleValidator {
+			continue
+		}
+		nodeID, err := ids.NodeIDFromString(node.NodeID)
+		if err != nil {
+			continue
+		}
+		chain := node.ChainName()
+		if expectedByChain[chain] == nil {
+			expectedByChain[chain] = make(map[ids.NodeID]struct{})
+		}
+		expectedByChain[chain][nodeID] = struct{}{}
 	}
 	expectedManager := make(map[ids.NodeID]struct{})
 	for _, node := range inv.public.Managers {
@@ -560,10 +596,12 @@ func (d *Deployer) probePublicValidatorSets(
 		}
 		expectedManager[nodeID] = struct{}{}
 	}
-	probe.mainVisible = containsValidators(main, expectedMain)
 	probe.managerVisible = containsValidators(manager, expectedManager)
-	for _, validator := range main {
-		probe.mainWeights[validator.NodeID.String()] = validator.Weight
+	for _, chain := range inv.chains {
+		probe.visibleByChain[chain] = containsValidators(chainValidators[chain], expectedByChain[chain])
+		for _, validator := range chainValidators[chain] {
+			probe.weights[validator.NodeID.String()] = validator.Weight
+		}
 	}
 }
 

@@ -192,10 +192,11 @@ func TestMergeUpgradesKeepsActivatedHistory(t *testing.T) {
 	}
 }
 
-// Every deploy must carry the recorded upgrade history to main-L1 nodes: a
-// fresh machine deployed after an activation cannot join the chain without
-// the activated entries. The pchain and oracle renders must not carry it
-// (wrong chain).
+// Every deploy must carry the recorded upgrade history to the nodes of ITS
+// chain: a fresh machine deployed after an activation cannot join the chain
+// without the activated entries. A node of another chain and the pchain
+// render must not carry it (wrong chain), and each chain carries only its
+// own file.
 func TestRenderNodeCarriesUpgradeHistory(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, "node-config.json"), "{}")
@@ -206,17 +207,19 @@ func TestRenderNodeCarriesUpgradeHistory(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "deployment"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	writeTestFile(t, upgradesPath(root), `{"stateUpgrades":[{"blockTimestamp":1,"accounts":{}}]}`)
+	writeTestFile(t, upgradesPath(root, "main"), `{"stateUpgrades":[{"blockTimestamp":1,"accounts":{}}]}`)
+	writeTestFile(t, upgradesPath(root, "trading"), `{"stateUpgrades":[{"blockTimestamp":2,"accounts":{}}]}`)
 
 	environment := config.FleetEnvironment{SSHUser: "op"}
 	for name, testCase := range map[string]struct {
 		node config.Node
-		want bool
+		want string
 	}{
-		"validator carries the history": {config.Node{Number: 1, Host: "v1", Role: config.RoleValidator}, true},
-		"rpc carries the history":       {config.Node{Number: 9, Host: "r1", Role: config.RoleRPC}, true},
-		"oracle node does not":          {config.Node{Number: 16, Host: "o1", Role: config.RoleOracleValidator}, false},
-		"pchain does not":               {config.Node{Number: 13, Host: "p1", Role: config.RolePChain}, false},
+		"validator carries the history":     {config.Node{Number: 1, Host: "v1", Role: config.RoleValidator}, `"blockTimestamp":1`},
+		"rpc carries the history":           {config.Node{Number: 9, Host: "r1", Role: config.RoleRPC}, `"blockTimestamp":1`},
+		"trading node carries its own file": {config.Node{Number: 17, Host: "t1", Role: config.RoleValidator, Chain: "trading"}, `"blockTimestamp":2`},
+		"oracle node does not":              {config.Node{Number: 16, Host: "o1", Role: config.RoleOracleValidator}, ""},
+		"pchain does not":                   {config.Node{Number: 13, Host: "p1", Role: config.RolePChain}, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			renderDir := filepath.Join(t.TempDir(), "render")
@@ -228,12 +231,12 @@ func TestRenderNodeCarriesUpgradeHistory(t *testing.T) {
 			); err != nil {
 				t.Fatal(err)
 			}
-			_, err := os.Stat(filepath.Join(renderDir, "upgrade.json"))
-			if testCase.want && err != nil {
-				t.Fatalf("render did not carry the upgrade history: %v", err)
+			carried, err := os.ReadFile(filepath.Join(renderDir, "upgrade.json"))
+			if testCase.want != "" && (err != nil || !strings.Contains(string(carried), testCase.want)) {
+				t.Fatalf("render did not carry this chain's upgrade history: err=%v contents=%s", err, carried)
 			}
-			if !testCase.want && err == nil {
-				t.Fatal("render carried the upgrade history to the wrong chain")
+			if testCase.want == "" && err == nil {
+				t.Fatal("render carried an upgrade history to the wrong chain")
 			}
 		})
 	}

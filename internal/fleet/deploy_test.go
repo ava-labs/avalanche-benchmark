@@ -300,8 +300,8 @@ func TestL1PackageTransfersAndInstallsPlugin(t *testing.T) {
 	deployer := &Deployer{root: root, out: io.Discard, runner: runner}
 	state := deployment{
 		environment: config.FleetEnvironment{SSHUser: "ubuntu", SystemInstall: true},
-		chainID:     ids.GenerateTestID(),
-		subnetID:    ids.GenerateTestID(),
+		chainIDs:    map[string]ids.ID{"main": ids.GenerateTestID()},
+		subnetIDs:   map[string]ids.ID{"main": ids.GenerateTestID()},
 	}
 	node := nodeDeployment{
 		node:      config.Node{Number: 1, Host: "validator", Role: config.RoleValidator},
@@ -845,6 +845,74 @@ func TestStateSyncPeersStayWithinTheirL1(t *testing.T) {
 		t.Fatalf("oracle validator peers = %q %q, want only the oracle rpc", ips, ids)
 	}
 }
+// The chain= partition generalizes the oracle special case: peers pair only
+// within their own chain, whatever the chain is called.
+func TestStateSyncPeersPartitionByDeclaredChain(t *testing.T) {
+	nodes := []config.Node{
+		{Number: 1, Host: "v1", Role: config.RoleValidator, Chain: "main"},
+		{Number: 2, Host: "r1", Role: config.RoleRPC, Chain: "main"},
+		{Number: 3, Host: "p1", Role: config.RolePChain},
+		{Number: 4, Host: "t1", Role: config.RoleValidator, Chain: "trading"},
+		{Number: 5, Host: "t2", Role: config.RoleRPC, Chain: "trading"},
+	}
+	assigned := map[int]creation.PublicNode{
+		1: {NodeID: "NodeID-v1"}, 2: {NodeID: "NodeID-r1"},
+		4: {NodeID: "NodeID-t1"}, 5: {NodeID: "NodeID-t2"},
+	}
+	ports := portsByNode(nodes)
+	up := map[int]bool{1: true, 2: true, 3: true, 4: true, 5: true}
+
+	ips, ids := stateSyncPeers(nodes[0], nodes, assigned, ports, up)
+	if ips != "r1:9651" || ids != "NodeID-r1" {
+		t.Fatalf("main validator peers = %q %q, want only the main rpc", ips, ids)
+	}
+	ips, ids = stateSyncPeers(nodes[3], nodes, assigned, ports, up)
+	if ips != "t2:9651" || ids != "NodeID-t2" {
+		t.Fatalf("trading validator peers = %q %q, want only the trading rpc", ips, ids)
+	}
+}
+
+// A chain can carry its own subnet configuration under chains/<name>/; every
+// chain without one shares the root default.
+func TestRenderNodeResolvesPerChainSubnetConfig(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "node-config.json"), `{}`)
+	writeTestFile(t, filepath.Join(root, "chain-config.json"), `{}`)
+	writeTestFile(t, filepath.Join(root, "subnet-config.json"), `{"l1":"default"}`)
+	if err := os.MkdirAll(filepath.Join(root, "chains", "trading"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(root, "chains", "trading", "subnet-config.json"), `{"l1":"trading"}`)
+	environment := config.FleetEnvironment{Network: "fuji", SSHUser: "op"}
+
+	for name, testCase := range map[string]struct {
+		node config.Node
+		want string
+	}{
+		"main falls back to the root": {config.Node{Number: 1, Role: config.RoleValidator, Chain: "main"}, `{"l1":"default"}`},
+		"trading uses its override":   {config.Node{Number: 7, Role: config.RoleValidator, Chain: "trading"}, `{"l1":"trading"}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			renderDir := filepath.Join(t.TempDir(), "render")
+			if err := renderNode(
+				renderDir, root, environment, testCase.node,
+				creation.PublicNode{Identity: "a", Role: testCase.node.Role},
+				ids.GenerateTestID(), ids.GenerateTestID(), [2]int{9650, 9651},
+				followMode, "pchain:9651", "NodeID-pchain", "", "",
+			); err != nil {
+				t.Fatal(err)
+			}
+			subnet, err := os.ReadFile(filepath.Join(renderDir, "subnet.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(subnet) != testCase.want {
+				t.Fatalf("subnet.json = %s, want %s", subnet, testCase.want)
+			}
+		})
+	}
+}
+
 // The address book must name only machines meant to be up. It doubles as the
 // state-sync beacon set with alpha = count/2 + 1 over the LIST, so listing a
 // machine that is down raises the bar without adding anyone who can clear it:

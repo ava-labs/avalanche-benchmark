@@ -17,8 +17,9 @@ type freezeGate struct {
 	upstreamHeight uint64
 	localHeight    uint64
 	managerVisible bool
-	mainVisible    bool
-	oracleVisible  bool
+	// chainVisible reports, per declared chain, whether the full expected
+	// validator set is publicly visible.
+	chainVisible map[string]bool
 }
 
 // check returns nil when the node may be frozen, or the precise reason it may
@@ -35,11 +36,15 @@ func (g freezeGate) check() error {
 	if !g.managerVisible {
 		missing = append(missing, "management")
 	}
-	if !g.mainVisible {
-		missing = append(missing, "main")
+	chains := make([]string, 0, len(g.chainVisible))
+	for chain := range g.chainVisible {
+		chains = append(chains, chain)
 	}
-	if !g.oracleVisible {
-		missing = append(missing, "oracle")
+	config.SortChains(chains)
+	for _, chain := range chains {
+		if !g.chainVisible[chain] {
+			missing = append(missing, chain)
+		}
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf(
@@ -132,25 +137,21 @@ func (d *Deployer) freezeGateState(ctx context.Context, prepared deployment) (fr
 	if err != nil {
 		return freezeGate{}, fmt.Errorf("read management validator set from %s: %w", network.PChainAPI, err)
 	}
-	main, err := public.GetCurrentValidators(ctx, prepared.subnetID, nil)
-	if err != nil {
-		return freezeGate{}, fmt.Errorf("read main validator set from %s: %w", network.PChainAPI, err)
-	}
-	// Without oracle roles there is no oracle set to wait for.
-	oracleVisible := true
-	if len(prepared.expectedOracle) > 0 {
-		oracle, err := public.GetCurrentValidators(ctx, prepared.oracleSubnetID, nil)
+	// Freezing waits for EVERY declared chain's validator set: the archive
+	// must hold each of them, or the frozen fleet cannot serve that chain.
+	chainVisible := make(map[string]bool, len(prepared.expectedByChain))
+	for chain, expected := range prepared.expectedByChain {
+		validators, err := public.GetCurrentValidators(ctx, prepared.subnetIDs[chain], nil)
 		if err != nil {
-			return freezeGate{}, fmt.Errorf("read oracle validator set from %s: %w", network.PChainAPI, err)
+			return freezeGate{}, fmt.Errorf("read %s validator set from %s: %w", chain, network.PChainAPI, err)
 		}
-		oracleVisible = containsValidators(oracle, prepared.expectedOracle)
+		chainVisible[chain] = containsValidators(validators, expected)
 	}
 
 	return freezeGate{
 		upstreamHeight: upstreamHeight,
 		localHeight:    observation.height,
 		managerVisible: containsValidators(manager, prepared.expectedManager),
-		mainVisible:    containsValidators(main, prepared.expectedMain),
-		oracleVisible:  oracleVisible,
+		chainVisible:   chainVisible,
 	}, nil
 }

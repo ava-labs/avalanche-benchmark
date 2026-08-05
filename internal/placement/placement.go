@@ -78,9 +78,11 @@ func Save(path string, value Placement) error {
 func Validate(value Placement, public creation.Public, nodes []config.Node) error {
 	roleByIdentity := make(map[string]config.Role, len(public.Nodes))
 	homeByIdentity := make(map[string]int, len(public.Nodes))
+	chainByIdentity := make(map[string]string, len(public.Nodes))
 	for _, node := range public.Nodes {
 		roleByIdentity[node.Identity] = node.Role
 		homeByIdentity[node.Identity] = node.Node
+		chainByIdentity[node.Identity] = node.ChainName()
 	}
 	if len(value) != len(nodes) {
 		return fmt.Errorf("placement assigns %d machines but nodes.ini has %d", len(value), len(nodes))
@@ -100,6 +102,14 @@ func Validate(value Placement, public creation.Public, nodes []config.Node) erro
 			return fmt.Errorf(
 				"placement assigns %s identity %q to %s node %d",
 				role, assigned, node.Role, node.Number,
+			)
+		}
+		// An identity carries its chain's stake and key material, so it never
+		// crosses onto a machine of another chain.
+		if machineChain := config.EffectiveChain(node.Role, node.Chain); chainByIdentity[assigned] != machineChain {
+			return fmt.Errorf(
+				"placement assigns chain %q identity %q to node %d, which serves chain %q",
+				chainByIdentity[assigned], assigned, node.Number, machineChain,
 			)
 		}
 		if role != config.RoleValidator && homeByIdentity[assigned] != node.Number {

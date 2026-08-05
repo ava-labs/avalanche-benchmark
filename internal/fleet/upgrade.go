@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 )
 
 // upgradeFile is the subset of a subnet-evm upgrade.json the kit validates.
@@ -80,13 +82,17 @@ type rawUpgradeFile struct {
 	PrecompileUpgrades []json.RawMessage `json:"precompileUpgrades,omitempty"`
 }
 
-// upgradesPath is the control-side canonical upgrade history for the main
-// L1. Apps emit FRAGMENTS (one new upgrade each); this file accumulates
-// them, fleet upgrade distributes it whole, and fleet deploy installs it on
-// every fresh node so a machine deployed after an activation still carries
-// the full history.
-func upgradesPath(root string) string {
-	return filepath.Join(root, "deployment", "upgrades.json")
+// upgradesPath is the control-side canonical upgrade history for one chain.
+// Apps emit FRAGMENTS (one new upgrade each); this file accumulates them,
+// fleet upgrade distributes it whole, and fleet deploy installs it on every
+// fresh node so a machine deployed after an activation still carries the
+// full history. The main chain keeps the historical file name so old
+// deployments carry their history forward unchanged.
+func upgradesPath(root, chain string) string {
+	if chain == config.MainChain {
+		return filepath.Join(root, "deployment", "upgrades.json")
+	}
+	return filepath.Join(root, "deployment", "upgrades-"+chain+".json")
 }
 
 // stateUpgradeTimestamps extracts blockTimestamp from each raw entry.
@@ -152,21 +158,22 @@ func mergeUpgrades(existing, fragment []byte, nodeCount int, now time.Time) ([]b
 	return append(contents, '\n'), nil
 }
 
-// UpgradeChain appends an upgrade fragment to the canonical history in
-// deployment/upgrades.json, installs the FULL history on every main-L1
-// node, and restarts them one at a time. The history, not the fragment, is
-// what lands on the nodes: subnet-evm's upgrade file is append-only, and a
-// file missing an already-activated entry stops every node it reaches. The
-// history reaches EVERY node before the first restart, so a failure in the
-// push phase changes no running process; the restarts are sequential with a
-// readiness wait, the same discipline as a rolling deploy.
-func (d *Deployer) UpgradeChain(ctx context.Context, path string) error {
+// UpgradeChain appends an upgrade fragment to the named chain's canonical
+// history under deployment/, installs the FULL history on every node of
+// that chain, and restarts them one at a time. The history, not the
+// fragment, is what lands on the nodes: subnet-evm's upgrade file is
+// append-only, and a file missing an already-activated entry stops every
+// node it reaches. The history reaches EVERY node before the first restart,
+// so a failure in the push phase changes no running process; the restarts
+// are sequential with a readiness wait, the same discipline as a rolling
+// deploy.
+func (d *Deployer) UpgradeChain(ctx context.Context, chain, path string) error {
 	fragment, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read upgrade fragment: %w", err)
 	}
 	var existing []byte
-	canonical := upgradesPath(d.root)
+	canonical := upgradesPath(d.root, chain)
 	if contents, err := os.ReadFile(canonical); err == nil {
 		existing = contents
 	} else if !os.IsNotExist(err) {
@@ -180,11 +187,18 @@ func (d *Deployer) UpgradeChain(ctx context.Context, path string) error {
 	if !inv.created {
 		return fmt.Errorf("fleet upgrade requires a complete deployment/network.env; run l1 create first")
 	}
-	// The upgrade file is per chain. This command targets the main L1; the
-	// optional oracle chain keeps its own file and is out of scope here.
+	declared := false
+	for _, name := range inv.chains {
+		declared = declared || name == chain
+	}
+	if !declared {
+		return fmt.Errorf("chain %q is not declared in nodes.ini; declared chains: %s", chain, strings.Join(inv.chains, " "))
+	}
+	// The upgrade history is per chain, so only that chain's nodes receive
+	// the file and restart.
 	targets := make([]nodeDeployment, 0, len(state.selected))
 	for _, target := range state.selected {
-		if oracleRole(target.node.Role) {
+		if chainOf(target.node) != chain {
 			continue
 		}
 		targets = append(targets, target)
@@ -218,10 +232,10 @@ func (d *Deployer) UpgradeChain(ctx context.Context, path string) error {
 		if err := d.rsyncFile(ctx, dep, node, canonical, stage); err != nil {
 			return err
 		}
-		chainDir := fmt.Sprintf("%s/%d/chains/%s", l.cfg, node.node.Number, inv.chainID)
+		chainDir := fmt.Sprintf("%s/%d/chains/%s", l.cfg, node.node.Number, inv.chainIDs[chain])
 		return d.runSSH(ctx, dep, node, strings.Join([]string{
 			l.sudo(fmt.Sprintf("install -d -m 0755 %s", chainDir)),
-			l.sudo(fmt.Sprintf("install -m 0644 %s/upgrades.json %s/upgrade.json", stage, chainDir)),
+			l.sudo(fmt.Sprintf("install -m 0644 %s/%s %s/upgrade.json", stage, filepath.Base(canonical), chainDir)),
 			"rm -rf " + stage,
 		}, " && "))
 	}); err != nil {

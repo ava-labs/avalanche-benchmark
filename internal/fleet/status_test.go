@@ -15,32 +15,34 @@ import (
 func TestRecordedValidatorSetsAnswerFrozenFleets(t *testing.T) {
 	inv := inventory{
 		created: true,
+		chains:  []string{"main", "trading"},
 		public: creation.Public{Nodes: []creation.PublicNode{
 			{Identity: "a", Role: config.RoleValidator, NodeID: "NodeID-A", Weight: 100000},
 			{Identity: "b", Role: config.RoleValidator, NodeID: "NodeID-B", Weight: 1000},
 			{Identity: "e", Role: config.RoleRPC, NodeID: "NodeID-E"},
+			{Identity: "f", Role: config.RoleValidator, Chain: "trading", NodeID: "NodeID-F", Weight: 100000},
 		}},
 	}
-	probe := statusPChainProbe{mainWeights: map[string]uint64{}}
+	probe := statusPChainProbe{visibleByChain: map[string]bool{}, weights: map[string]uint64{}}
 	recordedValidatorSets(inv, &probe)
-	if !probe.setsOK || !probe.mainVisible || !probe.managerVisible {
+	if !probe.setsOK || !probe.visibleByChain["main"] || !probe.visibleByChain["trading"] || !probe.managerVisible {
 		t.Fatalf("records did not answer the set questions: %+v", probe)
 	}
 	if probe.setsSource == "" || !strings.Contains(probe.setsSource, "records") {
 		t.Fatalf("setsSource = %q, want the records named", probe.setsSource)
 	}
-	if probe.mainWeights["NodeID-A"] != 100000 || probe.mainWeights["NodeID-B"] != 1000 {
-		t.Fatalf("recorded weights = %v", probe.mainWeights)
+	if probe.weights["NodeID-A"] != 100000 || probe.weights["NodeID-B"] != 1000 || probe.weights["NodeID-F"] != 100000 {
+		t.Fatalf("recorded weights = %v", probe.weights)
 	}
-	if _, exists := probe.mainWeights["NodeID-E"]; exists {
-		t.Fatalf("an RPC identity leaked into the main validator weights: %v", probe.mainWeights)
+	if _, exists := probe.weights["NodeID-E"]; exists {
+		t.Fatalf("an RPC identity leaked into the validator weights: %v", probe.weights)
 	}
 	if len(probe.failures) != 0 {
 		t.Fatalf("records produced failures: %v", probe.failures)
 	}
 
 	// Before l1 create there are no sets to vouch for, from any source.
-	uncreated := statusPChainProbe{mainWeights: map[string]uint64{}}
+	uncreated := statusPChainProbe{visibleByChain: map[string]bool{}, weights: map[string]uint64{}}
 	recordedValidatorSets(inventory{}, &uncreated)
 	if uncreated.setsOK || uncreated.setsSource != "" {
 		t.Fatalf("records vouched for an uncreated chain: %+v", uncreated)
@@ -70,25 +72,25 @@ func TestCollapseServiceState(t *testing.T) {
 
 func TestRenderStatusTableKeepsPlaceholderCells(t *testing.T) {
 	table := renderStatusTable([]statusRow{
-		{number: 1, dc: "A", role: "validator", id: "a", weight: "100000", state: statusUp, height: "812345"},
-		{number: 9, dc: "A", role: "rpc", id: "i", weight: statusNA, state: statusUp, height: "812344"},
-		{number: 3, dc: "", role: "validator", id: "c", weight: statusUnknown, state: statusNotInstalled, height: statusNA},
+		{number: 1, dc: "A", role: "validator", chain: "main", id: "a", weight: "100000", state: statusUp, height: "812345"},
+		{number: 9, dc: "A", role: "rpc", chain: "trading", id: "i", weight: statusNA, state: statusUp, height: "812344"},
+		{number: 3, dc: "", role: "validator", chain: "main", id: "c", weight: statusUnknown, state: statusNotInstalled, height: statusNA},
 	})
 	lines := strings.Split(strings.TrimRight(table, "\n"), "\n")
 	if len(lines) != 4 {
 		t.Fatalf("table has %d lines:\n%s", len(lines), table)
 	}
-	if !strings.HasPrefix(lines[0], "NODE") || !strings.Contains(lines[0], "HEIGHT") {
+	if !strings.HasPrefix(lines[0], "NODE") || !strings.Contains(lines[0], "CHAIN") || !strings.Contains(lines[0], "HEIGHT") {
 		t.Fatalf("header = %q", lines[0])
 	}
 	if !strings.Contains(lines[1], "validator") || !strings.Contains(lines[1], "100000") {
 		t.Fatalf("validator row = %q", lines[1])
 	}
-	if !strings.Contains(lines[2], "rpc") || !strings.Contains(lines[2], "-") {
+	if !strings.Contains(lines[2], "rpc") || !strings.Contains(lines[2], "trading") {
 		t.Fatalf("rpc row = %q", lines[2])
 	}
 	// An unset dc stays visibly unset instead of being invented.
-	if fields := strings.Fields(lines[3]); fields[1] != statusNA || fields[4] != statusUnknown {
+	if fields := strings.Fields(lines[3]); fields[1] != statusNA || fields[5] != statusUnknown {
 		t.Fatalf("unset dc row = %q", lines[3])
 	}
 	if !strings.Contains(lines[3], statusNotInstalled) {
@@ -122,7 +124,7 @@ func TestPChainStatusRow(t *testing.T) {
 	visible := statusPChainProbe{
 		number: 13, serviceState: statusUp, created: true, bootstrapped: true,
 		localOK: true, localHeight: 289700,
-		setsOK: true, mainVisible: true, managerVisible: true,
+		setsOK: true, visibleByChain: map[string]bool{"main": true}, managerVisible: true,
 	}
 	following := func(mutate func(*statusPChainProbe)) statusPChainRow {
 		probe := visible

@@ -93,7 +93,7 @@ func TestSelectNodesCannotReachPChain(t *testing.T) {
 func destroyState(chainID ids.ID) deployment {
 	return deployment{
 		environment: config.FleetEnvironment{SSHUser: "ubuntu", SSHKeyPath: "/key", SystemInstall: true},
-		chainID:     chainID,
+		chainIDs:    map[string]ids.ID{"main": chainID},
 		selected: []nodeDeployment{
 			{node: config.Node{Number: 1, Host: "v1", Role: config.RoleValidator}},
 			{node: config.Node{Number: 2, Host: "v2", Role: config.RoleValidator}},

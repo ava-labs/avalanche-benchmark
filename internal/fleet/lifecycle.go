@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanchego/ids"
 )
 
 // selectNodes resolves maintenance selectors against a candidate machine list.
@@ -94,10 +93,9 @@ func (d *Deployer) lifecycleTargets(selectors []string) (deployment, inventory, 
 		return deployment{}, inventory{}, err
 	}
 	state := deployment{
-		environment:   inv.environment,
-		chainID:       inv.chainID,
-		subnetID:      inv.subnetID,
-		oracleChainID: inv.oracleChainID,
+		environment: inv.environment,
+		chainIDs:    inv.chainIDs,
+		subnetIDs:   inv.subnetIDs,
 	}
 	for _, node := range chosen {
 		target, err := inv.target(node)
@@ -309,8 +307,8 @@ func (d *Deployer) Destroy(ctx context.Context, selectors []string) error {
 	if err != nil {
 		return err
 	}
-	if !inv.created || state.chainID == ids.Empty {
-		return fmt.Errorf("fleet destroy requires CHAIN_ID in deployment/network.env; there is no L1 chain data to remove")
+	if !inv.created {
+		return fmt.Errorf("fleet destroy requires the chain IDs in deployment/network.env; there is no L1 chain data to remove")
 	}
 	if err := d.destroyPhases(ctx, state); err != nil {
 		return err
@@ -368,7 +366,7 @@ func (d *Deployer) removeChainData(ctx context.Context, deployment deployment, n
 	// AvalancheGo derives chain-data-dir from data-dir and gives every chain its
 	// own <chain-id> subdirectory. Only this L1's directory is removed, so the
 	// P-chain database, identity, logs, configuration, and binaries survive.
-	nodeChainID, _ := deployment.l1For(node.node.Role)
+	nodeChainID, _ := deployment.l1For(node.node)
 	l := layoutFor(deployment.environment)
 	return d.runSSH(ctx, deployment, node, l.sudo(fmt.Sprintf(
 		"rm -rf %s/%d/chainData/%s",

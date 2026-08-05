@@ -189,6 +189,15 @@ func planPlace(inv inventory, identityLetter string, node int) (placement.Placem
 	if machine.Role != config.RoleValidator {
 		return nil, nil, fmt.Errorf("node %d is a %s machine; identities move between validator machines only", node, machine.Role)
 	}
+	// An identity carries its chain's stake, so it can only move between
+	// machines of that chain: the displaced identity would land on a machine
+	// of the wrong chain otherwise, and neither node could validate.
+	if generated.ChainName() != chainOf(machine) {
+		return nil, nil, fmt.Errorf(
+			"identity %q validates chain %q but node %d serves chain %q; identities move within one chain only",
+			identityLetter, generated.ChainName(), node, chainOf(machine),
+		)
+	}
 
 	source, placed := inv.placement.NodeOf(identityLetter)
 	if !placed {
@@ -313,8 +322,8 @@ func (d *Deployer) runtimeNodeID(ctx context.Context, host string, port int) (st
 func (d *Deployer) placementTargets(inv inventory, nodes []config.Node) (deployment, error) {
 	prepared := deployment{
 		environment: inv.environment,
-		chainID:     inv.chainID,
-		subnetID:    inv.subnetID,
+		chainIDs:    inv.chainIDs,
+		subnetIDs:   inv.subnetIDs,
 		selected:    make([]nodeDeployment, 0, len(nodes)),
 	}
 	for _, node := range nodes {

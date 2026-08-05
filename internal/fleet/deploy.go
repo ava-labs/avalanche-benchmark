@@ -86,32 +86,43 @@ func NewDeployer(root string, out io.Writer) *Deployer {
 }
 
 type deployment struct {
-	environment     config.FleetEnvironment
-	pchain          nodeDeployment
-	selected        []nodeDeployment
-	chainID         ids.ID
-	subnetID        ids.ID
+	environment config.FleetEnvironment
+	pchain      nodeDeployment
+	selected    []nodeDeployment
+	// chainIDs and subnetIDs record every declared chain's IDs by chain name.
+	chainIDs        map[string]ids.ID
+	subnetIDs       map[string]ids.ID
 	managerSubnetID ids.ID
-	oracleChainID   ids.ID
-	oracleSubnetID  ids.ID
-	expectedMain    map[ids.NodeID]struct{}
 	expectedManager map[ids.NodeID]struct{}
-	expectedOracle  map[ids.NodeID]struct{}
+	// expectedByChain is each chain's validator set as recorded at keygen.
+	expectedByChain map[string]map[ids.NodeID]struct{}
 	pchainMode      string
 }
 
-// oracleRole reports whether the role lives on the oracle L1.
-func oracleRole(role config.Role) bool {
-	return role == config.RoleOracleValidator || role == config.RoleOracleRPC
+// chainOf resolves the chain a node serves, applying the role default when
+// the field is empty.
+func chainOf(node config.Node) string {
+	return config.EffectiveChain(node.Role, node.Chain)
 }
 
-// l1For returns the chain and subnet a node serves: oracle roles live on the
-// oracle L1, every other L1 role on the main one.
-func (p deployment) l1For(role config.Role) (ids.ID, ids.ID) {
-	if oracleRole(role) {
-		return p.oracleChainID, p.oracleSubnetID
+// l1For returns the chain and subnet a node serves.
+func (p deployment) l1For(node config.Node) (ids.ID, ids.ID) {
+	chain := chainOf(node)
+	return p.chainIDs[chain], p.subnetIDs[chain]
+}
+
+// subnetConfigPath resolves a chain's subnet configuration: an override at
+// chains/<name>/subnet-config.json wins; the root default is
+// subnet-config.json, or subnet-config-oracle.json for the oracle chain.
+func subnetConfigPath(root, chain string) string {
+	override := filepath.Join(root, "chains", chain, "subnet-config.json")
+	if info, err := os.Stat(override); err == nil && !info.IsDir() {
+		return override
 	}
-	return p.chainID, p.subnetID
+	if chain == config.OracleChain {
+		return filepath.Join(root, "subnet-config-oracle.json")
+	}
+	return filepath.Join(root, "subnet-config.json")
 }
 
 type nodeDeployment struct {
@@ -564,31 +575,24 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 	if state["NETWORK"] != environment.Network {
 		return deployment{}, noCleanup, fmt.Errorf("deployment/network.env NETWORK=%q does not match .env NETWORK=%q", state["NETWORK"], environment.Network)
 	}
-	chainID, err := requiredID(state, "CHAIN_ID")
-	if err != nil {
-		return deployment{}, noCleanup, err
-	}
-	subnetID, err := requiredID(state, "SUBNET_ID")
-	if err != nil {
-		return deployment{}, noCleanup, err
-	}
 	managerSubnetID, err := requiredID(state, "MANAGER_SUBNET_ID")
 	if err != nil {
 		return deployment{}, noCleanup, err
 	}
-	hasOracle, hasArchive := false, false
-	for _, node := range nodes {
-		hasOracle = hasOracle || oracleRole(node.Role)
-		hasArchive = hasArchive || node.Role == config.RoleArchive
+	chains := config.Chains(nodes)
+	chainIDs := make(map[string]ids.ID, len(chains))
+	subnetIDs := make(map[string]ids.ID, len(chains))
+	for _, chain := range chains {
+		chainID, subnetID, err := creation.ChainIDsFromState(state, chain)
+		if err != nil {
+			return deployment{}, noCleanup, fmt.Errorf("deployment/network.env: %w; creation is incomplete", err)
+		}
+		chainIDs[chain] = chainID
+		subnetIDs[chain] = subnetID
 	}
-	var oracleChainID, oracleSubnetID ids.ID
-	if hasOracle {
-		if oracleChainID, err = requiredID(state, "ORACLE_CHAIN_ID"); err != nil {
-			return deployment{}, noCleanup, err
-		}
-		if oracleSubnetID, err = requiredID(state, "ORACLE_SUBNET_ID"); err != nil {
-			return deployment{}, noCleanup, err
-		}
+	hasArchive := false
+	for _, node := range nodes {
+		hasArchive = hasArchive || node.Role == config.RoleArchive
 	}
 
 	requiredFiles := []string{
@@ -600,10 +604,12 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 			filepath.Join(d.root, "bin", pluginID),
 			filepath.Join(d.root, "chain-config.json"),
 			filepath.Join(d.root, "chain-config-rpc.json"),
-			filepath.Join(d.root, "subnet-config.json"),
 		)
-		if hasOracle {
-			requiredFiles = append(requiredFiles, filepath.Join(d.root, "subnet-config-oracle.json"))
+		// Every declared chain needs its subnet configuration; the resolved
+		// path may be a shared root default, in which case one file covers
+		// several chains.
+		for _, chain := range chains {
+			requiredFiles = append(requiredFiles, subnetConfigPath(d.root, chain))
 		}
 		if hasArchive {
 			requiredFiles = append(requiredFiles, filepath.Join(d.root, "chain-config-archive.json"))
@@ -637,25 +643,23 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 	cleanup := func() { os.RemoveAll(renderRoot) }
 	result := deployment{
 		environment:     environment,
-		chainID:         chainID,
-		subnetID:        subnetID,
+		chainIDs:        chainIDs,
+		subnetIDs:       subnetIDs,
 		managerSubnetID: managerSubnetID,
-		oracleChainID:   oracleChainID,
-		oracleSubnetID:  oracleSubnetID,
-		expectedMain:    make(map[ids.NodeID]struct{}),
 		expectedManager: make(map[ids.NodeID]struct{}),
-		expectedOracle:  make(map[ids.NodeID]struct{}),
+		expectedByChain: make(map[string]map[ids.NodeID]struct{}),
 		pchainMode:      pchainMode,
 	}
 	for _, node := range public.Nodes {
-		switch node.Role {
-		case config.RoleValidator:
-			nodeID, _ := ids.NodeIDFromString(node.NodeID)
-			result.expectedMain[nodeID] = struct{}{}
-		case config.RoleOracleValidator:
-			nodeID, _ := ids.NodeIDFromString(node.NodeID)
-			result.expectedOracle[nodeID] = struct{}{}
+		if node.Role != config.RoleValidator && node.Role != config.RoleOracleValidator {
+			continue
 		}
+		nodeID, _ := ids.NodeIDFromString(node.NodeID)
+		chain := node.ChainName()
+		if result.expectedByChain[chain] == nil {
+			result.expectedByChain[chain] = make(map[ids.NodeID]struct{})
+		}
+		result.expectedByChain[chain][nodeID] = struct{}{}
 	}
 	for _, manager := range public.Managers {
 		nodeID, _ := ids.NodeIDFromString(manager.NodeID)
@@ -679,7 +683,7 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 		return deployment{}, noCleanup, err
 	}
 	pchainRender := filepath.Join(renderRoot, strconv.Itoa(pchain.Number))
-	if err := renderNode(pchainRender, d.root, environment, pchain, pchainIdentity, chainID, subnetID, ports[pchain.Number], pchainMode, "", "", "", ""); err != nil {
+	if err := renderNode(pchainRender, d.root, environment, pchain, pchainIdentity, ids.Empty, ids.Empty, ports[pchain.Number], pchainMode, "", "", "", ""); err != nil {
 		cleanup()
 		return deployment{}, noCleanup, err
 	}
@@ -717,7 +721,7 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 		renderDir := filepath.Join(renderRoot, strconv.Itoa(node.Number))
 		bootstrapIP := fmt.Sprintf("%s:%d", pchain.Host, ports[pchain.Number][1])
 		stateSyncIPs, stateSyncIDs := stateSyncPeers(node, nodes, assignedByNode, ports, deployUp)
-		nodeChainID, nodeSubnetID := result.l1For(node.Role)
+		nodeChainID, nodeSubnetID := result.l1For(node)
 		if err := renderNode(
 			renderDir,
 			d.root,
@@ -795,7 +799,7 @@ func stateSyncPeers(
 			continue
 		}
 		// Only a node on the same L1 holds that chain's state-sync summaries.
-		if oracleRole(peer.Role) != oracleRole(node.Role) {
+		if chainOf(peer) != chainOf(node) {
 			continue
 		}
 		peerIPs = append(peerIPs, fmt.Sprintf("%s:%d", peer.Host, ports[peer.Number][1]))
@@ -967,13 +971,9 @@ func renderNode(
 		case config.RoleArchive:
 			chainConfig = "chain-config-archive.json"
 		}
-		subnetConfig := "subnet-config.json"
-		if oracleRole(node.Role) {
-			subnetConfig = "subnet-config-oracle.json"
-		}
 		for _, copyPair := range [][2]string{
 			{filepath.Join(root, chainConfig), filepath.Join(renderDir, "chain.json")},
-			{filepath.Join(root, subnetConfig), filepath.Join(renderDir, "subnet.json")},
+			{subnetConfigPath(root, chainOf(node)), filepath.Join(renderDir, "subnet.json")},
 		} {
 			contents, err := os.ReadFile(copyPair[0])
 			if err != nil {
@@ -983,17 +983,15 @@ func renderNode(
 				return err
 			}
 		}
-		// The main chain's upgrade history rides along on every deploy: the
+		// The chain's upgrade history rides along on every deploy: the
 		// upgrade file is append-only, and a fresh machine deployed after an
 		// activation cannot join the chain without the activated entries.
-		if !oracleRole(node.Role) {
-			if history, err := os.ReadFile(upgradesPath(root)); err == nil {
-				if err := os.WriteFile(filepath.Join(renderDir, "upgrade.json"), history, 0o600); err != nil {
-					return err
-				}
-			} else if !os.IsNotExist(err) {
+		if history, err := os.ReadFile(upgradesPath(root, chainOf(node))); err == nil {
+			if err := os.WriteFile(filepath.Join(renderDir, "upgrade.json"), history, 0o600); err != nil {
 				return err
 			}
+		} else if !os.IsNotExist(err) {
+			return err
 		}
 	}
 	if l.user {
@@ -1229,7 +1227,7 @@ func (d *Deployer) installPackage(ctx context.Context, deployment deployment, no
 			deployment.environment.SSHUser, l.data, l.cfg, number)))
 	}
 	if node.node.Role != config.RolePChain {
-		nodeChainID, nodeSubnetID := deployment.l1For(node.node.Role)
+		nodeChainID, nodeSubnetID := deployment.l1For(node.node)
 		segments = append(segments,
 			l.sudo(fmt.Sprintf("install -d -m 0755 %[1]s/%[2]d/plugins %[3]s/%[2]d/chains/%[4]s %[3]s/%[2]d/subnets",
 				l.pkg, number, l.cfg, nodeChainID)),
@@ -1284,7 +1282,7 @@ func (d *Deployer) renderConfigs(inv inventory, targets []nodeDeployment, up map
 		// here is an L1 machine.
 		if err := renderNode(
 			renderDir, d.root, inv.environment, target.node, target.identity,
-			inv.chainID, inv.subnetID, inv.ports[target.node.Number],
+			inv.l1ChainFor(target.node), inv.l1SubnetFor(target.node), inv.ports[target.node.Number],
 			frozenMode, bootstrapIP, pchainIdentity.NodeID,
 			stateSyncIPs, stateSyncIDs,
 		); err != nil {
@@ -1439,7 +1437,7 @@ func containsValidators(validators []platformvm.ClientPermissionlessValidator, e
 
 func (d *Deployer) waitL1Ready(ctx context.Context, deployment deployment, node nodeDeployment) error {
 	deadline := time.Now().Add(d.waitLimit)
-	nodeChainID, _ := deployment.l1For(node.node.Role)
+	nodeChainID, _ := deployment.l1For(node.node)
 	url := fmt.Sprintf("http://%s:%d/ext/bc/%s/rpc", node.node.Host, node.httpPort, nodeChainID)
 	body := []byte(`{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}`)
 	var lastError error

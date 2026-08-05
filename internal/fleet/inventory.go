@@ -22,25 +22,28 @@ type inventory struct {
 	placement   placement.Placement
 	ports       map[int][2]int
 	pchain      config.Node
+	// chains is every declared chain name, main first.
+	chains []string
 
 	identityByLetter map[string]creation.PublicNode
 
 	// created is false when deployment/network.env is absent or incomplete,
-	// which is normal before l1 create.
+	// which is normal before l1 create. Complete means every declared
+	// chain's IDs are recorded.
 	created         bool
-	chainID         ids.ID
-	subnetID        ids.ID
+	chainIDs        map[string]ids.ID
+	subnetIDs       map[string]ids.ID
 	managerSubnetID ids.ID
-	oracleChainID   ids.ID
 }
 
-// l1ChainFor returns the chain a node serves: oracle roles live on the oracle
-// L1, every other L1 role on the main one.
-func (i inventory) l1ChainFor(role config.Role) ids.ID {
-	if role == config.RoleOracleValidator || role == config.RoleOracleRPC {
-		return i.oracleChainID
-	}
-	return i.chainID
+// l1ChainFor returns the ID of the chain a node serves.
+func (i inventory) l1ChainFor(node config.Node) ids.ID {
+	return i.chainIDs[chainOf(node)]
+}
+
+// l1SubnetFor returns the ID of the subnet a node serves.
+func (i inventory) l1SubnetFor(node config.Node) ids.ID {
+	return i.subnetIDs[chainOf(node)]
 }
 
 func (d *Deployer) inventory() (inventory, error) {
@@ -66,6 +69,7 @@ func (d *Deployer) inventory() (inventory, error) {
 		public:           public,
 		placement:        current,
 		ports:            portsByNode(nodes),
+		chains:           config.Chains(nodes),
 		identityByLetter: make(map[string]creation.PublicNode, len(public.Nodes)),
 	}
 	for _, node := range public.Nodes {
@@ -82,11 +86,22 @@ func (d *Deployer) inventory() (inventory, error) {
 	if err != nil {
 		return result, nil
 	}
-	chainID, chainErr := requiredID(state, "CHAIN_ID")
-	subnetID, subnetErr := requiredID(state, "SUBNET_ID")
 	managerSubnetID, managerErr := requiredID(state, "MANAGER_SUBNET_ID")
-	if chainErr != nil || subnetErr != nil || managerErr != nil {
+	if managerErr != nil {
 		return result, nil
+	}
+	// A deployment counts as created only when EVERY declared chain has its
+	// IDs recorded; a partially created multi-chain state stays not-created,
+	// the same answer an interrupted single-chain creation always gave.
+	chainIDs := make(map[string]ids.ID, len(result.chains))
+	subnetIDs := make(map[string]ids.ID, len(result.chains))
+	for _, chain := range result.chains {
+		chainID, subnetID, err := creation.ChainIDsFromState(state, chain)
+		if err != nil {
+			return result, nil
+		}
+		chainIDs[chain] = chainID
+		subnetIDs[chain] = subnetID
 	}
 	if state["NETWORK"] != environment.Network {
 		return inventory{}, fmt.Errorf(
@@ -95,13 +110,9 @@ func (d *Deployer) inventory() (inventory, error) {
 		)
 	}
 	result.created = true
-	result.chainID = chainID
-	result.subnetID = subnetID
+	result.chainIDs = chainIDs
+	result.subnetIDs = subnetIDs
 	result.managerSubnetID = managerSubnetID
-	// Optional: only present when the deployment includes the oracle L1.
-	if oracleChainID, err := requiredID(state, "ORACLE_CHAIN_ID"); err == nil {
-		result.oracleChainID = oracleChainID
-	}
 	return result, nil
 }
 

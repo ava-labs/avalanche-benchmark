@@ -84,10 +84,18 @@ func run() error {
 	case "destroy":
 		return deployer.Destroy(ctx, arguments[1:])
 	case "upgrade":
-		if len(arguments) != 2 {
-			return fmt.Errorf("usage:\n  %s upgrade <upgrade.json>", program)
+		// The chain is optional and defaults to main, matching the single
+		// chain every older inventory declares.
+		chain := "main"
+		rest := arguments[1:]
+		if len(rest) >= 2 && rest[0] == "--chain" {
+			chain = rest[1]
+			rest = rest[2:]
 		}
-		return deployer.UpgradeChain(ctx, arguments[1])
+		if len(rest) != 1 {
+			return fmt.Errorf("usage:\n  %s upgrade [--chain <name>] <upgrade.json>", program)
+		}
+		return deployer.UpgradeChain(ctx, chain, rest[0])
 	case "place":
 		if len(arguments) != 3 {
 			return fmt.Errorf("usage:\n  %s place <identity-letter> <node>", program)
@@ -109,7 +117,7 @@ func usage(program string) string {
 		"start [<node> ...]",
 		"stop [<node> ...]",
 		"destroy <node> [<node> ...]",
-		"upgrade <upgrade.json>",
+		"upgrade [--chain <name>] <upgrade.json>",
 		"place <identity-letter> <node>",
 	}
 	text := ""

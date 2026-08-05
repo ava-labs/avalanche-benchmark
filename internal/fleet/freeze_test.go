@@ -15,31 +15,36 @@ func TestFreezeGateRefusesWithExactReason(t *testing.T) {
 	}{
 		{
 			name: "ready",
-			gate: freezeGate{upstreamHeight: 100, localHeight: 100, managerVisible: true, mainVisible: true, oracleVisible: true},
+			gate: freezeGate{upstreamHeight: 100, localHeight: 100, managerVisible: true, chainVisible: map[string]bool{"main": true, "oracle": true}},
 		},
 		{
 			name: "behind upstream",
-			gate: freezeGate{upstreamHeight: 289700, localHeight: 289600, managerVisible: true, mainVisible: true, oracleVisible: true},
+			gate: freezeGate{upstreamHeight: 289700, localHeight: 289600, managerVisible: true, chainVisible: map[string]bool{"main": true, "oracle": true}},
 			want: []string{"not synchronized", "289600", "289700", "lag 100"},
 		},
 		{
 			name: "management set missing",
-			gate: freezeGate{upstreamHeight: 100, localHeight: 101, managerVisible: false, mainVisible: true, oracleVisible: true},
+			gate: freezeGate{upstreamHeight: 100, localHeight: 101, managerVisible: false, chainVisible: map[string]bool{"main": true, "oracle": true}},
 			want: []string{"missing the management validator set", "101", "100"},
 		},
 		{
 			name: "main set missing",
-			gate: freezeGate{upstreamHeight: 100, localHeight: 100, managerVisible: true, mainVisible: false, oracleVisible: true},
+			gate: freezeGate{upstreamHeight: 100, localHeight: 100, managerVisible: true, chainVisible: map[string]bool{"main": false, "oracle": true}},
 			want: []string{"missing the main validator set"},
 		},
 		{
 			name: "oracle set missing",
-			gate: freezeGate{upstreamHeight: 100, localHeight: 100, managerVisible: true, mainVisible: true, oracleVisible: false},
+			gate: freezeGate{upstreamHeight: 100, localHeight: 100, managerVisible: true, chainVisible: map[string]bool{"main": true, "oracle": false}},
 			want: []string{"missing the oracle validator set"},
 		},
 		{
+			name: "second chain set missing",
+			gate: freezeGate{upstreamHeight: 100, localHeight: 100, managerVisible: true, chainVisible: map[string]bool{"main": true, "trading": false}},
+			want: []string{"missing the trading validator set"},
+		},
+		{
 			name: "all sets missing",
-			gate: freezeGate{upstreamHeight: 100, localHeight: 100},
+			gate: freezeGate{upstreamHeight: 100, localHeight: 100, chainVisible: map[string]bool{"main": false, "oracle": false}},
 			want: []string{"missing the management and main and oracle validator set"},
 		},
 	} {
