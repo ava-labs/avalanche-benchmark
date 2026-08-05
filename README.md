@@ -1,26 +1,44 @@
 # Avalanche for Isolated Networks
 
-Benchmark and failover toolset for Avalanche L1s in isolated networks: no internet egress, fixed validator membership, PoA. Stand up an L1 on Fuji or mainnet, run it airgapped, drive load, and drill data-center failover by moving staking identities (key swap) or stake weight, on one deployment, with no chain re-creation between the two.
+This is a benchmark and failover toolset for Avalanche L1s in isolated
+networks. An isolated network has no internet egress, a fixed validator set,
+and PoA. The toolset creates an L1 on Fuji or mainnet and runs it in
+isolation. It puts load on the chain. It does data-center failover drills in
+two ways: it moves staking identities (key swap), or it moves stake weight.
+Both operate on one deployment. No step creates the chain again.
 
-Operator manual. Consensus parameter rationale: **[CONSENSUS-TUNING.md](CONSENSUS-TUNING.md)**.
+This document is the operator manual. For the consensus parameters, see
+**[CONSENSUS-TUNING.md](CONSENSUS-TUNING.md)**.
 
 ## What it needs
 
-Linux hosts reachable from one control machine over ssh, and a P-chain API endpoint (public or your own) for chain creation and weight changes. Nothing else. There is no provisioning layer here: you bring the machines, `nodes.ini` describes them, and the toolset deploys onto them.
+You need Linux machines with ssh access from one control machine. You need a
+P-chain API endpoint, public or your own, for chain creation and weight
+changes. You need nothing else. The toolset has no provisioning layer. You
+supply the machines, `nodes.ini` describes them, and the toolset deploys
+onto them.
 
-The fleet we develop and test against is EC2 across two AWS regions, which is why some notes below cite AWS behaviour. That is our test bed, not a requirement, and none of the tooling knows about a cloud provider. Bare metal, two physical data centers, or twelve VMs on one hypervisor all work; the only thing `dc=` tags do is label nodes in the `fleet status` table.
+Our test fleet is EC2 in two AWS regions. Some notes below therefore refer
+to AWS behavior. AWS is not a requirement. The toolset does not know about
+cloud providers. Bare metal, two physical data centers, or twelve VMs on one
+hypervisor also work. The `dc=` tags only label nodes in the `fleet status`
+table.
 
 ## Layout
 
-Two layers plus docs. The **base layer** (this README, `cmd/`, `internal/`,
-`monitoring/`) provisions and operates the chain: deploy, load (`bombard` is
-part of the base, since failover means nothing without load), failover,
-monitoring. **Apps** under `apps/` are self-contained business cases on top;
-each ships its own contracts, services, dashboards overlay, and runbook, and
-apps never depend on each other. First app: `apps/settlement-feed/`.
-Operational recipes live in `playbooks/` (provision, load test, failover
-drill, validator swap, rootless install, monitoring); ready-made inventory
-shapes in `examples/`.
+The repository has two layers and the docs. The **base layer** is this
+manual, `cmd/`, `internal/`, and `monitoring/`. It provisions and operates
+the chain: deploy, load, failover, and monitoring. The load generator
+`bombard` is part of the base layer, because a failover drill needs load.
+
+**Apps** are in `apps/`. An app is a self-contained business case on top of
+the base layer. Each app has its own contracts, services, dashboards, and
+runbook. Apps do not depend on each other. The first app is
+`apps/settlement-feed/`.
+
+Operational procedures are in `playbooks/`: provision, load test, failover
+drill, validator swap, rootless install, and monitoring. Ready-made
+inventory shapes are in `examples/`.
 
 ## Runbooks
 
@@ -38,9 +56,10 @@ make pack                         # remote-benchmark.tar.gz: binaries + configs,
 ./bin/bombard -rps 4000 -duration 5m
 ```
 
-### Frozen (airgapped) start
+### Frozen (isolated) start
 
-`deploy frozen` needs an archive that already contains the conversions, so the P-chain must sync and be captured first.
+`deploy frozen` needs an archive that contains the conversion transactions.
+The P-chain node must synchronize first. Then you capture it.
 
 ```bash
 ./bin/fleet pchain follow         # first-run initializer, P-chain node only
@@ -49,14 +68,17 @@ make pack                         # remote-benchmark.tar.gz: binaries + configs,
 ./bin/fleet deploy frozen         # freezes the P-chain, then starts the L1 fleet
 ```
 
-Do not substitute `deploy follow` here: it starts the whole L1 fleet before the archive exists.
+Do not use `deploy follow` here. That command starts the full L1 fleet
+before the archive exists.
 
-### Catching the P-chain up after a new create
+### Update the frozen P-chain after a new create
 
-A frozen P-chain has no upstream, so anything issued after the freeze (a new `create`, a `set-weight`, a `topup`) is invisible to the fleet. Unfreeze, let it replay, then re-freeze.
+A frozen P-chain has no upstream. It cannot see a transaction that you issue
+after the freeze. This applies to a new `create`, a `set-weight`, and a
+`topup`. The procedure is: unfreeze, let the node replay, freeze again.
 
 ```bash
-./bin/fleet pchain follow         # unfreeze: restores embedded bootstrappers, restarts, replays
+./bin/fleet pchain follow         # unfreeze: restores bootstrappers, restarts, replays
 ./bin/fleet status                # wait for MODE=synced and L1 STATE=complete
 rm pchain.tar.gz                  # archive refuses to overwrite
 ./bin/fleet pchain archive
@@ -64,30 +86,38 @@ rm pchain.tar.gz                  # archive refuses to overwrite
 ./bin/fleet deploy frozen         # re-deploys the L1 fleet against the new chain
 ```
 
-Replay from a recent freeze is seconds. A cold sync from an empty database is minutes (Fuji measured about 6). `deploy frozen` will **not** re-seed from the archive while the remote `db/` is nonempty: an existing database is authoritative. Follow-then-freeze is the only way to move a frozen snapshot forward.
+A replay from a recent freeze takes seconds. A cold synchronization from an
+empty database takes minutes. We measured approximately 6 minutes on Fuji.
+`deploy frozen` does not restore the archive while the remote `db/` has
+content. An existing database is authoritative. Follow-then-freeze is the
+only way to move a frozen snapshot forward.
 
-Issue weight changes while the P-chain node is following. A transaction submitted while frozen confirms publicly but does not reach the fleet until it follows again.
+Issue weight changes while the P-chain node follows. A transaction that you
+submit while the node is frozen confirms on the public network. The fleet
+does not see it until the node follows again.
 
-### Re-creating the chain
+### Create the chain again
 
 ```bash
 ./bin/l1 destroy                  # reclaims every validator balance, removes deployment/
 ./bin/l1 create                   # regenerates identities, creates both L1s
-# then the catch-up runbook above, since the new conversions are past the frozen height
+# then do the update runbook above: the new conversions are past the frozen height
 ```
 
 ### Drills
 
 ```bash
-./bin/fleet stop 5 6 7 8          # graceful node loss
-./bin/fleet stop 5 6 7 8 11 12    # graceful DC loss (site B, written out)
-./bin/fleet destroy 5 6 7 8       # abrupt loss: SIGKILL plus L1 chain data wipe
-./bin/fleet start 5 6 7 8 11 12   # bring back, re-pushing assigned identities
+./bin/fleet stop 5 6 7 8          # controlled node loss
+./bin/fleet stop 5 6 7 8 11 12    # controlled site loss (site B, written out)
+./bin/fleet destroy 5 6 7 8       # sudden loss: SIGKILL plus L1 chain data wipe
+./bin/fleet start 5 6 7 8 11 12   # recover, pushes the assigned identities again
 ./bin/fleet place a 5             # key-swap failover: converge, move, restart the mismatched
 ./bin/l1 set-weight d 100000      # weight-change failover
 ```
 
-After a host reboot, start the P-chain node first (`./bin/fleet pchain start`), then the L1 nodes (`./bin/fleet start`): every validator and RPC bootstraps from it.
+After a machine reboot, start the P-chain node first with
+`./bin/fleet pchain start`. Then run `./bin/fleet start`. Every validator
+and RPC node bootstraps from the P-chain node.
 
 ## Files
 
@@ -97,16 +127,17 @@ After a host reboot, start the P-chain node first (`./bin/fleet pchain start`), 
 | `.env` | operator | network, P-chain API, funding key, ssh access |
 | `deployment/identities/<letter>` | `keygen` | per-identity TLS and BLS keys |
 | `deployment/manager/<letter>` | `keygen` | committee BLS signing keys, control-side only |
-| `deployment/genesis-funds.key` | `keygen` | EVM key holding the genesis allocation, used by `bombard` |
+| `deployment/genesis-funds.key` | `keygen` | EVM key with the genesis allocation, used by `bombard` |
 | `deployment/public.json` | `keygen` | public handover: NodeIDs, PoPs, initial weights, genesis address |
-| `deployment/placement.json` | `keygen`, `place` | machine to identity bijection, control-side truth |
-| `deployment/genesis.json` | `create` | rendered genesis, stamped with creation time |
+| `deployment/placement.json` | `keygen`, `place` | machine-to-identity bijection, control-side truth |
+| `deployment/genesis.json` | `create` | rendered genesis, stamped with the creation time |
 | `deployment/network.env` | `create` | subnet, chain, and conversion transaction IDs |
 | `deployment/genesis-oracle.json` | `create` | rendered oracle genesis (only with oracle roles) |
-| `deployment/oracle-feeder.key` | `keygen` | EVM key funded on every price-feed chain, drives `oracle feed`/`relay` |
-| `pchain.tar.gz` | `pchain archive` | certified P-chain `db/` snapshot |
+| `deployment/oracle-feeder.key` | `keygen` | EVM key funded on every price-feed chain, used by `oracle feed`/`relay` |
+| `pchain.tar.gz` | `pchain archive` | validated P-chain `db/` snapshot |
 
-`deployment/` holds private keys. It is never in the pack artifact and never committed.
+`deployment/` contains private keys. It is never in the pack artifact. It is
+never committed.
 
 ## nodes.ini
 
@@ -123,16 +154,16 @@ After a host reboot, start the P-chain node first (`./bin/fleet pchain start`), 
 
 | Rule | Detail |
 |---|---|
-| Machines are numbers | data roots, unit names, and inventory keys all use `<n>` |
-| Identities are letters | `a`, `b`, `c`, assigned to nodes in ascending number order at keygen |
-| Valid shapes | 1 validator + 0 RPC (dev), or >= 4 validators + >= 1 RPC (failover). 2 or 3 validators are refused. |
-| Exactly one `pchain` | unregistered, stable TLS identity, no BLS signer, never key-swapped |
-| Initial weights | first three validators by node number get 100000, the rest 1000 |
-| `dc=` | display only, in the `fleet status` table. Nothing functional depends on it, and it is NOT a selector. |
-| Co-location | several nodes may share a host. Ports are positional by node order on that host: 9650/9651, 9652/9653, 9654/9655. |
-| Weights are not inventory | on-chain weight is the only truth |
-| `archive` | 0 or >= 2: an RPC-shaped main-L1 node with pruning and state-sync disabled (`chain-config-archive.json`). Must exist from genesis (an archive cannot state-sync); deployed like any other node. |
-| Oracle roles come together | `oracle-validator` / `oracle-rpc` declare the optional oracle L1 (`subnet-config-oracle.json`, all weights 1000, no key swaps). Omit both for no oracle chain; each requires the other. |
+| Machines are numbers | data roots, unit names, and inventory keys use `<n>` |
+| Identities are letters | `a`, `b`, `c`. Keygen assigns them to nodes in ascending number order. |
+| Valid shapes | 1 validator + 0 RPC (development), or 4+ validators + 1+ RPC (failover). The toolset refuses 2 or 3 validators. |
+| Exactly one `pchain` | not registered, stable TLS identity, no BLS signer, never key-swapped |
+| Initial weights | the first three validators by node number get 100000. The others get 1000. |
+| `dc=` | display only, in the `fleet status` table. Nothing functional reads it. It is not a selector. |
+| Co-location | several nodes can share one machine. Ports are positional by node order on that machine: 9650/9651, 9652/9653, 9654/9655. |
+| Weights are not inventory | the on-chain weight is the only truth |
+| `archive` | 0 or 2+. An RPC-shaped main-L1 node with pruning and state-sync off (`chain-config-archive.json`). It must exist from genesis, because an archive cannot state-sync. Deploy it like any other node. |
+| Oracle roles come together | `oracle-validator` and `oracle-rpc` declare the optional oracle L1 (`subnet-config-oracle.json`, all weights 1000, no key swaps). Omit both for no oracle chain. Each role requires the other. |
 
 ## .env
 
@@ -145,50 +176,97 @@ SSH_USER=ubuntu
 SSH_KEY_PATH=/home/ubuntu/.ssh/fleet
 ```
 
-Unknown fields, missing fields, and malformed values fail the command before it does any work. No aliases, no auto-discovery, no silent repair.
+An unknown field, a missing field, or a malformed value stops the command
+before it does work. There are no aliases, no auto-discovery, and no silent
+repair.
 
-`PCHAIN_API_TOKEN` is sent as the `token` query argument to the `PCHAIN_API` host and to no other host. It cannot be appended to `PCHAIN_API`: the AvalancheGo client overwrites the query string, so a token placed there is silently dropped.
+The toolset sends `PCHAIN_API_TOKEN` as the `token` query argument to the
+`PCHAIN_API` host, and to no other host. Do not append the token to
+`PCHAIN_API`. The AvalancheGo client overwrites the query string, so a token
+there is silently dropped.
 
-`go run ./cmd/l1 keygen-funding` generates a funding key straight into an empty `FUNDING_PRIVATE_KEY`, chmods `.env` to 0600, and refuses once `deployment/network.env` exists.
+`go run ./cmd/l1 keygen-funding` writes a new funding key into an empty
+`FUNDING_PRIVATE_KEY`. It sets `.env` to mode 0600. It refuses to run when
+`deployment/network.env` exists.
+
+For an install without root, also set `REMOTE_DIR`, and optionally
+`REMOTE_DATA_DIR`. See
+[playbooks/05-rootless-install.md](playbooks/05-rootless-install.md).
 
 ## Commands
 
 | Command | Effect |
 |---|---|
-| `l1 keygen [1\|4]` | offline: all private identities + `public.json` + `placement.json`. Requires `deployment/` absent. Argument is committee size. |
-| `l1 create` | on-chain: committee L1 then main L1. Runs `keygen` itself if `deployment/` is absent. |
-| `l1 address` | funding addresses and spendable P-chain balance |
-| `l1 keygen-funding` | generate `FUNDING_PRIVATE_KEY` into an empty `.env` field |
+| `l1 keygen [1\|4]` | offline: all private identities + `public.json` + `placement.json`. Requires that `deployment/` is absent. The argument is the committee size. |
+| `l1 create` | on-chain: the committee L1, then the main L1. Runs `keygen` itself if `deployment/` is absent. |
+| `l1 address` | the funding addresses and the spendable P-chain balance |
+| `l1 keygen-funding` | write a new `FUNDING_PRIVATE_KEY` into an empty `.env` field |
 | `l1 weights` | live weights and fee days left, both L1s, read-only |
 | `l1 topup <days>` | raise every registered validator to `<days>` of fee runway |
 | `l1 set-weight <letter> <1\|1000\|100000>` | weight-change failover through the committee |
-| `l1 destroy` | disable every validator, reclaim balances, remove `deployment/` |
-| `fleet deploy <frozen\|follow> [--dry-run] [sel...]` | no selectors: whole inventory, P-chain first. With selectors: rolling upgrade, one node fully through all phases before the next. Every host passes a mutation-free preflight (ssh, tools, writable paths, disk) before ANY node is stopped; `--dry-run` stops after it. |
-| `fleet pchain follow` | first-run initializer and unfreeze. P-chain node only. |
-| `fleet pchain freeze` | gate on synced + both validator sets, then switch to empty bootstrap lists |
-| `fleet pchain archive` | stop, snapshot `db/`, restart, download, validate, publish `./pchain.tar.gz` |
-| `fleet pchain start` | bring the P-chain node up from its installed unit or run script. Needs nothing but the machine (no upstream API), so it works on an airgapped frozen fleet. After a host reboot: this first, then `fleet start` |
-| `fleet pchain stop` | graceful stop, preserves everything. L1 nodes keep producing; bootstrapping needs it back |
-| `fleet status` | read-only, whole inventory, no selectors |
-| `fleet start [sel...]` | idempotent: restarts only nodes that are down, on the wrong identity, or not answering. Returns immediately, does NOT wait for serving |
-| `fleet stop [sel...]` | graceful, preserves data, keys, logs |
-| `fleet destroy <sel...>` | SIGKILL + delete `chainData/<chain-id>` only. Simulates abrupt loss. Node numbers are REQUIRED. |
-| `fleet place <letter> <node>` | reconcile, swap placement, reconcile again. One move per call, does NOT wait for readiness. The only placement verb. |
-| `bombard -rps N -duration D` | load generator, fans across all `role=rpc` nodes |
-| `oracle feed <node-url>` | foreground mock price feeder. With an oracle L1: submits to the aggregator there. Without one: publishes rounds directly to the main chain's Chainlink-shaped aggregator with type-2 priority-fee transactions |
-| `oracle relay <oracle-rpc-url> <rpc-url> <staking-ip:port,...>` | foreground Warp price relayer; signatures collected from the validators over ACP-118 (oracle L1 deployments only) |
+| `l1 destroy` | disable every validator, reclaim the balances, remove `deployment/` |
+| `fleet deploy <frozen\|follow> [--dry-run] [sel...]` | without selectors: the full inventory, P-chain first. With selectors: a rolling upgrade, one node through all phases before the next. A preflight tests every machine (ssh, tools, writable paths, disk) before any node stops. It changes nothing. `--dry-run` stops after the preflight. |
+| `fleet pchain follow` | the first-run initializer, and the unfreeze. P-chain node only. |
+| `fleet pchain freeze` | require synced + both validator sets, then switch to empty bootstrap lists |
+| `fleet pchain archive` | stop, snapshot `db/`, restart, download, validate, write `./pchain.tar.gz` |
+| `fleet pchain start` | start the P-chain node from its installed unit or run script. It needs only the machine, no upstream API. It works on an isolated frozen fleet. After a machine reboot: this first, then `fleet start`. |
+| `fleet pchain stop` | a controlled stop. All data stays. L1 nodes continue; a node that bootstraps needs the P-chain node back. |
+| `fleet status` | read-only, the full inventory, no selectors |
+| `fleet start [sel...]` | safe to repeat: restarts only nodes that are down, on the wrong identity, or not answering. Returns immediately. Does not wait for the nodes to serve. |
+| `fleet stop [sel...]` | controlled stop. Data, keys, and logs stay. |
+| `fleet destroy <sel...>` | SIGKILL, then delete `chainData/<chain-id>` only. Simulates sudden loss. Node numbers are required. |
+| `fleet place <letter> <node>` | reconcile, swap the placement, reconcile again. One move per call. Does not wait for readiness. The only placement verb. |
+| `bombard -rps N -duration D` | the load generator. Sends to all `role=rpc` nodes. |
+| `oracle feed <node-url>` | the foreground mock price feeder. With an oracle L1, it submits to the aggregator there. Without one, it publishes rounds to the main chain's Chainlink-shaped aggregator with type-2 priority-fee transactions. |
+| `oracle relay <oracle-rpc-url> <rpc-url> <staking-ip:port,...>` | the foreground Warp price relayer. It collects signatures from the validators over ACP-118. Oracle L1 deployments only. |
 
-Selector is a NODE NUMBER; multiple form a union; none means all, except for `destroy`, which refuses to run without explicit node numbers because its blast radius is data. It prints the whole-fleet command so you can copy it if you truly mean every machine. Separate arguments and comma-separated both work (`fleet stop 1 11 12` = `fleet stop 1,11,12`). `status` takes no selectors.
+A selector is a node number. Several selectors form a union. No selector
+means all nodes. `destroy` is the exception: it refuses to run without
+explicit node numbers, because it deletes data. It prints the full-fleet
+command, so you can copy it if you really mean every machine. Separate
+arguments and comma-separated lists both work: `fleet stop 1 11 12` is
+`fleet stop 1,11,12`. `status` takes no selectors.
 
-There is deliberately no `dc=<tag>` selector, and passing one is a loud error. One `destroy dc=A` takes down half a two-site fleet in a single keystroke, and half is the worst possible number: the state-sync beacon list carries weight 1 per entry with `alpha = count/2 + 1`, so losing half leaves every survivor exactly one beacon short of alpha and NO node can state-sync for the rest of the incident, even one whose local data is already at the network's height. Write a site drill out as node numbers, which also forces you to think about the RPC nodes separately from the validators.
+There is no `dc=<tag>` selector. One that you pass is a loud error. This is
+intentional. One `destroy dc=A` would stop half of a two-site fleet with one
+keystroke. Half is the worst number. The state-sync beacon list has weight 1
+per entry, and `alpha = count/2 + 1` is computed over the list. When half
+the entries are down, every survivor is one beacon short of alpha, and no
+node can state-sync for the rest of the incident. This applies also to a
+node whose local data is already at the network height. Write a site drill
+as node numbers. That also makes you handle the RPC nodes separately from
+the validators.
 
-**Upgrading binaries on a live fleet**: `fleet deploy <mode> <node>` one node at a time, and `fleet pchain freeze` (or `follow`) for the P-chain node, which reinstalls its package too. Never redeploy the whole fleet at once for an upgrade: restarting several nodes together removes the peers that serve state-sync summaries, and a node that cannot obtain one replays the entire chain from genesis instead of syncing in seconds.
+**Binary upgrade on a live fleet.** Run `fleet deploy <mode> <node>` one
+node at a time. For the P-chain node, run `fleet pchain freeze` (or
+`follow`); that reinstalls its package too. Do not redeploy the full fleet
+at once for an upgrade. A restart of several nodes together removes the
+peers that serve state-sync summaries. A node that cannot get a summary
+replays the full chain from genesis. A node with a summary synchronizes in
+seconds.
 
-`fleet start` is IDEMPOTENT. It probes each selected machine first and leaves any node that is already serving its assigned identity strictly alone: not stopped, not restarted, not re-pushed. Only a node that is down, running the wrong identity, or running but not answering its API is taken through stop, identity, config, start. Running it twice is a no-op. Restarting a healthy node is never free, since it drops its peers and re-enters bootstrap behind the 75% stake gate, so `fleet start 5 6 7` must never take three healthy boxes down to fix nothing.
+`fleet start` is safe to repeat. It examines each selected machine first. A
+node that serves its assigned identity is not touched: not stopped, not
+restarted, no new push. Only a node that is down, that runs the wrong
+identity, or that does not answer goes through stop, identity, config,
+start. A second run is a no-op. A restart of a healthy node has a cost: the
+node loses its peers and enters bootstrap again behind the 75% stake gate.
+`fleet start 5 6 7` must not stop three healthy machines to repair nothing.
 
-`fleet start` returns as soon as the services are up and deliberately does not wait for them to serve. A node only finishes bootstrapping once 75% of stake is connected (avalanchego's startup tracker is `(3*bootstrapWeight+3)/4`), so during a multi-node recovery no node can become ready until the others are also running. A blocking start would deadlock: restarting node A waits on node B, which has not been started because the command is still blocked on A. Start the whole set, then watch `fleet status` converge. `deploy` still blocks, since it brings up a coordinated set. `place` does not: it restarts the mismatched machines and returns.
+`fleet start` returns when the services are up. It does not wait for the
+nodes to serve. This is intentional. A node completes bootstrap only when
+75% of the stake is connected; the avalanchego startup tracker is
+`(3*bootstrapWeight+3)/4`. In a multi-node recovery, no node can become
+ready until the other nodes also run. A start command that waits would
+therefore deadlock: node A waits on node B, and node B has not started
+because the command still waits on node A. Start the full set. Then watch
+`fleet status` until it converges. `deploy` does wait, because it brings up
+a coordinated set. `place` does not wait: it restarts the mismatched
+machines and returns.
 
-Every mutating fleet command runs fleet-wide phases and aborts before the next phase if any node fails. Rerunning converges. Control-side state is written atomically before remote work.
+Every fleet command that changes state runs fleet-wide phases. It stops
+before the next phase when any node fails. A repeated run converges. The
+control-side state is written atomically before the remote work starts.
 
 ## fleet status
 
@@ -204,31 +282,44 @@ P-CHAIN  MODE    LOCAL HEIGHT  UPSTREAM HEIGHT  LAG  L1 STATE  READY TO FREEZE
 | Column | Source |
 |---|---|
 | `ID` | `deployment/placement.json` |
-| `WEIGHT` | public P-chain API; on a frozen fleet the deployment records, since the sets froze with the archive and the upstream is unreachable by design (the table says which source answered). `1`, `1000`, `100000`, or `-` for RPC. |
+| `WEIGHT` | the public P-chain API. On a frozen fleet: the deployment records, because the sets froze with the archive and the upstream is not reachable by design. The output names the source. Values: `1`, `1000`, `100000`, or `-` for RPC. |
 | `STATE` | systemd, collapsed to `up`, `down`, `failed`, `not installed` |
 | `HEIGHT` | that machine's own accepted L1 height, raw |
-| `MODE` | `bootstrapping` (with pct and eta), `catching-up`, `synced`, `frozen` |
+| `MODE` | `bootstrapping` (with percent and eta), `catching-up`, `synced`, `frozen` |
 | `L1 STATE` | `complete` when both validator sets are visible, else `partial` or `missing` |
 
-`-` means not applicable or deliberately down. `?` means it should exist but could not be observed. The P-chain machine never appears in the node table; the two sections together cover the whole inventory.
+`-` means not applicable, or down on purpose. `?` means the value must exist
+but was not observable. The P-chain machine is not in the node table. The
+two sections together cover the full inventory.
 
-Cross-node height differences are normal at 25ms blocks with ~20ms inter-DC latency and are never flagged. Runtime NodeID is checked against placement and drift is a loud error, not a column.
+Height differences between nodes are normal at 25ms blocks with ~20ms
+latency between the sites. Status does not flag them. Status compares the
+runtime NodeID with the placement. A difference is a loud error, not a
+column.
 
-Exit is nonzero for identity drift, an `up` service whose API cannot answer, and a required P-chain failure. `down` and `not installed` are valid drill states and exit zero. A frozen airgapped fleet with every node producing exits zero: the upstream API is treated as not applicable, so `status` works as an automated health probe.
+The exit code is not 0 for: identity drift, an `up` service that does not
+answer its API, and a required P-chain failure. `down` and `not installed`
+are valid drill states and exit 0. A frozen isolated fleet with every node
+in production exits 0. The upstream API is treated as not applicable.
+Automation can therefore use `status` as a health probe.
 
 ## The local P-chain never answers platform calls
 
-`--p-chain-follow-only` keeps the P-chain permanently in bootstrap by design: it reaches the tip and tracks read-only, but never hands off to consensus. Consequences, none of which are faults and none of which may gate anything:
+`--p-chain-follow-only` keeps the P-chain node in bootstrap permanently.
+This is by design. The node reaches the tip and tracks read-only. It never
+hands off to consensus. The consequences are not faults. Do not gate
+anything on them:
 
-- `platform.getHeight` and every local `platform.*` returns `chain is not done bootstrapping`, forever.
-- `info.isBootstrapped` never turns true.
+- `platform.getHeight`, and every local `platform.*` call, returns
+  `chain is not done bootstrapping`, forever.
+- `info.isBootstrapped` never becomes true.
 
 | Question | Answer from |
 |---|---|
-| local absolute height | startup `lastAcceptedHeight` in `P.log` + `avalanche_snowman_bs_accepted{chain="P"}` from `/ext/metrics` |
-| is it ready | `bootstrapped` check on `/ext/health` |
-| replay progress | `executing blocks` in `P.log`, carries `pctComplete` and `eta` every 5s |
-| validator sets, weights | public P-chain API |
+| local absolute height | the startup `lastAcceptedHeight` in `P.log`, plus `avalanche_snowman_bs_accepted{chain="P"}` from `/ext/metrics` |
+| is it ready | the `bootstrapped` check on `/ext/health` |
+| replay progress | `executing blocks` in `P.log`; it has `pctComplete` and `eta` every 5s |
+| validator sets, weights | the public P-chain API |
 
 ```bash
 ssh -i ~/.ssh/fleet ubuntu@<pchain-host> \
@@ -237,7 +328,10 @@ ssh -i ~/.ssh/fleet ubuntu@<pchain-host> \
 
 ## Topology
 
-The shipped example: 8 validators and 4 RPC nodes split across two sites, one P-chain node, one control machine. Nothing below is provider-specific. Oracle and archive nodes, when declared, co-locate on the same hosts with positional ports.
+The shipped example is 8 validators and 4 RPC nodes on two sites, one
+P-chain node, and one control machine. Nothing below is provider-specific.
+Declared oracle and archive nodes share the same machines with positional
+ports.
 
 ![Two-site benchmark topology](docs/architecture.png)
 
@@ -278,133 +372,226 @@ flowchart LR
     RB <--> VB
 ```
 
-Solid lines carry chain traffic, dashed lines are control-plane. The P-chain node is the only path to the primary network for the fleet, and in frozen mode its upstream link is cut, which is what makes the L1 runnable with no internet egress.
+Solid lines carry chain traffic. Dashed lines carry the control plane. The
+P-chain node is the fleet's only path to the primary network. In frozen
+mode, its upstream link is cut. This is what lets the L1 run with no
+internet egress.
 
-- The P-chain node is the sole primary-network bootstrap for every validator and RPC, addressed by `(host:staking-port, NodeID)` and verified by TLS at dial. It therefore cannot participate in key placement.
-- L1 state-sync peers for each node are all other validator and RPC nodes, never itself and never the P-chain node.
-- Ingress goes only to `role=rpc` nodes. Serving transactions on a validator measurably slows its block production.
+- The P-chain node is the only primary-network bootstrap for every
+  validator and RPC node. Peers address it as `(host:staking-port, NodeID)`
+  and verify it by TLS at dial. It therefore cannot take part in key
+  placement.
+- The state-sync peers of each node are all other validator and RPC nodes.
+  A node never lists itself, and never the P-chain node.
+- Transaction ingress goes only to `role=rpc` nodes. A validator that
+  serves transactions produces blocks measurably more slowly.
 
 ## place
 
-`place a 5` moves identity `a` to node 5 **and** node 5's previous identity to `a`'s old node. Placement is always a transposition, so the bijection holds by construction. It is the only placement verb and runs three phases:
+`place a 5` moves identity `a` to node 5, **and** the previous identity of
+node 5 to the old node of `a`. A placement change is always a transposition.
+The bijection therefore holds by construction. `place` is the only placement
+verb. It runs three phases:
 
-| phase | what |
+| Phase | Action |
 | --- | --- |
 | before | reconcile the fleet to `placement.json`. Silent when already converged. |
 | write | update `placement.json` atomically |
-| after | reconcile again, activating the move |
+| after | reconcile again. This activates the move. |
 
-One move per call, and the after phase does NOT wait for the restarted node to serve. Both are deliberate. Batching moves would restart several machines in the same pass, taking multiple boxes offline at once, which is the disruption a key-swap failover exists to avoid. And waiting for readiness would deadlock the case place exists for: a node finishes bootstrapping only once 75% of stake is connected, so relocating a quorum one identity at a time passes through placements where the surviving side is below that gate, and the wait would block forever on stake that only arrives with the next move. Chaining places would not escape it either, since the next command's before phase would wait on the same un-ready node. Move a quorum as a sequence of single places and watch `fleet status` converge.
+One call makes one move. The after phase does not wait for the restarted
+node to serve. Both properties are intentional. A batch of moves would
+restart several machines in one pass. That takes several machines offline
+at the same time, and this disruption is what a key-swap failover must
+avoid.
 
-Reconcile means: read each running node's NodeID, compare with placement, restart only the mismatched set, pushing the assigned key before each restart. A fresh `node.json` goes to EVERY L1 machine, not only the restarted ones, and lists only the machines the fleet is meant to be running: its `state-sync-ips`/`state-sync-ids` is the address book each node uses to find its siblings (nothing gossips these addresses, since the nodes are not primary-network validators and the sole bootstrapper does not track the L1), so one moved identity invalidates every other machine's copy. `start`, `stop`, and `destroy` re-render it fleet-wide the same way.
+A wait for readiness would deadlock the case that `place` exists for. A
+node completes bootstrap only when 75% of the stake is connected. When you
+move a quorum one identity at a time, some intermediate placements hold
+less stake than that gate. A wait would block forever on stake that only
+arrives with the next move. A chain of `place` calls does not escape this:
+the next call's before phase would wait on the same node. Move a quorum as
+a sequence of single `place` calls. Watch `fleet status` until it
+converges.
 
-Listing only the intended-up machines is what keeps state sync working through a site loss. The list doubles as the state-sync beacon set at weight 1 per entry with `alpha = count/2 + 1` computed over the list, not over who answers, so naming a machine that is down raises the bar without adding anybody who can clear it: twelve entries with six down leaves five reachable against an alpha of six and no node can state-sync at all. Intent comes from systemd's enabled flag, so `stop` and `destroy` record it for free, and a machine that does not answer counts as down. `deploy` does not consult liveness at all: it installs and brings up what it is given, so it renders the whole inventory. The refresh reaches running machines on purpose: the unit is `Restart=on-failure`, so a crash reloads `node.json` without the kit involved, and a machine holding a book full of dead peers would come back unable to sync. `fleet status` reports the intended-up count, since that input lives on the machines rather than in a file on control. Nodes already correct are untouched. Nodes deliberately down (inactive and disabled) stay down; inactive but enabled means an interrupted run and gets brought back.
+Reconcile means: read the NodeID of each running node, compare it with the
+placement, and restart only the mismatched set. The assigned key is pushed
+before each restart. A fresh `node.json` goes to every L1 machine, not only
+to the restarted ones. Its `state-sync-ips`/`state-sync-ids` list is the
+address book each node uses to find the other nodes. Nothing gossips these
+addresses: the nodes are not primary-network validators, and the only
+bootstrapper does not track the L1. One moved identity therefore makes
+every machine's copy wrong. `start`, `stop`, and `destroy` write the file
+fleet-wide in the same way.
 
-The before phase is why there is no separate apply step. Placing onto a fleet that had not been applied yet would bundle the pending move into this one, so a single restart would carry two identity changes and a failure would leave neither attributable. Converging first makes every `place` an isolated transition. A `place` that changes nothing skips the after phase entirely.
+The address book lists only the machines that are intended to be up. This
+is what keeps state sync alive through a site loss. The list is also the
+state-sync beacon set, at weight 1 per entry, with `alpha = count/2 + 1`
+computed over the list, not over the nodes that answer. An entry for a dead
+machine raises the bar and adds nobody who can clear it. Example: twelve
+entries with six down leaves five reachable nodes against an alpha of six,
+and no node can state-sync.
 
-Refused, for correctness not policy: any swap involving an `rpc` or `pchain` node. Their identities are state-sync seeds and unstaked, and moving a validator onto one silently changes its role.
+Intent comes from the systemd enabled flag. `stop` and `destroy` therefore
+record it without extra work. A machine that does not answer counts as
+down. `deploy` does not read liveness at all: it installs and starts what
+it is given, so it renders the full inventory. The refresh reaches running
+machines on purpose. The unit is `Restart=on-failure`, so a crash reloads
+`node.json` without the toolset. A machine with an address book full of
+dead peers would return from a crash unable to synchronize. `fleet status`
+reports the intended-up count, because that input lives on the machines and
+not in a file on control. Correct nodes are not touched. Nodes that are
+down on purpose (inactive and disabled) stay down. A node that is inactive
+but enabled is an interrupted run, and reconcile brings it back.
+
+The before phase is the reason there is no separate apply step. A `place`
+onto a fleet with a pending move would put two identity changes into one
+restart. A failure would then not be attributable to either move. The
+before phase converges first, so every `place` is one isolated transition.
+A `place` that changes nothing skips the after phase.
+
+`place` refuses every swap that involves an `rpc` or `pchain` node. This is
+correctness, not policy. Their identities are state-sync seeds and hold no
+stake. A validator identity moved onto one would silently change its role.
 
 ## set-weight
 
-Accepts exactly `1` (dead), `1000` (spare), `100000` (active). Weight `0` and everything else is refused: this is a fixed-membership benchmark, not a membership manager.
+`set-weight` accepts exactly `1` (dead), `1000` (spare), and `100000`
+(active). It refuses weight `0` and every other value. This is a
+fixed-membership benchmark, not a membership manager.
 
-It fetches the validationID and nonce, builds the `L1ValidatorWeight` Warp payload in an `AddressedCall` from the committee chain, signs with the committee BLS keys on control, aggregates a `BitSetSignature`, verifies at the 67% quorum, submits `SetL1ValidatorWeightTx`, and polls until the weight reads back.
+The command fetches the validationID and the nonce. It builds the
+`L1ValidatorWeight` Warp payload in an `AddressedCall` from the committee
+chain. It signs with the committee BLS keys on the control machine. It
+aggregates a `BitSetSignature` and verifies it at the 67% quorum. It
+submits `SetL1ValidatorWeightTx`. It polls until the new weight reads back.
 
-Warp admission verifies against the P-chain height pinned in the current ACP-181 epoch, not the latest state. `set-weight` derives the management conversion height from its recorded transaction ID and requires `currentEpoch.pChainHeight >= managementConversionHeight`. If the epoch is older it prints the JST boundary, sleeps to it, submits a visible no-op `BaseTx` to nudge the epoch, and rechecks. A quiet P-chain may need a second nudge.
+Warp admission verifies against the P-chain height that the current ACP-181
+epoch pins, not against the latest state. `set-weight` derives the
+management conversion height from its recorded transaction ID. It requires
+`currentEpoch.pChainHeight >= managementConversionHeight`. When the epoch
+is older, it prints the JST boundary, sleeps to it, submits a visible no-op
+`BaseTx` to advance the epoch, and checks again. A quiet P-chain can need a
+second nudge.
 
 ## The direct price feed
 
-Every main chain genesis bakes a Chainlink-compatible feed for USDC / USD:
-a `PriceAggregator` at `0x00000000000000000000000000000000FeedFacE` that the
-generated `deployment/oracle-feeder.key` publishes to, behind a
-`PriceFeedProxy` at `0x00000000000000000000000000000000FeedF00d` that
-consumers read from, ABI-identical to a Chainlink feed (`latestRoundData`,
-`getRoundData`, `decimals`, `description`; the kit's `IPriceFeed` interface
-matches Chainlink's `AggregatorV3Interface` signature for signature).
-On a deployment without oracle roles this is the whole price pipeline: one
-process, no extra chain, no relay.
+Every main-chain genesis contains a Chainlink-compatible feed for USDC/USD.
+A `PriceAggregator` is at `0x00000000000000000000000000000000FeedFacE`. The
+generated `deployment/oracle-feeder.key` publishes to it. A
+`PriceFeedProxy` is at `0x00000000000000000000000000000000FeedF00d`.
+Consumers read from the proxy. The ABI is identical to a Chainlink feed:
+`latestRoundData`, `getRoundData`, `decimals`, `description`. The
+`IPriceFeed` interface matches Chainlink's `AggregatorV3Interface`
+signature for signature. On a deployment without oracle roles, this is the
+full price pipeline: one process, no extra chain, no relay.
 
 ```bash
 ./bin/oracle feed http://<rpc>:9650
 ```
 
-`feed` publishes ten rounds a second as type-2 (EIP-1559) transactions. The
-priority fee is what keeps updates at the front of each block under load: the
-block builder orders by effective tip and `bombard`'s flood pays none, so the
-feed bids `max(2 * eth_maxPriorityFeePerGas, 10 wei)` and wins ordering while
-paying only `baseFee + tip`. The feeder also reads `latestRoundData` back
-through the proxy every 500ms, so the exported on-chain series is exactly a
-consumer contract's view, and exports feed price, on-chain price, their delta,
-and submit-to-mined latency
-(`monitoring/dashboards/oracle-direct-dashboard.json` charts all four). The
-proxy owner can swap the aggregator behind the stable consumer address with
-Chainlink's propose/confirm flow; see `apps/settlement-feed/docs/oracle-consumer.md`.
+`feed` publishes ten rounds per second as type-2 (EIP-1559) transactions.
+The priority fee keeps the updates at the front of each block under load.
+The block builder orders by effective tip, and the `bombard` flood pays no
+tip. The feed bids `max(2 * eth_maxPriorityFeePerGas, 10 wei)`. It wins the
+ordering and pays only `baseFee + tip`.
+
+The feeder also reads `latestRoundData` back through the proxy every 500ms.
+The exported on-chain series is therefore exactly what a consumer contract
+sees. It exports the feed price, the on-chain price, their delta, and the
+submit-to-mined latency. The dashboard
+`apps/settlement-feed/dashboards/oracle-direct-dashboard.json` shows all
+four. The proxy owner can swap the aggregator behind the stable consumer
+address with Chainlink's propose/confirm flow. See
+`apps/settlement-feed/docs/oracle-consumer.md`.
 
 ## The oracle L1
 
-Optional third L1, declared purely through `oracle-validator` / `oracle-rpc`
-inventory roles, for when the feed itself must be attested by a validator set
-instead of trusted key-to-contract: it ingests mocked price feeds (BTC-USD,
-USDC-USD) and exports every update to the main L1 as a Warp message signed by
-the oracle validator set. All contracts ship pre-deployed in genesis; there is
-nothing to deploy at runtime.
+The oracle L1 is an optional third L1. The inventory roles
+`oracle-validator` and `oracle-rpc` declare it; nothing else does. Use it
+when a validator set must attest the feed, instead of trust in one
+key-to-contract path. It ingests mock price feeds (BTC-USD, USDC-USD). It
+exports every update to the main L1 as a Warp message that the oracle
+validator set signs. All contracts are pre-deployed in genesis. There is
+nothing to deploy at run time.
 
 ```bash
 ./bin/oracle feed http://<oracle-rpc>:9650                                        # terminal 1
 ./bin/oracle relay http://<oracle-rpc>:9650 http://<rpc>:9650 <staking-ip:port,...>  # terminal 2
 ```
 
-`feed` submits both assets ten times a second, signed by
-`deployment/oracle-feeder.key`. `relay` watches the aggregator's Warp events
-over a websocket, has each message signed at the 67% quorum, packs everything
-pending into ONE delivery transaction (one Warp predicate per message, max 16),
-and confirms it on main. Batching has no timer: a lone message ships instantly;
-a backlog drains by widening batches instead of growing latency. The receiver
-contract accepts only the oracle chain + aggregator origin and skips stale
-sequence numbers.
+`feed` submits both assets ten times per second, signed by
+`deployment/oracle-feeder.key`. `relay` watches the aggregator's Warp
+events over a websocket. It has each message signed at the 67% quorum. It
+packs all pending messages into one delivery transaction, with one Warp
+predicate per message and a maximum of 16. It confirms the delivery on the
+main chain. The batch logic has no timer. A single message ships
+immediately. A backlog drains through wider batches, not through higher
+latency. The receiver contract accepts only the oracle chain plus
+aggregator origin. It skips stale sequence numbers.
 
 The relay holds no BLS keys. It requests each signature from the oracle
-validators themselves over ACP-118 on their staking ports (the icm-services
-signature-aggregator wire protocol) and aggregates replies at the 67% quorum
-(the committee keys used by `set-weight` remain on control; only the oracle
-chain signs its own messages). Collection latency is exported as
-`oracle_relay_sign_latency_seconds`; measured on the test fleet a 3-of-4
-quorum across three machines costs ~5ms p50, invisible next to block cadence.
-Only odd requestIDs are used: subnet-evm routes even-requestID AppRequests to
-its legacy sync handlers, which silently drop them.
+validators over ACP-118 on their staking ports. This is the icm-services
+signature-aggregator wire protocol. It aggregates the replies at the 67%
+quorum. The committee keys that `set-weight` uses stay on the control
+machine. Only the oracle chain signs its own messages. The collection
+latency is exported as `oracle_relay_sign_latency_seconds`. On the test
+fleet, a 3-of-4 quorum across three machines costs approximately 5ms at
+p50. That is not visible next to the block cadence. The relay uses only odd
+requestIDs. Subnet-evm routes AppRequests with even requestIDs to its
+legacy sync handlers, and those drop them silently.
 
-Delivery gates on the ACP-181 epoch pinning a P-chain height at or beyond the
-oracle conversion, so the first message after creation may wait one epoch
-boundary (the relay prints the exact JST boundary it sleeps to). A freshly
-created chain also cannot accept its first block until its first Granite epoch
-seals (~5 minutes on Fuji): start `feed` and `relay` after that window, or just
-restart them until deliveries confirm. In production the relay job belongs to
-[icm-relayer](https://github.com/ava-labs/icm-services); this control-host
-relayer is the airgap-friendly demo equivalent.
+Delivery requires an ACP-181 epoch that pins a P-chain height at or past
+the oracle conversion. The first message after creation can therefore wait
+for one epoch boundary. The relay prints the exact JST boundary it sleeps
+to. A freshly created chain also cannot accept its first block until its
+first Granite epoch seals. That takes approximately 5 minutes on Fuji.
+Start `feed` and `relay` after that window, or restart them until the
+deliveries confirm. In production, the relay job belongs to
+[icm-relayer](https://github.com/ava-labs/icm-services). This control-host
+relayer is the demo equivalent for isolated networks.
 
 ## Consensus
 
-Fixed benchmark input, identical for every topology including a single validator. Fleet commands never derive consensus settings from inventory.
+The consensus parameters are a fixed benchmark input. They are identical
+for every topology, including a single validator. Fleet commands never
+derive consensus settings from the inventory. The shipped values are in
+`subnet-config.json`:
 
 ```
-k=20  alphaPreference=11  alphaConfidence=13  beta=25  proposerWindow=100ms
+k=60  alphaPreference=31  alphaConfidence=38  beta=12  proposerWindow=100ms
 ```
 
-`alphaConfidence` deliberately sits above `alphaPreference`: with both at 11,
-a sustained tip-race under saturation load let different nodes finalize
-different siblings of the same parent (reproduced at 2x overload on the test
-fleet: two 100k validators continued on one branch while the rest of the
-fleet wedged on the other). Preference can flip cheaply; confidence, which
-feeds finality, demands the stronger majority, and the higher `beta` requires
-that majority to hold across more consecutive polls before a block is final.
+`alphaConfidence` is above `alphaPreference` on purpose. With both at the
+same marginal value (11 of 20), a sustained tip race under saturation load
+let different nodes finalize different siblings of the same parent. We
+reproduced this at 2x overload on the test fleet: two 100k validators
+continued on one branch, and the rest of the fleet stopped on the other.
+Preference can change cheaply. Confidence feeds finality and demands the
+stronger majority. The ratio `alphaConfidence/k = 0.633` also clears the
+connected-stake query gate with one heavy validator down. The full
+derivation and the measurements are in
+[CONSENSUS-TUNING.md](CONSENSUS-TUNING.md). Run `tools/forkcheck.sh` after
+every load run.
 
-Block cadence is 25ms: `min-delay-target` in `chain-config.json` and `initialMinDelayMS` in the genesis. The genesis is stamped with creation time; a genesis stamped `0` would sit before the network's Granite activation, leaving Granite inactive at block zero, silently discarding `initialMinDelayMS`, and starting the chain at the 2000ms ACP-226 default.
+The block cadence is 25ms: `min-delay-target` in `chain-config.json`, and
+`initialMinDelayMS` in the genesis. The genesis is stamped with the
+creation time. A genesis stamped `0` would sit before the network's Granite
+activation. Granite would then be inactive at block zero, the chain would
+silently drop `initialMinDelayMS`, and it would start at the 2000ms ACP-226
+default.
 
-`proposerWindowMilliseconds` is the cadence floor whenever the scheduled proposer misses its slot, so it bounds the whole benchmark. 50 is the avalanchego minimum (`subnets.MinProposerWindowMilliseconds`); `0` means the 5s default, not "no window". At 100ms, inter-block times quantized to 101/202/602ms and only a third of blocks reached the 25ms target.
+`proposerWindowMilliseconds` is the cadence floor whenever the scheduled
+proposer misses its slot. It therefore bounds the whole benchmark. 50 is
+the avalanchego minimum (`subnets.MinProposerWindowMilliseconds`). `0`
+means the 5-second default, not "no window". At 100ms, the inter-block
+times quantized to 101/202/602ms, and only a third of the blocks reached
+the 25ms target.
 
 ## Measured baseline
 
-2x2 topology, 8 validators, 4 RPCs, `bombard -rps 4000`, 12627 blocks over 323s measured from block timestamps:
+2x2 topology, 8 validators, 4 RPC nodes, `bombard -rps 4000`, 12627 blocks
+over 323s, measured from the block timestamps:
 
 ```
 per-second tps   mean 3951   p50 4004   stdev 152   CV 4%   min 3288   below-3000 0/323
@@ -412,15 +599,55 @@ block delta ms   p50 25   p75 25   p90 26   p99 43   max 170   at the 25ms floor
 bombard          p50 68-81ms   p95 114-165ms   in-flight cap not binding
 ```
 
-Measure from `timestampMilliseconds` on the blocks (chain truth), not the bombard TUI: the TUI's mined-tps is observer-side, and a watcher that falls behind renders a sawtooth with zero-seconds that never happened. The Grafana chain-TPS panel (`rate(avalanche_subnetevm_vm_eth_chain_txs_accepted[1m])`) is the durable version of the same measurement. When comparing configs, exclude windows spanning a restart, which average two configs together.
+Measure from `timestampMilliseconds` on the blocks. That is the chain
+truth. Do not measure from the bombard screen: its mined-tps is measured at
+the observer, and an observer that falls behind shows a sawtooth with
+zero-seconds that did not happen. The Grafana chain-TPS panel
+(`rate(avalanche_subnetevm_vm_eth_chain_txs_accepted[1m])`) is the durable
+form of the same measurement. When you compare configurations, exclude
+windows that contain a restart. Such a window averages two configurations.
 
 ## Gotchas
 
-- **Firewalling**: the staking port (9651, positional per host) must be open in **both** directions between every pair of nodes, plus ssh and HTTP from control. If nodes sit behind a firewall that filters by source address, remember a node may be reached at one address from across a site boundary and a different one from inside its own site, so a rule listing only the external addresses silently breaks local peering. On AWS specifically, cross-region peering arrives from public IPs while same-VPC traffic arrives from private IPs, and security groups listing only public CIDRs break intra-region peering.
-- **A host often cannot reach its own public address.** Where the public address is a 1:1 NAT rather than an address on the interface (AWS EC2, and most cloud NAT setups), a host connecting to its own public IP fails. The P-chain node therefore cannot live on the control host, because fleet commands reach every node at the address its peers use.
-- **Registered validators burn a continuous fee forever.** Run `l1 destroy` when abandoning a deployment.
-- **`fleet destroy` is not `l1 destroy`.** The first wipes local L1 chain data to simulate machine loss; the second disables validators on the P-chain and reclaims balances.
-- **`bombard -resubmit`** must exceed the worst observed block latency, otherwise a slow chain produces a resubmit storm larger than the issued count.
-- **The frozen P-chain must be at or above the height `l1 create` landed at.** `l1 create` issues against the public API, so it advances the real P-chain; a snapshot taken before those transactions leaves the first L1 blocks referencing a height the local P-chain never reaches. Nodes that already hold the blocks keep running (accepted blocks are never re-verified), so the fleet looks healthy until a node rejoins from an empty database and dies with `block P-chain height larger than current P-chain height`. Always follow to the tip and re-freeze **after** `l1 create`.
-- **Do not restart a node within a minute of restarting its state-sync sources.** State sync first asks peers which block to sync to, weighted by stake and needing alpha weight to be believed. If no peer can answer yet, the only summary on offer is genesis, and subnet-evm then skips state sync because `lastAccepted + state-sync-min-blocks > summaryHeight` holds trivially at `0 + n > 0`. The node replays from block 0 instead: 180k blocks and half an hour, versus roughly 30 seconds when a healthy peer can serve a summary. Recover nodes one at a time, or wait for the sources to reach tip. The log line to look for is `syncMode: "Skipped"` with `syncableHeight=0`.
-- The pack artifact contains no private keys. Transfer `.env`, `deployment/`, and the ssh key separately.
+- **Firewalls.** The staking port (9651, positional per machine) must be
+  open in both directions between every pair of nodes. Also open ssh and
+  HTTP from the control machine. A firewall that filters by source address
+  needs care: a node can be reached at one address from the other site and
+  at a different address from its own site. A rule that lists only the
+  external addresses silently breaks local peering. On AWS, cross-region
+  peering arrives from public IPs, and same-VPC traffic arrives from
+  private IPs. A security group that lists only public CIDRs breaks
+  intra-region peering.
+- **A machine often cannot reach its own public address.** This happens
+  where the public address is a 1:1 NAT and not an address on the
+  interface. AWS EC2 and most cloud NAT setups work this way. The P-chain
+  node therefore cannot run on the control machine: fleet commands reach
+  every node at the address its peers use.
+- **Registered validators pay a continuous fee, forever.** Run
+  `l1 destroy` when you abandon a deployment.
+- **`fleet destroy` is not `l1 destroy`.** The first deletes local L1 chain
+  data to simulate machine loss. The second disables the validators on the
+  P-chain and reclaims the balances.
+- **`bombard -resubmit`** must be larger than the worst observed block
+  latency. A smaller value on a slow chain produces a resubmit storm larger
+  than the issued count.
+- **The frozen P-chain must be at or above the height of `l1 create`.**
+  `l1 create` issues against the public API, so it advances the real
+  P-chain. A snapshot from before those transactions makes the first L1
+  blocks reference a height the local P-chain never reaches. Nodes that
+  already hold the blocks continue, because accepted blocks are not
+  verified again. The fleet therefore looks healthy until a node rejoins
+  from an empty database and stops with
+  `block P-chain height larger than current P-chain height`. Always follow
+  to the tip and freeze again **after** `l1 create`.
+- **Do not restart a node within a minute of a restart of its state-sync
+  sources.** State sync first asks the peers which block to sync to. The
+  answer is weighted by stake and needs alpha weight. When no peer can
+  answer yet, the only summary on offer is genesis. Subnet-evm then skips
+  state sync, because `lastAccepted + state-sync-min-blocks > summaryHeight`
+  is trivially true at `0 + n > 0`. The node replays from block 0: 180k
+  blocks and half an hour, against approximately 30 seconds with a healthy
+  summary. Recover nodes one at a time, or wait until the sources reach the
+  tip. The log line is `syncMode: "Skipped"` with `syncableHeight=0`.
+- The pack artifact contains no private keys. Transfer `.env`,
+  `deployment/`, and the ssh key separately.
