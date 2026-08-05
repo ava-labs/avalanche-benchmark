@@ -67,7 +67,7 @@ const testNodesINI = `1  host=10.0.0.1 role=validator dc=A
 func TestDiscoverRPCEndpoints(t *testing.T) {
 	root := writeInventory(t, testNodesINI, "NETWORK=fuji\nCHAIN_ID="+testChainID+"\n")
 
-	got, err := discoverRPCEndpoints(root)
+	got, err := discoverRPCEndpoints(root, "main")
 	if err != nil {
 		t.Fatalf("discoverRPCEndpoints: %v", err)
 	}
@@ -83,8 +83,46 @@ func TestDiscoverRPCEndpoints(t *testing.T) {
 
 func TestDiscoverRPCEndpointsRequiresChainID(t *testing.T) {
 	root := writeInventory(t, testNodesINI, "NETWORK=fuji\n")
-	if _, err := discoverRPCEndpoints(root); err == nil {
+	if _, err := discoverRPCEndpoints(root, "main"); err == nil {
 		t.Fatal("expected an error when CHAIN_ID is absent")
+	}
+}
+
+// -chain narrows discovery to that chain's rpc nodes and reads that chain's
+// ID from network.env.
+const testTwoChainNodesINI = testNodesINI + `20 host=10.0.1.1 role=validator chain=trading
+21 host=10.0.1.2 role=rpc       chain=trading
+`
+
+const testTradingChainID = "2W1H4RVBBhVXTRE9BgSgQyudEJQZDkbSAJhBhbSpUyGWDQrfaM"
+
+func TestDiscoverRPCEndpointsPerChain(t *testing.T) {
+	root := writeInventory(t, testTwoChainNodesINI,
+		"NETWORK=fuji\nCHAIN_ID="+testChainID+"\nCHAIN_TRADING_ID="+testTradingChainID+"\n")
+
+	got, err := discoverRPCEndpoints(root, "trading")
+	if err != nil {
+		t.Fatalf("discoverRPCEndpoints: %v", err)
+	}
+	want := []string{"http://10.0.1.2:9650/ext/bc/" + testTradingChainID + "/rpc"}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("discoverRPCEndpoints:\ngot  %v\nwant %v", got, want)
+	}
+
+	// Main discovery must not pick up the trading rpc node.
+	got, err = discoverRPCEndpoints(root, "main")
+	if err != nil {
+		t.Fatalf("discoverRPCEndpoints: %v", err)
+	}
+	for _, url := range got {
+		if strings.Contains(url, "10.0.1.") || strings.Contains(url, testTradingChainID) {
+			t.Fatalf("main discovery leaked a trading endpoint: %v", got)
+		}
+	}
+
+	// A chain with no recorded ID fails loudly and names the key.
+	if _, err := discoverRPCEndpoints(root, "risk"); err == nil || !strings.Contains(err.Error(), "CHAIN_RISK_ID") {
+		t.Fatalf("undeclared chain error = %v", err)
 	}
 }
 

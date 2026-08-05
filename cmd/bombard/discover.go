@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/crypto"
 	"github.com/joho/godotenv"
@@ -43,10 +44,10 @@ func httpPortsByNode(nodes []config.Node) map[int]int {
 	return result
 }
 
-// discoverRPCEndpoints builds the ingress URL of every role=rpc node in the
-// inventory. Transaction ingress goes to rpc nodes ONLY, never a validator and
+// discoverRPCEndpoints builds the ingress URL of every rpc node of the named
+// chain. Transaction ingress goes to rpc nodes ONLY, never a validator and
 // never the P-chain node, and it fans out across all of them.
-func discoverRPCEndpoints(root string) ([]string, error) {
+func discoverRPCEndpoints(root, chain string) ([]string, error) {
 	nodes, err := config.LoadNodes(filepath.Join(root, nodesFile))
 	if err != nil {
 		return nil, err
@@ -55,21 +56,27 @@ func discoverRPCEndpoints(root string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	chainID := strings.TrimSpace(state["CHAIN_ID"])
+	_, chainIDKey, _ := creation.StateChainKeys(chain)
+	chainID := strings.TrimSpace(state[chainIDKey])
 	if chainID == "" {
-		return nil, fmt.Errorf("%s: required field CHAIN_ID is not provided; run l1 create first", networkEnvFile)
+		return nil, fmt.Errorf("%s: required field %s is not provided; run l1 create first", networkEnvFile, chainIDKey)
 	}
 
+	// The oracle chain's ingress role keeps its legacy name.
+	rpcRole := config.RoleRPC
+	if chain == config.OracleChain {
+		rpcRole = config.RoleOracleRPC
+	}
 	ports := httpPortsByNode(nodes)
 	var urls []string
 	for _, node := range nodes {
-		if node.Role != config.RoleRPC {
+		if node.Role != rpcRole || config.EffectiveChain(node.Role, node.Chain) != chain {
 			continue
 		}
 		urls = append(urls, fmt.Sprintf("http://%s:%d/ext/bc/%s/rpc", node.Host, ports[node.Number], chainID))
 	}
 	if len(urls) == 0 {
-		return nil, fmt.Errorf("%s: no role=rpc nodes; transaction ingress requires at least one", nodesFile)
+		return nil, fmt.Errorf("%s: no rpc nodes on chain %q; transaction ingress requires at least one", nodesFile, chain)
 	}
 	return urls, nil
 }

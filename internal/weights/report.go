@@ -3,6 +3,7 @@ package weights
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -31,7 +32,26 @@ type Deployment struct {
 	OracleChainID         ids.ID
 	MainSubnetID          ids.ID
 	MainChainID           ids.ID
-	ManagerAddress        ethcommon.Address
+	// Chains records every additional chain by name, discovered from the
+	// dynamic network.env keys. Main and oracle keep the named fields above.
+	Chains         map[string]ChainDeployment
+	ManagerAddress ethcommon.Address
+}
+
+// ChainDeployment is one additional chain's recorded IDs.
+type ChainDeployment struct {
+	SubnetID ids.ID
+	ChainID  ids.ID
+}
+
+// convertKeyPattern matches the dynamic CONVERT_<NAME>_TX_ID keys. The bare
+// legacy CONVERT_TX_ID and the MANAGER_/ORACLE_ prefixed keys do not match.
+var convertKeyPattern = regexp.MustCompile(`^CONVERT_([A-Z0-9_]+)_TX_ID$`)
+
+// chainNameFromKey inverts creation.ChainKey: TRADING becomes trading,
+// RISK_2 becomes risk-2.
+func chainNameFromKey(key string) string {
+	return strings.ToLower(strings.ReplaceAll(key, "_", "-"))
 }
 
 type Validator struct {
@@ -49,8 +69,10 @@ type Report struct {
 	ManagementChainID ids.ID
 	OracleChainID     ids.ID
 	MainChainID       ids.ID
-	FeePrice          gas.Price
-	Validators        []Validator
+	// Chains carries every additional chain's ID by name.
+	Chains     map[string]ids.ID
+	FeePrice   gas.Price
+	Validators []Validator
 }
 
 type client interface {
@@ -127,6 +149,28 @@ func loadDeployment(path, network string, requireComplete bool) (Deployment, err
 			return Deployment{}, err
 		}
 	}
+	// Additional chains are discovered from their recorded conversions, the
+	// same rule the oracle chain follows: a chain exists for these commands
+	// exactly when its conversion was recorded.
+	deployment.Chains = make(map[string]ChainDeployment)
+	for key := range values {
+		match := convertKeyPattern.FindStringSubmatch(key)
+		if match == nil || strings.TrimSpace(values[key]) == "" {
+			continue
+		}
+		if _, err := requiredID(path, values, key); err != nil {
+			return Deployment{}, err
+		}
+		fragment := match[1]
+		record := ChainDeployment{}
+		if record.ChainID, err = requiredID(path, values, "CHAIN_"+fragment+"_ID"); err != nil {
+			return Deployment{}, err
+		}
+		if record.SubnetID, err = requiredID(path, values, "SUBNET_"+fragment+"_ID"); err != nil {
+			return Deployment{}, err
+		}
+		deployment.Chains[chainNameFromKey(fragment)] = record
+	}
 	if requireComplete {
 		managerAddressRaw := strings.TrimSpace(values["MANAGER_ADDRESS"])
 		if !ethcommon.IsHexAddress(managerAddressRaw) {
@@ -182,12 +226,33 @@ func fetch(ctx context.Context, pChain client, deployment Deployment, requireVal
 		}
 		rows = append(rows, main...)
 	}
+	extraNames := make([]string, 0, len(deployment.Chains))
+	for name := range deployment.Chains {
+		extraNames = append(extraNames, name)
+	}
+	sort.Strings(extraNames)
+	chainIDs := make(map[string]ids.ID, len(extraNames))
+	for _, name := range extraNames {
+		record := deployment.Chains[name]
+		chainIDs[name] = record.ChainID
+		extra, err := fetchValidators(ctx, pChain, name, record.SubnetID, height, feePrice)
+		if err != nil {
+			return Report{}, err
+		}
+		rows = append(rows, extra...)
+	}
 	if requireValidators && len(rows) == 0 {
 		return Report{}, fmt.Errorf("deployment has no active validators; it is destroyed")
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].L1 != rows[j].L1 {
-			return rows[i].L1 == "management"
+			if rows[i].L1 == "management" || rows[j].L1 == "management" {
+				return rows[i].L1 == "management"
+			}
+			if rows[i].L1 == "main" || rows[j].L1 == "main" {
+				return rows[i].L1 == "main"
+			}
+			return rows[i].L1 < rows[j].L1
 		}
 		return rows[i].NodeID.String() < rows[j].NodeID.String()
 	})
@@ -195,6 +260,7 @@ func fetch(ctx context.Context, pChain client, deployment Deployment, requireVal
 		ManagementChainID: deployment.ManagementChainID,
 		OracleChainID:     deployment.OracleChainID,
 		MainChainID:       deployment.MainChainID,
+		Chains:            chainIDs,
 		FeePrice:          feePrice,
 		Validators:        rows,
 	}, nil

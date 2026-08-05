@@ -107,16 +107,28 @@ func Run(
 	if err != nil {
 		return fmt.Errorf("identity %s nodeID: %w", identityName, err)
 	}
+	// The identity names its chain, so the command reads the right subnet
+	// without any flag: one committee manages every chain, and the Warp
+	// message below is chain-agnostic.
+	chainName := targetPublic.ChainName()
+	targetSubnetID := deployment.MainSubnetID
+	if chainName != config.MainChain {
+		record, known := deployment.Chains[chainName]
+		if !known {
+			return fmt.Errorf("identity %s validates chain %q, but network.env records no such chain", identityName, chainName)
+		}
+		targetSubnetID = record.SubnetID
+	}
 	pChain := platformvm.NewClient(environment.PChainAPI)
 	height, err := pChain.GetHeight(ctx)
 	if err != nil {
 		return fmt.Errorf("read P-chain height: %w", err)
 	}
-	mainValidators, err := fetchValidatorsAt(ctx, pChain, deployment.MainSubnetID, height)
+	chainValidators, err := fetchValidatorsAt(ctx, pChain, targetSubnetID, height)
 	if err != nil {
-		return fmt.Errorf("read main validators: %w", err)
+		return fmt.Errorf("read %s validators: %w", chainName, err)
 	}
-	target, err := findTarget(mainValidators, targetNodeID)
+	target, err := findTarget(chainValidators, targetNodeID)
 	if err != nil {
 		return fmt.Errorf("identity %s: %w", identityName, err)
 	}

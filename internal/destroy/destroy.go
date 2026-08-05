@@ -74,11 +74,17 @@ func Run(
 
 func reclaimableMainBeforeManagement(validators []weights.Validator) []weights.Validator {
 	ordered := make([]weights.Validator, 0, len(validators))
-	for _, l1 := range []string{"main", "oracle", "management"} {
-		for _, validator := range validators {
-			if validator.L1 == l1 && validator.Balance > 0 {
-				ordered = append(ordered, validator)
-			}
+	// Every managed L1 is reclaimed before the management chain, whatever the
+	// chain is called: the management chain is the authority the others
+	// convert against, so it goes last.
+	for _, validator := range validators {
+		if validator.L1 != "management" && validator.Balance > 0 {
+			ordered = append(ordered, validator)
+		}
+	}
+	for _, validator := range validators {
+		if validator.L1 == "management" && validator.Balance > 0 {
+			ordered = append(ordered, validator)
 		}
 	}
 	return ordered

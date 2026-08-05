@@ -274,7 +274,20 @@ func showWeights(root string) error {
 			return fmt.Errorf("%s validator %s has no local identity", validator.L1, validator.NodeID)
 		}
 	}
-	l1Rank := map[string]int{"management": 0, "main": 1, "oracle": 2}
+	// One table per L1: management first, then the chains in their display
+	// order (main first, the rest by name).
+	chains := []string{"main"}
+	if report.OracleChainID != ids.Empty {
+		chains = append(chains, "oracle")
+	}
+	for name := range report.Chains {
+		chains = append(chains, name)
+	}
+	config.SortChains(chains)
+	l1Rank := map[string]int{"management": 0}
+	for index, name := range chains {
+		l1Rank[name] = index + 1
+	}
 	sort.Slice(report.Validators, func(i, j int) bool {
 		left := identityNames[identityKey{L1: report.Validators[i].L1, NodeID: report.Validators[i].NodeID}]
 		right := identityNames[identityKey{L1: report.Validators[j].L1, NodeID: report.Validators[j].NodeID}]
@@ -287,6 +300,11 @@ func showWeights(root string) error {
 	fmt.Printf("main chain ID: %s\n", report.MainChainID)
 	if report.OracleChainID != ids.Empty {
 		fmt.Printf("oracle chain ID: %s\n", report.OracleChainID)
+	}
+	for _, name := range chains {
+		if chainID, known := report.Chains[name]; known {
+			fmt.Printf("%s chain ID: %s\n", name, chainID)
+		}
 	}
 	fmt.Printf("validator fee price: %d nAVAX/second\n", report.FeePrice)
 	fmt.Printf("validator fee cost: %.6f AVAX/30 days per validator\n", float64(report.FeePrice)*30*24*60*60/float64(units.Avax))
@@ -303,14 +321,10 @@ func showWeights(root string) error {
 		}
 		return w.Flush()
 	}
-	if err := printTable("management"); err != nil {
-		return err
-	}
-	if err := printTable("main"); err != nil {
-		return err
-	}
-	if report.OracleChainID != ids.Empty {
-		return printTable("oracle")
+	for _, l1 := range append([]string{"management"}, chains...) {
+		if err := printTable(l1); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -345,13 +359,9 @@ func loadIdentityNames(deploymentDirectory string) (map[identityKey]identityName
 	}
 	for _, node := range public.Nodes {
 		switch node.Role {
-		case config.RoleValidator:
-			if err := load("main", node.Identity, node.NodeID); err != nil {
-				return nil, fmt.Errorf("load main identity %s: %w", node.Identity, err)
-			}
-		case config.RoleOracleValidator:
-			if err := load("oracle", node.Identity, node.NodeID); err != nil {
-				return nil, fmt.Errorf("load oracle identity %s: %w", node.Identity, err)
+		case config.RoleValidator, config.RoleOracleValidator:
+			if err := load(node.ChainName(), node.Identity, node.NodeID); err != nil {
+				return nil, fmt.Errorf("load %s identity %s: %w", node.ChainName(), node.Identity, err)
 			}
 		}
 	}

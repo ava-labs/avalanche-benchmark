@@ -256,7 +256,8 @@ const (
 )
 
 func main() {
-	rpcFlag := flag.String("rpc", "", "Comma-separated RPC URLs. Omit to discover every role=rpc node from nodes.ini plus CHAIN_ID from deployment/network.env. Sends fan out across all; watchers race across all.")
+	rpcFlag := flag.String("rpc", "", "Comma-separated RPC URLs. Omit to discover every rpc node of -chain from nodes.ini plus its chain ID from deployment/network.env. Sends fan out across all; watchers race across all.")
+	chainFlag := flag.String("chain", "main", "Chain to bombard when discovering endpoints (the chain= name from nodes.ini). Ignored when -rpc is set.")
 	rps := flag.Int("rps", 1000, "Target transactions issued per second")
 	targetTxs := flag.Uint64("txs", 0, "Stop after at least this many mined txs; 0 means run until interrupted")
 	runDuration := flag.Duration("duration", 0, "Stop after this duration; 0 means run until interrupted or --txs is reached")
@@ -294,13 +295,13 @@ func main() {
 	// inventory, role=rpc nodes only.
 	rpcURLs := splitNonEmpty(*rpcFlag)
 	if len(rpcURLs) == 0 {
-		discovered, derr := discoverRPCEndpoints(root)
+		discovered, derr := discoverRPCEndpoints(root, *chainFlag)
 		if derr != nil {
 			fmt.Printf("No --rpc provided and endpoint discovery failed: %v\n", derr)
 			os.Exit(1)
 		}
 		rpcURLs = discovered
-		fmt.Printf("Discovered %d rpc endpoint(s) from %s: %s\n", len(rpcURLs), nodesFile, strings.Join(rpcURLs, ", "))
+		fmt.Printf("Discovered %d rpc endpoint(s) for chain %s from %s: %s\n", len(rpcURLs), *chainFlag, nodesFile, strings.Join(rpcURLs, ", "))
 	}
 	wsURLs := make([]string, len(rpcURLs))
 	for i, u := range rpcURLs {

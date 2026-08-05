@@ -77,6 +77,51 @@ func TestLoadDeploymentRequiresCompletedMatchingCreation(t *testing.T) {
 	}
 }
 
+// Additional chains are discovered from their CONVERT_<NAME>_TX_ID keys; the
+// legacy bare and prefixed keys never match the pattern.
+func TestLoadDeploymentDiscoversAdditionalChains(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "network.env")
+	tradingChainID := ids.GenerateTestID()
+	tradingSubnetID := ids.GenerateTestID()
+	contents := strings.Join([]string{
+		"NETWORK=fuji",
+		"MANAGER_SUBNET_ID=" + ids.GenerateTestID().String(),
+		"MANAGER_CHAIN_ID=" + ids.GenerateTestID().String(),
+		"MANAGER_CONVERT_TX_ID=" + ids.GenerateTestID().String(),
+		"SUBNET_ID=" + ids.GenerateTestID().String(),
+		"CHAIN_ID=" + ids.GenerateTestID().String(),
+		"CONVERT_TX_ID=" + ids.GenerateTestID().String(),
+		"SUBNET_TRADING_ID=" + tradingSubnetID.String(),
+		"CHAIN_TRADING_ID=" + tradingChainID.String(),
+		"CONVERT_TRADING_TX_ID=" + ids.GenerateTestID().String(),
+		"MANAGER_ADDRESS=0x0000000000000000000000000000000000000001",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deployment, err := LoadDeployment(path, "fuji")
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, known := deployment.Chains["trading"]
+	if !known || record.ChainID != tradingChainID || record.SubnetID != tradingSubnetID {
+		t.Fatalf("trading chain not discovered: %+v", deployment.Chains)
+	}
+	if len(deployment.Chains) != 1 {
+		t.Fatalf("legacy keys leaked into the chain map: %+v", deployment.Chains)
+	}
+
+	// A recorded conversion with no matching IDs is a broken state file.
+	broken := contents + "\nCONVERT_RISK_TX_ID=" + ids.GenerateTestID().String()
+	if err := os.WriteFile(path, []byte(broken), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadDeployment(path, "fuji"); err == nil || !strings.Contains(err.Error(), "CHAIN_RISK_ID") {
+		t.Fatalf("broken chain record error = %v", err)
+	}
+}
+
 func TestLoadDeploymentForDestroyAcceptsManagementOnlyCreation(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "network.env")
