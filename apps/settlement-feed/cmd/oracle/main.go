@@ -32,6 +32,10 @@ func run() error {
 		return feed(root, os.Args[2], os.Args[3])
 	case len(os.Args) == 5 && os.Args[1] == "relay":
 		return relay(root, os.Args[2], os.Args[3], os.Args[4])
+	case len(os.Args) == 2 && os.Args[1] == "upgrade":
+		return upgradeCommand(root, "")
+	case len(os.Args) == 3 && os.Args[1] == "upgrade":
+		return upgradeCommand(root, os.Args[2])
 	default:
 		return fmt.Errorf("usage:\n%s", usage(filepath.Base(os.Args[0])))
 	}
@@ -39,7 +43,8 @@ func run() error {
 
 func usage(program string) string {
 	return fmt.Sprintf(
-		"  %s feed <node-url> [settlement-contract]         foreground mock price feeder. With an oracle\n                                                   L1 it submits to the aggregator on the oracle\n                                                   chain (pass an oracle node URL); without one it\n                                                   publishes rounds to the price aggregator on the\n                                                   main chain with type-2 priority-fee transactions\n                                                   (pass a main-chain RPC node URL). An optional\n                                                   deployed Settlement example address adds its\n                                                   canSettle gate to the exported metrics\n  %s relay <oracle-node-url> <main-node-url> <staking-ip:port,...>\n                                                   foreground Warp price relayer; collects each\n                                                   signature from the oracle validators over\n                                                   ACP-118 on their staking ports",
+		"  %s feed <node-url> [settlement-contract]         foreground mock price feeder. With an oracle\n                                                   L1 it submits to the aggregator on the oracle\n                                                   chain (pass an oracle node URL); without one it\n                                                   publishes rounds to the price aggregator on the\n                                                   main chain with type-2 priority-fee transactions\n                                                   (pass a main-chain RPC node URL). An optional\n                                                   deployed Settlement example address adds its\n                                                   canSettle gate to the exported metrics\n  %s relay <oracle-node-url> <main-node-url> <staking-ip:port,...>\n                                                   foreground Warp price relayer; collects each\n                                                   signature from the oracle validators over\n                                                   ACP-118 on their staking ports\n  %s upgrade [activation-minutes]                  write ./upgrade.json: the direct feed's\n                                                   accounts as a stateUpgrades entry, for adding\n                                                   the app to a RUNNING chain without recreating\n                                                   it. Apply with: fleet upgrade upgrade.json",
+		program,
 		program,
 		program,
 	)

@@ -38,8 +38,9 @@ runbook. Apps do not depend on each other. The first app is
 `apps/settlement-feed/`.
 
 Operational procedures are in `playbooks/`: provision, load test, failover
-drill, validator swap, rootless install, monitoring, and the connected
-P-chain mode. Ready-made inventory shapes are in `examples/`.
+drill, validator swap, rootless install, monitoring, the connected P-chain
+mode, and app installation on a running chain. Ready-made inventory shapes
+are in `examples/`.
 
 ## Runbooks
 
@@ -167,13 +168,13 @@ never committed.
 |---|---|
 | Machines are numbers | data roots, unit names, and inventory keys use `<n>` |
 | Identities are letters | `a`, `b`, `c`. Keygen assigns them to nodes in ascending number order. |
-| Valid shapes | 1 validator + 0 RPC (development), or 4+ validators + 1+ RPC (failover). The toolset refuses 2 or 3 validators. |
+| Shapes | any validator, rpc, and archive count works. The tested failover shape is 4+ validators + 1+ RPC; a smaller shape prints a warning and tolerates less loss. |
 | Exactly one `pchain` | not registered, stable TLS identity, no BLS signer, never key-swapped |
 | Initial weights | the first three validators by node number get 100000. The others get 1000. |
 | `dc=` | display only, in the `fleet status` table. Nothing functional reads it. It is not a selector. |
 | Co-location | several nodes can share one machine. Ports are positional by node order on that machine: 9650/9651, 9652/9653, 9654/9655. |
 | Weights are not inventory | the on-chain weight is the only truth |
-| `archive` | 0 or 2+. An RPC-shaped main-L1 node with pruning and state-sync off (`chain-config-archive.json`). It must exist from genesis, because an archive cannot state-sync. Deploy it like any other node. |
+| `archive` | an RPC-shaped main-L1 node with pruning and state-sync off (`chain-config-archive.json`). It must exist from genesis, because an archive cannot state-sync. A single archive prints a warning. Deploy it like any other node. |
 | Oracle roles come together | `oracle-validator` and `oracle-rpc` declare the optional oracle L1 (`subnet-config-oracle.json`, all weights 1000, no key swaps). Omit both for no oracle chain. Each role requires the other. |
 
 ## .env
@@ -232,6 +233,7 @@ restart-on-crash, start-on-boot; needs passwordless sudo). See
 | `fleet start [sel...]` | safe to repeat: restarts only nodes that are down, on the wrong identity, or not answering. Returns immediately. Does not wait for the nodes to serve. |
 | `fleet stop [sel...]` | controlled stop. Data, keys, and logs stay. |
 | `fleet destroy <sel...>` | SIGKILL, then delete `chainData/<chain-id>` only. Simulates sudden loss. Node numbers are required. |
+| `fleet upgrade <upgrade.json>` | install a subnet-evm upgrade file on every main-L1 node, then a rolling restart. The file reaches every node before the first restart. Explicit zero values are refused: they stop a node on the restart after activation. |
 | `fleet place <letter> <node>` | reconcile, swap the placement, reconcile again. One move per call. Does not wait for readiness. The only placement verb. |
 | `bombard -rps N -duration D` | the load generator. Sends to all `role=rpc` nodes. |
 | `oracle feed <node-url>` | the foreground mock price feeder. With an oracle L1, it submits to the aggregator there. Without one, it publishes rounds to the main chain's Chainlink-shaped aggregator with type-2 priority-fee transactions. |

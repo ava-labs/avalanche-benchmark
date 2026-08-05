@@ -7,6 +7,6 @@ The annotated reference for every field is `nodes.ini.example`. The
 oracle-L1 roles in that file belong to the settlement-feed app's
 multi-chain shape.
 
-- `dev-single-host.ini`: the smallest legal fleet, on one machine.
+- `dev-single-host.ini`: the recommended development fleet, on one machine.
 - `uat-two-dc.ini`: the two-site shape. The failover drills in
   `playbooks/` use this shape.

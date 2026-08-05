@@ -177,9 +177,7 @@ func TestLoadNodesFailsLoudly(t *testing.T) {
 		"duplicate number":             append(append([]string{}, base...), "5 host=r2 role=rpc"),
 		"unknown field":                append(append([]string{}, base...), "7 host=r2 role=rpc site=A"),
 		"invalid role":                 []string{"1 host=v1 role=validator", "2 host=v2 role=validator", "3 host=v3 role=validator", "4 host=v4 role=validator", "5 host=r1 role=spare", "6 host=p1 role=pchain"},
-		"missing rpc":                  append(append([]string{}, base[:4]...), "6 host=p1 role=pchain"),
 		"missing pchain":               base[:5],
-		"single archive":               append(append([]string{}, base...), "7 host=a1 role=archive"),
 		"oracle validator without rpc": append(append([]string{}, base...), "7 host=o1 role=oracle-validator"),
 		"oracle rpc without validator": append(append([]string{}, base...), "7 host=o1 role=oracle-rpc"),
 	}
@@ -189,6 +187,24 @@ func TestLoadNodesFailsLoudly(t *testing.T) {
 			writeFile(t, path, strings.Join(lines, "\n"))
 			if _, err := LoadNodes(path); err == nil {
 				t.Fatal("expected error")
+			}
+		})
+	}
+}
+
+// Shape opinions warn instead of refusing: operators may experiment with any
+// validator, rpc, and archive count, and only the structural rules stay hard.
+func TestLoadNodesAllowsUnconventionalShapes(t *testing.T) {
+	for name, lines := range map[string][]string{
+		"single validator, no rpc": {"1 host=v1 role=validator", "2 host=p1 role=pchain"},
+		"three validators":         {"1 host=v1 role=validator", "2 host=v2 role=validator", "3 host=v3 role=validator", "4 host=r1 role=rpc", "5 host=p1 role=pchain"},
+		"single archive":           {"1 host=v1 role=validator", "2 host=v2 role=validator", "3 host=v3 role=validator", "4 host=v4 role=validator", "5 host=r1 role=rpc", "6 host=p1 role=pchain", "7 host=a1 role=archive"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "nodes.ini")
+			writeFile(t, path, strings.Join(lines, "\n"))
+			if _, err := LoadNodes(path); err != nil {
+				t.Fatalf("unconventional shape refused: %v", err)
 			}
 		})
 	}

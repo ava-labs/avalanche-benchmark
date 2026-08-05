@@ -70,6 +70,37 @@ func phaseAggregatorsSlot(phase uint64) ethcommon.Hash {
 	return ethcrypto.Keccak256Hash(key[:])
 }
 
+// DirectFeedAllocations is the single source of truth for the direct price
+// feed's on-chain state: the aggregator the feeder publishes to, behind the
+// proxy consumers read, seeded at phase 1. `l1 create` bakes these into
+// every main-chain genesis, and `oracle upgrade` renders the same accounts
+// as a stateUpgrades entry for a chain that is already running. Every seeded
+// value is non-zero BY CONSTRUCTION: an explicit zero in upgrade.json passes
+// the first restart and then bricks the node, because the database reads the
+// zero back as absent and the deep-equal check fails.
+func DirectFeedAllocations(feederAddress ethcommon.Address) []ContractAllocation {
+	return []ContractAllocation{
+		{
+			Address:     PriceFeedAggregatorAddress,
+			RuntimeCode: oraclecontracts.PriceAggregatorRuntime,
+			Storage: map[ethcommon.Hash]ethcommon.Hash{
+				{}:                                  ethcommon.BytesToHash(feederAddress.Bytes()),
+				ethcommon.BigToHash(ethcommon.Big1): shortString(priceFeedPair),
+			},
+		},
+		{
+			Address:     PriceFeedAddress,
+			RuntimeCode: oraclecontracts.PriceFeedProxyRuntime,
+			Storage: map[ethcommon.Hash]ethcommon.Hash{
+				{}:                                  ethcommon.BytesToHash(feederAddress.Bytes()),
+				ethcommon.BigToHash(ethcommon.Big1): ethcommon.BytesToHash(PriceFeedAggregatorAddress.Bytes()),
+				ethcommon.BigToHash(ethcommon.Big2): ethcommon.BigToHash(ethcommon.Big1),
+				phaseAggregatorsSlot(1):             ethcommon.BytesToHash(PriceFeedAggregatorAddress.Bytes()),
+			},
+		},
+	}
+}
+
 type Result struct {
 	OutputDirectory string
 	State           State
@@ -201,26 +232,7 @@ func create(
 	// and a proxy consumers read through, seeded at phase 1. When an oracle
 	// L1 exists the Warp receiver joins them, but that render must wait for
 	// the oracle chain ID below.
-	mainContracts := []ContractAllocation{
-		{
-			Address:     PriceFeedAggregatorAddress,
-			RuntimeCode: oraclecontracts.PriceAggregatorRuntime,
-			Storage: map[ethcommon.Hash]ethcommon.Hash{
-				{}:                                  ethcommon.BytesToHash(feederAddress.Bytes()),
-				ethcommon.BigToHash(ethcommon.Big1): shortString(priceFeedPair),
-			},
-		},
-		{
-			Address:     PriceFeedAddress,
-			RuntimeCode: oraclecontracts.PriceFeedProxyRuntime,
-			Storage: map[ethcommon.Hash]ethcommon.Hash{
-				{}:                                  ethcommon.BytesToHash(feederAddress.Bytes()),
-				ethcommon.BigToHash(ethcommon.Big1): ethcommon.BytesToHash(PriceFeedAggregatorAddress.Bytes()),
-				ethcommon.BigToHash(ethcommon.Big2): ethcommon.BigToHash(ethcommon.Big1),
-				phaseAggregatorsSlot(1):             ethcommon.BytesToHash(PriceFeedAggregatorAddress.Bytes()),
-			},
-		},
-	}
+	mainContracts := DirectFeedAllocations(feederAddress)
 	var oracleGenesis []byte
 	if hasOracle {
 		oracleTemplate, err := os.ReadFile(oracleGenesisTemplatePath)

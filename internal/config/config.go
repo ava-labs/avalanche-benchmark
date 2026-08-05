@@ -356,19 +356,23 @@ func LoadNodes(path string) ([]Node, error) {
 			oracleRPCCount++
 		}
 	}
-	if validatorCount < 4 {
-		return nil, fmt.Errorf("%s: expected at least 4 validators, found %d", path, validatorCount)
-	}
-	if rpcCount < 1 {
-		return nil, fmt.Errorf("%s: expected at least 1 rpc node, found %d", path, rpcCount)
-	}
+	// Structural rules stay hard errors: deploy cannot work without them.
+	// Shape opinions (validator count, RPC count, archive redundancy) are
+	// warnings, so an operator can experiment with any topology and still
+	// hears why the recommended shape is what it is.
 	if pchainCount != 1 {
 		return nil, fmt.Errorf("%s: expected exactly 1 P-chain node, found %d", path, pchainCount)
+	}
+	if validatorCount < 4 {
+		fmt.Fprintf(os.Stderr, "warning: %s declares %d validator(s); the tested failover shape uses 4 or more (3 heavy + spares), and fewer validators tolerate less loss\n", path, validatorCount)
+	}
+	if rpcCount < 1 {
+		fmt.Fprintf(os.Stderr, "warning: %s declares no rpc node; bombard and transaction ingress need role=rpc, and serving transactions on a validator slows its block production\n", path)
 	}
 	// A single archive cannot cross-check its own answers and leaves no
 	// replica while it re-executes from genesis after a loss.
 	if archiveCount == 1 {
-		return nil, fmt.Errorf("%s: expected 0 or at least 2 archive nodes, found 1", path)
+		fmt.Fprintf(os.Stderr, "warning: %s declares a single archive node; it cannot cross-check its answers and re-executes from genesis alone after a loss\n", path)
 	}
 	// The oracle L1 is opt-in: no oracle nodes means no oracle chain. When it
 	// exists, its feed ingress must stay off its validators, same as main.

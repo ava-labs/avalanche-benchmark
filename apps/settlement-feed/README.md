@@ -28,14 +28,19 @@ on any other app. Everything specific to this app is in this directory.
 
 ## Deployment
 
-There are two supported paths:
+There are three supported paths:
 
-1. Genesis-baked. This is the default. Every main-chain genesis contains
-   the proxy at `0x...FeedF00D` and the aggregator at `0x...FEeDfAce`.
-   `l1 create` bakes them, and `network.env` records the addresses. No
-   runtime deployment is necessary.
-2. After the fact. Deploy `Settlement`, or your own consumer, with forge
-   against the running chain.
+1. Genesis-baked. This is the default for a fresh chain. Every main-chain
+   genesis contains the proxy at `0x...FeedF00D` and the aggregator at
+   `0x...FEeDfAce`. `l1 create` bakes them, and `network.env` records the
+   addresses. No runtime deployment is necessary.
+2. A state upgrade, for a chain that ALREADY RUNS. `./bin/oracle upgrade`
+   renders `upgrade.json` with the same accounts, and
+   `./bin/fleet upgrade upgrade.json` installs it with a rolling restart.
+   The chain is not recreated. See
+   [playbooks/08-install-app.md](../../playbooks/08-install-app.md).
+3. A normal forge deployment, for consumer contracts like `Settlement`,
+   at a new address.
 
 The oracle-L1 configuration files (`oracle-genesis-template.json`,
 `subnet-config-oracle.json`) are at the repository root. The kit reads

@@ -83,6 +83,11 @@ func run() error {
 		return deployer.Stop(ctx, arguments[1:])
 	case "destroy":
 		return deployer.Destroy(ctx, arguments[1:])
+	case "upgrade":
+		if len(arguments) != 2 {
+			return fmt.Errorf("usage:\n  %s upgrade <upgrade.json>", program)
+		}
+		return deployer.UpgradeChain(ctx, arguments[1])
 	case "place":
 		if len(arguments) != 3 {
 			return fmt.Errorf("usage:\n  %s place <identity-letter> <node>", program)
@@ -104,6 +109,7 @@ func usage(program string) string {
 		"start [<node> ...]",
 		"stop [<node> ...]",
 		"destroy <node> [<node> ...]",
+		"upgrade <upgrade.json>",
 		"place <identity-letter> <node>",
 	}
 	text := ""
