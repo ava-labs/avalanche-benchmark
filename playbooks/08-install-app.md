@@ -64,8 +64,9 @@ entry changes when the second app arrives.
   refused. A zero value passes the first restart and stops the node on
   the next restart after activation, because the database reads the zero
   back as absent and the configuration check fails.
-- `fleet upgrade` targets the main L1. The optional oracle L1 keeps its
-  own upgrade file.
+- `fleet upgrade` targets one chain per call: `--chain <name>` selects it,
+  and the default is `main`. Each chain keeps its own history file. See
+  playbooks/09-multi-chain.md.
 
 ## Custom upgrades
 

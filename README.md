@@ -2,10 +2,12 @@
 
 This is a benchmark and failover toolset for Avalanche L1s in isolated
 networks. An isolated network has no internet egress, a fixed validator set,
-and PoA. The toolset creates an L1 on Fuji or mainnet and runs it in
-isolation. It puts load on the chain. It does data-center failover drills in
-two ways: it moves staking identities (key swap), or it moves stake weight.
-Both operate on one deployment. No step creates the chain again.
+and PoA. The toolset creates one or more L1s on Fuji or mainnet and runs
+them in isolation. The chain count is an inventory variable: a `chain=` tag
+on a `nodes.ini` line declares which chain a node serves. The toolset puts
+load on a chain. It does data-center failover drills in two ways: it moves
+staking identities (key swap), or it moves stake weight. Both operate on one
+deployment. No step creates a chain again.
 
 This document is the operator manual. For the consensus parameters, see
 **[CONSENSUS-TUNING.md](CONSENSUS-TUNING.md)**.
@@ -37,10 +39,15 @@ the base layer. Each app has its own contracts, services, dashboards, and
 runbook. Apps do not depend on each other. The first app is
 `apps/settlement-feed/`.
 
+One deployment can run several L1s. One management committee, one P-chain
+node, and one control machine cover every chain. Per-chain configuration
+lives in `chains/<name>/` (`genesis-template.json`, `subnet-config.json`);
+a chain without that directory uses the root defaults.
+
 Operational procedures are in `playbooks/`: provision, load test, failover
 drill, validator swap, rootless install, monitoring, the connected P-chain
-mode, and app installation on a running chain. Ready-made inventory shapes
-are in `examples/`.
+mode, app installation on a running chain, and multi-chain operation.
+Ready-made inventory shapes are in `examples/`.
 
 ## Runbooks
 
@@ -60,7 +67,7 @@ The P-chain node has two modes, and every deployment picks one:
 cp nodes.ini.example nodes.ini    # edit host= lines, exactly one role=pchain
 cp .env.example .env              # NETWORK, PCHAIN_API, FUNDING_PRIVATE_KEY, SSH_*
 go run ./cmd/l1 address           # fund the printed P-chain address
-go run ./cmd/l1 create            # generates deployment/ if absent, then both L1s
+go run ./cmd/l1 create            # generates deployment/ if absent, then every chain
 make pack                         # remote-benchmark.tar.gz: binaries + configs, no sources
 # ship the archive to control, extract, then from the control host:
 ./bin/fleet deploy follow         # P-chain tracks the public network
@@ -112,7 +119,7 @@ does not see it until the node follows again.
 
 ```bash
 ./bin/l1 destroy                  # reclaims every validator balance, removes deployment/
-./bin/l1 create                   # regenerates identities, creates both L1s
+./bin/l1 create                   # regenerates identities, creates every chain
 # then do the update runbook above: the new conversions are past the frozen height
 ```
 
@@ -142,11 +149,13 @@ and RPC node bootstraps from the P-chain node.
 | `deployment/genesis-funds.key` | `keygen` | EVM key with the genesis allocation, used by `bombard` |
 | `deployment/public.json` | `keygen` | public handover: NodeIDs, PoPs, initial weights, genesis address |
 | `deployment/placement.json` | `keygen`, `place` | machine-to-identity bijection, control-side truth |
-| `deployment/genesis.json` | `create` | rendered genesis, stamped with the creation time |
-| `deployment/network.env` | `create` | subnet, chain, and conversion transaction IDs |
-| `deployment/genesis-oracle.json` | `create` | rendered oracle genesis (only with oracle roles) |
-| `deployment/oracle-feeder.key` | `keygen` | EVM key funded on every price-feed chain, used by `oracle feed`/`relay` |
-| `deployment/upgrades.json` | `fleet upgrade` | the chain's append-only upgrade history; every deploy installs it |
+| `deployment/genesis.json` | `create` | rendered main-chain genesis, stamped with the creation time |
+| `deployment/genesis-<name>.json` | `create` | rendered genesis of every other declared chain (the oracle chain's file is `genesis-oracle.json`) |
+| `deployment/network.env` | `create` | subnet, chain, and conversion transaction IDs. Main uses the bare keys; each other chain gets `SUBNET_<NAME>_ID`, `CHAIN_<NAME>_ID`, `CONVERT_<NAME>_TX_ID`. |
+| `deployment/oracle-feeder.key` | `keygen` | EVM key funded on every chain, used by `oracle feed`/`relay` |
+| `deployment/upgrades.json` | `fleet upgrade` | the main chain's append-only upgrade history; every deploy installs it |
+| `deployment/upgrades-<name>.json` | `fleet upgrade --chain <name>` | the named chain's upgrade history, same rules |
+| `chains/<name>/` | operator | optional per-chain `genesis-template.json` and `subnet-config.json`; absent means the root defaults |
 | `pchain.tar.gz` | `pchain archive` | validated P-chain `db/` snapshot |
 
 `deployment/` contains private keys. It is never in the pack artifact. It is
@@ -155,7 +164,7 @@ never committed.
 ## nodes.ini
 
 ```ini
-# <node-number> host=<address> role=validator|rpc|pchain|archive|oracle-validator|oracle-rpc [dc=<tag>]
+# <node-number> host=<address> role=validator|rpc|pchain|archive|oracle-validator|oracle-rpc [chain=<name>] [dc=<tag>]
 1  host=10.0.0.11 role=validator dc=A
 5  host=10.1.0.11 role=validator dc=B
 9  host=10.0.0.15 role=rpc       dc=A
@@ -163,20 +172,22 @@ never committed.
 14 host=10.0.0.17 role=archive   dc=A
 16 host=10.0.0.18 role=oracle-validator dc=A
 17 host=10.0.0.15 role=oracle-rpc       dc=A
+18 host=10.0.0.19 role=validator chain=trading dc=A
 ```
 
 | Rule | Detail |
 |---|---|
 | Machines are numbers | data roots, unit names, and inventory keys use `<n>` |
 | Identities are letters | `a`, `b`, `c`. Keygen assigns them to nodes in ascending number order. |
-| Shapes | any validator, rpc, and archive count works. The tested failover shape is 4+ validators + 1+ RPC; a smaller shape prints a warning and tolerates less loss. |
-| Exactly one `pchain` | not registered, stable TLS identity, no BLS signer, never key-swapped |
-| Initial weights | the first three validators by node number get 100000. The others get 1000. |
+| Shapes | any validator, rpc, and archive count works, per chain. The tested failover shape is 4+ validators + 1+ RPC per chain; a smaller shape prints a warning and tolerates less loss. |
+| Exactly one `pchain` | not registered, stable TLS identity, no BLS signer, never key-swapped. It serves every chain and takes no `chain=`. |
+| `chain=` | the L1 a node serves; lowercase letters, digits, and hyphens, at most 20 characters. Omitted means `main`. Every named chain needs at least one validator. The names `oracle` and `management` are reserved. |
+| Initial weights | the first three validators of each chain by node number get 100000. The others get 1000. |
 | `dc=` | display only, in the `fleet status` table. Nothing functional reads it. It is not a selector. |
 | Co-location | several nodes can share one machine. Ports are positional by node order on that machine: 9650/9651, 9652/9653, 9654/9655. |
 | Weights are not inventory | the on-chain weight is the only truth |
 | `archive` | an RPC-shaped main-L1 node with pruning and state-sync off (`chain-config-archive.json`). It must exist from genesis, because an archive cannot state-sync. A single archive prints a warning. Deploy it like any other node. |
-| Oracle roles come together | `oracle-validator` and `oracle-rpc` declare the optional oracle L1 (`subnet-config-oracle.json`, all weights 1000, no key swaps). Omit both for no oracle chain. Each role requires the other. |
+| Oracle roles come together | `oracle-validator` and `oracle-rpc` declare the optional oracle L1 (`subnet-config-oracle.json`, all weights 1000, no key swaps). Omit both for no oracle chain. Each role requires the other. These roles always serve `chain=oracle`. |
 
 ## .env
 
@@ -217,16 +228,16 @@ restart-on-crash, start-on-boot; needs passwordless sudo). See
 | Command | Effect |
 |---|---|
 | `l1 keygen [1\|4]` | offline: all private identities + `public.json` + `placement.json`. Requires that `deployment/` is absent. The argument is the committee size. |
-| `l1 create` | on-chain: the committee L1, then the main L1. Runs `keygen` itself if `deployment/` is absent. |
+| `l1 create` | on-chain: the committee L1, then every declared chain, main first. Runs `keygen` itself if `deployment/` is absent. |
 | `l1 address` | the funding addresses and the spendable P-chain balance |
 | `l1 keygen-funding` | write a new `FUNDING_PRIVATE_KEY` into an empty `.env` field |
-| `l1 weights` | live weights and fee days left, both L1s, read-only |
+| `l1 weights` | live weights and fee days left, every L1, read-only |
 | `l1 topup <days>` | raise every registered validator to `<days>` of fee runway |
-| `l1 set-weight <letter> <1\|1000\|100000>` | weight-change failover through the committee |
+| `l1 set-weight <letter> <1\|1000\|100000>` | weight-change failover through the committee. The identity names its chain; no flag is needed. |
 | `l1 destroy` | disable every validator, reclaim the balances, remove `deployment/` |
 | `fleet deploy [frozen\|follow] [--dry-run] [sel...]` | the mode is optional; the default is `frozen`. Without selectors: the full inventory, P-chain first. With selectors: a rolling upgrade, one node through all phases before the next. A preflight tests every machine (ssh, tools, writable paths, disk) before any node stops. It changes nothing. `--dry-run` stops after the preflight. |
 | `fleet pchain follow` | the first-run initializer, and the unfreeze. P-chain node only. |
-| `fleet pchain freeze` | require synced + both validator sets, then switch to empty bootstrap lists |
+| `fleet pchain freeze` | require synced + every validator set, then switch to empty bootstrap lists |
 | `fleet pchain archive` | stop, snapshot `db/`, restart, download, validate, write `./pchain.tar.gz` |
 | `fleet pchain start` | start the P-chain node from its installed unit or run script. It needs only the machine, no upstream API. It works on an isolated frozen fleet. After a machine reboot: this first, then `fleet start`. |
 | `fleet pchain stop` | a controlled stop. All data stays. L1 nodes continue; a node that bootstraps needs the P-chain node back. |
@@ -234,9 +245,9 @@ restart-on-crash, start-on-boot; needs passwordless sudo). See
 | `fleet start [sel...]` | safe to repeat: restarts only nodes that are down, on the wrong identity, or not answering. Returns immediately. Does not wait for the nodes to serve. |
 | `fleet stop [sel...]` | controlled stop. Data, keys, and logs stay. |
 | `fleet destroy <sel...>` | SIGKILL, then delete `chainData/<chain-id>` only. Simulates sudden loss. Node numbers are required. |
-| `fleet upgrade <fragment.json>` | append a subnet-evm upgrade fragment to the history in `deployment/upgrades.json`, install the full history on every main-L1 node, then a rolling restart. The history reaches every node before the first restart, and every later deploy carries it. Explicit zero values are refused: they stop a node on the restart after activation. |
+| `fleet upgrade [--chain <name>] <fragment.json>` | append a subnet-evm upgrade fragment to the named chain's history (default `main`, in `deployment/upgrades.json`; other chains in `deployment/upgrades-<name>.json`), install the full history on that chain's nodes, then a rolling restart. The history reaches every node before the first restart, and every later deploy carries it. Explicit zero values are refused: they stop a node on the restart after activation. |
 | `fleet place <letter> <node>` | reconcile, swap the placement, reconcile again. One move per call. Does not wait for readiness. The only placement verb. |
-| `bombard -rps N -duration D` | the load generator. Sends to all `role=rpc` nodes. |
+| `bombard -rps N -duration D [-chain <name>]` | the load generator. Sends to the named chain's rpc nodes; the default is `main`. |
 | `oracle feed <node-url>` | the foreground mock price feeder. With an oracle L1, it submits to the aggregator there. Without one, it publishes rounds to the main chain's Chainlink-shaped aggregator with type-2 priority-fee transactions. |
 | `oracle relay <oracle-rpc-url> <rpc-url> <staking-ip:port,...>` | the foreground Warp price relayer. It collects signatures from the validators over ACP-118. Oracle L1 deployments only. |
 
@@ -291,9 +302,10 @@ control-side state is written atomically before the remote work starts.
 ## fleet status
 
 ```text
-NODE  DC  ROLE       ID  WEIGHT  STATE  HEIGHT
-1     A   validator  a   100000  up     812345
-9     A   rpc        i   -       up     812344
+NODE  DC  ROLE       CHAIN    ID  WEIGHT  STATE  HEIGHT
+1     A   validator  main     a   100000  up     812345
+9     A   rpc        main     i   -       up     812344
+18    A   validator  trading  m   100000  up     640012
 
 P-CHAIN  MODE    LOCAL HEIGHT  UPSTREAM HEIGHT  LAG  L1 STATE  READY TO FREEZE
 13       synced  290135        290135           0    complete  yes
@@ -302,11 +314,12 @@ P-CHAIN  MODE    LOCAL HEIGHT  UPSTREAM HEIGHT  LAG  L1 STATE  READY TO FREEZE
 | Column | Source |
 |---|---|
 | `ID` | `deployment/placement.json` |
+| `CHAIN` | the node's chain from `nodes.ini` |
 | `WEIGHT` | the public P-chain API. On a frozen fleet: the deployment records, because the sets froze with the archive and the upstream is not reachable by design. The output names the source. Values: `1`, `1000`, `100000`, or `-` for RPC. |
 | `STATE` | systemd, collapsed to `up`, `down`, `failed`, `not installed` |
-| `HEIGHT` | that machine's own accepted L1 height, raw |
+| `HEIGHT` | that machine's own accepted height on its chain, raw |
 | `MODE` | `bootstrapping` (with percent and eta), `catching-up`, `synced`, `frozen` |
-| `L1 STATE` | `complete` when both validator sets are visible, else `partial` or `missing` |
+| `L1 STATE` | `complete` when the management set and every chain's validator set are visible, else `partial` or `missing` |
 
 `-` means not applicable, or down on purpose. `?` means the value must exist
 but was not observable. The P-chain machine is not in the node table. The
@@ -477,6 +490,8 @@ A `place` that changes nothing skips the after phase.
 `place` refuses every swap that involves an `rpc` or `pchain` node. This is
 correctness, not policy. Their identities are state-sync seeds and hold no
 stake. A validator identity moved onto one would silently change its role.
+`place` also refuses a swap across chains. An identity carries its chain's
+stake, so it moves only between machines of that chain.
 
 ## set-weight
 

@@ -1,8 +1,14 @@
-# <node-number> host=<address> role=validator|rpc|pchain|archive|oracle-validator|oracle-rpc [dc=<tag>]
+# <node-number> host=<address> role=validator|rpc|pchain|archive|oracle-validator|oracle-rpc [chain=<name>] [dc=<tag>]
 # Validators are registered in ascending node-number order. The first three
-# validators start at weight 100000; every remaining validator starts at 1000.
+# validators OF EACH CHAIN start at weight 100000; every remaining validator
+# starts at 1000.
+# chain= names the L1 a node serves (lowercase letters, digits, hyphens; at
+# most 20 characters). Omitted means main. Every named chain needs at least
+# one validator. The names oracle and management are reserved. See
+# examples/two-chains.ini and playbooks/09-multi-chain.md.
 # Exactly one pchain node hosts the P-chain beacon the fleet deploys through.
-# archive nodes serve the main L1 with pruning and state-sync disabled; they
+# It serves every chain and takes no chain= tag.
+# archive nodes serve their chain with pruning and state-sync disabled; they
 # must exist from genesis because an archive cannot state-sync. A single
 # archive prints a warning: it cannot cross-check its answers.
 # oracle-validator / oracle-rpc nodes are the optional oracle L1; omit them all
