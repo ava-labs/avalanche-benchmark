@@ -500,15 +500,19 @@ second nudge.
 
 ## The direct price feed
 
-Every main-chain genesis contains a Chainlink-compatible feed for USDC/USD.
-A `PriceAggregator` is at `0x00000000000000000000000000000000FeedFacE`. The
-generated `deployment/oracle-feeder.key` publishes to it. A
-`PriceFeedProxy` is at `0x00000000000000000000000000000000FeedF00d`.
-Consumers read from the proxy. The ABI is identical to a Chainlink feed:
-`latestRoundData`, `getRoundData`, `decimals`, `description`. The
-`IPriceFeed` interface matches Chainlink's `AggregatorV3Interface`
-signature for signature. On a deployment without oracle roles, this is the
-full price pipeline: one process, no extra chain, no relay.
+The direct feed is the settlement-feed app's Chainlink-compatible feed for
+USDC/USD. It installs onto the running chain through the upgrade history
+(`oracle upgrade`, then `fleet upgrade upgrade.json`; see
+playbooks/08-install-app.md). Genesis stays base layer only, so the
+install never recreates the chain. A `PriceAggregator` lands at
+`0x00000000000000000000000000000000FeedFacE`. The generated
+`deployment/oracle-feeder.key` publishes to it. A `PriceFeedProxy` lands
+at `0x00000000000000000000000000000000FeedF00d`. Consumers read from the
+proxy. The ABI is identical to a Chainlink feed: `latestRoundData`,
+`getRoundData`, `decimals`, `description`. The `IPriceFeed` interface
+matches Chainlink's `AggregatorV3Interface` signature for signature. On a
+deployment without oracle roles, this is the full price pipeline: one
+process, no extra chain, no relay.
 
 ```bash
 ./bin/oracle feed http://<rpc>:9650

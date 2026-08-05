@@ -72,12 +72,12 @@ func phaseAggregatorsSlot(phase uint64) ethcommon.Hash {
 
 // DirectFeedAllocations is the single source of truth for the direct price
 // feed's on-chain state: the aggregator the feeder publishes to, behind the
-// proxy consumers read, seeded at phase 1. `l1 create` bakes these into
-// every main-chain genesis, and `oracle upgrade` renders the same accounts
-// as a stateUpgrades entry for a chain that is already running. Every seeded
-// value is non-zero BY CONSTRUCTION: an explicit zero in upgrade.json passes
-// the first restart and then bricks the node, because the database reads the
-// zero back as absent and the deep-equal check fails.
+// proxy consumers read, seeded at phase 1. `oracle upgrade` renders these
+// accounts as a stateUpgrades entry; the app installs through the upgrade
+// history, never through genesis. Every seeded value is non-zero BY
+// CONSTRUCTION: an explicit zero in upgrade.json passes the first restart
+// and then bricks the node, because the database reads the zero back as
+// absent and the deep-equal check fails.
 func DirectFeedAllocations(feederAddress ethcommon.Address) []ContractAllocation {
 	return []ContractAllocation{
 		{
@@ -227,12 +227,14 @@ func create(
 	}
 	hasOracle := public.HasOracle()
 	feederAddress := ethcommon.HexToAddress(public.FeederAddress)
-	// The direct-publish price feed lives on the main chain in every
-	// deployment shape: a Chainlink-shaped aggregator the feeder publishes to
-	// and a proxy consumers read through, seeded at phase 1. When an oracle
-	// L1 exists the Warp receiver joins them, but that render must wait for
-	// the oracle chain ID below.
-	mainContracts := DirectFeedAllocations(feederAddress)
+	// The main genesis is BASE LAYER ONLY: funded accounts, consensus, and
+	// network shape. App contracts never bake into it; they install onto the
+	// running chain through the upgrade history (playbooks/08-install-app.md),
+	// so adding an app never forces a chain re-creation. The feeder address
+	// stays funded here because a balance is an allocation, not app state.
+	// Known exception, flagged for the same treatment: the oracle-L1 shape
+	// below still bakes its Warp receiver, whose seed needs the oracle chain
+	// ID that only exists mid-creation.
 	var oracleGenesis []byte
 	if hasOracle {
 		oracleTemplate, err := os.ReadFile(oracleGenesisTemplatePath)
@@ -274,7 +276,7 @@ func create(
 	if !hasOracle {
 		// Without an oracle the main genesis has no chain-dependent content,
 		// so it is published before the first transaction, exactly as before.
-		mainGenesis, err = RenderGenesis(template, []ethcommon.Address{genesisAddress, feederAddress}, mainContracts, nil, createdAt)
+		mainGenesis, err = RenderGenesis(template, []ethcommon.Address{genesisAddress, feederAddress}, nil, nil, createdAt)
 		if err != nil {
 			return Result{}, err
 		}
@@ -437,14 +439,14 @@ func create(
 		mainGenesis, err = RenderGenesis(
 			template,
 			[]ethcommon.Address{genesisAddress, feederAddress},
-			append(mainContracts, ContractAllocation{
+			[]ContractAllocation{{
 				Address:     ReceiverAddress,
 				RuntimeCode: oraclecontracts.ReceiverRuntime,
 				Storage: map[ethcommon.Hash]ethcommon.Hash{
 					{}:                                  ethcommon.Hash(state.OracleChainID),
 					ethcommon.BigToHash(ethcommon.Big1): ethcommon.BytesToHash(AggregatorAddress.Bytes()),
 				},
-			}),
+			}},
 			nil,
 			createdAt,
 		)

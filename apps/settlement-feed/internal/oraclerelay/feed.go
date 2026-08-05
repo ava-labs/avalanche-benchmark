@@ -430,6 +430,15 @@ func feedDirect(ctx context.Context, deployment Deployment, feederKey *ecdsa.Pri
 	}
 	proxy := deployment.PriceFeedAddress
 	aggregator := deployment.PriceFeedAggregatorAddress
+	// A submit to a codeless address succeeds and does nothing, so a chain
+	// without the app installed must fail loudly here, not publish nonsense.
+	hasCode, err := main.HasCode(ctx, aggregator)
+	if err != nil {
+		return fmt.Errorf("check aggregator code at %s: %w", aggregator.Hex(), err)
+	}
+	if !hasCode {
+		return fmt.Errorf("no contract at aggregator %s: the settlement-feed app is not installed on this chain. Install it with `oracle upgrade` and `fleet upgrade upgrade.json` (playbooks/08-install-app.md)", aggregator.Hex())
+	}
 
 	meters := newFeedMetrics()
 	if err := meters.serve(FeedMetricsListenAddress); err != nil {

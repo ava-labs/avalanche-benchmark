@@ -151,6 +151,17 @@ func (c *evmClient) MaxPriorityFeePerGas(ctx context.Context) (*big.Int, error) 
 }
 
 // CallContract executes a read-only eth_call against the latest block.
+// HasCode reports whether an address holds contract code. A call to a
+// codeless address succeeds vacuously, so publishers must check before they
+// submit into the void.
+func (c *evmClient) HasCode(ctx context.Context, address ethcommon.Address) (bool, error) {
+	var code string
+	if err := c.call(ctx, "eth_getCode", []any{address.Hex(), "latest"}, &code); err != nil {
+		return false, err
+	}
+	return code != "" && code != "0x", nil
+}
+
 func (c *evmClient) CallContract(ctx context.Context, to ethcommon.Address, data []byte) ([]byte, error) {
 	var raw hexutil.Bytes
 	params := []any{

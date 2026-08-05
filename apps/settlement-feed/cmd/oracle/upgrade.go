@@ -19,10 +19,10 @@ import (
 const defaultActivationMinutes = 15
 
 // upgradeCommand renders ./upgrade.json: the direct price feed's accounts as
-// a subnet-evm stateUpgrades entry, for installing the app on a chain that is
-// ALREADY RUNNING. It is the same state `l1 create` bakes into a fresh
-// genesis, rendered for this deployment's feeder key. Apply it with
-// `fleet upgrade upgrade.json`.
+// a subnet-evm stateUpgrades entry, rendered for this deployment's feeder
+// key. This is THE install path for the app: genesis stays base-layer-only,
+// so installing an app never forces a chain re-creation. Apply the fragment
+// with `fleet upgrade upgrade.json`.
 func upgradeCommand(root, minutesArgument string) error {
 	minutes := defaultActivationMinutes
 	if minutesArgument != "" {

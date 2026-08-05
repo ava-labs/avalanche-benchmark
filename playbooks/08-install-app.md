@@ -3,13 +3,14 @@
 This playbook installs the settlement-feed contracts on a chain that
 already runs. The chain is not recreated. No genesis changes.
 
-An app's contracts can reach the chain in three ways:
+The genesis is base layer only. App contracts never bake into it: a
+genesis change means a new chain, and on a frozen P-chain that means a
+full unfreeze, re-create, re-freeze, and redeploy cycle. An app's
+contracts reach the chain in two ways:
 
-1. Genesis baking. `l1 create` bakes them into a fresh chain. This is the
-   default for new deployments.
-2. A state upgrade (`upgrade.json`). This playbook. Use it when the chain
-   already runs and the contracts must sit at their fixed addresses.
-3. A normal deployment with forge, at a new address. Use it for consumer
+1. A state upgrade (`upgrade.json`). This playbook. The standard path,
+   and the only one that puts contracts at fixed addresses.
+2. A normal deployment with forge, at a new address. Use it for consumer
    contracts, for example `Settlement.sol`.
 
 ## Procedure
