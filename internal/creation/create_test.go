@@ -662,6 +662,34 @@ func TestIssueTxRebuildsTheWalletAndRetries(t *testing.T) {
 	}
 }
 
+// A throttled public API fails the wallet REBUILD, not only the issuance.
+// Creation is not resumable, so a rebuild failure must be one more retried
+// attempt, never a command exit (observed live on Fuji, 2026-08-05).
+func TestIssueTxRetriesWalletRebuildFailures(t *testing.T) {
+	previous := issueBackoff
+	issueBackoff = 0
+	t.Cleanup(func() { issueBackoff = previous })
+
+	wallet := &fakeWallet{}
+	rebuilds := 0
+	factory := func(_ context.Context, _ string, _ keychain.Keychain, _ primary.WalletConfig) (pwallet.Wallet, error) {
+		rebuilds++
+		if rebuilds <= 2 {
+			return nil, errors.New("received status code: 429")
+		}
+		return wallet, nil
+	}
+	state := State{}
+	tx, err := issueTx(context.Background(), "trading CreateChainTx", "https://example.invalid", nil, &state, factory,
+		func(w pwallet.Wallet) (*txs.Tx, error) { return w.IssueCreateSubnetTx(nil) })
+	if err != nil {
+		t.Fatalf("rebuild failures must be retried: %v", err)
+	}
+	if tx == nil || rebuilds != 3 {
+		t.Fatalf("tx=%v rebuilds=%d, want a transaction after 3 rebuild attempts", tx, rebuilds)
+	}
+}
+
 func TestIssueTxGivesUpAndReportsTheLastError(t *testing.T) {
 	previous := issueBackoff
 	issueBackoff = 0

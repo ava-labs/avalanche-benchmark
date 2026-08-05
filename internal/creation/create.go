@@ -244,10 +244,8 @@ func printPublic(public Public, path, digest string) {
 	}
 	for _, node := range public.Nodes {
 		switch node.Role {
-		case config.RoleValidator:
-			fmt.Printf("main identity %s: %s weight %d\n", node.Identity, node.NodeID, node.Weight)
-		case config.RoleOracleValidator:
-			fmt.Printf("oracle identity %s: %s weight %d\n", node.Identity, node.NodeID, node.Weight)
+		case config.RoleValidator, config.RoleOracleValidator:
+			fmt.Printf("%s identity %s: %s weight %d\n", node.ChainName(), node.Identity, node.NodeID, node.Weight)
 		}
 	}
 	fmt.Printf("price feeder EVM address: %s\n", public.FeederAddress)
@@ -662,6 +660,12 @@ var issueBackoff = 3 * time.Second
 // consumed UTXO". Rebuilding before each attempt makes the retry a fresh build
 // against current state rather than a replay of the same doomed transaction,
 // so this both retries and removes the cause.
+//
+// A FAILED REBUILD is retried too, and the backoff doubles per attempt. The
+// public API rate-limits bursts (429), creation issues its transactions in a
+// burst, and creation is not resumable: a rebuild failure that exits the
+// command strands the whole deployment over one throttled window (observed
+// live 2026-08-05, trading CreateChainTx after eight accepted transactions).
 func issueTx(
 	ctx context.Context,
 	action string,
@@ -672,26 +676,27 @@ func issueTx(
 	build func(pwallet.Wallet) (*txs.Tx, error),
 ) (*txs.Tx, error) {
 	var lastErr error
+	backoff := issueBackoff
 	for attempt := 1; attempt <= issueAttempts; attempt++ {
 		wallet, err := makeWallet(ctx, api, keys, *state, newWallet)
-		if err != nil {
-			return nil, err
-		}
-		tx, err := build(wallet)
 		if err == nil {
-			return tx, nil
+			var tx *txs.Tx
+			if tx, err = build(wallet); err == nil {
+				return tx, nil
+			}
 		}
 		lastErr = err
 		if attempt == issueAttempts {
 			break
 		}
 		fmt.Printf("%s attempt %d/%d failed: %v\n", action, attempt, issueAttempts, err)
-		fmt.Printf("  rebuilding the wallet UTXO set, retrying in %s\n", issueBackoff)
+		fmt.Printf("  rebuilding the wallet UTXO set, retrying in %s\n", backoff)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(issueBackoff):
+		case <-time.After(backoff):
 		}
+		backoff *= 2
 	}
 	return nil, fmt.Errorf("%s after %d attempts: %w", action, issueAttempts, lastErr)
 }
