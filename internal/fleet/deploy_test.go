@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -750,6 +751,58 @@ func TestLayoutSeparatesUserAndSystemInstalls(t *testing.T) {
 		if !strings.Contains(command, "sudo systemctl") {
 			t.Fatalf("system %s command lost its sudo systemctl shape: %q", name, command)
 		}
+	}
+}
+
+// Two kits on one machine share node numbers, so the pattern-based process
+// fallback must be anchored to THIS install's directories. An unanchored
+// config/<n>/node.json pattern once let a second kit's deploy stop the first
+// kit's running P-chain node (reported 2026-08-05).
+func TestProcessPatternsAreScopedToTheInstall(t *testing.T) {
+	kitA := layoutFor(config.FleetEnvironment{RemoteDir: "/home/op/kit-a"})
+	kitB := layoutFor(config.FleetEnvironment{RemoteDir: "/home/op/kit-b"})
+
+	nodeArgv := "/home/op/kit-a/pkg/13/bin/avalanchego --config-file=/home/op/kit-a/config/13/node.json"
+	if !regexp.MustCompile(kitA.processPattern(13)).MatchString(nodeArgv) {
+		t.Fatalf("pattern %q does not match its own node", kitA.processPattern(13))
+	}
+	if regexp.MustCompile(kitB.processPattern(13)).MatchString(nodeArgv) {
+		t.Fatalf("pattern %q matches a DIFFERENT install's node", kitB.processPattern(13))
+	}
+
+	pluginArgv := "/home/op/kit-a/pkg/13/plugins/" + pluginID
+	if !regexp.MustCompile(kitA.pluginPattern(13)).MatchString(pluginArgv) {
+		t.Fatalf("pattern %q does not match its own plugin", kitA.pluginPattern(13))
+	}
+	if regexp.MustCompile(kitB.pluginPattern(13)).MatchString(pluginArgv) {
+		t.Fatalf("pattern %q matches a DIFFERENT install's plugin", kitB.pluginPattern(13))
+	}
+
+	// The stop and kill commands carry the pattern in their own argv; the
+	// bracket must keep them from matching themselves.
+	target := nodeDeployment{node: config.Node{Number: 13}}
+	for name, command := range map[string]string{
+		"stop": kitA.stopCommand(target),
+		"kill": kitA.killCommand(target),
+	} {
+		if regexp.MustCompile(kitA.processPattern(13)).MatchString(command) {
+			t.Fatalf("process pattern matches the %s command that carries it: %q", name, command)
+		}
+		if regexp.MustCompile(kitA.pluginPattern(13)).MatchString(command) {
+			t.Fatalf("plugin pattern matches the %s command that carries it: %q", name, command)
+		}
+	}
+
+	// A regex metacharacter in the install path must match only itself.
+	dated := layoutFor(config.FleetEnvironment{RemoteDir: "/home/op/kit-2026.08"})
+	if regexp.MustCompile(dated.processPattern(13)).MatchString("/home/op/kit-2026x08/config/13/node.json") {
+		t.Fatal("unescaped dot in the install path matches unrelated paths")
+	}
+
+	// The system layout anchors to its own constants the same way.
+	system := layoutFor(config.FleetEnvironment{})
+	if !strings.Contains(system.processPattern(13), remoteConfigDir) {
+		t.Fatalf("system process pattern %q is not anchored to %s", system.processPattern(13), remoteConfigDir)
 	}
 }
 
