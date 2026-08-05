@@ -113,7 +113,7 @@ func readBlock(ctx context.Context, blocks blockByHeightClient, height uint64) (
 // current epoch's PChainHeight; if that height predates the oracle conversion,
 // the main chain rejects our signatures no matter how much weight we hold. Unlike
 // setweight's quiet P-chain, the main chain is under benchmark load and advances
-// epochs on its own, so we only sleep to the seal boundary and poll — no nudge.
+// epochs on its own, so we only sleep to the seal boundary and poll; no nudge.
 func gateOracleVisibility(
 	ctx context.Context,
 	epochs epochClient,

@@ -24,7 +24,7 @@ var (
 	submitPriceSelector  = [4]byte{0x9f, 0x21, 0xbf, 0x2e} // submitPrice(bytes32,uint256)
 	receivePriceSelector = [4]byte{0xb8, 0xc1, 0x27, 0x58} // receivePrice(uint32)
 	latestPriceSelector  = [4]byte{0x4e, 0xec, 0x7c, 0x2b} // latestPrice(bytes32)
-	// receivePrices(uint32) — batched delivery. Derived locally as
+	// receivePrices(uint32): batched delivery. Derived locally as
 	// keccak256("receivePrices(uint32)")[:4]; verified against selectors.json's
 	// other entries with the same method. Hardcoded until the contracts agent
 	// lands it in selectors.json.

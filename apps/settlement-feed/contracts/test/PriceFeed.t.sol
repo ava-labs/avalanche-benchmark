@@ -251,7 +251,7 @@ contract PriceFeedTest is Test {
         vm.expectRevert("wrong origin sender");
         rcv.receivePrices(2);
 
-        // Nothing persisted — the whole batch reverted.
+        // Nothing persisted: the whole batch reverted.
         (uint256 pa, ) = rcv.latestPrice(ASSET);
         assertEq(pa, 0);
     }

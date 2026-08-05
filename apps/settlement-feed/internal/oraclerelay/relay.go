@@ -165,8 +165,8 @@ func Relay(ctx context.Context, pChainAPI string, deployment Deployment, deploym
 	go pollMainPrices(runCtx, main, deployment, meters, fail)
 
 	// Build the oracle canonical validator set once. The oracle L1's set is
-	// immutable in this design — set-weight targets the main L1, never the oracle,
-	// and place never touches it — so membership, keys, weights, and therefore the
+	// immutable in this design (set-weight targets the main L1, never the oracle,
+	// and place never touches it), so membership, keys, weights, and therefore the
 	// canonical bit ordering are fixed for the relay's lifetime. The main chain's
 	// Warp verifier pins a P-chain height that may advance, but an unchanging set
 	// yields the same canonical order at every height, so one fetch is correct and

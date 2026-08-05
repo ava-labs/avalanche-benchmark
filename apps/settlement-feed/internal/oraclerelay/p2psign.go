@@ -28,7 +28,7 @@ import (
 )
 
 // The relay collects signatures the way icm-services' signature-aggregator
-// does — ACP-118 SignatureRequest AppRequests over each validator's staking
+// does: ACP-118 SignatureRequest AppRequests over each validator's staking
 // port. The relay holds no BLS keys; validators sign their own Warp messages.
 // The fleet's validators are known statically from the inventory, so no peer
 // discovery is needed: dial each one once at startup and hold the connection.
@@ -173,7 +173,7 @@ func (s *p2pSigner) Sign(ctx context.Context, unsigned *warp.UnsignedMessage) (*
 	outstanding := 0
 	for _, connected := range s.peers {
 		// Odd requestIDs only: subnet-evm splits the inbound AppRequest
-		// requestID space by parity — even IDs go to its legacy sync-handler
+		// requestID space by parity: even IDs go to its legacy sync-handler
 		// network, which silently drops ACP-118 payloads; odd IDs reach the SDK
 		// router that owns the signature handler. Proven empirically: even IDs
 		// time out, odd IDs answer in under a millisecond.
