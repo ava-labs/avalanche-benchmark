@@ -75,6 +75,8 @@ Issue weight changes while the P-chain node is following. A transaction submitte
 ./bin/l1 set-weight d 100000      # weight-change failover
 ```
 
+After a host reboot, start the P-chain node first (`./bin/fleet pchain start`), then the L1 nodes (`./bin/fleet start`): every validator and RPC bootstraps from it.
+
 ## Files
 
 | Path | Written by | Contents |
@@ -149,10 +151,12 @@ Unknown fields, missing fields, and malformed values fail the command before it 
 | `l1 topup <days>` | raise every registered validator to `<days>` of fee runway |
 | `l1 set-weight <letter> <1\|1000\|100000>` | weight-change failover through the committee |
 | `l1 destroy` | disable every validator, reclaim balances, remove `deployment/` |
-| `fleet deploy <frozen\|follow> [sel...]` | no selectors: whole inventory, P-chain first. With selectors: rolling upgrade, one node fully through all phases before the next. |
+| `fleet deploy <frozen\|follow> [--dry-run] [sel...]` | no selectors: whole inventory, P-chain first. With selectors: rolling upgrade, one node fully through all phases before the next. Every host passes a mutation-free preflight (ssh, tools, writable paths, disk) before ANY node is stopped; `--dry-run` stops after it. |
 | `fleet pchain follow` | first-run initializer and unfreeze. P-chain node only. |
 | `fleet pchain freeze` | gate on synced + both validator sets, then switch to empty bootstrap lists |
 | `fleet pchain archive` | stop, snapshot `db/`, restart, download, validate, publish `./pchain.tar.gz` |
+| `fleet pchain start` | bring the P-chain node up from its installed unit or run script. Needs nothing but the machine (no upstream API), so it works on an airgapped frozen fleet. After a host reboot: this first, then `fleet start` |
+| `fleet pchain stop` | graceful stop, preserves everything. L1 nodes keep producing; bootstrapping needs it back |
 | `fleet status` | read-only, whole inventory, no selectors |
 | `fleet start [sel...]` | idempotent: restarts only nodes that are down, on the wrong identity, or not answering. Returns immediately, does NOT wait for serving |
 | `fleet stop [sel...]` | graceful, preserves data, keys, logs |
@@ -188,7 +192,7 @@ P-CHAIN  MODE    LOCAL HEIGHT  UPSTREAM HEIGHT  LAG  L1 STATE  READY TO FREEZE
 | Column | Source |
 |---|---|
 | `ID` | `deployment/placement.json` |
-| `WEIGHT` | public P-chain API. `1`, `1000`, `100000`, or `-` for RPC. |
+| `WEIGHT` | public P-chain API; on a frozen fleet the deployment records, since the sets froze with the archive and the upstream is unreachable by design (the table says which source answered). `1`, `1000`, `100000`, or `-` for RPC. |
 | `STATE` | systemd, collapsed to `up`, `down`, `failed`, `not installed` |
 | `HEIGHT` | that machine's own accepted L1 height, raw |
 | `MODE` | `bootstrapping` (with pct and eta), `catching-up`, `synced`, `frozen` |
@@ -198,7 +202,7 @@ P-CHAIN  MODE    LOCAL HEIGHT  UPSTREAM HEIGHT  LAG  L1 STATE  READY TO FREEZE
 
 Cross-node height differences are normal at 25ms blocks with ~20ms inter-DC latency and are never flagged. Runtime NodeID is checked against placement and drift is a loud error, not a column.
 
-Exit is nonzero for identity drift, an `up` service whose API cannot answer, and a required P-chain failure. `down` and `not installed` are valid drill states and exit zero.
+Exit is nonzero for identity drift, an `up` service whose API cannot answer, and a required P-chain failure. `down` and `not installed` are valid drill states and exit zero. A frozen airgapped fleet with every node producing exits zero: the upstream API is treated as not applicable, so `status` works as an automated health probe.
 
 ## The local P-chain never answers platform calls
 
@@ -348,8 +352,8 @@ contract accepts only the oracle chain + aggregator origin and skips stale
 sequence numbers.
 
 The relay holds no BLS keys. It requests each signature from the oracle
-validators themselves over ACP-118 on their staking ports — the icm-services
-signature-aggregator wire protocol — and aggregates replies at the 67% quorum
+validators themselves over ACP-118 on their staking ports (the icm-services
+signature-aggregator wire protocol) and aggregates replies at the 67% quorum
 (the committee keys used by `set-weight` remain on control; only the oracle
 chain signs its own messages). Collection latency is exported as
 `oracle_relay_sign_latency_seconds`; measured on the test fleet a 3-of-4
