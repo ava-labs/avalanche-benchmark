@@ -80,8 +80,8 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	if err := os.WriteFile(templatePath, []byte(template), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Without oracle nodes the oracle template must never be read.
-	oracleTemplatePath := filepath.Join(dir, "oracle-genesis-template.json")
+	// Without oracle nodes the oracle template does not exist and must never
+	// be read.
 	cfg := config.Config{
 		Environment: config.Environment{
 			Network:           "fuji",
@@ -130,7 +130,7 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := create(context.Background(), cfg.Environment, output, templatePath, oracleTemplatePath, loaded, factory)
+	result, err := create(context.Background(), cfg.Environment, output, dir, loaded, factory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	if constants.SubnetEVMID == ids.Empty {
 		t.Fatal("unexpected empty Subnet-EVM VM ID")
 	}
-	if _, err := create(context.Background(), cfg.Environment, output, templatePath, oracleTemplatePath, loaded, factory); err == nil {
+	if _, err := create(context.Background(), cfg.Environment, output, dir, loaded, factory); err == nil {
 		t.Fatal("create must refuse existing genesis")
 	}
 }
@@ -274,7 +274,7 @@ func TestCreateWithOracleRunsManagerOracleMain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := create(context.Background(), cfg.Environment, output, templatePath, oracleTemplatePath, loaded, factory)
+	result, err := create(context.Background(), cfg.Environment, output, dir, loaded, factory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,6 +358,165 @@ func assertGenesisIsBaseLayerOnly(t *testing.T, mainDocument genesisDocument) {
 		account := mainDocument.Alloc[allocKey(address)]
 		if account.Code != "" || len(account.Storage) != 0 {
 			t.Fatalf("%s baked into main genesis; app contracts install through the upgrade history: %+v", name, account)
+		}
+	}
+}
+
+// Two declared chains create two L1s under the one management chain, each
+// with its own genesis, template override, weight ladder, and state record.
+func TestCreateTwoChainsLoopsAndRecordsPerChainState(t *testing.T) {
+	dir := t.TempDir()
+	template := `{
+		"config":{"chainId":99999},"alloc":{},"nonce":"0x0",
+		"timestamp":"0x0","extraData":"0x00","gasLimit":"0x1",
+		"difficulty":"0x0","mixHash":"0x0","coinbase":"0x0",
+		"number":"0x0","gasUsed":"0x0","parentHash":"0x0"
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "genesis-template.json"), []byte(template), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The trading chain carries its own template under chains/<name>/.
+	tradingTemplate := strings.Replace(template, "99999", "88888", 1)
+	if err := os.MkdirAll(filepath.Join(dir, "chains", "trading"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "chains", "trading", "genesis-template.json"), []byte(tradingTemplate), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		Environment: config.Environment{
+			Network:           "fuji",
+			PChainAPI:         "https://example.invalid",
+			FundingPrivateKey: strings.Repeat("1", 64),
+		},
+		Nodes: []config.Node{
+			{Number: 1, Host: "v1", Role: config.RoleValidator, Chain: "main"},
+			{Number: 2, Host: "v2", Role: config.RoleValidator, Chain: "main"},
+			{Number: 3, Host: "v3", Role: config.RoleValidator, Chain: "main"},
+			{Number: 4, Host: "v4", Role: config.RoleValidator, Chain: "main"},
+			{Number: 5, Host: "rpc", Role: config.RoleRPC, Chain: "main"},
+			{Number: 6, Host: "pchain", Role: config.RolePChain},
+			{Number: 7, Host: "t1", Role: config.RoleValidator, Chain: "trading"},
+			{Number: 8, Host: "t2", Role: config.RoleValidator, Chain: "trading"},
+			{Number: 9, Host: "t3", Role: config.RoleValidator, Chain: "trading"},
+			{Number: 10, Host: "t4", Role: config.RoleValidator, Chain: "trading"},
+			{Number: 11, Host: "t5", Role: config.RoleRPC, Chain: "trading"},
+		},
+	}
+	wallet := &fakeWallet{}
+	factory := func(
+		_ context.Context,
+		_ string,
+		_ keychain.Keychain,
+		_ primary.WalletConfig,
+	) (pwallet.Wallet, error) {
+		return wallet, nil
+	}
+
+	output := filepath.Join(dir, "deployment")
+	if err := os.Mkdir(output, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	privateOutput := filepath.Join(dir, "private")
+	if err := os.Mkdir(privateOutput, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	generated, err := identity.Generate(privateOutput, cfg.Nodes, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feeder := ethcommon.HexToAddress("0xAbcDef0123456789abCDef0123456789ABcdEF01")
+	public := NewPublic(generated, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"), feeder)
+	if _, err := SavePublic(filepath.Join(output, "public.json"), public); err != nil {
+		t.Fatal(err)
+	}
+	// keygen writes chain only beyond the defaults, so old manifests load
+	// unchanged.
+	manifest, err := os.ReadFile(filepath.Join(output, "public.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifest), `"chain": "trading"`) {
+		t.Fatal("public.json must record the trading chain")
+	}
+	if strings.Contains(string(manifest), `"chain": "main"`) {
+		t.Fatal("public.json must not record the derived main chain")
+	}
+	loaded, _, err := LoadPublic(filepath.Join(output, "public.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := create(context.Background(), cfg.Environment, output, dir, loaded, factory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantEvents := []string{
+		"create-subnet", "create-chain", "convert",
+		"create-subnet", "create-chain", "convert",
+		"create-subnet", "create-chain", "convert",
+	}
+	if !reflect.DeepEqual(wallet.events, wantEvents) {
+		t.Fatalf("unexpected transaction order: got %v, want %v", wallet.events, wantEvents)
+	}
+	trading, recorded := result.State.Chains["trading"]
+	if !recorded || trading.SubnetID == ids.Empty || trading.ChainID == ids.Empty || trading.ConvertTxID == ids.Empty {
+		t.Fatalf("trading chain state not recorded: %+v", result.State.Chains)
+	}
+	// Manager first, then main, then trading; each chain conversion carries
+	// its own 3-heavy weight ladder.
+	if len(wallet.conversions) != 3 {
+		t.Fatalf("expected three conversions, got %d", len(wallet.conversions))
+	}
+	if wallet.conversions[1].subnetID != result.State.SubnetID {
+		t.Fatalf("main must convert before trading: %+v", wallet.conversions[1])
+	}
+	if wallet.conversions[2].subnetID != trading.SubnetID {
+		t.Fatalf("unexpected trading conversion: %+v", wallet.conversions[2])
+	}
+	for i := 1; i <= 2; i++ {
+		highCount, lowCount := 0, 0
+		for _, validator := range wallet.conversions[i].values {
+			switch validator.Weight {
+			case HighWeight:
+				highCount++
+			case LowWeight:
+				lowCount++
+			default:
+				t.Fatalf("unexpected weight: %d", validator.Weight)
+			}
+		}
+		if highCount != 3 || lowCount != 1 {
+			t.Fatalf("conversion %d weight split: high=%d low=%d", i, highCount, lowCount)
+		}
+	}
+
+	tradingGenesis, err := os.ReadFile(filepath.Join(output, "genesis-trading.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tradingDocument genesisDocument
+	if err := json.Unmarshal(tradingGenesis, &tradingDocument); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(tradingDocument.Config), "88888") {
+		t.Fatal("trading genesis must render from chains/trading/genesis-template.json")
+	}
+	if tradingDocument.Alloc[allocKey(feeder)].Balance != genesisBalance {
+		t.Fatal("feeder not funded on the trading chain")
+	}
+	assertGenesisIsBaseLayerOnly(t, tradingDocument)
+
+	// The dynamic keys land in network.env; main keeps the bare keys.
+	state, err := os.ReadFile(filepath.Join(output, "network.env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{
+		"\nCHAIN_ID=", "\nSUBNET_ID=", "\nCONVERT_TX_ID=",
+		"\nCHAIN_TRADING_ID=", "\nSUBNET_TRADING_ID=", "\nCONVERT_TRADING_TX_ID=",
+	} {
+		if !strings.Contains("\n"+string(state), key) {
+			t.Fatalf("network.env is missing %s:\n%s", strings.TrimSpace(key), state)
 		}
 	}
 }

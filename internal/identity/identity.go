@@ -17,9 +17,12 @@ type Identity struct {
 	Name       string
 	NodeNumber int
 	Role       config.Role
-	Directory  string
-	NodeID     ids.NodeID
-	Proof      *plformsigner.ProofOfPossession
+	// Chain is the L1 the node serves, resolved from the inventory: main by
+	// default, oracle for the oracle roles, empty for the P-chain node.
+	Chain     string
+	Directory string
+	NodeID    ids.NodeID
+	Proof     *plformsigner.ProofOfPossession
 }
 
 type Set struct {
@@ -47,6 +50,7 @@ func Generate(root string, nodes []config.Node, committeeSize int) (Set, error) 
 		if err != nil {
 			return Set{}, err
 		}
+		generated.Chain = config.EffectiveChain(node.Role, node.Chain)
 		set.Nodes = append(set.Nodes, generated)
 	}
 	for i := 0; i < committeeSize; i++ {

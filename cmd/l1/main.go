@@ -152,8 +152,7 @@ func create(root string) error {
 		context.Background(),
 		environment,
 		deploymentPath,
-		filepath.Join(root, "genesis-template.json"),
-		filepath.Join(root, "oracle-genesis-template.json"),
+		root,
 	)
 	return err
 }

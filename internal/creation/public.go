@@ -35,12 +35,22 @@ type Public struct {
 }
 
 type PublicNode struct {
-	Identity string                            `json:"identity"`
-	Node     int                               `json:"node"`
-	Role     config.Role                       `json:"role"`
-	NodeID   string                            `json:"nodeID"`
-	Weight   uint64                            `json:"weight,omitempty"`
-	Signer   *platformsigner.ProofOfPossession `json:"signer,omitempty"`
+	Identity string      `json:"identity"`
+	Node     int         `json:"node"`
+	Role     config.Role `json:"role"`
+	// Chain is the L1 the node serves. Empty means derived: main for the
+	// plain roles, oracle for the oracle roles. keygen writes it only for
+	// chains beyond those defaults, so old files load unchanged.
+	Chain  string                            `json:"chain,omitempty"`
+	NodeID string                            `json:"nodeID"`
+	Weight uint64                            `json:"weight,omitempty"`
+	Signer *platformsigner.ProofOfPossession `json:"signer,omitempty"`
+}
+
+// ChainName resolves the chain this node serves, applying the role default
+// when the field is empty.
+func (n PublicNode) ChainName() string {
+	return config.EffectiveChain(n.Role, n.Chain)
 }
 
 type PublicManager struct {
@@ -57,7 +67,10 @@ func NewPublic(generated identity.Set, genesisAddress ethcommon.Address, feederA
 		Nodes:          make([]PublicNode, 0, len(generated.Nodes)),
 		Managers:       make([]PublicManager, 0, len(generated.Manager)),
 	}
-	validatorIndex := 0
+	// The first HighValidatorCount validators OF EACH CHAIN, by node number,
+	// carry the heavy weight; the rest are spares. The oracle chain keeps its
+	// flat weights.
+	validatorIndex := make(map[string]int, 2)
 	for _, generated := range generated.Nodes {
 		node := PublicNode{
 			Identity: generated.Name,
@@ -66,13 +79,17 @@ func NewPublic(generated identity.Set, genesisAddress ethcommon.Address, feederA
 			NodeID:   generated.NodeID.String(),
 			Signer:   generated.Proof,
 		}
+		chainName := config.EffectiveChain(generated.Role, generated.Chain)
+		if chainName != config.EffectiveChain(generated.Role, "") {
+			node.Chain = chainName
+		}
 		switch generated.Role {
 		case config.RoleValidator:
 			node.Weight = LowWeight
-			if validatorIndex < HighValidatorCount {
+			if validatorIndex[chainName] < HighValidatorCount {
 				node.Weight = HighWeight
 			}
-			validatorIndex++
+			validatorIndex[chainName]++
 		case config.RoleOracleValidator:
 			node.Weight = OracleWeight
 		}
@@ -139,10 +156,8 @@ func (p Public) Validate() error {
 	}
 
 	seenNodeIDs := make(map[ids.NodeID]struct{}, len(p.Nodes)+len(p.Managers))
-	validatorCount := 0
-	rpcCount := 0
+	validatorIndex := make(map[string]int, 2)
 	pchainCount := 0
-	archiveCount := 0
 	oracleValidatorCount := 0
 	oracleRPCCount := 0
 	previousNode := 0
@@ -164,10 +179,28 @@ func (p Public) Validate() error {
 		}
 		seenNodeIDs[nodeID] = struct{}{}
 
+		if node.Chain != "" {
+			if !config.ValidChainName(node.Chain) {
+				return fmt.Errorf("node %s chain must be 1 to 20 characters of lowercase letters, digits, and hyphens, got %q", node.Identity, node.Chain)
+			}
+			switch node.Role {
+			case config.RolePChain:
+				return fmt.Errorf("node %s is the P-chain node and serves every chain; chain must be empty", node.Identity)
+			case config.RoleOracleValidator, config.RoleOracleRPC:
+				if node.Chain != config.OracleChain {
+					return fmt.Errorf("node %s role %s always serves chain %q, got %q", node.Identity, node.Role, config.OracleChain, node.Chain)
+				}
+			default:
+				if node.Chain == config.OracleChain || node.Chain == "management" {
+					return fmt.Errorf("node %s chain name %q is reserved", node.Identity, node.Chain)
+				}
+			}
+		}
+
 		switch node.Role {
 		case config.RoleValidator:
 			expectedWeight := uint64(LowWeight)
-			if validatorCount < HighValidatorCount {
+			if validatorIndex[node.ChainName()] < HighValidatorCount {
 				expectedWeight = HighWeight
 			}
 			if node.Weight != expectedWeight {
@@ -179,7 +212,7 @@ func (p Public) Validate() error {
 			if err := node.Signer.Verify(); err != nil {
 				return fmt.Errorf("validator %s signer: %w", node.Identity, err)
 			}
-			validatorCount++
+			validatorIndex[node.ChainName()]++
 		case config.RoleOracleValidator:
 			if node.Weight != OracleWeight {
 				return fmt.Errorf("oracle validator %s weight must be %d, got %d", node.Identity, OracleWeight, node.Weight)
@@ -199,10 +232,6 @@ func (p Public) Validate() error {
 				return fmt.Errorf("%s %s signer must not be provided", node.Role, node.Identity)
 			}
 			switch node.Role {
-			case config.RoleRPC:
-				rpcCount++
-			case config.RoleArchive:
-				archiveCount++
 			case config.RoleOracleRPC:
 				oracleRPCCount++
 			case config.RolePChain:
@@ -212,17 +241,19 @@ func (p Public) Validate() error {
 			return fmt.Errorf("node %s role must be validator, rpc, pchain, archive, oracle-validator, or oracle-rpc, got %q", node.Identity, node.Role)
 		}
 	}
-	if validatorCount < 4 {
-		return fmt.Errorf("at least 4 validators are required, got %d", validatorCount)
-	}
-	if rpcCount < 1 {
-		return fmt.Errorf("at least 1 rpc is required")
-	}
+	// Shape opinions (validator count, RPC count, archive redundancy) are
+	// warnings at inventory load; only the structural rules stay hard here,
+	// mirroring config.LoadNodes.
 	if pchainCount != 1 {
 		return fmt.Errorf("exactly 1 P-chain node is required, got %d", pchainCount)
 	}
-	if archiveCount == 1 {
-		return fmt.Errorf("0 or at least 2 archive nodes are required, got 1")
+	for _, chain := range p.Chains() {
+		if chain == config.OracleChain {
+			continue
+		}
+		if validatorIndex[chain] == 0 {
+			return fmt.Errorf("chain %q has no validator; a chain needs at least 1", chain)
+		}
 	}
 	if oracleValidatorCount > 0 && oracleRPCCount < 1 {
 		return fmt.Errorf("oracle validators require at least 1 oracle-rpc")
@@ -269,6 +300,26 @@ func (p Public) HasOracle() bool {
 	return false
 }
 
+// Chains returns the unique chain names the manifest declares, main first
+// when present and the rest in name order.
+func (p Public) Chains() []string {
+	seen := make(map[string]struct{}, 4)
+	var names []string
+	for _, node := range p.Nodes {
+		name := node.ChainName()
+		if name == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	config.SortChains(names)
+	return names
+}
+
 func (p Public) IdentitySet() (identity.Set, error) {
 	set := identity.Set{
 		Nodes:   make([]identity.Identity, 0, len(p.Nodes)),
@@ -283,6 +334,7 @@ func (p Public) IdentitySet() (identity.Set, error) {
 			Name:       node.Identity,
 			NodeNumber: node.Node,
 			Role:       node.Role,
+			Chain:      node.ChainName(),
 			NodeID:     nodeID,
 			Proof:      node.Signer,
 		})

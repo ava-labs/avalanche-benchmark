@@ -66,13 +66,41 @@ func Chains(nodes []Node) []string {
 		seen[node.Chain] = struct{}{}
 		names = append(names, node.Chain)
 	}
+	SortChains(names)
+	return names
+}
+
+// SortChains orders chain names for display and iteration: main first when
+// present, the rest by name.
+func SortChains(names []string) {
 	sort.Slice(names, func(i, j int) bool {
 		if names[i] == MainChain || names[j] == MainChain {
 			return names[i] == MainChain
 		}
 		return names[i] < names[j]
 	})
-	return names
+}
+
+// ValidChainName reports whether a name fits the chain naming rule.
+func ValidChainName(name string) bool {
+	return chainNamePattern.MatchString(name)
+}
+
+// EffectiveChain resolves the chain a role serves when the recorded chain
+// may be empty: oracle roles always serve the oracle chain, the P-chain
+// node serves none, and everything else defaults to main.
+func EffectiveChain(role Role, chain string) string {
+	if chain != "" {
+		return chain
+	}
+	switch role {
+	case RoleOracleValidator, RoleOracleRPC:
+		return OracleChain
+	case RolePChain:
+		return ""
+	default:
+		return MainChain
+	}
 }
 
 type Environment struct {

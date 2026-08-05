@@ -113,7 +113,30 @@ type walletFactory func(
 	primary.WalletConfig,
 ) (pwallet.Wallet, error)
 
-func Create(ctx context.Context, environment config.Environment, outputDirectory, genesisTemplatePath, oracleGenesisTemplatePath string) (Result, error) {
+// chainTemplatePath resolves a chain's genesis template: an override at
+// chains/<name>/genesis-template.json wins, the root template is the
+// default. The oracle chain's root default keeps its dedicated file.
+func chainTemplatePath(root, chain string) string {
+	override := filepath.Join(root, "chains", chain, "genesis-template.json")
+	if info, err := os.Stat(override); err == nil && !info.IsDir() {
+		return override
+	}
+	if chain == config.OracleChain {
+		return filepath.Join(root, "oracle-genesis-template.json")
+	}
+	return filepath.Join(root, "genesis-template.json")
+}
+
+// genesisFileName is the creation output of one chain's genesis. Main keeps
+// the bare name; the oracle chain's file follows the same rule it always had.
+func genesisFileName(chain string) string {
+	if chain == config.MainChain {
+		return "genesis.json"
+	}
+	return "genesis-" + chain + ".json"
+}
+
+func Create(ctx context.Context, environment config.Environment, outputDirectory, root string) (Result, error) {
 	statePath := filepath.Join(outputDirectory, "network.env")
 	if err := requireMissing(statePath); err != nil {
 		return Result{}, err
@@ -126,11 +149,8 @@ func Create(ctx context.Context, environment config.Environment, outputDirectory
 	if err != nil {
 		return Result{}, err
 	}
-	if err := requireMissing(filepath.Join(outputDirectory, "genesis.json")); err != nil {
-		return Result{}, err
-	}
-	if public.HasOracle() {
-		if err := requireMissing(filepath.Join(outputDirectory, "genesis-oracle.json")); err != nil {
+	for _, chain := range public.Chains() {
+		if err := requireMissing(filepath.Join(outputDirectory, genesisFileName(chain))); err != nil {
 			return Result{}, err
 		}
 	}
@@ -154,7 +174,7 @@ func Create(ctx context.Context, environment config.Environment, outputDirectory
 		formatAVAX(requiredBalance),
 	)
 	printPublic(public, publicPath, publicDigest)
-	return create(ctx, environment, outputDirectory, genesisTemplatePath, oracleGenesisTemplatePath, public, primary.MakePWallet)
+	return create(ctx, environment, outputDirectory, root, public, primary.MakePWallet)
 }
 
 func ValidateManagerCommittee(size int) error {
@@ -200,8 +220,7 @@ func create(
 	ctx context.Context,
 	environment config.Environment,
 	outputDirectory string,
-	genesisTemplatePath string,
-	oracleGenesisTemplatePath string,
+	root string,
 	public Public,
 	newWallet walletFactory,
 ) (Result, error) {
@@ -213,33 +232,36 @@ func create(
 	if err != nil {
 		return Result{}, fmt.Errorf("load FUNDING_PRIVATE_KEY: %w", err)
 	}
-	template, err := os.ReadFile(genesisTemplatePath)
+	mainTemplatePath := chainTemplatePath(root, config.MainChain)
+	mainTemplate, err := os.ReadFile(mainTemplatePath)
 	if err != nil {
-		return Result{}, fmt.Errorf("read required genesis template %s: %w", genesisTemplatePath, err)
+		return Result{}, fmt.Errorf("read required genesis template %s: %w", mainTemplatePath, err)
 	}
 	genesisAddress := ethcommon.HexToAddress(public.GenesisAddress)
 	createdAt := time.Now()
 	// The management chain never runs, so its genesis stays contract-free even
 	// when the main chain's genesis later embeds the oracle receiver.
-	managementGenesis, err := RenderGenesis(template, []ethcommon.Address{genesisAddress}, nil, nil, createdAt)
+	managementGenesis, err := RenderGenesis(mainTemplate, []ethcommon.Address{genesisAddress}, nil, nil, createdAt)
 	if err != nil {
 		return Result{}, err
 	}
 	hasOracle := public.HasOracle()
 	feederAddress := ethcommon.HexToAddress(public.FeederAddress)
-	// The main genesis is BASE LAYER ONLY: funded accounts, consensus, and
-	// network shape. App contracts never bake into it; they install onto the
-	// running chain through the upgrade history (playbooks/08-install-app.md),
-	// so adding an app never forces a chain re-creation. The feeder address
-	// stays funded here because a balance is an allocation, not app state.
-	// Known exception, flagged for the same treatment: the oracle-L1 shape
-	// below still bakes its Warp receiver, whose seed needs the oracle chain
-	// ID that only exists mid-creation.
+	// Every chain's genesis is BASE LAYER ONLY: funded accounts, consensus,
+	// and network shape. App contracts never bake into it; they install onto
+	// the running chain through the upgrade history
+	// (playbooks/08-install-app.md), so adding an app never forces a chain
+	// re-creation. The feeder address stays funded on every chain because a
+	// balance is an allocation, not app state. Known exception, flagged for
+	// the same treatment: the oracle-L1 shape below still bakes its Warp
+	// receiver, whose seed needs the oracle chain ID that only exists
+	// mid-creation.
 	var oracleGenesis []byte
 	if hasOracle {
-		oracleTemplate, err := os.ReadFile(oracleGenesisTemplatePath)
+		oracleTemplatePath := chainTemplatePath(root, config.OracleChain)
+		oracleTemplate, err := os.ReadFile(oracleTemplatePath)
 		if err != nil {
-			return Result{}, fmt.Errorf("read required oracle genesis template %s: %w", oracleGenesisTemplatePath, err)
+			return Result{}, fmt.Errorf("read required oracle genesis template %s: %w", oracleTemplatePath, err)
 		}
 		// The feeder also administers the oracle chain's FeeManager precompile,
 		// so fee/delay parameters are tunable live without a chain recreation.
@@ -264,31 +286,55 @@ func create(
 	if err != nil {
 		return Result{}, fmt.Errorf("load public identities: %w", err)
 	}
-	genesisPath := filepath.Join(outputDirectory, "genesis.json")
-	if err := requireMissing(genesisPath); err != nil {
-		return Result{}, err
+	// evmChains is every chain this creation converts against the management
+	// chain, main first. The oracle chain is excluded: its creation stays a
+	// dedicated block below because the main genesis needs its chain ID.
+	var evmChains []string
+	for _, chain := range public.Chains() {
+		if chain != config.OracleChain {
+			evmChains = append(evmChains, chain)
+		}
 	}
+	genesisPath := filepath.Join(outputDirectory, "genesis.json")
 	oracleGenesisPath := filepath.Join(outputDirectory, "genesis-oracle.json")
 	if err := requireMissing(oracleGenesisPath); err != nil {
 		return Result{}, err
 	}
-	var mainGenesis []byte
-	if !hasOracle {
-		// Without an oracle the main genesis has no chain-dependent content,
-		// so it is published before the first transaction, exactly as before.
-		mainGenesis, err = RenderGenesis(template, []ethcommon.Address{genesisAddress, feederAddress}, nil, nil, createdAt)
-		if err != nil {
+	genesisByChain := make(map[string][]byte, len(evmChains))
+	for _, chain := range evmChains {
+		path := filepath.Join(outputDirectory, genesisFileName(chain))
+		if err := requireMissing(path); err != nil {
 			return Result{}, err
 		}
-		if err := os.WriteFile(genesisPath, mainGenesis, 0o644); err != nil {
-			return Result{}, fmt.Errorf("write generated genesis %s: %w", genesisPath, err)
+		if chain == config.MainChain && hasOracle {
+			// The main genesis embeds the oracle receiver, so it can only be
+			// rendered after the oracle CreateChainTx is accepted.
+			continue
 		}
-		fmt.Printf("generated %s\n", genesisPath)
+		template := mainTemplate
+		if chain != config.MainChain {
+			templatePath := chainTemplatePath(root, chain)
+			if template, err = os.ReadFile(templatePath); err != nil {
+				return Result{}, fmt.Errorf("read required genesis template %s: %w", templatePath, err)
+			}
+		}
+		// A genesis with no chain-dependent content is published before the
+		// first transaction, exactly as before.
+		genesis, err := RenderGenesis(template, []ethcommon.Address{genesisAddress, feederAddress}, nil, nil, createdAt)
+		if err != nil {
+			return Result{}, fmt.Errorf("render %s genesis: %w", chain, err)
+		}
+		if err := os.WriteFile(path, genesis, 0o644); err != nil {
+			return Result{}, fmt.Errorf("write generated genesis %s: %w", path, err)
+		}
+		fmt.Printf("generated %s\n", path)
+		genesisByChain[chain] = genesis
 	}
 
 	state := State{
 		Path:                       filepath.Join(outputDirectory, "network.env"),
 		Network:                    environment.Network,
+		Chains:                     make(map[string]ChainRecord),
 		ManagerAddress:             managerAddress.Hex(),
 		GenesisEVMAddress:          public.GenesisAddress,
 		FeederEVMAddress:           public.FeederAddress,
@@ -436,8 +482,8 @@ func create(
 		// The receiver contract only trusts Warp messages whose source is the
 		// oracle chain, so the main genesis can be rendered only after the
 		// oracle CreateChainTx is accepted and its blockchain ID is known.
-		mainGenesis, err = RenderGenesis(
-			template,
+		mainGenesis, err := RenderGenesis(
+			mainTemplate,
 			[]ethcommon.Address{genesisAddress, feederAddress},
 			[]ContractAllocation{{
 				Address:     ReceiverAddress,
@@ -457,68 +503,91 @@ func create(
 			return Result{}, fmt.Errorf("write generated genesis %s: %w", genesisPath, err)
 		}
 		fmt.Printf("generated %s\n", genesisPath)
+		genesisByChain[config.MainChain] = mainGenesis
 	}
 
-	fmt.Println("creating main subnet")
-	mainSubnetTx, err := issue("main CreateSubnetTx", func(w pwallet.Wallet) (*txs.Tx, error) {
-		return w.IssueCreateSubnetTx(subnetOwner)
-	})
-	if err != nil {
-		return Result{}, err
-	}
-	state.SubnetID = mainSubnetTx.ID()
-	fmt.Printf("accepted main CreateSubnetTx %s\n", mainSubnetTx.ID())
-	if err := state.Save(); err != nil {
-		return Result{}, err
-	}
-
-	fmt.Println("creating main chain")
-	mainChainTx, err := issue("main CreateChainTx", func(w pwallet.Wallet) (*txs.Tx, error) {
-		return w.IssueCreateChainTx(state.SubnetID, mainGenesis, constants.SubnetEVMID, nil, "benchmark")
-	})
-	if err != nil {
-		return Result{}, err
-	}
-	state.ChainID = mainChainTx.ID()
-	fmt.Printf("accepted main CreateChainTx %s\n", mainChainTx.ID())
-	if err := state.Save(); err != nil {
-		return Result{}, err
-	}
-
-	validators := make([]identity.Identity, 0, len(identities.Nodes))
-	for _, generated := range identities.Nodes {
-		if generated.Role == config.RoleValidator {
-			validators = append(validators, generated)
+	// setRecord routes one chain's creation output into the state: main keeps
+	// its named fields, every other chain its record. Saved after every
+	// accepted transaction, exactly like the blocks above.
+	setRecord := func(chain string, record ChainRecord) {
+		if chain == config.MainChain {
+			state.SubnetID, state.ChainID, state.ConvertTxID = record.SubnetID, record.ChainID, record.ConvertTxID
+			return
 		}
+		state.Chains[chain] = record
 	}
-	weightByIdentity := make(map[string]uint64, len(validators))
-	for _, node := range public.Nodes {
-		if node.Role == config.RoleValidator {
-			weightByIdentity[node.Identity] = node.Weight
+	for _, chain := range evmChains {
+		// The main chain keeps its historical on-chain name.
+		chainTxName := chain
+		if chain == config.MainChain {
+			chainTxName = "benchmark"
 		}
-	}
-	mainValidators, err := conversionValidators(validators, func(generated identity.Identity) uint64 {
-		return weightByIdentity[generated.Name]
-	}, validatorOwner)
-	if err != nil {
-		return Result{}, err
-	}
-	fmt.Println("converting main subnet to an L1 managed by the management chain")
-	mainConvertTx, err := issue("main ConvertSubnetToL1Tx", func(w pwallet.Wallet) (*txs.Tx, error) {
-		return w.IssueConvertSubnetToL1Tx(
-			state.SubnetID,
-			state.ManagerChainID,
-			managerAddress.Bytes(),
-			mainValidators,
-		)
-	})
-	if err != nil {
-		return Result{}, err
-	}
-	state.ConvertTxID = mainConvertTx.ID()
-	fmt.Printf("accepted main ConvertSubnetToL1Tx %s\n", mainConvertTx.ID())
-	if err := state.Save(); err != nil {
-		return Result{}, err
+		chainValidatorIdentities := make([]identity.Identity, 0, len(identities.Nodes))
+		for _, generated := range identities.Nodes {
+			if generated.Role == config.RoleValidator && generated.Chain == chain {
+				chainValidatorIdentities = append(chainValidatorIdentities, generated)
+			}
+		}
+		weightByIdentity := make(map[string]uint64, len(chainValidatorIdentities))
+		for _, node := range public.Nodes {
+			if node.Role == config.RoleValidator && node.ChainName() == chain {
+				weightByIdentity[node.Identity] = node.Weight
+			}
+		}
+		chainValidators, err := conversionValidators(chainValidatorIdentities, func(generated identity.Identity) uint64 {
+			return weightByIdentity[generated.Name]
+		}, validatorOwner)
+		if err != nil {
+			return Result{}, err
+		}
+
+		var record ChainRecord
+		fmt.Printf("creating %s subnet\n", chain)
+		subnetTx, err := issue(chain+" CreateSubnetTx", func(w pwallet.Wallet) (*txs.Tx, error) {
+			return w.IssueCreateSubnetTx(subnetOwner)
+		})
+		if err != nil {
+			return Result{}, err
+		}
+		record.SubnetID = subnetTx.ID()
+		setRecord(chain, record)
+		fmt.Printf("accepted %s CreateSubnetTx %s\n", chain, subnetTx.ID())
+		if err := state.Save(); err != nil {
+			return Result{}, err
+		}
+
+		fmt.Printf("creating %s chain\n", chain)
+		chainTx, err := issue(chain+" CreateChainTx", func(w pwallet.Wallet) (*txs.Tx, error) {
+			return w.IssueCreateChainTx(record.SubnetID, genesisByChain[chain], constants.SubnetEVMID, nil, chainTxName)
+		})
+		if err != nil {
+			return Result{}, err
+		}
+		record.ChainID = chainTx.ID()
+		setRecord(chain, record)
+		fmt.Printf("accepted %s CreateChainTx %s\n", chain, chainTx.ID())
+		if err := state.Save(); err != nil {
+			return Result{}, err
+		}
+
+		fmt.Printf("converting %s subnet to an L1 managed by the management chain\n", chain)
+		convertTx, err := issue(chain+" ConvertSubnetToL1Tx", func(w pwallet.Wallet) (*txs.Tx, error) {
+			return w.IssueConvertSubnetToL1Tx(
+				record.SubnetID,
+				state.ManagerChainID,
+				managerAddress.Bytes(),
+				chainValidators,
+			)
+		})
+		if err != nil {
+			return Result{}, err
+		}
+		record.ConvertTxID = convertTx.ID()
+		setRecord(chain, record)
+		fmt.Printf("accepted %s ConvertSubnetToL1Tx %s\n", chain, convertTx.ID())
+		if err := state.Save(); err != nil {
+			return Result{}, err
+		}
 	}
 
 	fmt.Printf("creation complete; generated state %s\n", state.Path)
@@ -592,7 +661,7 @@ func makeWallet(
 	state State,
 	newWallet walletFactory,
 ) (pwallet.Wallet, error) {
-	subnetIDs := make([]ids.ID, 0, 3)
+	subnetIDs := make([]ids.ID, 0, 3+len(state.Chains))
 	if state.ManagerSubnetID != ids.Empty {
 		subnetIDs = append(subnetIDs, state.ManagerSubnetID)
 	}
@@ -601,6 +670,11 @@ func makeWallet(
 	}
 	if state.SubnetID != ids.Empty {
 		subnetIDs = append(subnetIDs, state.SubnetID)
+	}
+	for _, name := range state.chainNames() {
+		if record := state.Chains[name]; record.SubnetID != ids.Empty {
+			subnetIDs = append(subnetIDs, record.SubnetID)
+		}
 	}
 	wallet, err := newWallet(ctx, api, keys, primary.WalletConfig{SubnetIDs: subnetIDs})
 	if err != nil {
