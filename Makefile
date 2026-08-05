@@ -28,7 +28,7 @@ bin/fleet:
 
 bin/oracle:
 	mkdir -p bin
-	$(PACKAGE_GO_ENV) go build -o bin/oracle ./cmd/oracle
+	$(PACKAGE_GO_ENV) go build -o bin/oracle ./apps/settlement-feed/cmd/oracle
 
 bin/bombard:
 	mkdir -p bin
@@ -76,7 +76,8 @@ PACK_FILES := \
 	subnet-config.json \
 	subnet-config-oracle.json \
 	monitoring/grafana-datasources.yml \
-	monitoring/dashboards/
+	monitoring/dashboards/ \
+	apps/settlement-feed/dashboards/
 
 pack:
 	rm -rf bin

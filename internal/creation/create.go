@@ -14,7 +14,7 @@ import (
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/funding"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/oraclecontracts"
+	"github.com/ava-labs/avalanche-benchmark/remote/apps/settlement-feed/oraclecontracts"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/utils/constants"
 	"github.com/ava-labs/avalanchego/utils/crypto/keychain"

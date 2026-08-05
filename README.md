@@ -324,7 +324,7 @@ consumer contract's view, and exports feed price, on-chain price, their delta,
 and submit-to-mined latency
 (`monitoring/dashboards/oracle-direct-dashboard.json` charts all four). The
 proxy owner can swap the aggregator behind the stable consumer address with
-Chainlink's propose/confirm flow; see `docs/oracle-consumer.md`.
+Chainlink's propose/confirm flow; see `apps/settlement-feed/docs/oracle-consumer.md`.
 
 ## The oracle L1
 
