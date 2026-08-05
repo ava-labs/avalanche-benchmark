@@ -1,37 +1,52 @@
 # Playbook 05: rootless install
 
-Goal: the whole fleet under a plain user account. No sudo anywhere, ever.
+This playbook runs the full fleet under a normal user account. No command
+uses sudo.
 
-## Configure
+## Configuration
+
+Set these values in `.env` on the control machine:
 
 ```bash
-# .env on the control machine
-REMOTE_DIR=/home/youruser/avalanche     # everything lives under this
-REMOTE_DATA_DIR=/nvme/youruser/data     # optional: databases on faster disk
+REMOTE_DIR=/home/youruser/avalanche     # all fleet files go under this directory
+REMOTE_DATA_DIR=/nvme/youruser/data     # optional: databases on a faster disk
 ```
 
-Empty `REMOTE_DIR` means the system install (/opt, /etc, /var/lib, systemd,
-sudo). Setting it switches every command to user mode: packages, configs and
-data under your directory, nodes run as plain processes from a rendered
-run.sh with a pidfile. `REMOTE_DATA_DIR` defaults to `REMOTE_DIR/data`.
+An empty `REMOTE_DIR` selects the system install. The system install uses
+/opt, /etc, /var/lib, systemd, and sudo. A set `REMOTE_DIR` selects the
+user install. In the user install, all files are under your directory.
+Each node runs as a normal process. A run script starts it, and a pidfile
+identifies it. `REMOTE_DATA_DIR` is optional. Its default is
+`REMOTE_DIR/data`.
 
-`fleet deploy <mode> --dry-run` preflights every host without changing
-anything; run it first on new machines. It checks exactly what user mode
-needs: writable target paths, required tools, disk. Nothing assumes your
-group name matches your username (RHEL-friendly) and staging paths are
-per-user, so shared hosts do not collide.
+## Test the hosts first
 
-## What is different from a system install
+```bash
+./bin/fleet deploy frozen --dry-run
+```
 
-- No boot persistence and no auto-restart: after a host reboot, run
-  `./bin/fleet pchain start` and then `./bin/fleet start`. If you want
-  crash recovery, wrap those two in your own supervisor or cron.
-- Everything else behaves identically: deploy, status, drills, place.
+This command examines every host and changes nothing. It checks the ssh
+access, the necessary tools, the write permissions on the target paths,
+and the free disk space. Run it on every new set of machines before the
+first deploy.
 
-## Limits
+The user install does not use Linux group names. It works on hosts where
+your group name is not your user name, for example on RHEL. The staging
+paths in /tmp include your user name, so two operators on one host do not
+collide.
 
-One running install per set of machines: ports are assigned positionally
-per host, so a second kit deployed beside a running one fails loudly at
-start (it can no longer harm the first: process management is scoped to
-each install's own directories). Validate a new release against the hosts
-with `--dry-run` instead.
+## Differences from the system install
+
+- No node starts at boot. No node restarts after a crash. After a host
+  reboot, run `./bin/fleet pchain start`, then `./bin/fleet start`. If
+  you want automatic recovery, put these two commands in your own
+  supervisor or cron.
+- All other commands are identical: deploy, status, the drills, place.
+
+## Known limit
+
+Only one install can run on a set of machines at one time. The node ports
+are fixed per host. A second install beside a running one stops with a
+port error at start. The second install cannot damage the first one:
+process control is limited to each install's own directories. To validate
+a new release against the hosts, use `--dry-run`.

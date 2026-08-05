@@ -1,33 +1,42 @@
 # Playbook 02: load test
 
-Goal: sustained transaction load with trustworthy numbers.
+This playbook puts transaction load on the fleet and measures the result
+correctly.
 
-## Run
+## Procedure
 
 ```bash
-./bin/bombard -rps 1000 -duration 10m   # fans across every role=rpc node
+./bin/bombard -rps 1000 -duration 10m
 ```
 
-Step the rate (1000, 2000, 4000) rather than jumping to the target: the
-interesting number is where p99 detaches from p50, and a single big jump
-hides it.
+The load generator sends transactions to every `role=rpc` node.
 
-## Measure
+Increase the rate in steps, for example 1000, then 2000, then 4000. Do not
+go to the target rate in one step. The important measurement is the rate
+where the p99 latency separates from the p50 latency. One large step hides
+this point.
 
-- Chain truth is block timestamps. The Grafana chain-TPS panel
-  (`rate(avalanche_subnetevm_vm_eth_chain_txs_accepted[1m])`) reports it
-  durably. Do not benchmark from the bombard TUI: its mined-tps is
-  observer-side and falls into a sawtooth when the watcher lags.
-- Submit-to-mined latency from bombard's histogram is real; a growing gap
-  between it and block cadence means the mempool is backing up (offered load
-  exceeds what the fleet mines; that is a finding, not an error).
-- Exclude windows spanning a restart when comparing configurations.
+## How to measure
 
-## What bounds throughput
+- Measure throughput from the block timestamps. The Grafana chain-TPS panel
+  shows this value:
+  `rate(avalanche_subnetevm_vm_eth_chain_txs_accepted[1m])`.
+- Do not measure throughput from the bombard screen. Its value is measured
+  at the observer. If the observer falls behind, the value becomes wrong.
+- The bombard latency histogram is correct. If this latency grows and the
+  block rate does not, the mempool has a backlog. A backlog means the
+  offered load is more than the fleet can mine. This is a valid result,
+  not an error.
+- Do not compare measurement windows that contain a node restart.
 
-Hardware first: consensus poll rounds cost ~3ms on dedicated cores against
-~9.5ms on starved ones, and fsync latency sets the floor under block times
-(NVMe ~0.03ms vs EBS ~3ms). Consensus parameters second: see
-CONSENSUS-TUNING.md before touching k or the alphas; the safe operating
-point shipped in `subnet-config.json` was chosen after observing a real
-finalization fork under an aggressive one.
+## What limits throughput
+
+Hardware is the first limit. A consensus poll round costs approximately 3
+milliseconds on free CPU cores. The same round costs approximately 9.5
+milliseconds on busy cores. Disk fsync latency sets the lower limit for
+block times.
+
+The consensus parameters are the second limit. Read CONSENSUS-TUNING.md
+before you change `k` or the alpha values. The values in
+`subnet-config.json` are safe. We selected them after we saw a
+finalization fork with more aggressive values.

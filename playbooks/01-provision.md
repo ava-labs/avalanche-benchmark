@@ -1,39 +1,48 @@
 # Playbook 01: provision a fleet
 
-Goal: an L1 producing blocks on your machines, airgapped from the public
-network, in one sitting.
+This playbook makes an L1 that produces blocks on your machines. The fleet
+operates in isolation from the public network.
 
-## Prerequisites
+## Before you start
 
-- Machines reachable over ssh from the control machine (see `examples/` for
-  inventory shapes), NVMe or sub-millisecond-fsync disks for benchmark work.
-- `.env` from `.env.example`: network, P-chain API, funded key, ssh access.
-  For hosts where you have no root, also set `REMOTE_DIR`
-  (see [05-rootless-install.md](05-rootless-install.md)).
-- `nodes.ini` from an example shape. Numbers and roles are load-bearing;
-  hosts are yours to change.
-- Binaries: `make package-build` (builds avalanchego pinned to the kit's
-  commit plus the kit binaries into `bin/`).
+Make sure that these conditions are true:
 
-## Steps
+- The control machine has ssh access to every fleet machine.
+- Each machine has a fast disk. NVMe is good. A disk with fsync latency
+  above one millisecond is not good for benchmark work.
+- The file `.env` exists. Copy it from `.env.example`. Set the network, the
+  P-chain API, the funded key, and the ssh values. If you do not have root
+  on the machines, also set `REMOTE_DIR`. See
+  [05-rootless-install.md](05-rootless-install.md).
+- The file `nodes.ini` exists. Copy a shape from `examples/` and set your
+  hosts. Do not change the node numbers or the roles.
+- The binaries exist in `bin/`. Run `make package-build` to build them.
+
+## Procedure
 
 ```bash
-./bin/l1 keygen                    # identities for every inventory node
-./bin/l1 create                    # register the L1 on the public network
-./bin/fleet deploy follow          # P-chain node follows the public network
-./bin/fleet status                 # wait: synced, both validator sets, READY TO FREEZE yes
-./bin/fleet pchain archive         # snapshot ./pchain.tar.gz
-./bin/fleet deploy frozen --dry-run  # preflight every host, mutate nothing
-./bin/fleet deploy frozen          # the airgapped fleet, P-chain first
-./bin/fleet status                 # every node up, heights advancing
+./bin/l1 keygen                    # step 1: make the node identities
+./bin/l1 create                    # step 2: register the L1 on the public network
+./bin/fleet deploy follow          # step 3: start the P-chain node
+./bin/fleet status                 # step 4: wait for READY TO FREEZE = yes
+./bin/fleet pchain archive         # step 5: write ./pchain.tar.gz
+./bin/fleet deploy frozen --dry-run  # step 6: test every host, change nothing
+./bin/fleet deploy frozen          # step 7: deploy the full fleet
+./bin/fleet status                 # step 8: confirm the result
 ```
 
-`deploy frozen` validates every host before stopping anything; a host
-mismatch (missing tool, unwritable path, full disk) aborts with every
-problem listed and the fleet untouched.
+In step 4, repeat `fleet status` until the P-chain MODE is `synced` and
+READY TO FREEZE is `yes`.
 
-## Verification
+Step 7 examines every host before it stops any node. If one host has a
+problem, the command stops with a report and changes nothing. Correct the
+host and run the command again.
 
-`fleet status` exits 0, every node `up`, heights advancing, P-chain MODE
-`frozen`, L1 STATE `complete`. From here: load ([02](02-load-test.md)),
-drills ([03](03-failover-drill.md)), dashboards ([06](06-monitoring.md)).
+## Result
+
+`fleet status` shows every node `up` and exits with code 0. The heights
+increase. The P-chain MODE is `frozen`. The L1 STATE is `complete`.
+
+The next playbooks are [02-load-test.md](02-load-test.md),
+[03-failover-drill.md](03-failover-drill.md), and
+[06-monitoring.md](06-monitoring.md).
