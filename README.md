@@ -2,7 +2,7 @@
 
 Benchmark and failover toolset for Avalanche L1s in isolated networks: no internet egress, fixed validator membership, PoA. Stand up an L1 on Fuji or mainnet, run it airgapped, drive load, and drill data-center failover by moving staking identities (key swap) or stake weight, on one deployment, with no chain re-creation between the two.
 
-Operator manual. Rationale and decision history: **[DESIGN.md](DESIGN.md)**.
+Operator manual. Consensus parameter rationale: **[CONSENSUS-TUNING.md](CONSENSUS-TUNING.md)**.
 
 ## What it needs
 
@@ -227,8 +227,6 @@ ssh -i ~/.ssh/fleet ubuntu@<pchain-host> \
 
 The shipped example: 8 validators and 4 RPC nodes split across two sites, one P-chain node, one control machine. Nothing below is provider-specific. Oracle and archive nodes, when declared, co-locate on the same hosts with positional ports.
 
-![Two-site benchmark topology](docs/architecture.png)
-
 ```mermaid
 flowchart LR
     subgraph CONTROL[control machine]
@@ -392,7 +390,7 @@ Block cadence is 25ms: `min-delay-target` in `chain-config.json` and `initialMin
 
 ## Measured baseline
 
-2x2 topology, 8 validators, 4 RPCs, `bombard -rps 4000`, 12627 blocks over 323s measured with `scripts/tpsdist.py`:
+2x2 topology, 8 validators, 4 RPCs, `bombard -rps 4000`, 12627 blocks over 323s measured from block timestamps:
 
 ```
 per-second tps   mean 3951   p50 4004   stdev 152   CV 4%   min 3288   below-3000 0/323
@@ -400,7 +398,7 @@ block delta ms   p50 25   p75 25   p90 26   p99 43   max 170   at the 25ms floor
 bombard          p50 68-81ms   p95 114-165ms   in-flight cap not binding
 ```
 
-Measure with `scripts/tpsdist.py`, not the bombard TUI. The script reads `timestampMilliseconds` off the blocks, so it reports chain truth; the TUI's mined-tps is observer-side and a watcher that falls behind renders a sawtooth with zero-seconds that never happened. Pass `FROM=<block>` when comparing configs, since a window spanning a restart averages two configs together.
+Measure from `timestampMilliseconds` on the blocks (chain truth), not the bombard TUI: the TUI's mined-tps is observer-side, and a watcher that falls behind renders a sawtooth with zero-seconds that never happened. The Grafana chain-TPS panel (`rate(avalanche_subnetevm_vm_eth_chain_txs_accepted[1m])`) is the durable version of the same measurement. When comparing configs, exclude windows spanning a restart, which average two configs together.
 
 ## Gotchas
 

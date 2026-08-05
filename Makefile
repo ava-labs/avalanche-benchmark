@@ -65,7 +65,6 @@ package-build: bin/avalanchego bin/$(SUBNET_EVM_ID) bin/l1 bin/fleet bin/oracle 
 PACK_FILES := \
 	bin/ \
 	README.md \
-	DESIGN.md \
 	.env.example \
 	nodes.ini.example \
 	genesis-template.json \
@@ -76,7 +75,6 @@ PACK_FILES := \
 	chain-config-archive.json \
 	subnet-config.json \
 	subnet-config-oracle.json \
-	scripts/tpsdist.py \
 	monitoring/grafana-datasources.yml \
 	monitoring/dashboards/
 
