@@ -20,9 +20,13 @@ Rules:
 - Each chain gets its own weight ladder: the first three validators of the
   chain by node number start at 100000, the rest at 1000.
 - The names `oracle` and `management` are reserved.
-- Optional per-chain configuration goes in `chains/<name>/`:
-  `genesis-template.json` and `subnet-config.json`. A chain without that
-  directory uses the root defaults.
+- Per-chain configuration goes in `chains/<name>/`:
+  `genesis-template.json` and `subnet-config.json`. A file that is absent
+  falls back to the root default.
+- Give each chain a `genesis-template.json` with its own `chainId`. The
+  genesis funds the same addresses on every chain, so a shared chainId
+  lets a transaction replay across chains. `l1 create` refuses duplicate
+  chainIds. The `subnet-config.json` fallback is safe to share.
 
 ## Create and deploy
 

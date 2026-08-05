@@ -155,7 +155,7 @@ and RPC node bootstraps from the P-chain node.
 | `deployment/oracle-feeder.key` | `keygen` | EVM key funded on every chain, used by `oracle feed`/`relay` |
 | `deployment/upgrades.json` | `fleet upgrade` | the main chain's append-only upgrade history; every deploy installs it |
 | `deployment/upgrades-<name>.json` | `fleet upgrade --chain <name>` | the named chain's upgrade history, same rules |
-| `chains/<name>/` | operator | optional per-chain `genesis-template.json` and `subnet-config.json`; absent means the root defaults |
+| `chains/<name>/` | operator | per-chain `genesis-template.json` (required beyond one chain: each chain needs its own chainId) and optional `subnet-config.json`; absent means the root defaults |
 | `pchain.tar.gz` | `pchain archive` | validated P-chain `db/` snapshot |
 
 `deployment/` contains private keys. It is never in the pack artifact. It is

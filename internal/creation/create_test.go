@@ -521,6 +521,76 @@ func TestCreateTwoChainsLoopsAndRecordsPerChainState(t *testing.T) {
 	}
 }
 
+// A second chain that falls back to the root template shares the main
+// chain's EVM chainId. The same addresses are funded on both chains at
+// nonce 0, so a transaction replays across them. create refuses this.
+func TestCreateRefusesDuplicateEVMChainIDs(t *testing.T) {
+	dir := t.TempDir()
+	template := `{
+		"config":{"chainId":99999},"alloc":{},"nonce":"0x0",
+		"timestamp":"0x0","extraData":"0x00","gasLimit":"0x1",
+		"difficulty":"0x0","mixHash":"0x0","coinbase":"0x0",
+		"number":"0x0","gasUsed":"0x0","parentHash":"0x0"
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "genesis-template.json"), []byte(template), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nodes := []config.Node{
+		{Number: 1, Host: "v1", Role: config.RoleValidator, Chain: "main"},
+		{Number: 2, Host: "r1", Role: config.RoleRPC, Chain: "main"},
+		{Number: 3, Host: "pchain", Role: config.RolePChain},
+		{Number: 4, Host: "t1", Role: config.RoleValidator, Chain: "trading"},
+	}
+	environment := config.Environment{
+		Network:           "fuji",
+		PChainAPI:         "https://example.invalid",
+		FundingPrivateKey: strings.Repeat("1", 64),
+	}
+	factory := func(
+		_ context.Context,
+		_ string,
+		_ keychain.Keychain,
+		_ primary.WalletConfig,
+	) (pwallet.Wallet, error) {
+		return &fakeWallet{}, nil
+	}
+
+	output := filepath.Join(dir, "deployment")
+	if err := os.Mkdir(output, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	privateOutput := filepath.Join(dir, "private")
+	if err := os.Mkdir(privateOutput, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	generated, err := identity.Generate(privateOutput, nodes, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public := NewPublic(
+		generated,
+		ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"),
+		ethcommon.HexToAddress("0xAbcDef0123456789abCDef0123456789ABcdEF01"),
+	)
+
+	_, err = create(context.Background(), environment, output, dir, public, factory)
+	if err == nil || !strings.Contains(err.Error(), "chainId") || !strings.Contains(err.Error(), "chains/trading/genesis-template.json") {
+		t.Fatalf("duplicate chainId error = %v", err)
+	}
+
+	// A trading template with its own chainId clears the refusal.
+	if err := os.MkdirAll(filepath.Join(dir, "chains", "trading"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	distinct := strings.Replace(template, "99999", "88888", 1)
+	if err := os.WriteFile(filepath.Join(dir, "chains", "trading", "genesis-template.json"), []byte(distinct), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := create(context.Background(), environment, output, dir, public, factory); err != nil {
+		t.Fatalf("distinct chainIds still refused: %v", err)
+	}
+}
+
 func TestRequiredFreshCreateBalanceIncludesAllRegistrationsAndFeeReserve(t *testing.T) {
 	public := Public{
 		Nodes: []PublicNode{

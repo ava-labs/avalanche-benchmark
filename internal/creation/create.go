@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"os"
@@ -134,6 +135,42 @@ func genesisFileName(chain string) string {
 		return "genesis.json"
 	}
 	return "genesis-" + chain + ".json"
+}
+
+// validateDistinctChainIDs refuses two chains that share one EVM chainId.
+// The genesis funds the same addresses on every chain, at nonce 0, so a
+// shared chainId lets an EIP-155 transaction from one chain replay on the
+// other. This happens exactly when a second chain falls back to the root
+// genesis template.
+func validateDistinctChainIDs(root string, chains []string) error {
+	owner := make(map[string]string, len(chains))
+	for _, chain := range chains {
+		path := chainTemplatePath(root, chain)
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read required genesis template %s: %w", path, err)
+		}
+		var document struct {
+			Config struct {
+				ChainID json.Number `json:"chainId"`
+			} `json:"config"`
+		}
+		if err := json.Unmarshal(contents, &document); err != nil {
+			return fmt.Errorf("parse genesis template %s: %w", path, err)
+		}
+		chainID := document.Config.ChainID.String()
+		if chainID == "" {
+			return fmt.Errorf("genesis template %s: required config.chainId is not provided", path)
+		}
+		if previous, taken := owner[chainID]; taken {
+			return fmt.Errorf(
+				"chains %q and %q share EVM chainId %s; a shared chainId lets a transaction replay across the chains. Give chain %q its own template with a distinct chainId at chains/%s/genesis-template.json",
+				previous, chain, chainID, chain, chain,
+			)
+		}
+		owner[chainID] = chain
+	}
+	return nil
 }
 
 func Create(ctx context.Context, environment config.Environment, outputDirectory, root string) (Result, error) {
@@ -294,6 +331,11 @@ func create(
 		if chain != config.OracleChain {
 			evmChains = append(evmChains, chain)
 		}
+	}
+	// The check covers every chain, the oracle chain included: it also
+	// serves the shared funded addresses.
+	if err := validateDistinctChainIDs(root, public.Chains()); err != nil {
+		return Result{}, err
 	}
 	genesisPath := filepath.Join(outputDirectory, "genesis.json")
 	oracleGenesisPath := filepath.Join(outputDirectory, "genesis-oracle.json")
