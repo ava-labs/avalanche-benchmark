@@ -84,6 +84,11 @@ func (d *Deployer) FreezePChain(ctx context.Context) error {
 		)
 	}
 
+	// Reconciling stops the node before reinstalling it, so the host is
+	// validated first: a mismatch must not leave the node down.
+	if err := d.preflightHosts(ctx, prepared, []nodeDeployment{prepared.pchain}); err != nil {
+		return err
+	}
 	if err := d.reconcilePChain(ctx, prepared, false); err != nil {
 		return err
 	}

@@ -39,7 +39,16 @@ func run() error {
 		if len(arguments) < 2 {
 			return fmt.Errorf("usage:\n%s", usage(program))
 		}
-		return deployer.Deploy(ctx, arguments[1], arguments[2:])
+		dryRun := false
+		selectors := make([]string, 0, len(arguments)-2)
+		for _, argument := range arguments[2:] {
+			if argument == "--dry-run" {
+				dryRun = true
+				continue
+			}
+			selectors = append(selectors, argument)
+		}
+		return deployer.Deploy(ctx, arguments[1], selectors, dryRun)
 	case "pchain":
 		if len(arguments) != 2 {
 			return fmt.Errorf("usage:\n%s", usage(program))
@@ -51,6 +60,10 @@ func run() error {
 			return deployer.FollowPChain(ctx)
 		case "freeze":
 			return deployer.FreezePChain(ctx)
+		case "start":
+			return deployer.StartPChain(ctx)
+		case "stop":
+			return deployer.StopPChain(ctx)
 		}
 	case "status":
 		if len(arguments) != 1 {
@@ -78,8 +91,8 @@ func run() error {
 
 func usage(program string) string {
 	lines := []string{
-		"deploy <frozen|follow> [<node> ...]",
-		"pchain <archive|follow|freeze>",
+		"deploy <frozen|follow> [--dry-run] [<node> ...]",
+		"pchain <archive|follow|freeze|start|stop>",
 		"status",
 		"start [<node> ...]",
 		"stop [<node> ...]",

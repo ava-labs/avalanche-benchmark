@@ -3,7 +3,49 @@ package fleet
 import (
 	"strings"
 	"testing"
+
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
 )
+
+// A frozen fleet is airgapped by design, so status must answer the
+// validator-set questions from the deployment records: setsOK true keeps the
+// fatal counter at zero, the weights render as numbers instead of "?", and
+// the source is named so nobody mistakes records for a live API read.
+func TestRecordedValidatorSetsAnswerFrozenFleets(t *testing.T) {
+	inv := inventory{
+		created: true,
+		public: creation.Public{Nodes: []creation.PublicNode{
+			{Identity: "a", Role: config.RoleValidator, NodeID: "NodeID-A", Weight: 100000},
+			{Identity: "b", Role: config.RoleValidator, NodeID: "NodeID-B", Weight: 1000},
+			{Identity: "e", Role: config.RoleRPC, NodeID: "NodeID-E"},
+		}},
+	}
+	probe := statusPChainProbe{mainWeights: map[string]uint64{}}
+	recordedValidatorSets(inv, &probe)
+	if !probe.setsOK || !probe.mainVisible || !probe.managerVisible {
+		t.Fatalf("records did not answer the set questions: %+v", probe)
+	}
+	if probe.setsSource == "" || !strings.Contains(probe.setsSource, "records") {
+		t.Fatalf("setsSource = %q, want the records named", probe.setsSource)
+	}
+	if probe.mainWeights["NodeID-A"] != 100000 || probe.mainWeights["NodeID-B"] != 1000 {
+		t.Fatalf("recorded weights = %v", probe.mainWeights)
+	}
+	if _, exists := probe.mainWeights["NodeID-E"]; exists {
+		t.Fatalf("an RPC identity leaked into the main validator weights: %v", probe.mainWeights)
+	}
+	if len(probe.failures) != 0 {
+		t.Fatalf("records produced failures: %v", probe.failures)
+	}
+
+	// Before l1 create there are no sets to vouch for, from any source.
+	uncreated := statusPChainProbe{mainWeights: map[string]uint64{}}
+	recordedValidatorSets(inventory{}, &uncreated)
+	if uncreated.setsOK || uncreated.setsSource != "" {
+		t.Fatalf("records vouched for an uncreated chain: %+v", uncreated)
+	}
+}
 
 func TestCollapseServiceState(t *testing.T) {
 	cases := []struct {

@@ -86,6 +86,11 @@ func (d *Deployer) lifecycleTargets(selectors []string) (deployment, inventory, 
 	}
 	chosen, err := selectNodes(inv.l1Nodes(), selectors)
 	if err != nil {
+		// Naming the P-chain machine is a natural mistake with a supported
+		// answer, so the refusal points at it instead of dead-ending.
+		if inv.pchain.Role == config.RolePChain && selectorsName(selectors, inv.pchain.Number) {
+			err = fmt.Errorf("%w. Node %d is the P-chain machine; manage it with fleet pchain start|stop", err, inv.pchain.Number)
+		}
 		return deployment{}, inventory{}, err
 	}
 	state := deployment{
@@ -377,4 +382,90 @@ func selectedNumbers(state deployment) []int {
 		numbers = append(numbers, target.node.Number)
 	}
 	return numbers
+}
+
+// selectorsName reports whether any selector names the given node number,
+// honouring the same comma splitting selectNodes accepts.
+func selectorsName(selectors []string, number int) bool {
+	for _, selector := range selectors {
+		for _, part := range strings.Split(selector, ",") {
+			if value, err := strconv.Atoi(strings.TrimSpace(part)); err == nil && value == number {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// StartPChain brings the P-chain node up from its installed unit or run
+// script and proves the process is running. It talks only to the machine
+// itself: no upstream API, no render, no reseed. That restraint is the point.
+// Every validator and RPC bootstraps from this node, it is the one machine
+// fleet start cannot reach (selectors resolve L1 machines), and on an
+// airgapped frozen fleet the reinstalling escape hatches (pchain
+// follow|freeze) assume an upstream that is unreachable by design. After a
+// host reboot: fleet pchain start first, then fleet start.
+func (d *Deployer) StartPChain(ctx context.Context) error {
+	inv, err := d.inventory()
+	if err != nil {
+		return err
+	}
+	return d.startPChain(ctx, inv)
+}
+
+func (d *Deployer) startPChain(ctx context.Context, inv inventory) error {
+	state, target, err := pchainLifecycleTarget(inv)
+	if err != nil {
+		return err
+	}
+	l := layoutFor(inv.environment)
+	if err := d.runSSH(ctx, state, target, l.enableAndStartCommand(target)); err != nil {
+		return fmt.Errorf("start P-chain node %d (%s): %w", target.node.Number, target.node.Host, err)
+	}
+	// enableAndStart proves liveness in a user install but not under systemd,
+	// so the liveness check is its own round trip in both modes.
+	if err := d.runSSH(ctx, state, target, l.isActiveCommand(target)); err != nil {
+		return fmt.Errorf("P-chain node %d (%s) did not stay up: %w", target.node.Number, target.node.Host, err)
+	}
+	fmt.Fprintf(d.out, "P-chain node %d (%s) is up; it may replay before its bootstrapped health check passes\n",
+		target.node.Number, target.node.Host)
+	fmt.Fprintln(d.out, pchainWatchHint(inv.environment, target))
+	return nil
+}
+
+// StopPChain gracefully stops the P-chain node and preserves everything on
+// disk. Running L1 nodes keep producing without it; only a bootstrapping node
+// (restarted or new) needs it back first.
+func (d *Deployer) StopPChain(ctx context.Context) error {
+	inv, err := d.inventory()
+	if err != nil {
+		return err
+	}
+	return d.stopPChain(ctx, inv)
+}
+
+func (d *Deployer) stopPChain(ctx context.Context, inv inventory) error {
+	state, target, err := pchainLifecycleTarget(inv)
+	if err != nil {
+		return err
+	}
+	if err := d.runSSH(ctx, state, target, layoutFor(inv.environment).disableAndStopCommand(target)); err != nil {
+		return fmt.Errorf("stop P-chain node %d (%s): %w", target.node.Number, target.node.Host, err)
+	}
+	fmt.Fprintf(d.out, "stopped P-chain node %d (%s); L1 nodes cannot bootstrap until it is started again\n",
+		target.node.Number, target.node.Host)
+	return nil
+}
+
+// pchainLifecycleTarget builds the addressing-only view of the P-chain
+// machine, mirroring lifecycleTargets for the one machine it excludes.
+func pchainLifecycleTarget(inv inventory) (deployment, nodeDeployment, error) {
+	if inv.pchain.Role != config.RolePChain {
+		return deployment{}, nodeDeployment{}, fmt.Errorf("nodes.ini declares no P-chain machine")
+	}
+	target, err := inv.target(inv.pchain)
+	if err != nil {
+		return deployment{}, nodeDeployment{}, err
+	}
+	return deployment{environment: inv.environment}, target, nil
 }

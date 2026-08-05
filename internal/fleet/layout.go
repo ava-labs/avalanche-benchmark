@@ -2,6 +2,7 @@ package fleet
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
@@ -64,11 +65,22 @@ func (l layout) pidFile(number int) string {
 	return fmt.Sprintf("%s/%d/avalanchego.pid", l.cfg, number)
 }
 
-// processPattern matches a node's avalanchego by the config file it was
-// started with, as a pidfile-independent fallback for stop and kill. The
-// bracket keeps the pattern from matching the pkill shell's own argv.
+// processPattern matches a node's avalanchego by the ABSOLUTE path of the
+// config file it was started with, as a pidfile-independent fallback for stop
+// and kill. Anchoring to this install's config directory is what keeps the
+// fallback inside this install: two kits on the same machine share node
+// numbers, and a relative config/<n>/node.json pattern let one kit's stop
+// phase kill the other kit's running node (reported 2026-08-05). The bracket
+// keeps the pattern from matching the pkill shell's own argv.
 func (l layout) processPattern(number int) string {
-	return fmt.Sprintf("[c]onfig/%d/node.json", number)
+	return fmt.Sprintf(`%s/%d/[n]ode\.json`, patternQuote(l.cfg), number)
+}
+
+// patternQuote escapes a path for use inside a pgrep/pkill -f pattern, so a
+// directory name containing a regex metacharacter (a dot in a dated path,
+// say) matches only itself.
+func patternQuote(path string) string {
+	return regexp.QuoteMeta(path)
 }
 
 // runScript is the user-mode replacement for a systemd unit.
@@ -77,10 +89,11 @@ func (l layout) runScript(number int) string {
 }
 
 // pluginPattern matches a node's subnet-evm plugin process by its on-disk
-// path. The bracket keeps the pattern from matching the pgrep/pkill shell
-// whose own argv contains it.
+// path, quoted for the same install-scoping reason as processPattern. The
+// bracket keeps the pattern from matching the pgrep/pkill shell whose own
+// argv contains it.
 func (l layout) pluginPattern(number int) string {
-	return fmt.Sprintf("%s/%d/[p]lugins/", l.pkg, number)
+	return fmt.Sprintf("%s/%d/[p]lugins/", patternQuote(l.pkg), number)
 }
 
 // startCommand starts a node and reports failure if it did not come up. Both
