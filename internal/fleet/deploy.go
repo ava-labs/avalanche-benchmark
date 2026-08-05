@@ -150,7 +150,11 @@ var l1DeployPhases = []struct {
 // replace binaries on a live fleet. Restarting several nodes at once loses the
 // peers that serve state-sync summaries, and a node that cannot get a summary
 // replays the whole chain from genesis instead of syncing.
-func (d *Deployer) Deploy(ctx context.Context, pchainMode string, selectors []string) error {
+//
+// dryRun stops after the preflight: every host is validated, nothing is
+// installed, stopped, or started. It exists so a release can be checked
+// against the hosts without committing the running fleet to the upgrade.
+func (d *Deployer) Deploy(ctx context.Context, pchainMode string, selectors []string, dryRun bool) error {
 	prepared, cleanup, err := d.prepare(pchainMode, true)
 	if err != nil {
 		return err
@@ -166,6 +170,9 @@ func (d *Deployer) Deploy(ctx context.Context, pchainMode string, selectors []st
 	if rolling {
 		chosen, err := selectNodes(l1Only(prepared.selected), selectors)
 		if err != nil {
+			if selectorsName(selectors, prepared.pchain.node.Number) {
+				err = fmt.Errorf("%w. Node %d is the P-chain machine and a rolling deploy leaves it alone; reinstall it with fleet pchain freeze|follow, or just restart it with fleet pchain start", err, prepared.pchain.node.Number)
+			}
 			return err
 		}
 		picked := make([]nodeDeployment, 0, len(chosen))
@@ -178,7 +185,24 @@ func (d *Deployer) Deploy(ctx context.Context, pchainMode string, selectors []st
 			}
 		}
 		prepared.selected = picked
-	} else {
+	}
+
+	// EVERY host is validated before ANY node is stopped. A full deploy also
+	// covers the P-chain machine, because reconciling it is the next thing
+	// that happens; a rolling deploy never touches it.
+	preflightTargets := prepared.selected
+	if !rolling {
+		preflightTargets = append([]nodeDeployment{prepared.pchain}, prepared.selected...)
+	}
+	if err := d.preflightHosts(ctx, prepared, preflightTargets); err != nil {
+		return err
+	}
+	if dryRun {
+		fmt.Fprintln(d.out, "dry run: nothing was deployed")
+		return nil
+	}
+
+	if !rolling {
 		// The P-chain node is reconciled and accepted before any L1 node is
 		// touched. This is a phase barrier, not a best-effort bootstrap hint.
 		if err := d.reconcilePChain(ctx, prepared, prepared.pchainMode == frozenMode); err != nil {
@@ -230,6 +254,11 @@ func (d *Deployer) FollowPChain(ctx context.Context) error {
 	}
 	defer cleanup()
 
+	// Reconciling stops the node before reinstalling it, so the host is
+	// validated first: a mismatch must not leave the node down.
+	if err := d.preflightHosts(ctx, prepared, []nodeDeployment{prepared.pchain}); err != nil {
+		return err
+	}
 	if err := d.reconcilePChain(ctx, prepared, false); err != nil {
 		return err
 	}

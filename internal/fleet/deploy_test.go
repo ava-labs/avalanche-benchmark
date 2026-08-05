@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
@@ -22,12 +23,15 @@ import (
 )
 
 type recordingRunner struct {
+	mutex     sync.Mutex
 	output    []byte
 	runs      [][]string
 	runErrors map[int]error
 }
 
 func (r *recordingRunner) Run(_ context.Context, name string, args ...string) error {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
 	r.runs = append(r.runs, append([]string{name}, args...))
 	return r.runErrors[len(r.runs)-1]
 }
@@ -84,7 +88,7 @@ func TestFrozenDeployValidatesConfigurationBeforeArchive(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, pchainArchive), "not an archive")
 	deployer := NewDeployer(root, io.Discard)
-	err := deployer.Deploy(context.Background(), frozenMode, nil)
+	err := deployer.Deploy(context.Background(), frozenMode, nil, false)
 	if err == nil || !strings.Contains(err.Error(), ".env") {
 		t.Fatalf("frozen deploy did not report configuration first: %v", err)
 	}
