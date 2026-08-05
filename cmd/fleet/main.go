@@ -51,6 +51,10 @@ func run() error {
 			return deployer.FollowPChain(ctx)
 		case "freeze":
 			return deployer.FreezePChain(ctx)
+		case "start":
+			return deployer.StartPChain(ctx)
+		case "stop":
+			return deployer.StopPChain(ctx)
 		}
 	case "status":
 		if len(arguments) != 1 {
@@ -79,7 +83,7 @@ func run() error {
 func usage(program string) string {
 	lines := []string{
 		"deploy <frozen|follow> [<node> ...]",
-		"pchain <archive|follow|freeze>",
+		"pchain <archive|follow|freeze|start|stop>",
 		"status",
 		"start [<node> ...]",
 		"stop [<node> ...]",

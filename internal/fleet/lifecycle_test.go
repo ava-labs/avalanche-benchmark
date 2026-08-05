@@ -261,6 +261,93 @@ func TestPlanStartOnlyRestartsWhatIsBroken(t *testing.T) {
 	}
 }
 
+// pchainLifecycleInventory extends the placement fixture with the addressing
+// fields the P-chain lifecycle verbs resolve through.
+func pchainLifecycleInventory(t *testing.T, environment config.FleetEnvironment) inventory {
+	t.Helper()
+	inv := placementTestInventory(t)
+	inv.environment = environment
+	inv.ports = portsByNode(inv.nodes)
+	for _, node := range inv.nodes {
+		if node.Role == config.RolePChain {
+			inv.pchain = node
+		}
+	}
+	return inv
+}
+
+// fleet pchain start|stop exist for the airgapped frozen fleet after a host
+// reboot, so they must talk ONLY to the P-chain machine itself: no upstream
+// API, no reinstall, no other host.
+func TestPChainStartAndStopTouchOnlyThePChainMachine(t *testing.T) {
+	for name, environment := range map[string]config.FleetEnvironment{
+		"system": {SSHUser: "ubuntu", SSHKeyPath: "/key"},
+		"user":   {SSHUser: "op", SSHKeyPath: "/key", RemoteDir: "/home/op/kit"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			inv := pchainLifecycleInventory(t, environment)
+
+			runner := &recordingRunner{}
+			deployer := &Deployer{root: t.TempDir(), out: io.Discard, runner: runner}
+			if err := deployer.startPChain(context.Background(), inv); err != nil {
+				t.Fatal(err)
+			}
+			if len(runner.runs) != 2 {
+				t.Fatalf("start commands = %d, want start plus liveness check: %v", len(runner.runs), runner.runs)
+			}
+			for _, command := range runner.runs {
+				joined := strings.Join(command, " ")
+				if !strings.Contains(joined, "@pchain") {
+					t.Fatalf("start reached a machine other than the P-chain node: %q", joined)
+				}
+				if environment.RemoteDir != "" && (strings.Contains(joined, "sudo") || strings.Contains(joined, "systemctl")) {
+					t.Fatalf("user-level pchain start reaches for root: %q", joined)
+				}
+			}
+
+			runner = &recordingRunner{}
+			deployer = &Deployer{root: t.TempDir(), out: io.Discard, runner: runner}
+			if err := deployer.stopPChain(context.Background(), inv); err != nil {
+				t.Fatal(err)
+			}
+			if len(runner.runs) != 1 {
+				t.Fatalf("stop commands = %d, want 1: %v", len(runner.runs), runner.runs)
+			}
+			joined := strings.Join(runner.runs[0], " ")
+			if !strings.Contains(joined, "@pchain") {
+				t.Fatalf("stop reached a machine other than the P-chain node: %q", joined)
+			}
+			if strings.Contains(joined, "SIGKILL") && environment.RemoteDir == "" {
+				t.Fatalf("pchain stop is not graceful: %q", joined)
+			}
+			if strings.Contains(joined, "rm -rf") {
+				t.Fatalf("pchain stop deleted something: %q", joined)
+			}
+		})
+	}
+}
+
+// A failed liveness check must be an error: "started" with a dead process is
+// how a reboot recovery silently fails.
+func TestPChainStartFailsWhenTheProcessDoesNotStayUp(t *testing.T) {
+	inv := pchainLifecycleInventory(t, config.FleetEnvironment{SSHUser: "ubuntu", SSHKeyPath: "/key"})
+	runner := &recordingRunner{runErrors: map[int]error{1: errors.New("inactive")}}
+	deployer := &Deployer{root: t.TempDir(), out: io.Discard, runner: runner}
+	err := deployer.startPChain(context.Background(), inv)
+	if err == nil || !strings.Contains(err.Error(), "did not stay up") {
+		t.Fatalf("start error = %v, want a liveness failure", err)
+	}
+}
+
+func TestSelectorsNameHonoursCommaSplitting(t *testing.T) {
+	if !selectorsName([]string{"1,13"}, 13) || !selectorsName([]string{" 13 "}, 13) {
+		t.Fatal("selectorsName missed the P-chain number")
+	}
+	if selectorsName([]string{"1,12"}, 13) || selectorsName([]string{"dc=A"}, 13) {
+		t.Fatal("selectorsName matched selectors that do not name the node")
+	}
+}
+
 // destroy deletes chain data, so it must never have a bare form meaning
 // "every node". The error must arrive even when the inventory cannot be read,
 // because the whole-fleet hint is a convenience, not a precondition.
