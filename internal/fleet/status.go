@@ -146,6 +146,7 @@ type statusPChainProbe struct {
 	upstreamHeight uint64
 	created        bool
 	setsOK         bool
+	setsSource     string
 	mainVisible    bool
 	managerVisible bool
 	mainWeights    map[string]uint64
@@ -314,6 +315,9 @@ func (d *Deployer) Status(ctx context.Context) error {
 	// "why does this node list four peers" is to read node.json on every box.
 	fmt.Fprintf(d.out, "ADDRESS BOOK  %d of %d L1 machines intended up\n\n", intendedUpCount(rows), len(rows))
 	fmt.Fprint(d.out, renderStatusPChain(pchainStatusRow(pchain)))
+	if pchain.setsSource != "" {
+		fmt.Fprintf(d.out, "validator sets and weights: %s\n", pchain.setsSource)
+	}
 	if pchain.watchHint != "" {
 		fmt.Fprintln(d.out, pchain.watchHint)
 	}
@@ -406,53 +410,44 @@ func (d *Deployer) probePChainStatus(ctx context.Context, inv inventory, remote 
 		mainWeights:  map[string]uint64{},
 	}
 
-	// Validator sets and weights are network facts that a follow-only node can
-	// never answer, so they come from the public API and stay observable even
-	// when the P-chain machine is down.
-	var public *platformvm.Client
-	network, err := config.LoadNetworkEnvironment(filepath.Join(d.root, ".env"))
-	if err != nil {
-		probe.failures = append(probe.failures, fmt.Sprintf("P-chain public API: %v", err))
-	} else {
-		public = platformvm.NewClient(network.PChainAPI)
-		if inv.created {
-			d.probePublicValidatorSets(ctx, inv, public, network.PChainAPI, &probe)
-		}
-	}
-
+	// The deployed mode is read BEFORE any public API call, because the mode
+	// decides whether the public API applies at all: a frozen fleet is
+	// airgapped by design, and asking an unreachable upstream reported its
+	// normal steady state as unhealthy (reported 2026-08-05, status used as an
+	// automated health probe).
 	target, err := inv.target(inv.pchain)
 	if err != nil {
 		probe.failures = append(probe.failures, fmt.Sprintf("P-chain node %d: %v", inv.pchain.Number, err))
+		d.probePublicPChain(ctx, inv, &probe, false)
 		return probe
 	}
 	present, active, enabled, err := d.probeService(ctx, remote, target)
 	if err != nil {
 		probe.failures = append(probe.failures, fmt.Sprintf("P-chain node %d (%s): read service state: %v", inv.pchain.Number, inv.pchain.Host, err))
+		d.probePublicPChain(ctx, inv, &probe, false)
 		return probe
 	}
 	probe.serviceState = collapseServiceState(present, active, enabled)
+
+	if probe.serviceState == statusUp {
+		mode, err := d.probePChainMode(ctx, remote, target)
+		if err != nil {
+			probe.failures = append(probe.failures, fmt.Sprintf("P-chain node %d (%s): read deployed bootstrap mode: %v", inv.pchain.Number, inv.pchain.Host, err))
+		}
+		probe.mode = mode
+	}
+
+	// Validator sets and weights are network facts that a follow-only node can
+	// never answer. A frozen fleet answers them from the deployment records; every
+	// other state asks the public API, which also stays the fallback when the
+	// machine is down and the mode is unknowable.
+	if probe.mode == frozenMode {
+		recordedValidatorSets(inv, &probe)
+	} else {
+		d.probePublicPChain(ctx, inv, &probe, probe.mode == followMode)
+	}
 	if probe.serviceState != statusUp {
 		return probe
-	}
-
-	mode, err := d.probePChainMode(ctx, remote, target)
-	if err != nil {
-		probe.failures = append(probe.failures, fmt.Sprintf("P-chain node %d (%s): read deployed bootstrap mode: %v", inv.pchain.Number, inv.pchain.Host, err))
-	}
-	probe.mode = mode
-
-	if probe.mode == followMode && public != nil {
-		// Sampled immediately before the local read so the comparison can never
-		// call a lagging node synced.
-		upstreamCtx, cancel := context.WithTimeout(ctx, d.http.Timeout)
-		height, err := public.GetHeight(upstreamCtx)
-		cancel()
-		if err != nil {
-			probe.failures = append(probe.failures, fmt.Sprintf("P-chain upstream %s: read height: %v", network.PChainAPI, err))
-		} else {
-			probe.upstreamOK = true
-			probe.upstreamHeight = height
-		}
 	}
 
 	observation, err := d.observePChain(ctx, remote, target)
@@ -474,6 +469,57 @@ func (d *Deployer) probePChainStatus(ctx context.Context, inv inventory, remote 
 		probe.watchHint = pchainWatchHint(inv.environment, target)
 	}
 	return probe
+}
+
+// probePublicPChain reads everything status wants from the public P-chain
+// API: the validator sets whenever the chain exists, plus the upstream height
+// when asked (only following mode compares against it).
+func (d *Deployer) probePublicPChain(ctx context.Context, inv inventory, probe *statusPChainProbe, readHeight bool) {
+	network, err := config.LoadNetworkEnvironment(filepath.Join(d.root, ".env"))
+	if err != nil {
+		probe.failures = append(probe.failures, fmt.Sprintf("P-chain public API: %v", err))
+		return
+	}
+	public := platformvm.NewClient(network.PChainAPI)
+	if inv.created {
+		d.probePublicValidatorSets(ctx, inv, public, network.PChainAPI, probe)
+	}
+	if !readHeight {
+		return
+	}
+	// Sampled immediately before the local read so the comparison can never
+	// call a lagging node synced.
+	upstreamCtx, cancel := context.WithTimeout(ctx, d.http.Timeout)
+	height, err := public.GetHeight(upstreamCtx)
+	cancel()
+	if err != nil {
+		probe.failures = append(probe.failures, fmt.Sprintf("P-chain upstream %s: read height: %v", network.PChainAPI, err))
+	} else {
+		probe.upstreamOK = true
+		probe.upstreamHeight = height
+	}
+}
+
+// recordedValidatorSets answers the validator-set questions from the
+// deployment records instead of the public API. A frozen fleet's sets are
+// immutable: they are whatever the archive froze, and freezing was gated on
+// both sets being publicly visible. The recorded weights are the creation
+// weights, which match the archive unless a weight was changed on the live
+// P-chain between creation and freezing, a sequence the kit's workflow does
+// not produce.
+func recordedValidatorSets(inv inventory, probe *statusPChainProbe) {
+	if !inv.created {
+		return
+	}
+	probe.setsOK = true
+	probe.setsSource = "deployment records (frozen fleet; upstream API not consulted)"
+	probe.mainVisible = true
+	probe.managerVisible = true
+	for _, node := range inv.public.Nodes {
+		if node.Role == config.RoleValidator {
+			probe.mainWeights[node.NodeID] = node.Weight
+		}
+	}
 }
 
 // probePublicValidatorSets fills in everything the public P-chain API knows
