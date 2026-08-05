@@ -253,10 +253,26 @@ mean, the probability of that sequence collapses. This is why 40/60 and
 20/30 crawl instead of a clean halt: they clear the gate by a small margin
 and lose the sequence. Both effects push in the same direction.
 
-## 5. Open item
+## 5. Soak result (2026-08-05) and the open item it leaves
 
-A 60-second run cannot prove the absence of forks. The 11/11 fork needed
-minutes of sustained load to appear. Nothing forked at 0.60 or 0.633, but
-each observation covers approximately one minute. A 30 to 60 minute soak
-at k=60/31/38, with `./tools/forkcheck.sh` at intervals, is still
-necessary before full trust.
+A 60-second run cannot prove the absence of forks, so we ran the soak: 45
+minutes at 4000 rps offered, k=60/31/38/12, full fleet, fresh genesis,
+data on NVMe. `tools/forkcheck.sh` ran every 5 minutes and once after the
+load stopped.
+
+- **No fork.** All ten checks returned one hash. The engine counters
+  agree: `reorg_exec +0`, `bad_blocks +0`, over 46992 blocks and
+  approximately 9.0M accepted transactions.
+- Throughput was not constant. The first ~15 minutes held the full 4000
+  TPS at p50 62 to 67ms with zero resubmits. The block cadence then
+  degraded in steps: ~2870 mined TPS at minute ~20, ~2020 at minute ~45,
+  with p50 near 900ms and the in-flight cap binding. The chain stayed
+  self-consistent through the slowdown, and transactions per block grew
+  as the cadence fell.
+
+The consensus question is answered: this configuration does not fork
+under sustained 2x overload. The new open item is the slowdown: sustained
+maximum-rate load degrades block cadence over tens of minutes on this
+shape. Characterize what grows (state, trie commits, or the txpool replay
+path; the soak counted 413662 replays) before quoting a sustained-rate
+number beyond ~15 minutes.
