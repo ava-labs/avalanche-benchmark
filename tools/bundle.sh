@@ -35,7 +35,7 @@ cp README.md nodes.ini nodes.ini.example node-config.json \
    chain-config.json chain-config-rpc.json chain-config-archive.json \
    "$STAGE/$NAME/"
 for optional in oracle-genesis-template.json subnet-config-oracle.json \
-                CONSENSUS-TUNING.md HANDOVER.md; do
+                CONSENSUS-TUNING.md; do
   test -f "$optional" && cp "$optional" "$STAGE/$NAME/"
 done
 cp -R playbooks "$STAGE/$NAME/playbooks"
