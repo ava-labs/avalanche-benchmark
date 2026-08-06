@@ -42,10 +42,10 @@ validators. It needs the funding key and a reachable, not frozen,
 P-chain. Use it in the `follow` mode only. Do not use it on an isolated
 frozen fleet.
 
-## Known limit
+## Monitoring after a place
 
-The Prometheus scrape configuration is written at deploy time. After a
-`place`, the machine has a new identity letter, but the scrape label
-keeps the old letter. The label stays wrong until you write the scrape
-configuration again. The weight-per-machine panels come from the weight
-exporter and stay correct.
+The scrape targets label every node by its machine slot number, not by
+its identity letter (see playbooks/06-monitoring.md). A `place` moves an
+identity between machines; it changes no slot, host, or port. The scrape
+labels therefore stay correct. The identity movement itself shows in the
+weight exporter's `identity` label on the weight-per-machine panels.
