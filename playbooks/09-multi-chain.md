@@ -26,7 +26,7 @@ Rules:
   `genesis-template.json`, `subnet-config.json`, and the node config
   variants `chain-config.json`, `chain-config-rpc.json`, and
   `chain-config-archive.json`. A file that is absent falls back to the
-  root default. Deploy picks the variant by node role: `rpc` and
+  shared default in `chains/default/`. Deploy picks the variant by node role: `rpc` and
   `oracle-rpc` get the rpc variant, `archive` gets the archive variant,
   every other role gets `chain-config.json`. The oracle chain follows the
   same rule under `chains/oracle/`.

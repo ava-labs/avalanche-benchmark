@@ -66,13 +66,7 @@ PACK_FILES := \
 	bin/ \
 	README.md \
 	.env.example \
-	nodes.ini.example \
-	genesis-template.json \
-	node-config.json \
-	chain-config.json \
-	chain-config-rpc.json \
-	chain-config-archive.json \
-	subnet-config.json \
+	examples/ \
 	chains/ \
 	monitoring/grafana-datasources.yml \
 	monitoring/dashboards/ \

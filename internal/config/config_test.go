@@ -280,6 +280,7 @@ func TestLoadNodesChainErrors(t *testing.T) {
 		"chain name too long":       append(append([]string{}, base...), "7 host=t1 role=validator chain=aaaaaaaaaaaaaaaaaaaaa"),
 		"reserved oracle name":      append(append([]string{}, base...), "7 host=t1 role=validator chain=oracle"),
 		"reserved management name":  append(append([]string{}, base...), "7 host=t1 role=validator chain=management"),
+		"reserved default name":     append(append([]string{}, base...), "7 host=t1 role=validator chain=default"),
 		"oracle role other chain":   append(append([]string{}, base...), "7 host=o1 role=oracle-validator chain=trading", "8 host=o2 role=oracle-rpc"),
 		"pchain with chain":         []string{"1 host=v1 role=validator", "2 host=v2 role=validator", "3 host=v3 role=validator", "4 host=v4 role=validator", "5 host=r1 role=rpc", "6 host=p1 role=pchain chain=main"},
 		"chain without a validator": append(append([]string{}, base...), "7 host=t1 role=rpc chain=trading"),

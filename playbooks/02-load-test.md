@@ -36,7 +36,7 @@ milliseconds on free CPU cores. The same round costs approximately 9.5
 milliseconds on busy cores. Disk fsync latency sets the lower limit for
 block times.
 
-The consensus parameters are the second limit. Read CONSENSUS-TUNING.md
+The consensus parameters are the second limit. Read docs/CONSENSUS-TUNING.md
 before you change `k` or the alpha values. The values in
-`subnet-config.json` are safe. We selected them after we saw a
+`chains/default/subnet-config.json` are safe. We selected them after we saw a
 finalization fork with more aggressive values.

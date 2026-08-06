@@ -430,6 +430,9 @@ func LoadNodes(path string) ([]Node, error) {
 			if chain == "management" {
 				return nil, fmt.Errorf("%s:%d: chain name %q is reserved for the management chain", path, lineNumber, chain)
 			}
+			if chain == "default" {
+				return nil, fmt.Errorf("%s:%d: chain name %q is reserved for the shared defaults at chains/default/", path, lineNumber, chain)
+			}
 		}
 		var weight uint64
 		if raw, present := values["weight"]; present {

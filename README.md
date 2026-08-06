@@ -10,7 +10,7 @@ staking identities (key swap), or it moves stake weight. Both operate on one
 deployment. No step creates a chain again.
 
 This document is the operator manual. For the consensus parameters, see
-**[CONSENSUS-TUNING.md](CONSENSUS-TUNING.md)**.
+**[docs/CONSENSUS-TUNING.md](docs/CONSENSUS-TUNING.md)**.
 
 ## What it needs
 
@@ -43,9 +43,9 @@ One deployment can run several L1s. One management committee, one P-chain
 node, and one control machine cover every chain. Per-chain configuration
 lives in `chains/<name>/` (`genesis-template.json`, `subnet-config.json`,
 and the optional node config variants `chain-config.json`,
-`chain-config-rpc.json`, `chain-config-archive.json`); a chain without a
-file uses the root default. The oracle chain's files ship in
-`chains/oracle/`.
+`chain-config-rpc.json`, `chain-config-archive.json`, `node-config.json`).
+The shared defaults live in `chains/default/`; a chain without a file uses
+the default. The oracle chain's files ship in `chains/oracle/`.
 
 Operational procedures are in `playbooks/`: provision, load test, failover
 drill, validator swap, rootless install, monitoring, the connected P-chain
@@ -67,7 +67,7 @@ The P-chain node has two modes, and every deployment picks one:
 ### Fresh chain on a fresh fleet
 
 ```bash
-cp nodes.ini.example nodes.ini    # edit host= lines, exactly one role=pchain
+cp examples/nodes.ini.example nodes.ini   # edit host= lines, exactly one role=pchain
 cp .env.example .env              # NETWORK, PCHAIN_API, FUNDING_PRIVATE_KEY, SSH_*
 go run ./cmd/l1 address           # fund the printed P-chain address
 go run ./cmd/l1 create            # generates deployment/ if absent, then every chain
@@ -158,7 +158,8 @@ and RPC node bootstraps from the P-chain node.
 | `deployment/oracle-feeder.key` | `keygen` | EVM key funded on every chain, used by `oracle feed`/`relay` |
 | `deployment/upgrades.json` | `fleet upgrade` | the main chain's append-only upgrade history; every deploy installs it |
 | `deployment/upgrades-<name>.json` | `fleet upgrade --chain <name>` | the named chain's upgrade history, same rules |
-| `chains/<name>/` | operator | per-chain `genesis-template.json` (required beyond one chain: each chain needs its own chainId), optional `subnet-config.json`, and optional `chain-config.json`, `chain-config-rpc.json`, `chain-config-archive.json`; an absent file means the root default. The repository ships the oracle chain's files in `chains/oracle/`. |
+| `chains/default/` | repository | the shared defaults: `genesis-template.json`, `subnet-config.json`, `node-config.json`, and the `chain-config*.json` variants. Every chain without its own file uses these. |
+| `chains/<name>/` | operator | per-chain overrides of any default (a `genesis-template.json` with its own chainId is required beyond one chain). The repository ships the oracle chain's files in `chains/oracle/`. |
 | `pchain.tar.gz` | `pchain archive` | validated P-chain `db/` snapshot |
 
 `deployment/` contains private keys. It is never in the pack artifact. It is
@@ -605,7 +606,7 @@ relayer is the demo equivalent for isolated networks.
 The consensus parameters are a fixed benchmark input. They are identical
 for every topology, including a single validator. Fleet commands never
 derive consensus settings from the inventory. The shipped values are in
-`subnet-config.json`:
+`chains/default/subnet-config.json`:
 
 ```
 k=60  alphaPreference=31  alphaConfidence=38  beta=12  proposerWindow=100ms
@@ -620,10 +621,10 @@ Preference can change cheaply. Confidence feeds finality and demands the
 stronger majority. The ratio `alphaConfidence/k = 0.633` also clears the
 connected-stake query gate with one heavy validator down. The full
 derivation and the measurements are in
-[CONSENSUS-TUNING.md](CONSENSUS-TUNING.md). Run `tools/forkcheck.sh` after
+[docs/CONSENSUS-TUNING.md](docs/CONSENSUS-TUNING.md). Run `tools/forkcheck.sh` after
 every load run.
 
-The block cadence is 25ms: `min-delay-target` in `chain-config.json`, and
+The block cadence is 25ms: `min-delay-target` in `chains/default/chain-config.json`, and
 `initialMinDelayMS` in the genesis. The genesis is stamped with the
 creation time. A genesis stamped `0` would sit before the network's Granite
 activation. Granite would then be inactive at block zero, the chain would

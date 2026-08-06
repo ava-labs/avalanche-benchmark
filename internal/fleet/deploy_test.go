@@ -957,6 +957,42 @@ func TestRenderNodeResolvesPerChainChainConfig(t *testing.T) {
 	}
 }
 
+// Every shipped configuration file resolves through three layers: the
+// chain's own file, the shared default at chains/default/, then the legacy
+// root name. Old deployment roots with only root files must keep working.
+func TestShippedPathResolvesThroughChainsDefault(t *testing.T) {
+	root := t.TempDir()
+
+	legacy := filepath.Join(root, "node-config.json")
+	if got := shippedPath(root, "trading", "node-config.json"); got != legacy {
+		t.Fatalf("shippedPath = %s, want legacy root %s on a bare root", got, legacy)
+	}
+
+	fallback := filepath.Join(root, "chains", "default", "node-config.json")
+	if err := os.MkdirAll(filepath.Dir(fallback), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, fallback, `{}`)
+	if got := shippedPath(root, "trading", "node-config.json"); got != fallback {
+		t.Fatalf("shippedPath = %s, want shared default %s over the legacy root", got, fallback)
+	}
+	if got := shippedPath(root, "", "node-config.json"); got != fallback {
+		t.Fatalf("shippedPath = %s, want the pchain node (no chain) to use the default too", got)
+	}
+
+	override := filepath.Join(root, "chains", "trading", "node-config.json")
+	if err := os.MkdirAll(filepath.Dir(override), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, override, `{}`)
+	if got := shippedPath(root, "trading", "node-config.json"); got != override {
+		t.Fatalf("shippedPath = %s, want the chain's own file %s over the default", got, override)
+	}
+	if got := shippedPath(root, "main", "node-config.json"); got != fallback {
+		t.Fatalf("shippedPath = %s, want main untouched by another chain's override", got)
+	}
+}
+
 // The address book must name only machines meant to be up. It doubles as the
 // state-sync beacon set with alpha = count/2 + 1 over the LIST, so listing a
 // machine that is down raises the bar without adding anyone who can clear it:

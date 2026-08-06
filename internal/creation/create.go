@@ -114,18 +114,26 @@ type walletFactory func(
 	primary.WalletConfig,
 ) (pwallet.Wallet, error)
 
-// chainTemplatePath resolves a chain's genesis template: an override at
-// chains/<name>/genesis-template.json wins, the root template is the
-// default. The repository ships the oracle template at
-// chains/oracle/genesis-template.json; the root oracle-genesis-template.json
-// stays as a legacy fallback for old deployment roots.
+// chainTemplatePath resolves a chain's genesis template in three layers:
+// the chain's own file at chains/<name>/ wins, then the shared default at
+// chains/default/, then the legacy root names for deployment roots that
+// predate the chains/ layout (oracle-genesis-template.json for the oracle
+// chain, genesis-template.json for everything).
 func chainTemplatePath(root, chain string) string {
-	override := filepath.Join(root, "chains", chain, "genesis-template.json")
-	if info, err := os.Stat(override); err == nil && !info.IsDir() {
+	exists := func(path string) bool {
+		info, err := os.Stat(path)
+		return err == nil && !info.IsDir()
+	}
+	if override := filepath.Join(root, "chains", chain, "genesis-template.json"); exists(override) {
 		return override
 	}
+	if fallback := filepath.Join(root, "chains", "default", "genesis-template.json"); exists(fallback) {
+		return fallback
+	}
 	if chain == config.OracleChain {
-		return filepath.Join(root, "oracle-genesis-template.json")
+		if legacy := filepath.Join(root, "oracle-genesis-template.json"); exists(legacy) {
+			return legacy
+		}
 	}
 	return filepath.Join(root, "genesis-template.json")
 }
