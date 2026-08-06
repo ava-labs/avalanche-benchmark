@@ -44,10 +44,12 @@ paths:
 meaning once the app is installed. `oracle feed` checks that the
 aggregator has code and stops with an install pointer when it does not.
 
-The oracle-L1 configuration files (`oracle-genesis-template.json`,
-`subnet-config-oracle.json`) are at the repository root. The kit reads
-them from the deployment root at run time. They belong to this app. They
-move here when the base layer gets a configuration drop-in mechanism.
+The oracle-L1 configuration files live in `chains/oracle/`
+(`genesis-template.json`, `subnet-config.json`), the standard per-chain
+location. The kit reads them from the deployment root at run time. Old
+deployment roots that still carry `oracle-genesis-template.json` and
+`subnet-config-oracle.json` at the root keep working: the root names are
+a legacy fallback.
 
 ## Operation
 

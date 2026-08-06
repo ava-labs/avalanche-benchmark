@@ -34,6 +34,9 @@ cp README.md nodes.ini nodes.ini.example node-config.json \
    genesis-template.json subnet-config.json \
    chain-config.json chain-config-rpc.json chain-config-archive.json \
    "$STAGE/$NAME/"
+# The root oracle file names are a legacy fallback: old deployment roots
+# still carry them. The repository ships the oracle files in chains/oracle/,
+# which the chains/ copy below stages.
 for optional in oracle-genesis-template.json subnet-config-oracle.json \
                 CONSENSUS-TUNING.md; do
   test -f "$optional" && cp "$optional" "$STAGE/$NAME/"

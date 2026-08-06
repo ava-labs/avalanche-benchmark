@@ -208,6 +208,30 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	}
 }
 
+// The repository ships the oracle template at chains/oracle/. The root
+// oracle-genesis-template.json stays as a legacy fallback for old deployment
+// roots, and the chains/oracle/ file wins when both exist.
+func TestChainTemplatePathPrefersChainsOracleOverLegacyRoot(t *testing.T) {
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "oracle-genesis-template.json")
+	if err := os.WriteFile(legacy, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := chainTemplatePath(dir, config.OracleChain); got != legacy {
+		t.Fatalf("chainTemplatePath = %s, want legacy fallback %s", got, legacy)
+	}
+	override := filepath.Join(dir, "chains", "oracle", "genesis-template.json")
+	if err := os.MkdirAll(filepath.Dir(override), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(override, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := chainTemplatePath(dir, config.OracleChain); got != override {
+		t.Fatalf("chainTemplatePath = %s, want override %s", got, override)
+	}
+}
+
 func TestCreateWithOracleRunsManagerOracleMain(t *testing.T) {
 	dir := t.TempDir()
 	template := `{

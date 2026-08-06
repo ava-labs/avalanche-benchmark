@@ -41,8 +41,11 @@ runbook. Apps do not depend on each other. The first app is
 
 One deployment can run several L1s. One management committee, one P-chain
 node, and one control machine cover every chain. Per-chain configuration
-lives in `chains/<name>/` (`genesis-template.json`, `subnet-config.json`);
-a chain without that directory uses the root defaults.
+lives in `chains/<name>/` (`genesis-template.json`, `subnet-config.json`,
+and the optional node config variants `chain-config.json`,
+`chain-config-rpc.json`, `chain-config-archive.json`); a chain without a
+file uses the root default. The oracle chain's files ship in
+`chains/oracle/`.
 
 Operational procedures are in `playbooks/`: provision, load test, failover
 drill, validator swap, rootless install, monitoring, the connected P-chain
@@ -155,7 +158,7 @@ and RPC node bootstraps from the P-chain node.
 | `deployment/oracle-feeder.key` | `keygen` | EVM key funded on every chain, used by `oracle feed`/`relay` |
 | `deployment/upgrades.json` | `fleet upgrade` | the main chain's append-only upgrade history; every deploy installs it |
 | `deployment/upgrades-<name>.json` | `fleet upgrade --chain <name>` | the named chain's upgrade history, same rules |
-| `chains/<name>/` | operator | per-chain `genesis-template.json` (required beyond one chain: each chain needs its own chainId) and optional `subnet-config.json`; absent means the root defaults |
+| `chains/<name>/` | operator | per-chain `genesis-template.json` (required beyond one chain: each chain needs its own chainId), optional `subnet-config.json`, and optional `chain-config.json`, `chain-config-rpc.json`, `chain-config-archive.json`; an absent file means the root default. The repository ships the oracle chain's files in `chains/oracle/`. |
 | `pchain.tar.gz` | `pchain archive` | validated P-chain `db/` snapshot |
 
 `deployment/` contains private keys. It is never in the pack artifact. It is
@@ -187,7 +190,7 @@ never committed.
 | Co-location | several nodes can share one machine. Ports are positional by node order on that machine: 9650/9651, 9652/9653, 9654/9655. |
 | Weights are not inventory | the on-chain weight is the only truth |
 | `archive` | an RPC-shaped main-L1 node with pruning and state-sync off (`chain-config-archive.json`). It must exist from genesis, because an archive cannot state-sync. A single archive prints a warning. Deploy it like any other node. |
-| Oracle roles come together | `oracle-validator` and `oracle-rpc` declare the optional oracle L1 (`subnet-config-oracle.json`, all weights 1000, no key swaps). Omit both for no oracle chain. Each role requires the other. These roles always serve `chain=oracle`. |
+| Oracle roles come together | `oracle-validator` and `oracle-rpc` declare the optional oracle L1 (`chains/oracle/subnet-config.json`, all weights 1000, no key swaps). Omit both for no oracle chain. Each role requires the other. These roles always serve `chain=oracle`. |
 
 ## .env
 

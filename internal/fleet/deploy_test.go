@@ -914,6 +914,49 @@ func TestRenderNodeResolvesPerChainSubnetConfig(t *testing.T) {
 	}
 }
 
+// A chain can carry its own EVM chain configuration variants under
+// chains/<name>/; a chain without one shares the root variant.
+func TestRenderNodeResolvesPerChainChainConfig(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, filepath.Join(root, "node-config.json"), `{}`)
+	writeTestFile(t, filepath.Join(root, "chain-config.json"), `{"variant":"root"}`)
+	writeTestFile(t, filepath.Join(root, "chain-config-rpc.json"), `{"variant":"root-rpc"}`)
+	writeTestFile(t, filepath.Join(root, "subnet-config.json"), `{}`)
+	if err := os.MkdirAll(filepath.Join(root, "chains", "trading"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, filepath.Join(root, "chains", "trading", "chain-config-rpc.json"), `{"variant":"trading-rpc"}`)
+	environment := config.FleetEnvironment{Network: "fuji", SSHUser: "op"}
+
+	for name, testCase := range map[string]struct {
+		node config.Node
+		want string
+	}{
+		"trading rpc uses its override":        {config.Node{Number: 7, Role: config.RoleRPC, Chain: "trading"}, `{"variant":"trading-rpc"}`},
+		"main rpc falls back to the root":      {config.Node{Number: 5, Role: config.RoleRPC, Chain: "main"}, `{"variant":"root-rpc"}`},
+		"trading validator falls back to root": {config.Node{Number: 8, Role: config.RoleValidator, Chain: "trading"}, `{"variant":"root"}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			renderDir := filepath.Join(t.TempDir(), "render")
+			if err := renderNode(
+				renderDir, root, environment, testCase.node,
+				creation.PublicNode{Identity: "a", Role: testCase.node.Role},
+				ids.GenerateTestID(), ids.GenerateTestID(), [2]int{9650, 9651},
+				followMode, "pchain:9651", "NodeID-pchain", "", "",
+			); err != nil {
+				t.Fatal(err)
+			}
+			chain, err := os.ReadFile(filepath.Join(renderDir, "chain.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(chain) != testCase.want {
+				t.Fatalf("chain.json = %s, want %s", chain, testCase.want)
+			}
+		})
+	}
+}
+
 // The address book must name only machines meant to be up. It doubles as the
 // state-sync beacon set with alpha = count/2 + 1 over the LIST, so listing a
 // machine that is down raises the bar without adding anyone who can clear it:

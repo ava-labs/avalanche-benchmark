@@ -21,8 +21,13 @@ Rules:
   chain by node number start at 100000, the rest at 1000.
 - The names `oracle` and `management` are reserved.
 - Per-chain configuration goes in `chains/<name>/`:
-  `genesis-template.json` and `subnet-config.json`. A file that is absent
-  falls back to the root default.
+  `genesis-template.json`, `subnet-config.json`, and the node config
+  variants `chain-config.json`, `chain-config-rpc.json`, and
+  `chain-config-archive.json`. A file that is absent falls back to the
+  root default. Deploy picks the variant by node role: `rpc` and
+  `oracle-rpc` get the rpc variant, `archive` gets the archive variant,
+  every other role gets `chain-config.json`. The oracle chain follows the
+  same rule under `chains/oracle/`.
 - Give each chain a `genesis-template.json` with its own `chainId`. The
   genesis funds the same addresses on every chain, so a shared chainId
   lets a transaction replay across chains. `l1 create` refuses duplicate

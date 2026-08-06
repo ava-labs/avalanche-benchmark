@@ -68,13 +68,12 @@ PACK_FILES := \
 	.env.example \
 	nodes.ini.example \
 	genesis-template.json \
-	oracle-genesis-template.json \
 	node-config.json \
 	chain-config.json \
 	chain-config-rpc.json \
 	chain-config-archive.json \
 	subnet-config.json \
-	subnet-config-oracle.json \
+	chains/ \
 	monitoring/grafana-datasources.yml \
 	monitoring/dashboards/ \
 	apps/settlement-feed/dashboards/

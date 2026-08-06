@@ -113,7 +113,9 @@ func (p deployment) l1For(node config.Node) (ids.ID, ids.ID) {
 
 // subnetConfigPath resolves a chain's subnet configuration: an override at
 // chains/<name>/subnet-config.json wins; the root default is
-// subnet-config.json, or subnet-config-oracle.json for the oracle chain.
+// subnet-config.json. The repository ships the oracle file at
+// chains/oracle/subnet-config.json; the root subnet-config-oracle.json stays
+// as a legacy fallback for old deployment roots.
 func subnetConfigPath(root, chain string) string {
 	override := filepath.Join(root, "chains", chain, "subnet-config.json")
 	if info, err := os.Stat(override); err == nil && !info.IsDir() {
@@ -123,6 +125,31 @@ func subnetConfigPath(root, chain string) string {
 		return filepath.Join(root, "subnet-config-oracle.json")
 	}
 	return filepath.Join(root, "subnet-config.json")
+}
+
+// chainConfigVariant picks the EVM chain configuration file a role runs
+// with: RPC nodes serve the API surface, archives keep full state, every
+// other role runs the lean validator configuration.
+func chainConfigVariant(role config.Role) string {
+	switch role {
+	case config.RoleRPC, config.RoleOracleRPC:
+		return "chain-config-rpc.json"
+	case config.RoleArchive:
+		return "chain-config-archive.json"
+	default:
+		return "chain-config.json"
+	}
+}
+
+// chainConfigPath resolves one variant of the EVM chain configuration: an
+// override at chains/<name>/<variant> wins; the root <variant> is the
+// shared default.
+func chainConfigPath(root, chain, variant string) string {
+	override := filepath.Join(root, "chains", chain, variant)
+	if info, err := os.Stat(override); err == nil && !info.IsDir() {
+		return override
+	}
+	return filepath.Join(root, variant)
 }
 
 type nodeDeployment struct {
@@ -590,29 +617,31 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 		chainIDs[chain] = chainID
 		subnetIDs[chain] = subnetID
 	}
-	hasArchive := false
-	for _, node := range nodes {
-		hasArchive = hasArchive || node.Role == config.RoleArchive
-	}
-
 	requiredFiles := []string{
 		filepath.Join(d.root, "bin", "avalanchego"),
 		filepath.Join(d.root, "node-config.json"),
 	}
 	if includeL1 {
-		requiredFiles = append(requiredFiles,
-			filepath.Join(d.root, "bin", pluginID),
-			filepath.Join(d.root, "chain-config.json"),
-			filepath.Join(d.root, "chain-config-rpc.json"),
-		)
+		requiredFiles = append(requiredFiles, filepath.Join(d.root, "bin", pluginID))
 		// Every declared chain needs its subnet configuration; the resolved
 		// path may be a shared root default, in which case one file covers
 		// several chains.
 		for _, chain := range chains {
 			requiredFiles = append(requiredFiles, subnetConfigPath(d.root, chain))
 		}
-		if hasArchive {
-			requiredFiles = append(requiredFiles, filepath.Join(d.root, "chain-config-archive.json"))
+		// Every L1 node needs its EVM chain configuration variant, resolved
+		// the same way renderNode resolves it: a per-chain override wins,
+		// the root file is the shared default.
+		seenChainConfigs := make(map[string]bool)
+		for _, node := range nodes {
+			if node.Role == config.RolePChain {
+				continue
+			}
+			path := chainConfigPath(d.root, chainOf(node), chainConfigVariant(node.Role))
+			if !seenChainConfigs[path] {
+				seenChainConfigs[path] = true
+				requiredFiles = append(requiredFiles, path)
+			}
 		}
 	}
 	for _, path := range requiredFiles {
@@ -964,15 +993,9 @@ func renderNode(
 		return err
 	}
 	if node.Role != config.RolePChain {
-		chainConfig := "chain-config.json"
-		switch node.Role {
-		case config.RoleRPC, config.RoleOracleRPC:
-			chainConfig = "chain-config-rpc.json"
-		case config.RoleArchive:
-			chainConfig = "chain-config-archive.json"
-		}
+		chainConfig := chainConfigVariant(node.Role)
 		for _, copyPair := range [][2]string{
-			{filepath.Join(root, chainConfig), filepath.Join(renderDir, "chain.json")},
+			{chainConfigPath(root, chainOf(node), chainConfig), filepath.Join(renderDir, "chain.json")},
 			{subnetConfigPath(root, chainOf(node)), filepath.Join(renderDir, "subnet.json")},
 		} {
 			contents, err := os.ReadFile(copyPair[0])

@@ -116,7 +116,9 @@ type walletFactory func(
 
 // chainTemplatePath resolves a chain's genesis template: an override at
 // chains/<name>/genesis-template.json wins, the root template is the
-// default. The oracle chain's root default keeps its dedicated file.
+// default. The repository ships the oracle template at
+// chains/oracle/genesis-template.json; the root oracle-genesis-template.json
+// stays as a legacy fallback for old deployment roots.
 func chainTemplatePath(root, chain string) string {
 	override := filepath.Join(root, "chains", chain, "genesis-template.json")
 	if info, err := os.Stat(override); err == nil && !info.IsDir() {
