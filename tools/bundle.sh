@@ -38,7 +38,11 @@ for optional in oracle-genesis-template.json subnet-config-oracle.json \
                 CONSENSUS-TUNING.md; do
   test -f "$optional" && cp "$optional" "$STAGE/$NAME/"
 done
+# Per-chain configuration: a multi-chain deployment cannot redeploy or
+# re-create without its chains/<name>/ templates.
+test -d chains && cp -R chains "$STAGE/$NAME/chains"
 cp -R playbooks "$STAGE/$NAME/playbooks"
+cp -R examples "$STAGE/$NAME/examples"
 mkdir -p "$STAGE/$NAME/monitoring"
 cp monitoring/grafana-datasources.yml "$STAGE/$NAME/monitoring/"
 cp -R monitoring/dashboards "$STAGE/$NAME/monitoring/dashboards"

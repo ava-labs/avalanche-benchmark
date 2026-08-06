@@ -1,15 +1,23 @@
 #!/usr/bin/env bash
-# Compare one block hash across every L1 node. One distinct hash means no
-# fork. Run this after every load run: TPS cannot see a fork, because a
-# minority branch changes no throughput number.
+# Compare one block hash across every node of one chain. One distinct hash
+# means no fork. Run this after every load run: TPS cannot see a fork,
+# because a minority branch changes no throughput number.
 #
-# The check reads eth_blockNumber from every main-L1 node, takes the
+# Usage: forkcheck.sh [chain]   (default: main)
+#
+# The check reads eth_blockNumber from every node of the chain, takes the
 # minimum, and compares the block hash at (minimum - 5) on every node.
 # Run it from the deployment root (it reads nodes.ini and network.env).
 set -euo pipefail
 
-CHAIN_ID="$(grep '^CHAIN_ID=' deployment/network.env | cut -d= -f2)"
-test -n "$CHAIN_ID" || { echo "forkcheck: no CHAIN_ID in deployment/network.env" >&2; exit 1; }
+CHAIN="${1:-main}"
+case "$CHAIN" in
+  main) KEY="CHAIN_ID" ;;
+  oracle) KEY="ORACLE_CHAIN_ID" ;;
+  *) KEY="CHAIN_$(printf '%s' "$CHAIN" | tr 'a-z-' 'A-Z_')_ID" ;;
+esac
+CHAIN_ID="$(grep "^$KEY=" deployment/network.env | cut -d= -f2)"
+test -n "$CHAIN_ID" || { echo "forkcheck: no $KEY in deployment/network.env" >&2; exit 1; }
 
 rpc() { # rpc <host> <port> <method> <params-json>
   curl -sf -m 10 -H 'Content-Type: application/json' \
@@ -17,21 +25,26 @@ rpc() { # rpc <host> <port> <method> <params-json>
     "http://$1:$2/ext/bc/$CHAIN_ID/rpc" | sed -E 's/.*"result":"?([^",}]*)"?.*/\1/'
 }
 
-# Build "<number> <host> <port>" for every main-L1 node. Ports are
-# positional per host, in inventory order, and the pchain and oracle nodes
-# are skipped after their port slot is counted.
-targets="$(awk '
+# Build "<number> <host> <port>" for every node of the chain. Ports are
+# positional per host, in inventory order, and every other node is skipped
+# after its port slot is counted. Plain roles default to the main chain;
+# the oracle roles always serve the oracle chain.
+targets="$(awk -v want="$CHAIN" '
   /^[[:space:]]*#/ || NF == 0 { next }
   {
-    number = $1; host = ""; role = ""
+    number = $1; host = ""; role = ""; chain = ""
     for (i = 2; i <= NF; i++) {
       if ($i ~ /^host=/) { host = substr($i, 6) }
       if ($i ~ /^role=/) { role = substr($i, 6) }
+      if ($i ~ /^chain=/) { chain = substr($i, 7) }
     }
     port = 9650 + 2 * seen[host]; seen[host]++
+    effective = ""
     if (role == "validator" || role == "rpc" || role == "archive") {
-      print number, host, port
+      effective = (chain == "" ? "main" : chain)
     }
+    if (role == "oracle-validator" || role == "oracle-rpc") { effective = "oracle" }
+    if (effective == want) { print number, host, port }
   }' nodes.ini)"
 
 minimum=""
