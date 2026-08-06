@@ -1,0 +1,66 @@
+# App: settlement-feed
+
+This app is a Chainlink-compatible price feed with an example settlement
+consumer. It runs on top of the base layer's L1. It is the first app in
+the base-plus-apps layout. The app is self-contained. It does not depend
+on any other app. Everything specific to this app is in this directory.
+
+## Contents
+
+- `contracts/`: the Solidity sources. `PriceAggregator` stores the rounds
+  from one authorized publisher. `PriceFeedProxy` is the stable consumer
+  address. It packs the phase into the round ids and swaps aggregators in
+  two steps. Consumers read the `IPriceFeed` interface. Its signatures are
+  identical to Chainlink's `AggregatorV3Interface`, so Chainlink consumers
+  operate without changes. `Settlement.sol` is the example consumer. It
+  permits settlement only when the price is in a band and is fresh.
+- `cmd/oracle`: the off-chain services. `oracle feed <rpc-url>` publishes
+  mock USDC-USD rounds as type-2 transactions and reads them back through
+  the proxy. `oracle relay` is the Warp path for the optional oracle-L1
+  shape.
+- `oraclecontracts/`: the deployed bytecode, embedded for genesis baking.
+  See the package comment. This import is the app's one edge into the
+  base layer.
+- `dashboards/`: the Direct Price Feed Grafana dashboard. Provision it
+  together with the base dashboards.
+- `docs/oracle-consumer.md`: the reference for teams that write consumers
+  against the feed.
+
+## Deployment
+
+Genesis is base layer only; the app never bakes into it. There are two
+paths:
+
+1. The upgrade history. This is THE install path. `./bin/fleet app
+   install settlement-feed` reads `app.json`, runs `./bin/oracle upgrade`
+   to render `upgrade.json` with the app's accounts (the proxy at
+   `0x...FeedF00D`, the aggregator at `0x...FEeDfAce`), and installs it
+   with a rolling restart. The chain is not recreated, and a frozen
+   P-chain stays frozen. See
+   [playbooks/08-install-app.md](../../playbooks/08-install-app.md).
+2. A normal forge deployment, for consumer contracts like `Settlement`,
+   at a new address.
+
+`network.env` records the fixed addresses at creation time; they hold
+meaning once the app is installed. `oracle feed` checks that the
+aggregator has code and stops with an install pointer when it does not.
+
+The oracle-L1 configuration files live in `chains/oracle/`
+(`genesis-template.json`, `subnet-config.json`), the standard per-chain
+location. The kit reads them from the deployment root at run time. Old
+deployment roots that still carry `oracle-genesis-template.json` and
+`subnet-config-oracle.json` at the root keep working: the root names are
+a legacy fallback.
+
+## Operation
+
+```bash
+./bin/oracle feed http://<rpc-host>:9650                      # publish rounds
+./bin/oracle feed http://<rpc-host>:9650 <settlement-address> # also poll the settlement gate
+cd apps/settlement-feed/contracts && forge test               # 21 tests
+```
+
+The feed exports metrics on port 9701: `price`, `onchain_price`,
+`price_delta`, and the confirm latency. A delta of 0 means the on-chain
+value is equal to the last published round. The delta is the staleness
+alarm.

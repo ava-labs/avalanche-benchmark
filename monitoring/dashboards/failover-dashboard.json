@@ -1,80 +1,357 @@
 {
   "annotations": {
-    "list": [
-      {
-        "builtIn": 1,
-        "datasource": {
-          "type": "grafana",
-          "uid": "-- Grafana --"
-        },
-        "enable": true,
-        "hide": true,
-        "iconColor": "rgba(0,211,255,1)",
-        "name": "Annotations & Alerts",
-        "type": "dashboard"
-      }
-    ]
+    "list": []
   },
   "editable": true,
-  "fiscalYearStartMonth": 0,
-  "graphTooltip": 1,
-  "id": null,
-  "links": [],
-  "liveNow": true,
   "panels": [
     {
-      "type": "row",
-      "collapsed": false,
-      "title": "Overview \u2014 Site A vs Site B (overlay)",
+      "id": 1,
+      "type": "stat",
+      "title": "Nodes up",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
       "gridPos": {
-        "h": 1,
-        "w": 24,
+        "h": 5,
+        "w": 5,
         "x": 0,
         "y": 0
       },
-      "id": 101,
-      "panels": []
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(up{job=\"avalanche\", l1=~\"$l1|\"})",
+          "refId": "A",
+          "legendFormat": "up"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 13
+              },
+              {
+                "color": "green",
+                "value": 15
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "value_and_name",
+        "colorMode": "background"
+      }
     },
     {
+      "id": 2,
+      "type": "stat",
+      "title": "Benched validator weight",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Max finalized height per site. B overtakes A at failover; A catches up on restore. A flat segment is a halt \u2014 its width is downtime.",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 5,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(avalanche_benchlist_benched_weight{chain=~\"$chain_id\"})",
+          "refId": "A",
+          "legendFormat": "benched"
+        }
+      ],
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "none"
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1000
+              },
+              {
+                "color": "red",
+                "value": 100000
+              }
+            ]
+          }
         },
         "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "value_and_name",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Successful polls (1m)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 11,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(avalanche_snowman_polls_successful{chain=~\"$chain_id\"}[1m])) / (sum(increase(avalanche_snowman_polls_successful{chain=~\"$chain_id\"}[1m])) + sum(increase(avalanche_snowman_polls_failed{chain=~\"$chain_id\"}[1m])))",
+          "refId": "A",
+          "legendFormat": "success"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 1,
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.8
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "value_and_name",
+        "colorMode": "background"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Feed submit-to-mined p95",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 7,
+        "x": 17,
+        "y": 0
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(oracle_feed_confirm_latency_seconds_bucket[1m])))",
+          "refId": "A",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 3,
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 5,
+      "type": "state-timeline",
+      "title": "avalanchego up/down - DC A",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "up{job=\"avalanche\", l1=~\"$l1|\", dc=\"A\"}",
+          "refId": "A",
+          "legendFormat": "{{node}} ({{role}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 0
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "serving",
+                  "color": "green"
+                },
+                "0": {
+                  "text": "down",
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "rowHeight": 0.85,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "state-timeline",
+      "title": "avalanchego up/down - DC B",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "up{job=\"avalanche\", l1=~\"$l1|\", dc=\"B\"}",
+          "refId": "A",
+          "legendFormat": "{{node}} ({{role}})"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 0
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "1": {
+                  "text": "serving",
+                  "color": "green"
+                },
+                "0": {
+                  "text": "down",
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "rowHeight": 0.85,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "state-timeline",
+      "title": "Weight per machine - DC A",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 1
-      },
-      "id": 102,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "y": 14
       },
       "targets": [
         {
@@ -82,56 +359,62 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "editorMode": "code",
-          "expr": "max by (site) (avalanche_snowman_last_accepted_height{chain!~\"C|P|X|all\"})",
-          "legendFormat": "{{site}}",
-          "range": true,
-          "refId": "A"
+          "expr": "fleet_actual_weight{dc=\"A\", l1=~\"$l1\"}",
+          "refId": "A",
+          "legendFormat": "machine {{machine}} ({{identity}})"
         }
       ],
-      "title": "Finalized (last-accepted) height \u2014 A vs B",
-      "type": "timeseries"
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 0
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "100000": {
+                  "text": "100000",
+                  "color": "green"
+                },
+                "1000": {
+                  "text": "1000",
+                  "color": "yellow"
+                },
+                "1": {
+                  "text": "1",
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "rowHeight": 0.85,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     },
     {
+      "id": 12,
+      "type": "state-timeline",
+      "title": "Weight per machine - DC B",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
-      },
-      "description": "Finalized-but-not-propagated window: signed gap A - B. Positive = A leads, negative = B leads; widens under partition, restore target is 0.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "none"
-        },
-        "overrides": []
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 1
-      },
-      "id": 103,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "y": 14
       },
       "targets": [
         {
@@ -139,56 +422,62 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "editorMode": "code",
-          "expr": "max(avalanche_snowman_last_accepted_height{site=\"a\",chain!~\"C|P|X|all\"}) - max(avalanche_snowman_last_accepted_height{site=\"b\",chain!~\"C|P|X|all\"})",
-          "legendFormat": "A \u2212 B",
-          "range": true,
-          "refId": "A"
+          "expr": "fleet_actual_weight{dc=\"B\", l1=~\"$l1\"}",
+          "refId": "A",
+          "legendFormat": "machine {{machine}} ({{identity}})"
         }
       ],
-      "title": "Finalized gap \u2014 A \u2212 B (blocks)",
-      "type": "timeseries"
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "fillOpacity": 70,
+            "lineWidth": 0
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "100000": {
+                  "text": "100000",
+                  "color": "green"
+                },
+                "1000": {
+                  "text": "1000",
+                  "color": "yellow"
+                },
+                "1": {
+                  "text": "1",
+                  "color": "red"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "auto",
+        "rowHeight": 0.85,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      }
     },
     {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Accepted height by node (a dead node flatlines, the chain does not)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
-      },
-      "description": "Where consensus is actually producing. Drops to 0 on the down site / during a halt \u2014 the liveness signal.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "ops"
-        },
-        "overrides": []
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 9
-      },
-      "id": 104,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "y": 22
       },
       "targets": [
         {
@@ -196,56 +485,30 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "editorMode": "code",
-          "expr": "max by (site) (rate(avalanche_snowman_blks_accepted_count{chain!~\"C|P|X|all\"}[1m]))",
-          "legendFormat": "{{site}}",
-          "range": true,
-          "refId": "A"
+          "expr": "max by (node) (avalanche_snowman_last_accepted_height{chain=~\"$chain_id\"})",
+          "refId": "A",
+          "legendFormat": "{{node}}"
         }
       ],
-      "title": "Block production rate \u2014 A vs B (blk/s)",
-      "type": "timeseries"
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {}
     },
     {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Successful polls by node",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
-      },
-      "description": "L1 transactions/sec. The down site reads 0; watch the dip + recovery through failover and the per-validator dips during the rolling restore.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "ops"
-        },
-        "overrides": []
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 9
-      },
-      "id": 105,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "y": 22
       },
       "targets": [
         {
@@ -253,58 +516,32 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "editorMode": "code",
-          "expr": "max by (site) (rate(avalanche_subnetevm_vm_eth_chain_txs_processed[1m]))",
-          "legendFormat": "{{site}}",
-          "range": true,
-          "refId": "A"
+          "expr": "sum by (node) (increase(avalanche_snowman_polls_successful{chain=~\"$chain_id\"}[1m])) / (sum by (node) (increase(avalanche_snowman_polls_successful{chain=~\"$chain_id\"}[1m])) + sum by (node) (increase(avalanche_snowman_polls_failed{chain=~\"$chain_id\"}[1m])))",
+          "refId": "A",
+          "legendFormat": "{{node}}"
         }
       ],
-      "title": "TPS \u2014 A vs B (tx/s)",
-      "type": "timeseries"
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {}
     },
     {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Chain TPS (accepted)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Reachable nodes per site. The site outage is unmistakable (A -> 0/5 on site-failover b).",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "none",
-          "min": 0,
-          "max": 5
-        },
-        "overrides": []
-      },
       "gridPos": {
-        "h": 8,
+        "h": 7,
         "w": 12,
         "x": 0,
-        "y": 17
-      },
-      "id": 106,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "y": 30
       },
       "targets": [
         {
@@ -312,284 +549,32 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "editorMode": "code",
-          "expr": "sum by (site) (up{job=\"avalanche-l1\"})",
-          "legendFormat": "{{site}}",
-          "range": true,
-          "refId": "A"
+          "expr": "max(rate(avalanche_subnetevm_vm_eth_chain_txs_accepted{chain=~\"$chain_id\"}[1m]))",
+          "refId": "A",
+          "legendFormat": "tx/s"
         }
       ],
-      "title": "Nodes up \u2014 A vs B (of 6)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Stake weight currently benched (unresponsive validators excluded from polling). Spikes the moment a site's validators drop.",
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 17
-      },
-      "id": 107,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (site) (avalanche_benchlist_benched_weight{chain!~\"C|P|X|all\"})",
-          "legendFormat": "{{site}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Benched validator weight \u2014 A vs B",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Consensus liveness per DC. Dips when a site loses its quorum / can't finalize.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "percent"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 25
-      },
-      "id": 118,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "(sum by (site) (increase(avalanche_snowman_polls_successful{chain!~\"C|P|X|all\"}[1m]))) / (sum by (site) (increase(avalanche_snowman_polls_successful{chain!~\"C|P|X|all\"}[1m])) + sum by (site) (increase(avalanche_snowman_polls_failed{chain!~\"C|P|X|all\"}[1m]))) * 100",
-          "legendFormat": "{{site}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Successful polls % \u2014 A vs B",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Per-block verify+execute time per DC. Rises sharply on a node that's I/O-bound or falling behind under load.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "ms"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 25
-      },
-      "id": 122,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "(sum by (site) (increase(avalanche_meterchainvm_verify_sum{chain!~\"C|P|X|all\"}[5m])) / sum by (site) (increase(avalanche_meterchainvm_verify_count{chain!~\"C|P|X|all\"}[5m]))) / 1e6",
-          "legendFormat": "{{site}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Avg block verification time \u2014 A vs B (ms)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Blocks that failed verification per DC (5m). Non-zero signals a fork/divergence or bad state.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
           "unit": "short"
         },
         "overrides": []
       },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 33
-      },
-      "id": 120,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (site) (increase(avalanche_meterchainvm_verify_err_count{chain!~\"C|P|X|all\"}[5m]))",
-          "legendFormat": "{{site}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Block verifications failed \u2014 A vs B",
-      "type": "timeseries"
+      "options": {}
     },
     {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Blocks per second (accepted)",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
-      "description": "Blocks rejected by consensus per DC (5m). A fork/divergence indicator \u2014 should stay 0 through failover/restore.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
       "gridPos": {
-        "h": 8,
+        "h": 7,
         "w": 12,
         "x": 12,
-        "y": 33
-      },
-      "id": 123,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
+        "y": 30
       },
       "targets": [
         {
@@ -597,577 +582,63 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "editorMode": "code",
-          "expr": "sum by (site) (increase(avalanche_snowman_blks_rejected_count{chain!~\"C|P|X|all\"}[5m]))",
-          "legendFormat": "{{site}}",
-          "range": true,
-          "refId": "A"
+          "expr": "max(rate(avalanche_snowman_blks_accepted_count{chain=~\"$chain_id\"}[1m]))",
+          "refId": "A",
+          "legendFormat": "blocks/s"
         }
       ],
-      "title": "Rejected blocks \u2014 A vs B",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Failed inbound consensus/sync requests per DC (5m). Spikes when nodes can't fetch blocks (catch-up starvation).",
       "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "short"
-        },
+        "defaults": {},
         "overrides": []
       },
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 41
-      },
-      "id": 121,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "sum by (site) (increase(avalanche_handler_messages{chain!~\"C|P|X|all\",op=~\".*_failed\"}[5m]))",
-          "legendFormat": "{{site}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Requests failed \u2014 A vs B",
-      "type": "timeseries"
-    },
-    {
-      "type": "row",
-      "collapsed": false,
-      "title": "Site A (us-east-1) \u2014 per node",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 49
-      },
-      "id": 108,
-      "panels": []
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Per-node finalized height \u2014 spot a lagging node within the site.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 50
-      },
-      "id": 109,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (instance) (avalanche_snowman_last_accepted_height{site=\"a\",chain!~\"C|P|X|all\"})",
-          "legendFormat": "{{instance}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Finalized height by node \u2014 site a",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 50
-      },
-      "id": 110,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (instance) (rate(avalanche_snowman_blks_accepted_count{site=\"a\",chain!~\"C|P|X|all\"}[1m]))",
-          "legendFormat": "{{instance}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Block production rate by node \u2014 site a (blk/s)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "none",
-          "min": 0,
-          "max": 1
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 58
-      },
-      "id": 111,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "up{job=\"avalanche-l1\",site=\"a\"}",
-          "legendFormat": "{{instance}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Nodes up \u2014 site a",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 58
-      },
-      "id": 112,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "avalanche_subnetevm_vm_eth_txpool_pending{site=\"a\"} + avalanche_subnetevm_vm_eth_txpool_queued{site=\"a\"}",
-          "legendFormat": "{{instance}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Mempool pending+queued by node \u2014 site a",
-      "type": "timeseries"
-    },
-    {
-      "type": "row",
-      "collapsed": false,
-      "title": "Site B (us-east-2) \u2014 per node",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 66
-      },
-      "id": 113,
-      "panels": []
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "Per-node finalized height \u2014 spot a lagging node within the site.",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 67
-      },
-      "id": 114,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (instance) (avalanche_snowman_last_accepted_height{site=\"b\",chain!~\"C|P|X|all\"})",
-          "legendFormat": "{{instance}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Finalized height by node \u2014 site b",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "ops"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 67
-      },
-      "id": 115,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "max by (instance) (rate(avalanche_snowman_blks_accepted_count{site=\"b\",chain!~\"C|P|X|all\"}[1m]))",
-          "legendFormat": "{{instance}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Block production rate by node \u2014 site b (blk/s)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "none",
-          "min": 0,
-          "max": 1
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 75
-      },
-      "id": 116,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "up{job=\"avalanche-l1\",site=\"b\"}",
-          "legendFormat": "{{instance}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Nodes up \u2014 site b",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "description": "",
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 8,
-            "showPoints": "never",
-            "spanNulls": false
-          },
-          "unit": "none"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 75
-      },
-      "id": 117,
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "editorMode": "code",
-          "expr": "avalanche_subnetevm_vm_eth_txpool_pending{site=\"b\"} + avalanche_subnetevm_vm_eth_txpool_queued{site=\"b\"}",
-          "legendFormat": "{{instance}}",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Mempool pending+queued by node \u2014 site b",
-      "type": "timeseries"
+      "options": {}
     }
   ],
   "refresh": "5s",
   "schemaVersion": 39,
+  "style": "dark",
   "tags": [
     "avalanche",
     "failover"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "l1",
+        "label": "chain",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values(up{job=\"avalanche\"}, l1)",
+        "refresh": 2,
+        "sort": 1,
+        "current": {
+          "text": "main",
+          "value": "main"
+        }
+      },
+      {
+        "name": "chain_id",
+        "type": "query",
+        "hide": 2,
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values(up{job=\"avalanche\", l1=~\"$l1\"}, l1_chain_id)",
+        "refresh": 2,
+        "sort": 1,
+        "current": {}
+      }
+    ]
   },
   "time": {
     "from": "now-30m",
     "to": "now"
   },
-  "timepicker": {},
-  "timezone": "",
+  "timezone": "browser",
   "title": "Avalanche Failover",
-  "uid": "avalanche-failover",
-  "version": 1,
-  "weekStart": ""
+  "uid": "avalanche-failover"
 }

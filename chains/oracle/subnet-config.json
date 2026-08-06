@@ -1,0 +1,8 @@
+{
+    "snowParameters": {
+        "k": 1,
+        "alpha": 1
+    },
+    "proposerWindowMilliseconds": 100,
+    "proposerMillisecondTimestamps": true
+}

@@ -52,10 +52,10 @@ func hexToUint64(hex string) uint64 {
 
 // watchBlocks polls a node for new blocks and marks each of our transactions
 // mined as it appears. It OWNS its websocket connection and RECONNECTS when the
-// connection drops — essential across a failover/restore, where the watched node
+// connection drops, essential across a failover/restore, where the watched node
 // restarts. The old version dialed once and, on a dead connection, spun on the
 // dead socket forever (and died outright if the very first call failed); bombard
-// was then left detecting mines only via a surviving watcher — which after a
+// was then left detecting mines only via a surviving watcher, which after a
 // restore is a cross-region tracker lagging the tip, inflating observed
 // mine-latency and throttling throughput via the in-flight cap until a manual
 // restart. Now any RPC error redials a fresh socket and retries; resubmission
@@ -110,7 +110,7 @@ func watchBlocks(ctx context.Context, wsURL string, pollInterval time.Duration) 
 		err := getBlock(client, &block, "latest")
 		observedAt := time.Now()
 		if err != nil {
-			client.Close() // socket likely dropped (node restart) — redial, don't spin on it
+			client.Close() // socket likely dropped (node restart), redial, don't spin on it
 			if client = dial(); client == nil {
 				return
 			}

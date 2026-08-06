@@ -1,0 +1,31 @@
+{
+  "config": {
+    "chainId": 99999,
+    "graniteTimestamp": 0,
+    "initialMinDelayMS": 25,
+    "warpConfig": {
+      "blockTimestamp": 1709740800
+    },
+    "feeConfig": {
+      "gasLimit": 200000000,
+      "targetBlockRate": 1,
+      "minBaseFee": 1,
+      "targetGas": 18446744073709551615,
+      "baseFeeChangeDenominator": 9223372036854775807,
+      "minBlockGasCost": 0,
+      "maxBlockGasCost": 0,
+      "blockGasCostStep": 0
+    }
+  },
+  "alloc": {},
+  "nonce": "0x0",
+  "timestamp": "0x6a445880",
+  "extraData": "0x00",
+  "gasLimit": "0xbebc200",
+  "difficulty": "0x0",
+  "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+  "coinbase": "0x0000000000000000000000000000000000000000",
+  "number": "0x0",
+  "gasUsed": "0x0",
+  "parentHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+}

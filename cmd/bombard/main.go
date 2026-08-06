@@ -9,7 +9,6 @@ import (
 	"math/big"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -20,27 +19,26 @@ import (
 
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/core/types"
-	"github.com/ava-labs/libevm/crypto"
 	"github.com/ava-labs/libevm/ethclient"
 	"github.com/ava-labs/libevm/rpc"
 )
 
 // Single-issuer bombard.
 //
-// One key, one strictly increasing nonce — a production-shaped workload (a
+// One key, one strictly increasing nonce, a production-shaped workload (a
 // single web2->web3 gateway issuing transactions in order). Two governors:
 //
 //  1. Rate limiter: a rolling token bucket. Tokens accrue at `rps`(×overshoot)
 //     per second and are capped at a 1-second burst, so a deficit in the
 //     trailing ~1s (send workers briefly saturated, inflight grazing the cap)
-//     is made up instead of being dropped at a wall-second boundary — the old
+//     is made up instead of being dropped at a wall-second boundary, the old
 //     per-second-reset budget leaked the tail of every second (~the last few
 //     txs each second), so mined always sat a hair under target. Carry-over is
 //     bounded to 1s so a long stall (e.g. a failover dip) cannot trigger an
 //     unbounded catch-up flood; at most one second is recovered.
 //  2. In-flight cap: we never let ourselves get more than `inflight` nonces
 //     ahead of the last-mined nonce. Hitting the cap is the backpressure /
-//     "falling behind" signal — there is no timeout counter.
+//     "falling behind" signal, there is no timeout counter.
 //
 // Resilience: a tx leaves the system only when its nonce mines. Anything still
 // in flight after the resubmit interval is re-sent verbatim (same bytes, same
@@ -48,9 +46,6 @@ import (
 // / "nonce too low" send errors are benign no-ops.
 
 const (
-	// EWOQ is the pre-funded test key for Avalanche local networks.
-	ewoqPrivateKey = "56289e99c94b6912bfc12adc093c9b51124f0dc54ac7a766b2bc5ccf558d8027"
-
 	gasLimitNative = 21000
 	gasPrice       = 25
 )
@@ -117,7 +112,7 @@ func (t *tracker) onMined(hash common.Hash, observedAt time.Time) {
 }
 
 // inFlight is how many nonces we are ahead of the last-mined nonce. Abandoned
-// (dropped) txs don't count — they're no longer waiting to mine, so the in-flight
+// (dropped) txs don't count, they're no longer waiting to mine, so the in-flight
 // cap unblocks the moment a resync drops the stranded set.
 func (t *tracker) inFlight() uint64 {
 	return t.issued.Load() - t.mined.Load() - t.dropped.Load()
@@ -189,8 +184,8 @@ func activeRPCsFilePath() string {
 
 // watchActiveRPCs polls the active-rpcs file and marks each endpoint active only if
 // it appears there, so ingress goes solely to the live validator site and re-points
-// when reconcile moves it. Fail-open: an absent/empty file — or one that matches no
-// endpoint (format drift) — leaves all endpoints active, so a bad file never starves
+// when reconcile moves it. Fail-open: an absent/empty file, or one that matches no
+// endpoint (format drift), leaves all endpoints active, so a bad file never starves
 // ingress. Polled (not inotify) to survive the file being rewritten across a run.
 func watchActiveRPCs(ctx context.Context, b *broadcaster, path string) {
 	ticker := time.NewTicker(2 * time.Second)
@@ -231,11 +226,11 @@ func watchActiveRPCs(ctx context.Context, b *broadcaster, path string) {
 		}
 		switch {
 		case len(want) == 0:
-			fmt.Fprintf(os.Stderr, "\ningress: active-site routing cleared — sending to all %d endpoint(s)\n", len(b.nodes))
+			fmt.Fprintf(os.Stderr, "\ningress: active-site routing cleared, sending to all %d endpoint(s)\n", len(b.nodes))
 		case failOpen:
-			fmt.Fprintf(os.Stderr, "\ningress: WARN active-rpcs file matched no endpoint — sending to all (fail-open)\n")
+			fmt.Fprintf(os.Stderr, "\ningress: WARN active-rpcs file matched no endpoint, sending to all (fail-open)\n")
 		default:
-			fmt.Fprintf(os.Stderr, "\ningress: active site — routing to %s\n", strings.Join(on, ", "))
+			fmt.Fprintf(os.Stderr, "\ningress: active site, routing to %s\n", strings.Join(on, ", "))
 		}
 	}
 }
@@ -261,7 +256,8 @@ const (
 )
 
 func main() {
-	rpcFlag := flag.String("rpc", "", "Comma-separated RPC URLs (auto-detected from network_data/rpcs.txt if omitted). Sends fan out across all; watchers race across all.")
+	rpcFlag := flag.String("rpc", "", "Comma-separated RPC URLs. Omit to discover every rpc node of -chain from nodes.ini plus its chain ID from deployment/network.env. Sends fan out across all; watchers race across all.")
+	chainFlag := flag.String("chain", "main", "Chain to bombard when discovering endpoints (the chain= name from nodes.ini). Ignored when -rpc is set.")
 	rps := flag.Int("rps", 1000, "Target transactions issued per second")
 	targetTxs := flag.Uint64("txs", 0, "Stop after at least this many mined txs; 0 means run until interrupted")
 	runDuration := flag.Duration("duration", 0, "Stop after this duration; 0 means run until interrupted or --txs is reached")
@@ -288,21 +284,24 @@ func main() {
 	resubmitEvery := *resubmitFlag
 	useTUI := *tuiFlag && stdoutIsTerminal()
 
-	// Resolve the RPC endpoint list.
+	root, err := os.Getwd()
+	if err != nil {
+		fmt.Printf("Failed to resolve the working directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Resolve the RPC endpoint list. -rpc is an explicit override that skips
+	// discovery entirely; otherwise the endpoints come from the deployment
+	// inventory, role=rpc nodes only.
 	rpcURLs := splitNonEmpty(*rpcFlag)
 	if len(rpcURLs) == 0 {
-		rpcsFile := filepath.Join("./network_data", "rpcs.txt")
-		data, err := os.ReadFile(rpcsFile)
-		if err != nil {
-			fmt.Printf("No --rpc provided and failed to read %s: %v\n", rpcsFile, err)
+		discovered, derr := discoverRPCEndpoints(root, *chainFlag)
+		if derr != nil {
+			fmt.Printf("No --rpc provided and endpoint discovery failed: %v\n", derr)
 			os.Exit(1)
 		}
-		rpcURLs = splitNonEmpty(string(data))
-		if len(rpcURLs) == 0 {
-			fmt.Printf("No RPC URLs found in %s\n", rpcsFile)
-			os.Exit(1)
-		}
-		fmt.Printf("Auto-detected %d RPC URL(s) from %s\n", len(rpcURLs), rpcsFile)
+		rpcURLs = discovered
+		fmt.Printf("Discovered %d rpc endpoint(s) for chain %s from %s: %s\n", len(rpcURLs), *chainFlag, nodesFile, strings.Join(rpcURLs, ", "))
 	}
 	wsURLs := make([]string, len(rpcURLs))
 	for i, u := range rpcURLs {
@@ -404,19 +403,18 @@ func main() {
 	}
 	fmt.Printf("Chain ID: %s\n", chainID)
 
-	privateKey, err := crypto.HexToECDSA(ewoqPrivateKey)
+	privateKey, address, err := loadIssuerKey(root)
 	if err != nil {
-		fmt.Printf("Failed to load key: %v\n", err)
+		fmt.Printf("Failed to load the genesis funding key: %v\n", err)
 		os.Exit(1)
 	}
-	address := crypto.PubkeyToAddress(privateKey.PublicKey)
 	signer := types.NewEIP155Signer(chainID)
 
 	// Read the start nonce as the real ACCEPTED (latest-block) nonce, MAX across
 	// all nodes. We deliberately use NonceAt(latest), NOT PendingNonceAt: the
 	// pending nonce counts mempool txs, so leftover in-flight txs from a previous
 	// run inflate it ABOVE a gap and a fresh run would issue past the missing
-	// nonce — stranding the account behind an unfilled gap. The accepted nonce is
+	// nonce, stranding the account behind an unfilled gap. The accepted nonce is
 	// the true chain frontier and can never skip a gap; re-issuing from there is
 	// safe because every tx is idempotent (deterministic signing -> same hash)
 	// and a re-sent already-known/already-mined nonce is a benign no-op. MAX
@@ -520,7 +518,7 @@ func main() {
 // issuer releases nonces under a rolling token bucket and the in-flight cap.
 // Tokens accrue at the configured rate (rps×overshoot) and are bounded by `burst`
 // (= 1 second's worth), so the issuer makes up a deficit from the trailing ~1s
-// instead of dropping the tail of each wall-second — while the burst cap keeps a
+// instead of dropping the tail of each wall-second, while the burst cap keeps a
 // long stall from triggering an unbounded catch-up flood.
 func issuer(ctx context.Context, sendCh chan<- uint64, baseRPS, overshoot float64, cap, startNonce uint64) {
 	ticker := time.NewTicker(time.Millisecond)
@@ -580,19 +578,18 @@ func issuer(ctx context.Context, sendCh chan<- uint64, baseRPS, overshoot float6
 	}
 }
 
-
 // monitorNonce rescues bombard from a frontier regression. A hard failover (or any
 // reorg) can leave the chain's accepted nonce BELOW our lowest in-flight nonce: the
 // chain then expects a nonce we already "mined" on the old frontier and will never
 // see, so it can never mine our in-flight txs (an unfillable gap) and we wedge
-// at-cap forever — issuing, resubmitting, mining nothing. When the live frontier
+// at-cap forever, issuing, resubmitting, mining nothing. When the live frontier
 // sits below our lowest in-flight nonce for two consecutive checks (so a momentary
 // race can't trigger it), we request a resync to the live frontier; the issuer then
 // jumps there and abandons the stranded set. This is what lets bombard ride through
 // a hard failover without a restart.
 //
 // A clean failover (new site already at the old tip) keeps frontier == lowest
-// in-flight, so this never fires — only a genuine regression does.
+// in-flight, so this never fires, only a genuine regression does.
 func monitorNonce(ctx context.Context, bc *broadcaster, address common.Address) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -601,7 +598,7 @@ func monitorNonce(ctx context.Context, bc *broadcaster, address common.Address) 
 	resync := func(frontier uint64, why string) {
 		resyncTarget.Store(frontier)
 		resyncPending.Store(true)
-		fmt.Fprintf(os.Stderr, "\nnonce: %s — resyncing issuer to live frontier %d\n", why, frontier)
+		fmt.Fprintf(os.Stderr, "\nnonce: %s, resyncing issuer to live frontier %d\n", why, frontier)
 		stalls = 0
 	}
 
@@ -616,7 +613,7 @@ func monitorNonce(ctx context.Context, bc *broadcaster, address common.Address) 
 		inflight := track.inFlight()
 		frontier, ok := maxAcceptedNonce(ctx, bc, address)
 
-		// Fast path: we're AHEAD of the frontier (a gap — e.g. failover to a site
+		// Fast path: we're AHEAD of the frontier (a gap, e.g. failover to a site
 		// behind the old tip). Our in-flight can never mine; resync down to it now.
 		if ok && inflight > 0 {
 			if low, have := track.lowestInflightNonce(); have && frontier < low {
@@ -626,12 +623,11 @@ func monitorNonce(ctx context.Context, bc *broadcaster, address common.Address) 
 			}
 		}
 
-		// General path: mined FROZEN while we still hold in-flight work is a stall —
-		// our nonce view has desynced from the chain (e.g. the watcher missed mines
+		// General path: mined FROZEN while we still hold in-flight work is a stall, // our nonce view has desynced from the chain (e.g. the watcher missed mines
 		// during node churn, leaving already-accepted "zombie" nonces that pin the
 		// in-flight cap and starve new issuance). Confirm over a few ticks (so a
 		// normal cutover pause doesn't twitch it), then resync to the live frontier:
-		// jump the issuer there and drop the stale in-flight — the manual-restart
+		// jump the issuer there and drop the stale in-flight, the manual-restart
 		// recovery, automatic. (Resyncing during a benign pause is harmless: the same
 		// nonces re-issue to the same deterministic txs.)
 		if mined == lastMined && inflight > 0 {
@@ -647,7 +643,7 @@ func monitorNonce(ctx context.Context, bc *broadcaster, address common.Address) 
 }
 
 // maxAcceptedNonce reads the issuer account's accepted (latest-block) nonce from
-// every HEALTHY node and returns the max — the live chain frontier. Healthy-only so
+// every HEALTHY node and returns the max, the live chain frontier. Healthy-only so
 // a downed/lagging site (e.g. the one we just failed away from) can't report a
 // stale-high nonce and mask a regression. Returns false if nothing is reachable.
 func maxAcceptedNonce(ctx context.Context, bc *broadcaster, address common.Address) (uint64, bool) {
@@ -687,7 +683,7 @@ func sendWorker(
 		}
 		now := time.Now()
 		track.register(nonce, &txState{signed: signed, firstSend: now, lastSend: now})
-		// Fire-and-forget to every node; a failed/dropped send is fine — the tx
+		// Fire-and-forget to every node; a failed/dropped send is fine, the tx
 		// stays in flight and the resubmit loop re-broadcasts it. We only drop
 		// it from accounting when it mines.
 		bc.broadcast(signed)
@@ -710,7 +706,7 @@ func resubmitLoop(ctx context.Context, bc *broadcaster, interval time.Duration) 
 }
 
 // benignSendErr reports send errors that mean the tx is already accepted or
-// already mined — expected when resubmitting an identical transaction.
+// already mined, expected when resubmitting an identical transaction.
 func benignSendErr(err error) bool {
 	s := strings.ToLower(err.Error())
 	return strings.Contains(s, "already known") ||

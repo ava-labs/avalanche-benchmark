@@ -1,0 +1,127 @@
+{
+  "title": "Fleet Health",
+  "uid": "fleet-health",
+  "description": "The first dashboard to open. One chain at a time: pick it in the l1 dropdown. Does the chain produce blocks, is every node up, and where is the stake?",
+  "schemaVersion": 39,
+  "editable": true,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "l1",
+        "label": "chain",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(up{job=\"avalanche\"}, l1)",
+        "refresh": 2,
+        "sort": 1,
+        "current": { "text": "main", "value": "main" }
+      },
+      {
+        "name": "chain_id",
+        "type": "query",
+        "hide": 2,
+        "datasource": { "type": "prometheus", "uid": "prometheus" },
+        "query": "label_values(up{job=\"avalanche\", l1=~\"$l1\"}, l1_chain_id)",
+        "refresh": 2,
+        "sort": 1,
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "$l1 nodes up",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum(up{job=\"avalanche\", l1=~\"$l1\"})", "legendFormat": "up", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] } }, "overrides": [] }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "$l1 nodes down",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "count(up{job=\"avalanche\", l1=~\"$l1\"} == 0) OR on() vector(0)", "legendFormat": "down", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "P-chain beacon",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "up{job=\"avalanche\", role=\"pchain\"}", "legendFormat": "beacon", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] }, "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } } ] }, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "$l1 transactions per second",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "max(rate(avalanche_subnetevm_vm_eth_chain_txs_accepted{chain=~\"$chain_id\"}[1m]))", "legendFormat": "tx/s", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "decimals": 1, "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "blue", "value": null } ] } }, "overrides": [] }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "$l1 height per node",
+      "description": "Every node of the chain at the same height and climbing together means healthy consensus. A flat line is a stalled or isolated node.",
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "max by (node) (avalanche_snowman_last_accepted_height{chain=~\"$chain_id\"})", "legendFormat": "node {{node}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 0 } }, "overrides": [] }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "$l1 throughput",
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "max(rate(avalanche_subnetevm_vm_eth_chain_txs_accepted{chain=~\"$chain_id\"}[1m]))", "legendFormat": "tx/s", "refId": "A" },
+        { "expr": "max(rate(avalanche_snowman_blks_accepted_count{chain=~\"$chain_id\"}[1m]))", "legendFormat": "blocks/s", "refId": "B" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "$l1 poll success per node (%)",
+      "description": "Below 100 the node loses consensus polls. Sustained low values on one node point at that machine; on every node they point at the network.",
+      "gridPos": { "x": 0, "y": 13, "w": 12, "h": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "100 * sum by (node) (increase(avalanche_snowman_polls_successful{chain=~\"$chain_id\"}[1m])) / (sum by (node) (increase(avalanche_snowman_polls_successful{chain=~\"$chain_id\"}[1m])) + sum by (node) (increase(avalanche_snowman_polls_failed{chain=~\"$chain_id\"}[1m])))", "legendFormat": "node {{node}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "max": 100, "min": 0, "unit": "percent", "custom": { "drawStyle": "line", "fillOpacity": 0 } }, "overrides": [] }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "$l1 stake weight per data center",
+      "description": "From the control-side weight exporter. Works on an isolated fleet: no chain API involved.",
+      "gridPos": { "x": 12, "y": 13, "w": 12, "h": 9 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "expr": "sum by (dc) (fleet_actual_weight{l1=~\"$l1\"})", "legendFormat": "dc {{dc}}", "refId": "A" }
+      ],
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] }
+    }
+  ]
+}

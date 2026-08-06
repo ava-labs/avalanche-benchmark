@@ -94,7 +94,13 @@
             "id": 1,
             "options": {
                 "legend": {
-                    "calcs": ["min", "max", "mean", "p95", "lastNotNull"],
+                    "calcs": [
+                        "min",
+                        "max",
+                        "mean",
+                        "p95",
+                        "lastNotNull"
+                    ],
                     "displayMode": "table",
                     "placement": "bottom",
                     "show": false,
@@ -115,7 +121,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "(\n  max by (instance) (\n    increase(avalanche_snowman_polls_successful{chain=~\".*\"}[5m])\n  )\n  /\n  (\n    max by (instance) (\n      increase(avalanche_snowman_polls_successful{chain=~\".*\"}[5m])\n    )\n    +\n    max by (instance) (\n      increase(avalanche_snowman_polls_failed{chain=~\".*\"}[5m])\n    )\n  )\n) * 100",
+                    "expr": "(\n  max by (instance) (\n    increase(avalanche_snowman_polls_successful{chain=~\"$chain_id\"}[5m])\n  )\n  /\n  (\n    max by (instance) (\n      increase(avalanche_snowman_polls_successful{chain=~\"$chain_id\"}[5m])\n    )\n    +\n    max by (instance) (\n      increase(avalanche_snowman_polls_failed{chain=~\"$chain_id\"}[5m])\n    )\n  )\n) * 100",
                     "legendFormat": "{{instance}}",
                     "rawQuery": false,
                     "refId": "A"
@@ -195,7 +201,13 @@
             "id": 2,
             "options": {
                 "legend": {
-                    "calcs": ["min", "max", "mean", "p95", "lastNotNull"],
+                    "calcs": [
+                        "min",
+                        "max",
+                        "mean",
+                        "p95",
+                        "lastNotNull"
+                    ],
                     "displayMode": "table",
                     "placement": "bottom",
                     "show": false,
@@ -215,7 +227,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "max by (instance) (\n  avg_over_time(\n    avalanche_benchlist_benched_weight{chain=~\".*\"}[5m]\n  )\n)",
+                    "expr": "max by (instance) (\n  avg_over_time(\n    avalanche_benchlist_benched_weight{chain=~\"$chain_id\"}[5m]\n  )\n)",
                     "legendFormat": "{{instance}}",
                     "rawQuery": false,
                     "refId": "A"
@@ -295,7 +307,13 @@
             "id": 3,
             "options": {
                 "legend": {
-                    "calcs": ["min", "max", "mean", "p95", "lastNotNull"],
+                    "calcs": [
+                        "min",
+                        "max",
+                        "mean",
+                        "p95",
+                        "lastNotNull"
+                    ],
                     "displayMode": "table",
                     "placement": "bottom",
                     "show": false,
@@ -315,7 +333,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "max by (instance) (\n  increase(\n    avalanche_snowman_blks_accepted_sum{chain=~\".*\"}[5m]\n  )\n)/max by (instance) (\n  increase(\n    avalanche_snowman_blks_accepted_count{chain=~\".*\"}[5m]\n  )\n)/1000000000",
+                    "expr": "max by (instance) (\n  increase(\n    avalanche_snowman_blks_accepted_sum{chain=~\"$chain_id\"}[5m]\n  )\n)/max by (instance) (\n  increase(\n    avalanche_snowman_blks_accepted_count{chain=~\"$chain_id\"}[5m]\n  )\n)/1000000000",
                     "legendFormat": "{{instance}}",
                     "range": true,
                     "rawQuery": false,
@@ -396,7 +414,13 @@
             "id": 4,
             "options": {
                 "legend": {
-                    "calcs": ["min", "max", "mean", "p95", "lastNotNull"],
+                    "calcs": [
+                        "min",
+                        "max",
+                        "mean",
+                        "p95",
+                        "lastNotNull"
+                    ],
                     "displayMode": "table",
                     "placement": "bottom",
                     "show": false,
@@ -416,7 +440,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "max by (instance) (\n  avg_over_time(\n    avalanche_snowman_last_accepted_height{chain=~\".*\"}[5m]\n  )\n)",
+                    "expr": "max by (instance) (\n  avg_over_time(\n    avalanche_snowman_last_accepted_height{chain=~\"$chain_id\"}[5m]\n  )\n)",
                     "legendFormat": "{{instance}}",
                     "rawQuery": false,
                     "refId": "A"
@@ -511,7 +535,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "max by (instance) (\n  increase(\n    avalanche_snowman_blks_rejected_count{chain=~\".*\"}[5m]\n  )\n)",
+                    "expr": "max by (instance) (\n  increase(\n    avalanche_snowman_blks_rejected_count{chain=~\"$chain_id\"}[5m]\n  )\n)",
                     "legendFormat": "{{instance}}",
                     "rawQuery": false,
                     "refId": "query1"
@@ -591,7 +615,13 @@
             "id": 6,
             "options": {
                 "legend": {
-                    "calcs": ["min", "max", "mean", "p95", "lastNotNull"],
+                    "calcs": [
+                        "min",
+                        "max",
+                        "mean",
+                        "p95",
+                        "lastNotNull"
+                    ],
                     "displayMode": "table",
                     "placement": "bottom",
                     "show": false,
@@ -611,7 +641,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "max by (instance) (\n  increase(\n    avalanche_handler_messages{chain=~\".*\",op=\"get_state_summary_frontier_failed\"}[5m]\n  )\n)",
+                    "expr": "max by (instance) (\n  increase(\n    avalanche_handler_messages{chain=~\"$chain_id\",op=\"get_state_summary_frontier_failed\"}[5m]\n  )\n)",
                     "legendFormat": "{{instance}}",
                     "rawQuery": false,
                     "refId": "query1"
@@ -622,7 +652,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "max by (instance) (\n  increase(\n    avalanche_handler_messages{chain=~\".*\",op=\"get_accepted_state_summary_failed\"}[5m]\n  )\n)",
+                    "expr": "max by (instance) (\n  increase(\n    avalanche_handler_messages{chain=~\"$chain_id\",op=\"get_accepted_state_summary_failed\"}[5m]\n  )\n)",
                     "legendFormat": "{{instance}}",
                     "rawQuery": false,
                     "refId": "query2"
@@ -633,7 +663,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "max by (instance) (\n  increase(\n    avalanche_handler_messages{chain=~\".*\",op=\"get_accepted_frontier_failed\"}[5m]\n  )\n)",
+                    "expr": "max by (instance) (\n  increase(\n    avalanche_handler_messages{chain=~\"$chain_id\",op=\"get_accepted_frontier_failed\"}[5m]\n  )\n)",
                     "legendFormat": "{{instance}}",
                     "rawQuery": false,
                     "refId": "query3"
@@ -644,7 +674,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "max by (instance) (\n  increase(\n    avalanche_handler_messages{chain=~\".*\",op=\"get_accepted_failed\"}[5m]\n  )\n)",
+                    "expr": "max by (instance) (\n  increase(\n    avalanche_handler_messages{chain=~\"$chain_id\",op=\"get_accepted_failed\"}[5m]\n  )\n)",
                     "legendFormat": "{{instance}}",
                     "rawQuery": false,
                     "refId": "query4"
@@ -655,7 +685,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "max by (instance) (\n  increase(\n    avalanche_handler_messages{chain=~\".*\",op=\"get_ancestors_failed\"}[5m]\n  )\n)",
+                    "expr": "max by (instance) (\n  increase(\n    avalanche_handler_messages{chain=~\"$chain_id\",op=\"get_ancestors_failed\"}[5m]\n  )\n)",
                     "legendFormat": "{{instance}}",
                     "rawQuery": false,
                     "refId": "query5"
@@ -666,7 +696,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "max by (instance) (\n  increase(\n    avalanche_handler_messages{chain=~\".*\",op=\"get_failed\"}[5m]\n  )\n)",
+                    "expr": "max by (instance) (\n  increase(\n    avalanche_handler_messages{chain=~\"$chain_id\",op=\"get_failed\"}[5m]\n  )\n)",
                     "legendFormat": "{{instance}}",
                     "rawQuery": false,
                     "refId": "query6"
@@ -677,7 +707,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "max by (instance) (\n  increase(\n    avalanche_snowman_polls_failed{chain=~\".*\"}[5m]\n  )\n)",
+                    "expr": "max by (instance) (\n  increase(\n    avalanche_snowman_polls_failed{chain=~\"$chain_id\"}[5m]\n  )\n)",
                     "legendFormat": "polls_failed {{instance}}",
                     "rawQuery": false,
                     "refId": "query7"
@@ -758,7 +788,13 @@
             "id": 7,
             "options": {
                 "legend": {
-                    "calcs": ["min", "max", "mean", "p95", "lastNotNull"],
+                    "calcs": [
+                        "min",
+                        "max",
+                        "mean",
+                        "p95",
+                        "lastNotNull"
+                    ],
                     "displayMode": "table",
                     "placement": "bottom",
                     "show": false,
@@ -778,7 +814,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "(\n    (\n        max by (instance) (\n          increase(\n            avalanche_meterchainvm_verify_sum{chain=~\".*\"}[5m]\n          )\n        )\n      +\n        max by (instance) (\n          increase(\n            avalanche_meterchainvm_verify_err_sum{chain=~\".*\"}[5m]\n          )\n        )\n    )\n  /\n    (\n        max by (instance) (\n          increase(\n            avalanche_meterchainvm_verify_count{chain=~\".*\"}[5m]\n          )\n        )\n      +\n        max by (instance) (\n          increase(\n            avalanche_meterchainvm_verify_err_count{chain=~\".*\"}[5m]\n          )\n        )\n    )\n)\n/\n1e+06",
+                    "expr": "(\n    (\n        max by (instance) (\n          increase(\n            avalanche_meterchainvm_verify_sum{chain=~\"$chain_id\"}[5m]\n          )\n        )\n      +\n        max by (instance) (\n          increase(\n            avalanche_meterchainvm_verify_err_sum{chain=~\"$chain_id\"}[5m]\n          )\n        )\n    )\n  /\n    (\n        max by (instance) (\n          increase(\n            avalanche_meterchainvm_verify_count{chain=~\"$chain_id\"}[5m]\n          )\n        )\n      +\n        max by (instance) (\n          increase(\n            avalanche_meterchainvm_verify_err_count{chain=~\"$chain_id\"}[5m]\n          )\n        )\n    )\n)\n/\n1e+06",
                     "legendFormat": "{{instance}}",
                     "rawQuery": false,
                     "refId": "A"
@@ -858,7 +894,13 @@
             "id": 8,
             "options": {
                 "legend": {
-                    "calcs": ["min", "max", "mean", "p95", "lastNotNull"],
+                    "calcs": [
+                        "min",
+                        "max",
+                        "mean",
+                        "p95",
+                        "lastNotNull"
+                    ],
                     "displayMode": "table",
                     "placement": "bottom",
                     "show": false,
@@ -878,7 +920,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "max by (instance) (\n  increase(\n    avalanche_meterchainvm_verify_err_count{chain=~\".*\"}[5m]\n  )\n)",
+                    "expr": "max by (instance) (\n  increase(\n    avalanche_meterchainvm_verify_err_count{chain=~\"$chain_id\"}[5m]\n  )\n)",
                     "legendFormat": "{{instance}}",
                     "rawQuery": false,
                     "refId": "query1"
@@ -958,7 +1000,13 @@
             "id": 9,
             "options": {
                 "legend": {
-                    "calcs": ["min", "max", "mean", "p95", "lastNotNull"],
+                    "calcs": [
+                        "min",
+                        "max",
+                        "mean",
+                        "p95",
+                        "lastNotNull"
+                    ],
                     "displayMode": "table",
                     "placement": "bottom",
                     "show": false,
@@ -978,7 +1026,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "avg by (instance) (\n  increase(\n    avalanche_subnetevm_vm_eth_chain_block_gas_used_processed{chain=~\".*\"}[5m]\n  )\n)/avg by (instance) (\n  increase(\n    avalanche_subnetevm_vm_eth_chain_block_inserts_count{chain=~\".*\"}[5m]\n  )\n)",
+                    "expr": "avg by (instance) (\n  increase(\n    avalanche_subnetevm_vm_eth_chain_block_gas_used_processed{chain=~\"$chain_id\"}[5m]\n  )\n)/avg by (instance) (\n  increase(\n    avalanche_subnetevm_vm_eth_chain_block_inserts_count{chain=~\"$chain_id\"}[5m]\n  )\n)",
                     "legendFormat": "{{instance}}",
                     "range": true,
                     "rawQuery": false,
@@ -1058,7 +1106,13 @@
             "id": 10,
             "options": {
                 "legend": {
-                    "calcs": ["min", "max", "mean", "p95", "lastNotNull"],
+                    "calcs": [
+                        "min",
+                        "max",
+                        "mean",
+                        "p95",
+                        "lastNotNull"
+                    ],
                     "displayMode": "table",
                     "placement": "bottom",
                     "show": false,
@@ -1079,7 +1133,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "sum by (instance) (\n  rate(avalanche_meterchainvm_verify_sum{chain=~\".*\"}[5m])/rate(avalanche_subnetevm_vm_eth_chain_block_gas_used_processed{chain=~\".*\"}[5m])\n)",
+                    "expr": "sum by (instance) (\n  rate(avalanche_meterchainvm_verify_sum{chain=~\"$chain_id\"}[5m])/rate(avalanche_subnetevm_vm_eth_chain_block_gas_used_processed{chain=~\"$chain_id\"}[5m])\n)",
                     "legendFormat": "{{instance}}",
                     "range": true,
                     "rawQuery": false,
@@ -1160,7 +1214,13 @@
             "id": 11,
             "options": {
                 "legend": {
-                    "calcs": ["min", "max", "mean", "p95", "lastNotNull"],
+                    "calcs": [
+                        "min",
+                        "max",
+                        "mean",
+                        "p95",
+                        "lastNotNull"
+                    ],
                     "displayMode": "table",
                     "placement": "bottom",
                     "show": false,
@@ -1180,7 +1240,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "sum by (instance) (\n  avg_over_time(\n    avalanche_subnetevm_vm_eth_txpool_queued{chain=~\".*\"}[5m]\n  )\n)",
+                    "expr": "sum by (instance) (\n  avg_over_time(\n    avalanche_subnetevm_vm_eth_txpool_queued{chain=~\"$chain_id\"}[5m]\n  )\n)",
                     "legendFormat": "{{instance}}",
                     "rawQuery": false,
                     "refId": "A"
@@ -1261,7 +1321,13 @@
             "id": 12,
             "options": {
                 "legend": {
-                    "calcs": ["min", "max", "mean", "p95", "lastNotNull"],
+                    "calcs": [
+                        "min",
+                        "max",
+                        "mean",
+                        "p95",
+                        "lastNotNull"
+                    ],
                     "displayMode": "table",
                     "placement": "bottom",
                     "show": false,
@@ -1281,7 +1347,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "max by (instance) (\n  rate(\n    avalanche_subnetevm_vm_eth_chain_txs_processed{chain=~\".*\"}[5m]\n  )\n)",
+                    "expr": "max by (instance) (\n  rate(\n    avalanche_subnetevm_vm_eth_chain_txs_processed{chain=~\"$chain_id\"}[5m]\n  )\n)",
                     "legendFormat": "{{instance}}",
                     "range": true,
                     "rawQuery": false,
@@ -1363,7 +1429,13 @@
             "id": 13,
             "options": {
                 "legend": {
-                    "calcs": ["min", "max", "mean", "p95", "lastNotNull"],
+                    "calcs": [
+                        "min",
+                        "max",
+                        "mean",
+                        "p95",
+                        "lastNotNull"
+                    ],
                     "displayMode": "table",
                     "placement": "bottom",
                     "show": false,
@@ -1383,7 +1455,7 @@
                         "uid": "prometheus"
                     },
                     "editorMode": "code",
-                    "expr": "(60 / (increase(avalanche_snowman_blks_accepted_count{chain=~\".*\"}[1m]) > 0)) * 1000",
+                    "expr": "(60 / (increase(avalanche_snowman_blks_accepted_count{chain=~\"$chain_id\"}[1m]) > 0)) * 1000",
                     "legendFormat": "{{instance}}",
                     "range": true,
                     "rawQuery": false,
@@ -1398,7 +1470,37 @@
     "schemaVersion": 39,
     "tags": [],
     "templating": {
-        "list": []
+        "list": [
+            {
+                "name": "l1",
+                "label": "chain",
+                "type": "query",
+                "datasource": {
+                    "type": "prometheus",
+                    "uid": "prometheus"
+                },
+                "query": "label_values(up{job=\"avalanche\"}, l1)",
+                "refresh": 2,
+                "sort": 1,
+                "current": {
+                    "text": "main",
+                    "value": "main"
+                }
+            },
+            {
+                "name": "chain_id",
+                "type": "query",
+                "hide": 2,
+                "datasource": {
+                    "type": "prometheus",
+                    "uid": "prometheus"
+                },
+                "query": "label_values(up{job=\"avalanche\", l1=~\"$l1\"}, l1_chain_id)",
+                "refresh": 2,
+                "sort": 1,
+                "current": {}
+            }
+        ]
     },
     "time": {
         "from": "now-15m",

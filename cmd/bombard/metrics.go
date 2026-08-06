@@ -256,7 +256,7 @@ func scrapeAllNodes(rpcURLs []string) []nodeSnapshot {
 
 // sampler scrapes a focused set of rate/gauge metrics every interval and prints
 // one compact numeric row, so per-second dynamics (e.g. a dip's coincidence with
-// a txpool_pending peg or a blks_processing backlog spike) are visible — the
+// a txpool_pending peg or a blks_processing backlog spike) are visible, the
 // full ~45-metric panel is only meaningful as a begin/end delta and hides them.
 type sampler struct {
 	urls    []string
@@ -272,7 +272,7 @@ func newSampler(urls []string, chainID string) *sampler {
 
 // printSampleLegend prints the column key once, before the rows start.
 func printSampleLegend(urls []string) {
-	fmt.Printf("\nPER-SEC SAMPLE (%d node(s)) — txAcc/s: chain txs accepted/s | blkAcc,blkRej/s: blocks accepted/rejected per s | proc: max blks_processing (consensus backlog) | slot0%%: accepted in proposer slot-0 | pendMax: max txpool_pending across nodes | pf/s: polls failed/s\n", len(urls))
+	fmt.Printf("\nPER-SEC SAMPLE (%d node(s)), txAcc/s: chain txs accepted/s | blkAcc,blkRej/s: blocks accepted/rejected per s | proc: max blks_processing (consensus backlog) | slot0%%: accepted in proposer slot-0 | pendMax: max txpool_pending across nodes | pf/s: polls failed/s\n", len(urls))
 	fmt.Printf("SAMPLE   t  txAcc/s blkAcc/s blkRej/s proc slot0%% pendMax pf/s\n")
 }
 

@@ -22,7 +22,7 @@ const (
 	// connections instead of churning ephemeral ports / hitting fd limits.
 	sendConcPerNode = 64
 	// sendQueueLen is the per-node buffered queue depth. A dead or slow node
-	// fills its queue and then drops — it never blocks the issuer or other
+	// fills its queue and then drops, it never blocks the issuer or other
 	// nodes. Resubmission and the other nodes cover the dropped sends.
 	sendQueueLen = 4096
 
@@ -30,7 +30,7 @@ const (
 	// drop an endpoint from the send rotation once it falls ingressDropBehind
 	// blocks behind the furthest-ahead endpoint, and re-add it once within
 	// ingressRejoinWithin. Routing ingress to a node that isn't caught up wastes
-	// sends and — worse — keeps a recovering node (e.g. a wiped RPC) from ever
+	// sends and, worse, keeps a recovering node (e.g. a wiped RPC) from ever
 	// catching up. Hysteresis (drop >> rejoin) avoids flapping at the boundary.
 	ingressDropBehind    = 200
 	ingressRejoinWithin  = 50
@@ -38,12 +38,11 @@ const (
 	// ingressAtTipWithin gates ISSUANCE (not just rotation): bombard only sends the
 	// sequential-nonce stream to an endpoint within this many blocks of the tip.
 	// "Healthy" (within ingressDropBehind) is the right bar for a load balancer, but
-	// fatal for sequential nonces — a tx whose nonce sits above a behind endpoint's
+	// fatal for sequential nonces, a tx whose nonce sits above a behind endpoint's
 	// accepted frontier is an UNFILLABLE GAP: the node queues it but cannot mine it
 	// until it catches up, pinning throughput at 0. This bit is what keeps a graceful
 	// restore from stalling bombard: when the validator majority (and thus the active
-	// RPC set) flips to the recovering site, its archive RPCs are still catching up —
-	// so we keep issuing to the at-tip site we are restoring FROM until the recovering
+	// RPC set) flips to the recovering site, its archive RPCs are still catching up, // so we keep issuing to the at-tip site we are restoring FROM until the recovering
 	// RPCs are genuinely at tip, not merely "in rotation". Well above normal under-load
 	// lag, well below a restore catch-up backlog, so it neither flaps nor sends into a gap.
 	ingressAtTipWithin = 25
@@ -63,11 +62,11 @@ type nodeSender struct {
 	client  *ethclient.Client
 	queue   chan *types.Transaction
 	healthy atomic.Bool // in send rotation while within ingressDropBehind of tip
-	atTip   atomic.Bool // within ingressAtTipWithin of tip — safe to issue nonces to
+	atTip   atomic.Bool // within ingressAtTipWithin of tip, safe to issue nonces to
 	active  atomic.Bool // routed ingress only while on the active (validator) site
 }
 
-// newBroadcaster dials every rpcURL (lazily, over HTTP — a down node is included
+// newBroadcaster dials every rpcURL (lazily, over HTTP, a down node is included
 // and simply errors on send) behind a single tuned transport and starts the
 // per-node sender pools. sendTimeout bounds each individual send.
 func newBroadcaster(ctx context.Context, rpcURLs []string, sendTimeout time.Duration) (*broadcaster, error) {
@@ -76,8 +75,7 @@ func newBroadcaster(ctx context.Context, rpcURLs []string, sendTimeout time.Dura
 	}
 
 	// One shared transport. Keep-alive connections are pooled per host, bounded
-	// at sendConcPerNode so we never exceed what the sender goroutines can use —
-	// no ephemeral-port churn, no fd blowup.
+	// at sendConcPerNode so we never exceed what the sender goroutines can use, // no ephemeral-port churn, no fd blowup.
 	tr := &http.Transport{
 		Proxy:               http.ProxyFromEnvironment,
 		DialContext:         (&net.Dialer{Timeout: sendTimeout, KeepAlive: 30 * time.Second}).DialContext,
@@ -118,7 +116,7 @@ func newBroadcaster(ctx context.Context, rpcURLs []string, sendTimeout time.Dura
 }
 
 // run drains the node's queue, sending each tx with a tight per-call timeout and
-// ignoring all errors (already-known, nonce races, a down node — all expected).
+// ignoring all errors (already-known, nonce races, a down node, all expected).
 func (n *nodeSender) run(ctx context.Context, timeout time.Duration) {
 	for {
 		select {
@@ -138,13 +136,13 @@ func (b *broadcaster) broadcast(signed *types.Transaction) {
 	// Pick the send pool in priority order. Sequential-nonce issuance must land on an
 	// endpoint AT THE TIP: a tx whose nonce is above a behind endpoint's accepted
 	// frontier is an unfillable gap that pins throughput at 0 (see ingressAtTipWithin).
-	//   1. active + at-tip — steady state, and the end state of a completed migration.
-	//   2. any at-tip      — covers the restore window: the active set has flipped to the
+	//   1. active + at-tip, steady state, and the end state of a completed migration.
+	//   2. any at-tip, covers the restore window: the active set has flipped to the
 	//                        recovering site whose RPCs aren't caught up yet, so keep
 	//                        issuing to the at-tip site we are restoring FROM.
-	//   3. any healthy     — nothing is fully at tip but something is in rotation; a brief
+	//   3. any healthy, nothing is fully at tip but something is in rotation; a brief
 	//                        small-gap hop beats a stall.
-	//   4. everything      — nothing looks caught up at all; spray all so ingress never
+	//   4. everything, nothing looks caught up at all; spray all so ingress never
 	//                        hard-stops, and the resubmit loop retries as nodes recover.
 	activeAtTip, anyAtTip, anyHealthy := false, false, false
 	for _, n := range b.nodes {
@@ -184,7 +182,7 @@ func (b *broadcaster) broadcast(signed *types.Transaction) {
 }
 
 // monitorIngress polls every endpoint's height and routes ingress only to those
-// caught up to the tip — mirroring a load-balancer health check. A node that has
+// caught up to the tip, mirroring a load-balancer health check. A node that has
 // fallen behind (e.g. a freshly-wiped RPC rejoining mid-load) is taken out of the
 // send rotation so it can catch up without also serving load, then re-added once
 // within range. The furthest-ahead node is behind=0, so at least one endpoint is
@@ -211,17 +209,17 @@ func (b *broadcaster) monitorIngress(ctx context.Context) {
 				}
 			}
 			if maxH == 0 {
-				continue // nothing reachable yet — leave routing unchanged
+				continue // nothing reachable yet, leave routing unchanged
 			}
 			for i, n := range b.nodes {
 				behind := maxH - heights[i]
 				switch {
 				case n.healthy.Load() && behind > ingressDropBehind:
 					n.healthy.Store(false)
-					fmt.Fprintf(os.Stderr, "ingress: %s out of rotation — %d blocks behind tip (catching up)\n", n.url, behind)
+					fmt.Fprintf(os.Stderr, "ingress: %s out of rotation, %d blocks behind tip (catching up)\n", n.url, behind)
 				case !n.healthy.Load() && behind <= ingressRejoinWithin:
 					n.healthy.Store(true)
-					fmt.Fprintf(os.Stderr, "ingress: %s back in rotation — caught up (%d behind)\n", n.url, behind)
+					fmt.Fprintf(os.Stderr, "ingress: %s back in rotation, caught up (%d behind)\n", n.url, behind)
 				}
 				// atTip is the stricter issuance gate (see ingressAtTipWithin). No
 				// hysteresis: a few blocks of lag is normal under load, so flapping
@@ -229,7 +227,7 @@ func (b *broadcaster) monitorIngress(ctx context.Context) {
 				// equally-at-tip endpoints), and a restore backlog is far past it.
 				atTip := behind <= ingressAtTipWithin
 				if n.atTip.Swap(atTip) != atTip && !atTip {
-					fmt.Fprintf(os.Stderr, "ingress: %s no longer at tip — %d behind (holding issuance off it)\n", n.url, behind)
+					fmt.Fprintf(os.Stderr, "ingress: %s no longer at tip, %d behind (holding issuance off it)\n", n.url, behind)
 				}
 			}
 		}

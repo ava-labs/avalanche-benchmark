@@ -1,0 +1,850 @@
+{
+ "title": "Oracle Chain",
+ "uid": "avalanche-oracle",
+ "editable": true,
+ "refresh": "5s",
+ "schemaVersion": 39,
+ "style": "dark",
+ "tags": [
+  "avalanche",
+  "oracle"
+ ],
+ "time": {
+  "from": "now-15m",
+  "to": "now"
+ },
+ "timezone": "browser",
+ "templating": {
+  "list": []
+ },
+ "annotations": {
+  "list": []
+ },
+ "panels": [
+  {
+   "id": 1,
+   "type": "row",
+   "title": "Price feed \u2014 live on both chains",
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 0
+   },
+   "panels": []
+  },
+  {
+   "id": 2,
+   "type": "stat",
+   "title": "BTC-USD now",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 6,
+    "w": 5,
+    "x": 0,
+    "y": 1
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "oracle_relay_price{asset=\"BTC-USD\"}",
+     "refId": "A",
+     "legendFormat": "{{chain}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "currencyUSD",
+     "decimals": 2
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 3,
+   "type": "stat",
+   "title": "USDC-USD now",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 6,
+    "w": 5,
+    "x": 5,
+    "y": 1
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "oracle_relay_price{asset=\"USDC-USD\"}",
+     "refId": "A",
+     "legendFormat": "{{chain}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "currencyUSD",
+     "decimals": 4
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 4,
+   "type": "stat",
+   "title": "Main-chain price staleness (true, sub-second)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 6,
+    "w": 6,
+    "x": 10,
+    "y": 1
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "max by (asset) (oracle_relay_main_price_staleness_seconds)",
+     "refId": "A",
+     "legendFormat": "{{asset}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "decimals": 1
+    },
+    "overrides": []
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "textMode": "value_and_name"
+   }
+  },
+  {
+   "id": 5,
+   "type": "timeseries",
+   "title": "Relay in-flight / confirm lag",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 6,
+    "w": 8,
+    "x": 16,
+    "y": 1
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "oracle_relay_inflight",
+     "refId": "A",
+     "legendFormat": "in-flight queue"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(oracle_relay_delivered_total) - sum(oracle_relay_confirmed_total)",
+     "refId": "B",
+     "legendFormat": "delivered \u2212 confirmed"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 6,
+   "type": "timeseries",
+   "title": "BTC-USD \u2014 oracle vs main (overlay)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 7
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "oracle_relay_price{asset=\"BTC-USD\",chain=\"oracle\"}",
+     "refId": "A",
+     "legendFormat": "oracle (submitted)"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "oracle_relay_price{asset=\"BTC-USD\",chain=\"main\"}",
+     "refId": "B",
+     "legendFormat": "main (receiver state)"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "currencyUSD"
+    },
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 7,
+   "type": "timeseries",
+   "title": "USDC-USD \u2014 oracle vs main (overlay)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 7
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "oracle_relay_price{asset=\"USDC-USD\",chain=\"oracle\"}",
+     "refId": "A",
+     "legendFormat": "oracle (submitted)"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "oracle_relay_price{asset=\"USDC-USD\",chain=\"main\"}",
+     "refId": "B",
+     "legendFormat": "main (receiver state)"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "currencyUSD",
+     "decimals": 4
+    },
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 8,
+   "type": "row",
+   "title": "Cross-chain latency \u2014 oracle \u2192 main",
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 15
+   },
+   "panels": []
+  },
+  {
+   "id": 10,
+   "type": "timeseries",
+   "title": "Delivery latency \u2014 oracle event \u2192 confirmed on main",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 16
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.50, sum by (le) (rate(oracle_relay_pipeline_latency_seconds_bucket[2m])))",
+     "refId": "A",
+     "legendFormat": "p50"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(oracle_relay_pipeline_latency_seconds_bucket[2m])))",
+     "refId": "B",
+     "legendFormat": "p95"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.99, sum by (le) (rate(oracle_relay_pipeline_latency_seconds_bucket[2m])))",
+     "refId": "C",
+     "legendFormat": "p99"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s"
+    },
+    "overrides": []
+   },
+   "options": {},
+   "description": "Wall-clock from the relay seeing the aggregator's Warp event on the oracle chain to the delivery tx confirming on main: the full cross-chain hop. Sub-second precision (the relay's own clock, not block timestamps)."
+  },
+  {
+   "id": 100,
+   "type": "timeseries",
+   "title": "Price age on main \u2014 how far main lags the oracle",
+   "description": "Age of the price currently served on main, measured against the oracle event that produced it. Exported as a value at confirm time, so it is immune to scrape-interval and block-timestamp rounding. Lower = fresher.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 16
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "max by (asset) (oracle_relay_main_price_staleness_seconds)",
+     "refId": "A",
+     "legendFormat": "{{asset}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "min": 0
+    },
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 103,
+   "type": "timeseries",
+   "title": "Signature collection \u2014 ACP-118 quorum from the validators (p50/p95)",
+   "description": "Time to collect one message's quorum BitSetSignature from the oracle validators over their staking ports. The relay holds no BLS keys; requests fan out concurrently and return at the 67% quorum, so this tracks slowest-of-quorum round-trip plus BLS verification.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 24
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "A",
+     "legendFormat": "p50",
+     "expr": "histogram_quantile(0.50, sum by (le) (rate(oracle_relay_sign_latency_seconds_bucket[2m])))"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "refId": "B",
+     "legendFormat": "p95",
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(oracle_relay_sign_latency_seconds_bucket[2m])))"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "min": 0
+    },
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 102,
+   "type": "row",
+   "title": "Throughput \u2014 feed \u2192 relay \u2192 main",
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 32
+   },
+   "panels": []
+  },
+  {
+   "id": 25,
+   "type": "timeseries",
+   "title": "Message funnel \u2014 feed \u2192 relay \u2192 main (msg/s)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 33
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(oracle_feed_submitted_total[1m]))",
+     "refId": "A",
+     "legendFormat": "submitted (feed \u2192 oracle)"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(oracle_relay_delivered_total[1m]))",
+     "refId": "B",
+     "legendFormat": "delivered (relay \u2192 main)"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(oracle_relay_confirmed_total[1m]))",
+     "refId": "C",
+     "legendFormat": "confirmed (on main)"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(oracle_relay_skipped_stale_total[1m]))",
+     "refId": "D",
+     "legendFormat": "skipped (superseded seq)"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "mps"
+    },
+    "overrides": []
+   },
+   "options": {},
+   "description": "Every price update flows feed \u2192 oracle chain \u2192 relay \u2192 main. The three rates should sit on top of each other at 20 msg/s; a gap means that stage is lagging. skipped = superseded by a newer sequence before delivery (expected under backlog, not a loss)."
+  },
+  {
+   "id": 101,
+   "type": "timeseries",
+   "title": "Batching \u2014 messages packed per delivery tx",
+   "description": "Warp messages carried by each delivery tx on main (max 16). 1 = relaying in real time; higher = the relay is draining a backlog by batching. Rising batch size with flat delivery latency is the system absorbing load, not falling behind.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 33
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(oracle_relay_batch_size_sum[1m])) / sum(rate(oracle_relay_batch_size_count[1m]))",
+     "refId": "A",
+     "legendFormat": "avg"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "histogram_quantile(0.95, sum by (le) (rate(oracle_relay_batch_size_bucket[1m])))",
+     "refId": "B",
+     "legendFormat": "p95"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "min": 0
+    },
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 13,
+   "type": "row",
+   "title": "Chains \u2014 overview",
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 41
+   },
+   "panels": []
+  },
+  {
+   "id": 14,
+   "type": "timeseries",
+   "title": "Finalized height \u2014 oracle vs main",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 42
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "max by (l1) (avalanche_snowman_last_accepted_height{chain!~\"C|P|X|all\",l1=~\"oracle|main\"})",
+     "refId": "A",
+     "legendFormat": "{{l1}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 15,
+   "type": "timeseries",
+   "title": "Chain throughput \u2014 all txs/s (main includes benchmark load)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 42
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(avalanche_subnetevm_vm_eth_chain_txs_processed{l1=\"oracle\"}[1m]))",
+     "refId": "A",
+     "legendFormat": "oracle L1 (price submissions)"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(avalanche_subnetevm_vm_eth_chain_txs_processed{l1=\"main\"}[1m]))",
+     "refId": "B",
+     "legendFormat": "main L1 (all txs, incl. load)"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "tps"
+    },
+    "overrides": []
+   },
+   "options": {},
+   "description": "All executed txs per chain. The oracle line is price submissions; the main line counts everything, including bombard benchmark load \u2014 it is NOT oracle deliveries (see the message funnel for those)."
+  },
+  {
+   "id": 16,
+   "type": "timeseries",
+   "title": "Nodes up \u2014 by L1",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 50
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum by (l1) (up{job=\"avalanche-l1\"})",
+     "refId": "A",
+     "legendFormat": "{{l1}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 17,
+   "type": "timeseries",
+   "title": "Peer count by node",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 50
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "max by (node) (avalanche_network_peers{l1=~\"main|oracle\"})",
+     "refId": "A",
+     "legendFormat": "{{node}} ({{role}})"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 18,
+   "type": "row",
+   "title": "Oracle L1 \u2014 feed side",
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 58
+   },
+   "panels": []
+  },
+  {
+   "id": 19,
+   "type": "timeseries",
+   "title": "Finalized height by node \u2014 oracle",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 59
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "max by (node) (avalanche_snowman_last_accepted_height{chain!~\"C|P|X|all\",l1=\"oracle\"})",
+     "refId": "A",
+     "legendFormat": "{{node}} ({{role}})"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 20,
+   "type": "timeseries",
+   "title": "Block production rate \u2014 oracle (blk/s)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 59
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "max by (node) (rate(avalanche_snowman_blks_accepted_count{chain!~\"C|P|X|all\",l1=\"oracle\"}[1m]))",
+     "refId": "A",
+     "legendFormat": "{{node}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 21,
+   "type": "row",
+   "title": "Main L1 \u2014 receiver side",
+   "collapsed": false,
+   "gridPos": {
+    "h": 1,
+    "w": 24,
+    "x": 0,
+    "y": 67
+   },
+   "panels": []
+  },
+  {
+   "id": 22,
+   "type": "timeseries",
+   "title": "Finalized height by node \u2014 main",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 0,
+    "y": 68
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "max by (node) (avalanche_snowman_last_accepted_height{chain!~\"C|P|X|all\",l1=\"main\"})",
+     "refId": "A",
+     "legendFormat": "{{node}} ({{role}})"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {}
+  },
+  {
+   "id": 23,
+   "type": "timeseries",
+   "title": "Txs/s by node \u2014 main (all txs, incl. benchmark load)",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "gridPos": {
+    "h": 8,
+    "w": 12,
+    "x": 12,
+    "y": 68
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "max by (node) (rate(avalanche_subnetevm_vm_eth_chain_txs_processed{l1=\"main\"}[1m]))",
+     "refId": "A",
+     "legendFormat": "{{node}}"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "tps"
+    },
+    "overrides": []
+   },
+   "options": {},
+   "description": "Per-node executed txs on main. Includes bombard load; not just oracle deliveries."
+  }
+ ]
+}

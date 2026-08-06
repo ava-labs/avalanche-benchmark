@@ -1,0 +1,38 @@
+# One-command monitoring stack for the control machine.
+# Run from the deployment root:
+#
+#   ./bin/fleet targets > monitoring/targets.json
+#   docker compose -f monitoring/docker-compose.yml up -d
+#
+# Grafana: http://<control-host>:3000 (first login admin/admin).
+# Prometheus: http://<control-host>:9090.
+services:
+  prometheus:
+    image: prom/prometheus:v2.53.4
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./targets.json:/etc/prometheus/targets.json:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Serves fleet_actual_weight from the deployment records. No chain API:
+  # it also works on an isolated frozen fleet.
+  weight-exporter:
+    image: python:3.12-alpine
+    working_dir: /work
+    command: ["python3", "monitoring/fleet-weight-exporter.py", "deployment", "9091"]
+    volumes:
+      - ..:/work:ro
+
+  grafana:
+    image: grafana/grafana:11.1.5
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./dashboards:/var/lib/grafana/dashboards/fleet:ro
+      # One line per installed app: mount its dashboards directory.
+      - ../apps/settlement-feed/dashboards:/var/lib/grafana/dashboards/apps/settlement-feed:ro
