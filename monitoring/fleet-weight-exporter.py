@@ -46,11 +46,15 @@ def render() -> str:
     ]
     for machine, identity in sorted(placement.items(), key=lambda kv: int(kv[0])):
         node = by_identity.get(identity)
-        if node is None or node.get("role") != "validator":
+        if node is None or not node.get("role", "").endswith("validator"):
             continue
+        # The chain field is present only beyond the role default.
+        l1 = node.get("chain") or (
+            "oracle" if node["role"] == "oracle-validator" else "main"
+        )
         lines.append(
-            'fleet_actual_weight{machine="%s",identity="%s",dc="%s"} %d'
-            % (machine, identity, dcs.get(machine, ""), node["weight"])
+            'fleet_actual_weight{machine="%s",identity="%s",dc="%s",l1="%s"} %d'
+            % (machine, identity, dcs.get(machine, ""), l1, node["weight"])
         )
     return "\n".join(lines) + "\n"
 

@@ -1,48 +1,70 @@
 # Playbook 06: monitoring
 
-This playbook connects Prometheus and Grafana to the fleet. The dashboards
-answer two questions. Does the chain produce blocks? Which machines carry
-the stake?
+This playbook starts Prometheus and Grafana on the control machine. Three
+commands, no hand-written scrape configs. The dashboards answer three
+questions. Does each chain produce blocks? Is every node up? Which
+machines carry the stake?
 
-## Prometheus
+## Start the stack
 
-Make one scrape job that reads `/ext/metrics` from every node. Give each
-target these labels:
-
-```yaml
-- targets: ["10.0.0.11:9650"]
-  labels: { node: "a", role: "validator", dc: "A" }
-```
-
-The `node` label is the identity letter. The `dc` label is the same tag
-as in `nodes.ini`.
-
-Add one job for the app services. The settlement-feed exporter listens on
-port 9701. Add one job for the weight exporter:
+Run from the deployment root. Docker with the compose plugin must be
+installed.
 
 ```bash
-python3 monitoring/fleet-weight-exporter.py   # port 9091
+./bin/fleet targets > monitoring/targets.json
+docker compose -f monitoring/docker-compose.yml up -d
 ```
 
-The weight exporter reads the placement and the deployment records on the
-control machine. It does not use a chain API. It therefore operates on an
-isolated fleet.
+Open Grafana at `http://<control-host>:3000`. The first login is
+admin/admin. Start with the Fleet Health dashboard.
 
-## Grafana
+`fleet targets` renders the Prometheus scrape targets from `nodes.ini`
+and the deployment records. Every target carries these labels:
 
-Provision `monitoring/grafana-datasources.yml`. Provision every dashboard
-from `monitoring/dashboards/`. Also provision each app's `dashboards/`
-directory. For the settlement-feed app, this is the Direct Price Feed
-dashboard. The app dashboard files have name prefixes. Put them in the
-same provisioning directory as the base dashboards.
+- `node`: the inventory node number.
+- `role`: the inventory role.
+- `dc`: the data center tag, when the inventory sets one.
+- `l1`: the name of the chain the node serves. The P-chain node has no
+  `l1` label because it serves every chain.
+- `l1_chain_id`: the blockchain ID of that chain, after `l1 create`.
 
-The failover dashboard shows the up/down state and the weight per machine,
-for each data center. It also shows the height per node, the polls per
-node, and the chain TPS.
+Re-run `fleet targets` after every inventory change and after `l1 create`.
+Prometheus reloads the file by itself.
 
-Measure throughput from the chain-TPS panel:
-`max(rate(avalanche_subnetevm_vm_eth_chain_txs_accepted[1m]))`. This value
-comes from the accepted transactions on the chain.
+## Per-chain dashboards
+
+Every fleet dashboard has a chain dropdown. Pick a chain and every panel
+shows only that chain. The dropdown lists the `l1` label values, so a new
+chain in `nodes.ini` appears there without dashboard changes.
+
+The dashboards, in the order to open them:
+
+1. **Fleet Health**: the default view. Nodes up, P-chain beacon, height
+   per node, throughput, poll success, stake weight per data center.
+2. **Failover**: up/down and weight per machine and per data center. Use
+   it during failover drills (playbook 03).
+3. **Avalanche**: consensus internals per node. Open it when Fleet Health
+   shows a problem and you need the cause.
+4. **Machine**: CPU, memory, and disk per node process.
+
+App dashboards provision from each app's `dashboards/` directory. The
+compose file mounts `apps/settlement-feed/dashboards`; add one mount line
+per additional app.
+
+## The weight exporter
+
+The compose stack runs `monitoring/fleet-weight-exporter.py` as a
+service. It reads `deployment/placement.json` and
+`deployment/public.json` on every scrape and serves `fleet_actual_weight`
+per machine, with `dc` and `l1` labels. It uses no chain API, so it also
+operates on an isolated frozen fleet. A key swap from `fleet place` shows
+up on the next scrape.
+
+## Measure throughput
+
+Read the throughput panel on Fleet Health, or query directly:
+`max(rate(avalanche_subnetevm_vm_eth_chain_txs_accepted{chain="<blockchain-id>"}[1m]))`.
+The value comes from the accepted transactions on that chain.
 
 ## Health probe
 
@@ -50,3 +72,13 @@ Automation can call `fleet status` directly. The command exits with a
 code that is not 0 only for real problems. These problems are: identity
 drift, an `up` node with a silent API, and a required P-chain failure. An
 isolated frozen fleet in its normal state exits with code 0.
+
+## Without Docker
+
+Run Prometheus and Grafana any other way with the same files:
+`monitoring/prometheus.yml` (edit the weight-exporter and app targets to
+`localhost`), `monitoring/targets.json`, the provisioning files
+`monitoring/grafana-datasources.yml` (change the URL to
+`http://localhost:9090`) and `monitoring/grafana-dashboards.yml`, and the
+dashboards under `monitoring/dashboards/`. Start the weight exporter by
+hand: `python3 monitoring/fleet-weight-exporter.py deployment 9091`.

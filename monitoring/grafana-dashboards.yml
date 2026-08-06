@@ -1,0 +1,15 @@
+apiVersion: 1
+
+providers:
+  - name: fleet
+    folder: Fleet
+    type: file
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards/fleet
+  - name: apps
+    folder: Apps
+    type: file
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards/apps

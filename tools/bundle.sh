@@ -44,10 +44,10 @@ test -d chains && cp -R chains "$STAGE/$NAME/chains"
 cp -R playbooks "$STAGE/$NAME/playbooks"
 cp -R examples "$STAGE/$NAME/examples"
 mkdir -p "$STAGE/$NAME/monitoring"
-cp monitoring/grafana-datasources.yml "$STAGE/$NAME/monitoring/"
+cp monitoring/grafana-datasources.yml monitoring/grafana-dashboards.yml \
+   monitoring/prometheus.yml monitoring/docker-compose.yml \
+   monitoring/fleet-weight-exporter.py "$STAGE/$NAME/monitoring/"
 cp -R monitoring/dashboards "$STAGE/$NAME/monitoring/dashboards"
-test -f monitoring/fleet-weight-exporter.py && \
-  cp monitoring/fleet-weight-exporter.py "$STAGE/$NAME/monitoring/"
 
 # The app: dashboards overlay, docs, runbook, contract sources for reference.
 mkdir -p "$STAGE/$NAME/apps"

@@ -96,6 +96,11 @@ func run() error {
 			return fmt.Errorf("usage:\n  %s upgrade [--chain <name>] <upgrade.json>", program)
 		}
 		return deployer.UpgradeChain(ctx, chain, rest[0])
+	case "targets":
+		if len(arguments) != 1 {
+			return fmt.Errorf("targets takes no arguments; pipe it: %s targets > monitoring/targets.json", program)
+		}
+		return deployer.Targets()
 	case "place":
 		if len(arguments) != 3 {
 			return fmt.Errorf("usage:\n  %s place <identity-letter> <node>", program)
@@ -118,6 +123,7 @@ func usage(program string) string {
 		"stop [<node> ...]",
 		"destroy <node> [<node> ...]",
 		"upgrade [--chain <name>] <upgrade.json>",
+		"targets   (print Prometheus scrape targets; pipe to monitoring/targets.json)",
 		"place <identity-letter> <node>",
 	}
 	text := ""

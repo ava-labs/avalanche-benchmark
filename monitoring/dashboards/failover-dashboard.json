@@ -24,7 +24,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(up{job=\"avalanche-l1\"})",
+          "expr": "sum(up{job=\"avalanche\", l1=~\"$l1|\"})",
           "refId": "A",
           "legendFormat": "up"
         }
@@ -82,7 +82,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(avalanche_benchlist_benched_weight{chain!~\"P|C|X|all\"})",
+          "expr": "max(avalanche_benchlist_benched_weight{chain=~\"$chain_id\"})",
           "refId": "A",
           "legendFormat": "benched"
         }
@@ -140,7 +140,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(avalanche_snowman_polls_successful{chain!~\"P|C|X|all\"}[1m])) / (sum(increase(avalanche_snowman_polls_successful{chain!~\"P|C|X|all\"}[1m])) + sum(increase(avalanche_snowman_polls_failed{chain!~\"P|C|X|all\"}[1m])))",
+          "expr": "sum(increase(avalanche_snowman_polls_successful{chain=~\"$chain_id\"}[1m])) / (sum(increase(avalanche_snowman_polls_successful{chain=~\"$chain_id\"}[1m])) + sum(increase(avalanche_snowman_polls_failed{chain=~\"$chain_id\"}[1m])))",
           "refId": "A",
           "legendFormat": "success"
         }
@@ -241,7 +241,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=\"avalanche-l1\",dc=\"A\"}",
+          "expr": "up{job=\"avalanche\", l1=~\"$l1|\", dc=\"A\"}",
           "refId": "A",
           "legendFormat": "{{node}} ({{role}})"
         }
@@ -300,7 +300,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=\"avalanche-l1\",dc=\"B\"}",
+          "expr": "up{job=\"avalanche\", l1=~\"$l1|\", dc=\"B\"}",
           "refId": "A",
           "legendFormat": "{{node}} ({{role}})"
         }
@@ -359,7 +359,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "fleet_actual_weight{dc=\"A\"}",
+          "expr": "fleet_actual_weight{dc=\"A\", l1=~\"$l1\"}",
           "refId": "A",
           "legendFormat": "machine {{machine}} ({{identity}})"
         }
@@ -422,7 +422,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "fleet_actual_weight{dc=\"B\"}",
+          "expr": "fleet_actual_weight{dc=\"B\", l1=~\"$l1\"}",
           "refId": "A",
           "legendFormat": "machine {{machine}} ({{identity}})"
         }
@@ -485,7 +485,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max by (node) (avalanche_snowman_last_accepted_height{chain!~\"P|C|X|all\"})",
+          "expr": "max by (node) (avalanche_snowman_last_accepted_height{chain=~\"$chain_id\"})",
           "refId": "A",
           "legendFormat": "{{node}}"
         }
@@ -516,7 +516,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (node) (increase(avalanche_snowman_polls_successful{chain!~\"P|C|X|all\"}[1m])) / (sum by (node) (increase(avalanche_snowman_polls_successful{chain!~\"P|C|X|all\"}[1m])) + sum by (node) (increase(avalanche_snowman_polls_failed{chain!~\"P|C|X|all\"}[1m])))",
+          "expr": "sum by (node) (increase(avalanche_snowman_polls_successful{chain=~\"$chain_id\"}[1m])) / (sum by (node) (increase(avalanche_snowman_polls_successful{chain=~\"$chain_id\"}[1m])) + sum by (node) (increase(avalanche_snowman_polls_failed{chain=~\"$chain_id\"}[1m])))",
           "refId": "A",
           "legendFormat": "{{node}}"
         }
@@ -549,7 +549,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(rate(avalanche_subnetevm_vm_eth_chain_txs_accepted[1m]))",
+          "expr": "max(rate(avalanche_subnetevm_vm_eth_chain_txs_accepted{chain=~\"$chain_id\"}[1m]))",
           "refId": "A",
           "legendFormat": "tx/s"
         }
@@ -582,7 +582,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "max(rate(avalanche_snowman_blks_accepted_count{chain!~\"P|C|X|all\"}[1m]))",
+          "expr": "max(rate(avalanche_snowman_blks_accepted_count{chain=~\"$chain_id\"}[1m]))",
           "refId": "A",
           "legendFormat": "blocks/s"
         }
@@ -602,7 +602,37 @@
     "failover"
   ],
   "templating": {
-    "list": []
+    "list": [
+      {
+        "name": "l1",
+        "label": "chain",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values(up{job=\"avalanche\"}, l1)",
+        "refresh": 2,
+        "sort": 1,
+        "current": {
+          "text": "main",
+          "value": "main"
+        }
+      },
+      {
+        "name": "chain_id",
+        "type": "query",
+        "hide": 2,
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": "label_values(up{job=\"avalanche\", l1=~\"$l1\"}, l1_chain_id)",
+        "refresh": 2,
+        "sort": 1,
+        "current": {}
+      }
+    ]
   },
   "time": {
     "from": "now-30m",
