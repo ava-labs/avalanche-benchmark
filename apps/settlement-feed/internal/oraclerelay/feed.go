@@ -164,7 +164,7 @@ func newFeedMetrics() *feedMetrics {
 			// Fine-grained through the expected 50-300ms range: quantile
 			// panels interpolate inside a bucket, so coarse buckets there
 			// overstate p95 by up to half a bucket width.
-			Buckets:   []float64{0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.2, 0.25, 0.35, 0.5, 1, 2},
+			Buckets: []float64{0.025, 0.05, 0.075, 0.1, 0.125, 0.15, 0.2, 0.25, 0.35, 0.5, 1, 2},
 		}, []string{"asset"}),
 	}
 	m.settlementOpen = prometheus.NewGauge(prometheus.GaugeOpts{

@@ -845,6 +845,7 @@ func TestStateSyncPeersStayWithinTheirL1(t *testing.T) {
 		t.Fatalf("oracle validator peers = %q %q, want only the oracle rpc", ips, ids)
 	}
 }
+
 // The chain= partition generalizes the oracle special case: peers pair only
 // within their own chain, whatever the chain is called.
 func TestStateSyncPeersPartitionByDeclaredChain(t *testing.T) {

@@ -78,7 +78,7 @@ ORACLE_RECEIVER_ADDRESS=0x0000000000000000000000000000000000FeedED
 	if !deployment.HasOracle() {
 		t.Fatal("oracle fields present but HasOracle is false")
 	}
-	if (deployment.PriceFeedAddress != [20]byte{}) {
+	if deployment.PriceFeedAddress != [20]byte{} {
 		t.Fatalf("legacy state must leave the price feed address empty, got %s", deployment.PriceFeedAddress)
 	}
 }
