@@ -16,18 +16,38 @@ contracts reach the chain in two ways:
 ## Procedure
 
 ```bash
-./bin/oracle upgrade              # step 1: write ./upgrade.json (activation in 15 minutes)
-cat upgrade.json                  # step 2: review it
-./bin/fleet upgrade upgrade.json  # step 3: install on every node, rolling restart
+./bin/fleet app list                     # step 1: see the installable apps
+./bin/fleet app install settlement-feed  # step 2: render, then install with a rolling restart
 ```
 
-Step 1 renders the feed's accounts (code and storage seeds) for this
-deployment's feeder key. Pass a number to change the activation delay in
-minutes, for example `./bin/oracle upgrade 30`.
+`fleet app install` reads the app's manifest, runs the app's renderer
+from the deployment root, and installs the rendered fragment through the
+same code path as `fleet upgrade`. For settlement-feed the renderer is
+`./bin/oracle upgrade`, and it writes `./upgrade.json` with an activation
+time 15 minutes out.
 
-Step 3 first copies the file to every main-L1 node. No node restarts
-before every node has the file. It then restarts the nodes one at a time
-and waits for each node to serve again.
+The install targets exactly one chain. The target resolves in this
+order: the `--chain` flag, then the manifest's `chain` field, then
+`main`. The command refuses a chain that `nodes.ini` does not declare,
+before the renderer runs.
+
+The push copies the full upgrade history to every node of the target
+chain. No node restarts before every node has the file. The nodes then
+restart one at a time, and each node serves again before the next stops.
+
+### The app manifest
+
+`apps/<name>/app.json` declares the app to the installer:
+
+- `name`: the app name. It must equal the directory name.
+- `description`: one line, shown by `fleet app list`.
+- `chain`: the default target chain. Optional. The default is `main`.
+- `render`: the argv that writes the upgrade fragment. It runs from the
+  deployment root and inherits the environment.
+- `output`: the file the renderer writes, relative to the deployment
+  root. Optional. The default is `upgrade.json`.
+
+## Verify
 
 The upgrade executes in the first block at or after the activation time.
 An idle chain therefore shows no code until a transaction produces a
@@ -74,6 +94,18 @@ entry changes when the second app arrives.
 ## Custom upgrades
 
 `fleet upgrade` installs any valid subnet-evm upgrade fragment, not only
-the one `oracle upgrade` renders. Write your own for precompile changes or
-for your own contracts, and the same merge, validation, and rolling
-restart apply.
+the one an app manifest names. The manual path behind `fleet app install`
+stays available:
+
+```bash
+./bin/oracle upgrade              # step 1: write ./upgrade.json (activation in 15 minutes)
+cat upgrade.json                  # step 2: review it
+./bin/fleet upgrade upgrade.json  # step 3: install on every node, rolling restart
+```
+
+Step 1 renders the feed's accounts (code and storage seeds) for this
+deployment's feeder key. Pass a number to change the activation delay in
+minutes, for example `./bin/oracle upgrade 30`. Use this path to review
+the fragment before it lands, or to install a hand-written fragment for
+precompile changes or your own contracts. The same merge, validation,
+and rolling restart apply.

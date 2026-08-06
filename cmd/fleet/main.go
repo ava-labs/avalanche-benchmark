@@ -101,6 +101,44 @@ func run() error {
 			return fmt.Errorf("targets takes no arguments; pipe it: %s targets > monitoring/targets.json", program)
 		}
 		return deployer.Targets()
+	case "app":
+		rest := arguments[1:]
+		appUsage := fmt.Errorf("usage:\n  %s app install <name> [--chain <name>]\n  %s app list", program, program)
+		if len(rest) == 0 {
+			return appUsage
+		}
+		switch rest[0] {
+		case "list":
+			if len(rest) != 1 {
+				return appUsage
+			}
+			return deployer.ListApps()
+		case "install":
+			// The target chain resolves as: the --chain flag, else the
+			// manifest's chain, else main. One chain per install.
+			name := ""
+			chain := ""
+			install := rest[1:]
+			for index := 0; index < len(install); index++ {
+				if install[index] == "--chain" {
+					if index+1 >= len(install) {
+						return appUsage
+					}
+					chain = install[index+1]
+					index++
+					continue
+				}
+				if name != "" {
+					return appUsage
+				}
+				name = install[index]
+			}
+			if name == "" {
+				return appUsage
+			}
+			return deployer.InstallApp(ctx, name, chain)
+		}
+		return appUsage
 	case "place":
 		if len(arguments) != 3 {
 			return fmt.Errorf("usage:\n  %s place <identity-letter> <node>", program)
@@ -123,6 +161,8 @@ func usage(program string) string {
 		"stop [<node> ...]",
 		"destroy <node> [<node> ...]",
 		"upgrade [--chain <name>] <upgrade.json>",
+		"app install <name> [--chain <name>]",
+		"app list",
 		"targets   (print Prometheus scrape targets; pipe to monitoring/targets.json)",
 		"place <identity-letter> <node>",
 	}

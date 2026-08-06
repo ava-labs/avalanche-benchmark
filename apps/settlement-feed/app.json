@@ -1,0 +1,7 @@
+{
+  "name": "settlement-feed",
+  "description": "Chainlink-compatible price feed with an example settlement consumer",
+  "chain": "main",
+  "render": ["./bin/oracle", "upgrade"],
+  "output": "upgrade.json"
+}

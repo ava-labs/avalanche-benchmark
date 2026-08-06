@@ -31,11 +31,12 @@ on any other app. Everything specific to this app is in this directory.
 Genesis is base layer only; the app never bakes into it. There are two
 paths:
 
-1. The upgrade history. This is THE install path. `./bin/oracle upgrade`
-   renders `upgrade.json` with the app's accounts (the proxy at
-   `0x...FeedF00D`, the aggregator at `0x...FEeDfAce`), and
-   `./bin/fleet upgrade upgrade.json` installs it with a rolling restart.
-   The chain is not recreated, and a frozen P-chain stays frozen. See
+1. The upgrade history. This is THE install path. `./bin/fleet app
+   install settlement-feed` reads `app.json`, runs `./bin/oracle upgrade`
+   to render `upgrade.json` with the app's accounts (the proxy at
+   `0x...FeedF00D`, the aggregator at `0x...FEeDfAce`), and installs it
+   with a rolling restart. The chain is not recreated, and a frozen
+   P-chain stays frozen. See
    [playbooks/08-install-app.md](../../playbooks/08-install-app.md).
 2. A normal forge deployment, for consumer contracts like `Settlement`,
    at a new address.

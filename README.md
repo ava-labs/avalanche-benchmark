@@ -249,6 +249,8 @@ restart-on-crash, start-on-boot; needs passwordless sudo). See
 | `fleet stop [sel...]` | controlled stop. Data, keys, and logs stay. |
 | `fleet destroy <sel...>` | SIGKILL, then delete `chainData/<chain-id>` only. Simulates sudden loss. Node numbers are required. |
 | `fleet upgrade [--chain <name>] <fragment.json>` | append a subnet-evm upgrade fragment to the named chain's history (default `main`, in `deployment/upgrades.json`; other chains in `deployment/upgrades-<name>.json`), install the full history on that chain's nodes, then a rolling restart. The history reaches every node before the first restart, and every later deploy carries it. Explicit zero values are refused: they stop a node on the restart after activation. |
+| `fleet app install <name> [--chain <name>]` | read `apps/<name>/app.json`, run the app's renderer from the deployment root, then install the rendered fragment through the same path as `fleet upgrade`. The target chain is the `--chain` flag, else the manifest's `chain`, else `main`; exactly one chain per call, and an undeclared chain is refused. See playbooks/08-install-app.md. |
+| `fleet app list` | one line per `apps/*/app.json`: name, target chain, description. A directory without a manifest is skipped with a warning. |
 | `fleet place <letter> <node>` | reconcile, swap the placement, reconcile again. One move per call. Does not wait for readiness. The only placement verb. |
 | `fleet targets` | print the Prometheus scrape targets for the inventory, labeled with node, role, dc, chain name, and blockchain ID. Pipe to `monitoring/targets.json`; see playbooks/06-monitoring.md. |
 | `bombard -rps N -duration D [-chain <name>]` | the load generator. Sends to the named chain's rpc nodes; the default is `main`. |
