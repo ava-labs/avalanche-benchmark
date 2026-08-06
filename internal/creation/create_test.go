@@ -122,7 +122,7 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 		t.Fatal(err)
 	}
 	feeder := ethcommon.HexToAddress("0xAbcDef0123456789abCDef0123456789ABcdEF01")
-	public := NewPublic(generated, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"), feeder)
+	public := NewPublic(generated, cfg.Nodes, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"), feeder)
 	if _, err := SavePublic(filepath.Join(output, "public.json"), public); err != nil {
 		t.Fatal(err)
 	}
@@ -290,7 +290,7 @@ func TestCreateWithOracleRunsManagerOracleMain(t *testing.T) {
 		t.Fatal(err)
 	}
 	feeder := ethcommon.HexToAddress("0xAbcDef0123456789abCDef0123456789ABcdEF01")
-	public := NewPublic(generated, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"), feeder)
+	public := NewPublic(generated, cfg.Nodes, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"), feeder)
 	if _, err := SavePublic(filepath.Join(output, "public.json"), public); err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +450,7 @@ func TestCreateTwoChainsLoopsAndRecordsPerChainState(t *testing.T) {
 		t.Fatal(err)
 	}
 	feeder := ethcommon.HexToAddress("0xAbcDef0123456789abCDef0123456789ABcdEF01")
-	public := NewPublic(generated, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"), feeder)
+	public := NewPublic(generated, cfg.Nodes, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"), feeder)
 	if _, err := SavePublic(filepath.Join(output, "public.json"), public); err != nil {
 		t.Fatal(err)
 	}
@@ -545,6 +545,132 @@ func TestCreateTwoChainsLoopsAndRecordsPerChainState(t *testing.T) {
 	}
 }
 
+// Explicit weight= tags replace the ladder on their chain: they land in
+// public.json, survive the LoadPublic round trip, and reach the conversion
+// validators. A second chain without tags keeps the default ladder.
+func TestCreateExplicitWeightsReachConversionAndPublicRecords(t *testing.T) {
+	dir := t.TempDir()
+	template := `{
+		"config":{"chainId":99999},"alloc":{},"nonce":"0x0",
+		"timestamp":"0x0","extraData":"0x00","gasLimit":"0x1",
+		"difficulty":"0x0","mixHash":"0x0","coinbase":"0x0",
+		"number":"0x0","gasUsed":"0x0","parentHash":"0x0"
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "genesis-template.json"), []byte(template), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tradingTemplate := strings.Replace(template, "99999", "88888", 1)
+	if err := os.MkdirAll(filepath.Join(dir, "chains", "trading"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "chains", "trading", "genesis-template.json"), []byte(tradingTemplate), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		Environment: config.Environment{
+			Network:           "fuji",
+			PChainAPI:         "https://example.invalid",
+			FundingPrivateKey: strings.Repeat("1", 64),
+		},
+		Nodes: []config.Node{
+			{Number: 1, Host: "v1", Role: config.RoleValidator, Chain: "main", Weight: 70000},
+			{Number: 2, Host: "v2", Role: config.RoleValidator, Chain: "main", Weight: 70000},
+			{Number: 3, Host: "v3", Role: config.RoleValidator, Chain: "main", Weight: 500},
+			{Number: 4, Host: "v4", Role: config.RoleValidator, Chain: "main", Weight: 1},
+			{Number: 5, Host: "rpc", Role: config.RoleRPC, Chain: "main"},
+			{Number: 6, Host: "pchain", Role: config.RolePChain},
+			{Number: 7, Host: "t1", Role: config.RoleValidator, Chain: "trading"},
+			{Number: 8, Host: "t2", Role: config.RoleValidator, Chain: "trading"},
+			{Number: 9, Host: "t3", Role: config.RoleValidator, Chain: "trading"},
+			{Number: 10, Host: "t4", Role: config.RoleValidator, Chain: "trading"},
+			{Number: 11, Host: "t5", Role: config.RoleRPC, Chain: "trading"},
+		},
+	}
+	wallet := &fakeWallet{}
+	factory := func(
+		_ context.Context,
+		_ string,
+		_ keychain.Keychain,
+		_ primary.WalletConfig,
+	) (pwallet.Wallet, error) {
+		return wallet, nil
+	}
+
+	output := filepath.Join(dir, "deployment")
+	if err := os.Mkdir(output, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	privateOutput := filepath.Join(dir, "private")
+	if err := os.Mkdir(privateOutput, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	generated, err := identity.Generate(privateOutput, cfg.Nodes, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	feeder := ethcommon.HexToAddress("0xAbcDef0123456789abCDef0123456789ABcdEF01")
+	public := NewPublic(generated, cfg.Nodes, ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"), feeder)
+	if _, err := SavePublic(filepath.Join(output, "public.json"), public); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := os.ReadFile(filepath.Join(output, "public.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(manifest), `"explicitWeight": true`) {
+		t.Fatal("public.json must mark explicit weights")
+	}
+	loaded, _, err := LoadPublic(filepath.Join(output, "public.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The public deployment records carry the explicit weights on main and
+	// the default ladder on trading.
+	wantWeights := map[int]uint64{
+		1: 70000, 2: 70000, 3: 500, 4: 1,
+		7: HighWeight, 8: HighWeight, 9: HighWeight, 10: LowWeight,
+	}
+	for _, node := range loaded.Nodes {
+		want, isValidator := wantWeights[node.Node]
+		if !isValidator {
+			continue
+		}
+		if node.Weight != want {
+			t.Fatalf("public node %d weight = %d, want %d", node.Node, node.Weight, want)
+		}
+		if wantExplicit := node.Node <= 4; node.ExplicitWeight != wantExplicit {
+			t.Fatalf("public node %d explicitWeight = %v, want %v", node.Node, node.ExplicitWeight, wantExplicit)
+		}
+	}
+
+	result, err := create(context.Background(), cfg.Environment, output, dir, loaded, factory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(wallet.conversions) != 3 {
+		t.Fatalf("expected three conversions, got %d", len(wallet.conversions))
+	}
+	if wallet.conversions[1].subnetID != result.State.SubnetID {
+		t.Fatalf("main must convert second: %+v", wallet.conversions[1])
+	}
+	// Conversion validators are sorted by NodeID, so compare weight multisets.
+	countWeights := func(values []*txs.ConvertSubnetToL1Validator) map[uint64]int {
+		counts := make(map[uint64]int, len(values))
+		for _, validator := range values {
+			counts[validator.Weight]++
+		}
+		return counts
+	}
+	mainCounts := countWeights(wallet.conversions[1].values)
+	if !reflect.DeepEqual(mainCounts, map[uint64]int{70000: 2, 500: 1, 1: 1}) {
+		t.Fatalf("main conversion weights = %v", mainCounts)
+	}
+	tradingCounts := countWeights(wallet.conversions[2].values)
+	if !reflect.DeepEqual(tradingCounts, map[uint64]int{HighWeight: 3, LowWeight: 1}) {
+		t.Fatalf("trading conversion weights = %v", tradingCounts)
+	}
+}
+
 // A second chain that falls back to the root template shares the main
 // chain's EVM chainId. The same addresses are funded on both chains at
 // nonce 0, so a transaction replays across them. create refuses this.
@@ -593,6 +719,7 @@ func TestCreateRefusesDuplicateEVMChainIDs(t *testing.T) {
 	}
 	public := NewPublic(
 		generated,
+		nodes,
 		ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"),
 		ethcommon.HexToAddress("0xAbcDef0123456789abCDef0123456789ABcdEF01"),
 	)

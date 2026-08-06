@@ -1,7 +1,10 @@
-# <node-number> host=<address> role=validator|rpc|pchain|archive|oracle-validator|oracle-rpc [chain=<name>] [dc=<tag>]
-# Validators are registered in ascending node-number order. The first three
-# validators OF EACH CHAIN start at weight 100000; every remaining validator
-# starts at 1000.
+# <node-number> host=<address> role=validator|rpc|pchain|archive|oracle-validator|oracle-rpc [chain=<name>] [weight=<n>] [dc=<tag>]
+# Validators are registered in ascending node-number order. The default
+# ladder: the first three validators OF EACH CHAIN start at weight 100000;
+# every remaining validator starts at 1000.
+# weight= overrides the ladder with an explicit initial stake (an integer,
+# at least 1). It is valid only on validator and oracle-validator lines.
+# Set it on every validator of a chain or on none; a mix is an error.
 # chain= names the L1 a node serves (lowercase letters, digits, hyphens; at
 # most 20 characters). Omitted means main. Every named chain needs at least
 # one validator. The names oracle and management are reserved. See

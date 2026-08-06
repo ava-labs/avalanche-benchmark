@@ -32,6 +32,7 @@ func TestLoadPublicRejectsPolicyDriftAndUnknownFields(t *testing.T) {
 	publicPath := filepath.Join(root, "public.json")
 	if _, err := SavePublic(publicPath, NewPublic(
 		generated,
+		nodes,
 		ethcommon.HexToAddress("0x1234567890123456789012345678901234567890"),
 		ethcommon.HexToAddress("0xAbcDef0123456789abCDef0123456789ABcdEF01"),
 	)); err != nil {
@@ -56,5 +57,15 @@ func TestLoadPublicRejectsPolicyDriftAndUnknownFields(t *testing.T) {
 	}
 	if _, _, err := LoadPublic(publicPath); err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("unknown field was accepted: %v", err)
+	}
+
+	// A hand edit that marks one validator explicit while the rest keep the
+	// ladder violates the all-or-none rule per chain.
+	mixed := strings.Replace(string(contents), `"weight": 100000`, `"weight": 100000, "explicitWeight": true`, 1)
+	if err := os.WriteFile(publicPath, []byte(mixed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadPublic(publicPath); err == nil || !strings.Contains(err.Error(), "mixes explicit and default validator weights") {
+		t.Fatalf("mixed explicit and default weights were accepted: %v", err)
 	}
 }

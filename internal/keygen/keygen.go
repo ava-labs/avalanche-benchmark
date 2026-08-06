@@ -57,7 +57,7 @@ func Generate(outputDirectory string, nodes []config.Node, managerCount int) (Re
 		return Result{}, fmt.Errorf("write oracle feeder key %s: %w", feederKeyPath, err)
 	}
 
-	public := creation.NewPublic(generated, genesisKey.EthAddress(), feederKey.EthAddress())
+	public := creation.NewPublic(generated, nodes, genesisKey.EthAddress(), feederKey.EthAddress())
 	publicPath := filepath.Join(outputDirectory, "public.json")
 	digest, err := creation.SavePublic(publicPath, public)
 	if err != nil {

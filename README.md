@@ -167,7 +167,7 @@ never committed.
 ## nodes.ini
 
 ```ini
-# <node-number> host=<address> role=validator|rpc|pchain|archive|oracle-validator|oracle-rpc [chain=<name>] [dc=<tag>]
+# <node-number> host=<address> role=validator|rpc|pchain|archive|oracle-validator|oracle-rpc [chain=<name>] [weight=<n>] [dc=<tag>]
 1  host=10.0.0.11 role=validator dc=A
 5  host=10.1.0.11 role=validator dc=B
 9  host=10.0.0.15 role=rpc       dc=A
@@ -185,10 +185,10 @@ never committed.
 | Shapes | any validator, rpc, and archive count works, per chain. The tested failover shape is 4+ validators + 1+ RPC per chain; a smaller shape prints a warning and tolerates less loss. |
 | Exactly one `pchain` | not registered, stable TLS identity, no BLS signer, never key-swapped. It serves every chain and takes no `chain=`. |
 | `chain=` | the L1 a node serves; lowercase letters, digits, and hyphens, at most 20 characters. Omitted means `main`. Every named chain needs at least one validator. The names `oracle` and `management` are reserved. |
-| Initial weights | the first three validators of each chain by node number get 100000. The others get 1000. |
+| Initial weights | the default ladder: the first three validators of each chain by node number get 100000, the others get 1000. `weight=<n>` overrides the ladder with an explicit initial stake (an integer, at least 1). The tag is valid only on `validator` and `oracle-validator` lines. Set it on every validator of a chain or on none; a mix is a load error. |
 | `dc=` | display only, in the `fleet status` table. Nothing functional reads it. It is not a selector. |
 | Co-location | several nodes can share one machine. Ports are positional by node order on that machine: 9650/9651, 9652/9653, 9654/9655. |
-| Weights are not inventory | the on-chain weight is the only truth |
+| Weights are not inventory | `weight=` sets only the initial stake at creation. After creation, the on-chain weight is the only truth. |
 | `archive` | an RPC-shaped main-L1 node with pruning and state-sync off (`chain-config-archive.json`). It must exist from genesis, because an archive cannot state-sync. A single archive prints a warning. Deploy it like any other node. |
 | Oracle roles come together | `oracle-validator` and `oracle-rpc` declare the optional oracle L1 (`chains/oracle/subnet-config.json`, all weights 1000, no key swaps). Omit both for no oracle chain. Each role requires the other. These roles always serve `chain=oracle`. |
 

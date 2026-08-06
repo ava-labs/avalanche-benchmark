@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
@@ -41,10 +42,15 @@ type PublicNode struct {
 	// Chain is the L1 the node serves. Empty means derived: main for the
 	// plain roles, oracle for the oracle roles. keygen writes it only for
 	// chains beyond those defaults, so old files load unchanged.
-	Chain  string                            `json:"chain,omitempty"`
-	NodeID string                            `json:"nodeID"`
-	Weight uint64                            `json:"weight,omitempty"`
-	Signer *platformsigner.ProofOfPossession `json:"signer,omitempty"`
+	Chain  string `json:"chain,omitempty"`
+	NodeID string `json:"nodeID"`
+	Weight uint64 `json:"weight,omitempty"`
+	// ExplicitWeight records that Weight came from a weight= tag in
+	// nodes.ini. Without it the weight follows the default ladder, and
+	// validation recomputes and enforces the ladder value. keygen writes it
+	// only for explicit weights, so old files load unchanged.
+	ExplicitWeight bool                              `json:"explicitWeight,omitempty"`
+	Signer         *platformsigner.ProofOfPossession `json:"signer,omitempty"`
 }
 
 // ChainName resolves the chain this node serves, applying the role default
@@ -60,16 +66,25 @@ type PublicManager struct {
 	Signer   *platformsigner.ProofOfPossession `json:"signer"`
 }
 
-func NewPublic(generated identity.Set, genesisAddress ethcommon.Address, feederAddress ethcommon.Address) Public {
+func NewPublic(generated identity.Set, nodes []config.Node, genesisAddress ethcommon.Address, feederAddress ethcommon.Address) Public {
 	public := Public{
 		GenesisAddress: genesisAddress.Hex(),
 		FeederAddress:  feederAddress.Hex(),
 		Nodes:          make([]PublicNode, 0, len(generated.Nodes)),
 		Managers:       make([]PublicManager, 0, len(generated.Manager)),
 	}
-	// The first HighValidatorCount validators OF EACH CHAIN, by node number,
-	// carry the heavy weight; the rest are spares. The oracle chain keeps its
-	// flat weights.
+	// Explicit weight= tags from the inventory, by node number. Config load
+	// already enforced the all-or-none rule per chain.
+	explicit := make(map[int]uint64, len(nodes))
+	for _, node := range nodes {
+		if node.Weight > 0 {
+			explicit[node.Number] = node.Weight
+		}
+	}
+	// The default ladder: the first HighValidatorCount validators OF EACH
+	// CHAIN, by node number, carry the heavy weight; the rest are spares.
+	// The oracle chain keeps its flat weights. An explicit weight= tag
+	// replaces the ladder value for its node.
 	validatorIndex := make(map[string]int, 2)
 	for _, generated := range generated.Nodes {
 		node := PublicNode{
@@ -92,6 +107,10 @@ func NewPublic(generated identity.Set, genesisAddress ethcommon.Address, feederA
 			validatorIndex[chainName]++
 		case config.RoleOracleValidator:
 			node.Weight = OracleWeight
+		}
+		if weight, tagged := explicit[generated.NodeNumber]; tagged {
+			node.Weight = weight
+			node.ExplicitWeight = true
 		}
 		public.Nodes = append(public.Nodes, node)
 	}
@@ -154,6 +173,9 @@ func (p Public) Validate() error {
 	if len(p.Nodes) == 0 {
 		return fmt.Errorf("nodes must not be empty")
 	}
+	if err := p.validateWeightConsistency(); err != nil {
+		return err
+	}
 
 	seenNodeIDs := make(map[ids.NodeID]struct{}, len(p.Nodes)+len(p.Managers))
 	validatorIndex := make(map[string]int, 2)
@@ -199,12 +221,20 @@ func (p Public) Validate() error {
 
 		switch node.Role {
 		case config.RoleValidator:
-			expectedWeight := uint64(LowWeight)
-			if validatorIndex[node.ChainName()] < HighValidatorCount {
-				expectedWeight = HighWeight
-			}
-			if node.Weight != expectedWeight {
-				return fmt.Errorf("validator %s weight must be %d, got %d", node.Identity, expectedWeight, node.Weight)
+			// An explicit weight only needs to be positive; a default weight
+			// must recompute to the ladder value.
+			if node.ExplicitWeight {
+				if node.Weight == 0 {
+					return fmt.Errorf("validator %s explicit weight must be at least 1", node.Identity)
+				}
+			} else {
+				expectedWeight := uint64(LowWeight)
+				if validatorIndex[node.ChainName()] < HighValidatorCount {
+					expectedWeight = HighWeight
+				}
+				if node.Weight != expectedWeight {
+					return fmt.Errorf("validator %s weight must be %d, got %d", node.Identity, expectedWeight, node.Weight)
+				}
 			}
 			if node.Signer == nil {
 				return fmt.Errorf("validator %s signer is required", node.Identity)
@@ -214,7 +244,11 @@ func (p Public) Validate() error {
 			}
 			validatorIndex[node.ChainName()]++
 		case config.RoleOracleValidator:
-			if node.Weight != OracleWeight {
+			if node.ExplicitWeight {
+				if node.Weight == 0 {
+					return fmt.Errorf("oracle validator %s explicit weight must be at least 1", node.Identity)
+				}
+			} else if node.Weight != OracleWeight {
 				return fmt.Errorf("oracle validator %s weight must be %d, got %d", node.Identity, OracleWeight, node.Weight)
 			}
 			if node.Signer == nil {
@@ -227,6 +261,9 @@ func (p Public) Validate() error {
 		case config.RoleRPC, config.RoleArchive, config.RoleOracleRPC, config.RolePChain:
 			if node.Weight != 0 {
 				return fmt.Errorf("%s %s weight must be 0, got %d", node.Role, node.Identity, node.Weight)
+			}
+			if node.ExplicitWeight {
+				return fmt.Errorf("%s %s must not carry an explicit weight", node.Role, node.Identity)
 			}
 			if node.Signer != nil {
 				return fmt.Errorf("%s %s signer must not be provided", node.Role, node.Identity)
@@ -286,6 +323,37 @@ func (p Public) Validate() error {
 		if err := manager.Signer.Verify(); err != nil {
 			return fmt.Errorf("manager %s signer: %w", manager.Identity, err)
 		}
+	}
+	return nil
+}
+
+// validateWeightConsistency mirrors the nodes.ini rule on the manifest: a
+// chain's validators carry explicit weights all together or not at all.
+// keygen never writes a mix, so this catches hand edits.
+func (p Public) validateWeightConsistency() error {
+	withWeight := make(map[string][]string)
+	withoutWeight := make(map[string][]string)
+	for _, node := range p.Nodes {
+		if node.Role != config.RoleValidator && node.Role != config.RoleOracleValidator {
+			continue
+		}
+		chain := node.ChainName()
+		if node.ExplicitWeight {
+			withWeight[chain] = append(withWeight[chain], node.Identity)
+		} else {
+			withoutWeight[chain] = append(withoutWeight[chain], node.Identity)
+		}
+	}
+	for _, chain := range p.Chains() {
+		explicit := withWeight[chain]
+		defaulted := withoutWeight[chain]
+		if len(explicit) == 0 || len(defaulted) == 0 {
+			continue
+		}
+		return fmt.Errorf(
+			"chain %q mixes explicit and default validator weights: explicit on %s, default on %s",
+			chain, strings.Join(explicit, ", "), strings.Join(defaulted, ", "),
+		)
 	}
 	return nil
 }

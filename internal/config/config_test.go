@@ -295,6 +295,107 @@ func TestLoadNodesChainErrors(t *testing.T) {
 	}
 }
 
+// weight= overrides the default ladder per node. A chain sets it on all of
+// its validators or on none.
+func TestLoadNodesWeightTag(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nodes.ini")
+	writeFile(t, path, strings.Join([]string{
+		"1 host=v1 role=validator weight=70000",
+		"2 host=v2 role=validator weight=70000",
+		"3 host=v3 role=validator weight=500",
+		"4 host=v4 role=validator weight=1",
+		"5 host=r1 role=rpc",
+		"6 host=p1 role=pchain",
+		"7 host=t1 role=validator chain=trading",
+		"8 host=t2 role=validator chain=trading",
+		"9 host=o1 role=oracle-validator weight=2000",
+		"10 host=o2 role=oracle-rpc",
+	}, "\n"))
+
+	nodes, err := LoadNodes(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byNumber := make(map[int]Node, len(nodes))
+	for _, node := range nodes {
+		byNumber[node.Number] = node
+	}
+	for number, want := range map[int]uint64{
+		1: 70000, 2: 70000, 3: 500, 4: 1, 5: 0, 6: 0, 7: 0, 8: 0, 9: 2000, 10: 0,
+	} {
+		if byNumber[number].Weight != want {
+			t.Fatalf("node %d weight = %d, want %d", number, byNumber[number].Weight, want)
+		}
+	}
+}
+
+func TestLoadNodesWeightErrors(t *testing.T) {
+	base := []string{
+		"1 host=v1 role=validator",
+		"2 host=v2 role=validator",
+		"3 host=v3 role=validator",
+		"4 host=v4 role=validator",
+		"5 host=r1 role=rpc",
+		"6 host=p1 role=pchain",
+	}
+	tests := map[string]struct {
+		lines []string
+		want  string
+	}{
+		"weight on rpc role": {
+			lines: []string{"1 host=v1 role=validator weight=100", "2 host=r1 role=rpc weight=100", "3 host=p1 role=pchain"},
+			want:  "weight= is valid only with role=validator or role=oracle-validator",
+		},
+		"weight on pchain role": {
+			lines: []string{"1 host=v1 role=validator weight=100", "2 host=r1 role=rpc", "3 host=p1 role=pchain weight=100"},
+			want:  "weight= is valid only with role=validator or role=oracle-validator",
+		},
+		"weight zero": {
+			lines: []string{"1 host=v1 role=validator weight=0", "2 host=r1 role=rpc", "3 host=p1 role=pchain"},
+			want:  "weight must be an integer of at least 1",
+		},
+		"weight not a number": {
+			lines: []string{"1 host=v1 role=validator weight=heavy", "2 host=r1 role=rpc", "3 host=p1 role=pchain"},
+			want:  "weight must be an integer of at least 1",
+		},
+		"mix on one chain": {
+			lines: append(append([]string{}, base...), "7 host=v5 role=validator weight=100", "8 host=v6 role=validator weight=100"),
+			want:  `chain "main" mixes explicit and default validator weights: weight= is set on node(s) 7, 8 and not set on node(s) 1, 2, 3, 4`,
+		},
+		"mix on the oracle chain": {
+			lines: append(append([]string{}, base...), "7 host=o1 role=oracle-validator weight=100", "8 host=o2 role=oracle-validator", "9 host=o3 role=oracle-rpc"),
+			want:  `chain "oracle" mixes explicit and default validator weights: weight= is set on node(s) 7 and not set on node(s) 8`,
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "nodes.ini")
+			writeFile(t, path, strings.Join(test.lines, "\n"))
+			_, err := LoadNodes(path)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("error = %v, want it to contain %q", err, test.want)
+			}
+		})
+	}
+}
+
+// One chain with explicit weights leaves another chain's default ladder
+// untouched.
+func TestLoadNodesWeightPerChainIndependence(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nodes.ini")
+	writeFile(t, path, strings.Join([]string{
+		"1 host=v1 role=validator",
+		"2 host=v2 role=validator",
+		"3 host=r1 role=rpc",
+		"4 host=p1 role=pchain",
+		"5 host=t1 role=validator chain=trading weight=9",
+		"6 host=t2 role=validator chain=trading weight=9",
+	}, "\n"))
+	if _, err := LoadNodes(path); err != nil {
+		t.Fatalf("independent chains refused: %v", err)
+	}
+}
+
 func TestLoadNodesOracleAndArchiveRoles(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nodes.ini")
 	writeFile(t, path, strings.Join([]string{

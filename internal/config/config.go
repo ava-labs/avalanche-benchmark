@@ -48,6 +48,11 @@ type Node struct {
 	// inventory omits chain=, "oracle" for the oracle roles, and empty for
 	// the P-chain node, which serves every chain and belongs to none.
 	Chain string
+	// Weight is the explicit initial stake weight from weight=. Zero means
+	// the tag is absent and the default weight ladder applies. The tag is
+	// valid only on the validator and oracle-validator roles, and a chain
+	// sets it on all of its validators or on none.
+	Weight uint64
 }
 
 // Chains returns the unique chain names the inventory declares, main first
@@ -362,7 +367,7 @@ func LoadNodes(path string) ([]Node, error) {
 			continue
 		}
 		if len(fields) < 3 {
-			return nil, fmt.Errorf("%s:%d: expected <node-number> host=<address> role=validator|rpc|pchain|archive|oracle-validator|oracle-rpc [chain=<name>] [dc=<tag>]", path, lineNumber)
+			return nil, fmt.Errorf("%s:%d: expected <node-number> host=<address> role=validator|rpc|pchain|archive|oracle-validator|oracle-rpc [chain=<name>] [weight=<n>] [dc=<tag>]", path, lineNumber)
 		}
 
 		number, err := strconv.Atoi(fields[0])
@@ -380,7 +385,7 @@ func LoadNodes(path string) ([]Node, error) {
 			if !ok || key == "" || value == "" {
 				return nil, fmt.Errorf("%s:%d: expected key=value, got %q", path, lineNumber, field)
 			}
-			if key != "host" && key != "role" && key != "dc" && key != "chain" {
+			if key != "host" && key != "role" && key != "dc" && key != "chain" && key != "weight" {
 				return nil, fmt.Errorf("%s:%d: unknown node field %q", path, lineNumber, key)
 			}
 			if _, exists := values[key]; exists {
@@ -426,7 +431,20 @@ func LoadNodes(path string) ([]Node, error) {
 				return nil, fmt.Errorf("%s:%d: chain name %q is reserved for the management chain", path, lineNumber, chain)
 			}
 		}
-		nodes = append(nodes, Node{Number: number, Host: host, Role: role, DC: values["dc"], Chain: chain})
+		var weight uint64
+		if raw, present := values["weight"]; present {
+			// An explicit weight replaces the default ladder for this node.
+			// The role check keeps the tag on stake-carrying roles only.
+			if role != RoleValidator && role != RoleOracleValidator {
+				return nil, fmt.Errorf("%s:%d: weight= is valid only with role=validator or role=oracle-validator, got role=%s", path, lineNumber, role)
+			}
+			parsed, err := strconv.ParseUint(raw, 10, 64)
+			if err != nil || parsed == 0 {
+				return nil, fmt.Errorf("%s:%d: weight must be an integer of at least 1, got %q", path, lineNumber, raw)
+			}
+			weight = parsed
+		}
+		nodes = append(nodes, Node{Number: number, Host: host, Role: role, DC: values["dc"], Chain: chain, Weight: weight})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read inventory %s: %w", path, err)
@@ -504,5 +522,47 @@ func LoadNodes(path string) ([]Node, error) {
 	}
 
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Number < nodes[j].Number })
+	if err := validateWeightConsistency(path, nodes); err != nil {
+		return nil, err
+	}
 	return nodes, nil
+}
+
+// validateWeightConsistency enforces the all-or-none rule for explicit
+// weights: a chain sets weight= on every one of its validators or on none.
+// A mix would make the effective weights depend on line order, so it is a
+// hard error that names the chain and the node numbers on each side.
+func validateWeightConsistency(path string, nodes []Node) error {
+	withWeight := make(map[string][]int)
+	withoutWeight := make(map[string][]int)
+	for _, node := range nodes {
+		if node.Role != RoleValidator && node.Role != RoleOracleValidator {
+			continue
+		}
+		if node.Weight > 0 {
+			withWeight[node.Chain] = append(withWeight[node.Chain], node.Number)
+		} else {
+			withoutWeight[node.Chain] = append(withoutWeight[node.Chain], node.Number)
+		}
+	}
+	for _, chain := range Chains(nodes) {
+		explicit := withWeight[chain]
+		defaulted := withoutWeight[chain]
+		if len(explicit) == 0 || len(defaulted) == 0 {
+			continue
+		}
+		return fmt.Errorf(
+			"%s: chain %q mixes explicit and default validator weights: weight= is set on node(s) %s and not set on node(s) %s; set weight= on every validator of the chain or on none",
+			path, chain, joinNumbers(explicit), joinNumbers(defaulted),
+		)
+	}
+	return nil
+}
+
+func joinNumbers(numbers []int) string {
+	parts := make([]string, len(numbers))
+	for i, number := range numbers {
+		parts[i] = strconv.Itoa(number)
+	}
+	return strings.Join(parts, ", ")
 }

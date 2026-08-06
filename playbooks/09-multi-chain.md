@@ -17,8 +17,10 @@ cp examples/two-chains.ini nodes.ini   # main + trading, edit the host= lines
 Rules:
 
 - Every named chain needs at least one `role=validator` node.
-- Each chain gets its own weight ladder: the first three validators of the
-  chain by node number start at 100000, the rest at 1000.
+- Each chain gets its own default weight ladder: the first three validators
+  of the chain by node number start at 100000, the rest at 1000. A
+  `weight=<n>` tag on a validator line overrides the ladder. Set the tag on
+  every validator of a chain or on none.
 - The names `oracle` and `management` are reserved.
 - Per-chain configuration goes in `chains/<name>/`:
   `genesis-template.json`, `subnet-config.json`, and the node config
