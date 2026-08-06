@@ -51,6 +51,31 @@ App dashboards provision from each app's `dashboards/` directory. The
 compose file mounts `apps/settlement-feed/dashboards`; add one mount line
 per additional app.
 
+## Alerts
+
+Prometheus evaluates the rules in `monitoring/alerts.yml`. Apps ship their
+own rules next to their dashboards; the compose file mounts
+`apps/settlement-feed/alerts.yml` the same way. Firing alerts appear at
+`http://<control-host>:9090/alerts` and on `/api/v1/alerts`.
+
+The rules are the trigger source for your operations automation. The kit
+does not send notifications. To page or to automate a response, point an
+Alertmanager at Prometheus or poll the API.
+
+The severities:
+
+- `critical`: act now. `NodeDown` is the failover trigger; confirm the
+  machine is down and fence it before any identity move (playbook 04).
+  `ValidatorWeightBenched` and `DiskSpaceCritical` also carry it.
+- `warning`: investigate the same day. A node behind its peers, low poll
+  success, block verify errors, low disk, CPU throttling.
+- `info`: an audit signal. `RegisteredWeightChanged` fires on every stake
+  move; verify it matches a planned swap or failover.
+
+There is no height-stall rule on purpose. The EVM produces blocks only
+when transactions arrive, so a quiet chain looks identical to a stalled
+one. `NodeBehindPeers` catches the harmful case.
+
 ## The weight exporter
 
 The compose stack runs `monitoring/fleet-weight-exporter.py` as a

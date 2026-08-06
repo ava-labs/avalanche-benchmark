@@ -1,0 +1,34 @@
+# Prometheus configuration for the fleet monitoring stack.
+# The node list lives in targets.json. Generate it from the inventory and
+# regenerate it after every inventory or creation change:
+#
+#   ./bin/fleet targets > monitoring/targets.json
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+
+# Fleet rules plus one file per installed app; the compose file mounts them.
+# Firing alerts appear on /alerts and /api/v1/alerts. Alert delivery is
+# site-specific and not shipped: point your own Alertmanager here.
+rule_files:
+  - /etc/prometheus/alerts/*.yml
+
+scrape_configs:
+  # Every fleet node, labeled from nodes.ini: node, role, dc, l1 (chain
+  # name), l1_chain_id (blockchain ID). Dashboards select a chain with
+  # these labels.
+  - job_name: avalanche
+    metrics_path: /ext/metrics
+    file_sd_configs:
+      - files: ["/etc/prometheus/targets.json"]
+
+  # Control-side weight exporter: placement x registered weight.
+  - job_name: fleet-weight
+    static_configs:
+      - targets: ["weight-exporter:9091"]
+
+  # App exporters run on the control host, outside the compose network.
+  # The settlement-feed publisher serves metrics on port 9701.
+  - job_name: apps
+    static_configs:
+      - targets: ["host.docker.internal:9701"]
