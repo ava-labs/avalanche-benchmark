@@ -1,0 +1,123 @@
+# Prometheus alert rules for the fleet. These rules are the trigger source;
+# delivery (pager, chat, webhook, automation) is site-specific and not
+# shipped. Point an Alertmanager at Prometheus, or poll /api/v1/alerts, to
+# consume firing alerts.
+#
+# Two rules are intentionally absent:
+#   - Height stall: subnet-evm produces blocks only when transactions
+#     arrive, so a quiet chain looks identical to a stalled one.
+#     NodeBehindPeers catches the harmful case (one node not following).
+#   - Expected node count: NodeDown already fires once per missing node.
+groups:
+  - name: fleet-availability
+    rules:
+      # The primary failover trigger. Confirm the machine is really down
+      # and fence it before any identity move (playbook 04).
+      - alert: NodeDown
+        expr: up{job="avalanche"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }} stopped answering its metrics endpoint"
+          description: >-
+            Scrapes of {{ $labels.instance }} (role {{ $labels.role }},
+            dc {{ $labels.dc }}) have failed for 2 minutes. Confirm the
+            machine is down and fence it before any identity move.
+
+  - name: consensus-health
+    rules:
+      # One node falls behind the rest of its chain. This is the follower
+      # failure mode from the restart-rejoins-behind incidents.
+      - alert: NodeBehindPeers
+        expr: >-
+          (max by (chain) (avalanche_snowman_last_accepted_height{job="avalanche"})
+            - on (chain) group_right ()
+              avalanche_snowman_last_accepted_height{job="avalanche"}) > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }} is {{ $value }} blocks behind on {{ $labels.chain }}"
+          description: >-
+            The node stopped following the accepted frontier of its chain.
+            Check its logs before it gets benched by peers.
+
+      # Poll success below 90% means peers do not answer this node's
+      # consensus queries. Sustained low values precede a bench.
+      - alert: PollSuccessLow
+        expr: >-
+          100 * sum by (node, chain) (increase(avalanche_snowman_polls_successful{job="avalanche"}[5m]))
+            / (sum by (node, chain) (increase(avalanche_snowman_polls_successful{job="avalanche"}[5m]))
+             + sum by (node, chain) (increase(avalanche_snowman_polls_failed{job="avalanche"}[5m]))) < 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }} poll success below 90% on {{ $labels.chain }}"
+          description: >-
+            Consensus polls from this node fail. Check network reachability
+            between validators and the health of the polled peers.
+
+      # A node benches a peer after repeated query failures. Benched weight
+      # reduces the effective quorum; near the threshold the chain stalls.
+      - alert: ValidatorWeightBenched
+        expr: avalanche_benchlist_benched_weight{job="avalanche"} > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }} benched {{ $value }} weight on {{ $labels.chain }}"
+          description: >-
+            This node stopped querying one or more peers. Find the failing
+            validator and restore or replace it before quorum is at risk.
+
+      # Block verification failures are never routine on a private chain.
+      - alert: BlockVerifyErrors
+        expr: increase(avalanche_meterchainvm_verify_err_count{job="avalanche"}[5m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }} hit block verify errors on {{ $labels.chain }}"
+          description: "Inspect the node logs for the failing block and its producer."
+
+  - name: machine-resources
+    rules:
+      - alert: DiskSpaceLow
+        expr: avalanche_resource_tracker_disk_available_space{job="avalanche"} < 25e9
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }} has under 25 GB of disk left"
+          description: "Plan a cleanup or a volume grow before the node halts."
+
+      - alert: DiskSpaceCritical
+        expr: avalanche_resource_tracker_disk_available_space{job="avalanche"} < 5e9
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.node }} has under 5 GB of disk left"
+          description: "The node halts when the disk fills. Act now."
+
+      - alert: CpuThrottled
+        expr: rate(avalanche_network_cpu_throttler_total_waits[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.node }} throttles peer messages on CPU"
+          description: "The host is CPU-bound. Expect consensus latency to rise."
+
+  - name: fleet-weight
+    rules:
+      # Weight changes are planned events (a swap or a failover). An
+      # unexpected firing means someone or something moved stake.
+      - alert: RegisteredWeightChanged
+        expr: changes(fleet_actual_weight[15m]) > 0
+        labels:
+          severity: info
+        annotations:
+          summary: "Registered weight changed for {{ $labels.node }} ({{ $labels.l1 }})"
+          description: "Expected only during a planned swap or failover. Verify against the change log."

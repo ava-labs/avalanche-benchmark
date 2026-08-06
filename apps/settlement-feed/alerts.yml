@@ -1,0 +1,26 @@
+# Alert rules owned by the settlement-feed app. The monitoring compose file
+# mounts this next to the fleet rules; each installed app ships its own.
+groups:
+  - name: settlement-feed
+    rules:
+      # The publisher confirmed no transactions for 10 minutes. This is
+      # expected when the feed is stopped on purpose; treat as a warning.
+      - alert: FeedPublishStalled
+        expr: rate(oracle_feed_confirm_latency_seconds_count[5m]) == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "settlement-feed confirmed no transactions in 10 minutes"
+          description: "Check the publisher process and its RPC endpoint if the feed should be live."
+
+      - alert: FeedConfirmSlow
+        expr: >-
+          histogram_quantile(0.95,
+            sum by (le) (rate(oracle_feed_confirm_latency_seconds_bucket[5m]))) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "settlement-feed p95 confirm latency above 2s"
+          description: "Updates land slower than the feed interval. Check chain load and the RPC node."

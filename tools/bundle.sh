@@ -47,6 +47,7 @@ test -d docs && cp -R docs "$STAGE/$NAME/docs"
 mkdir -p "$STAGE/$NAME/monitoring"
 cp monitoring/grafana-datasources.yml monitoring/grafana-dashboards.yml \
    monitoring/prometheus.yml monitoring/docker-compose.yml \
+   monitoring/alerts.yml \
    monitoring/fleet-weight-exporter.py "$STAGE/$NAME/monitoring/"
 cp -R monitoring/dashboards "$STAGE/$NAME/monitoring/dashboards"
 
