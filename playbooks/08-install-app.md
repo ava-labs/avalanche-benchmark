@@ -29,7 +29,10 @@ Step 3 first copies the file to every main-L1 node. No node restarts
 before every node has the file. It then restarts the nodes one at a time
 and waits for each node to serve again.
 
-After the activation time passes, verify the contracts:
+The upgrade executes in the first block at or after the activation time.
+An idle chain therefore shows no code until a transaction produces a
+block. Send one transaction after the activation time, then verify the
+contracts:
 
 ```bash
 FEED=0x00000000000000000000000000000000FeedF00d
