@@ -1,4 +1,4 @@
-# Playbook 06: monitoring
+# Playbook 03: monitoring
 
 This playbook starts Prometheus and Grafana on the control machine. Three
 commands, no hand-written scrape configs. The dashboards answer three
@@ -42,7 +42,7 @@ The dashboards, in the order to open them:
 1. **Fleet Health**: the default view. Nodes up, P-chain beacon, height
    per node, throughput, poll success, stake weight per data center.
 2. **Failover**: up/down and weight per machine and per data center. Use
-   it during failover drills (playbook 03).
+   it during failover drills (playbook 05).
 3. **Avalanche**: consensus internals per node. Open it when Fleet Health
    shows a problem and you need the cause.
 4. **Machine**: CPU, memory, and disk per node process.
@@ -65,7 +65,7 @@ Alertmanager at Prometheus or poll the API.
 The severities:
 
 - `critical`: act now. `NodeDown` is the failover trigger; confirm the
-  machine is down and fence it before any identity move (playbook 04).
+  machine is down and fence it before any identity move (playbook 06).
   `ValidatorWeightBenched` and `DiskSpaceCritical` also carry it.
 - `warning`: investigate the same day. A node behind its peers, low poll
   success, block verify errors, low disk, CPU throttling.

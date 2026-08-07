@@ -12,7 +12,7 @@ groups:
   - name: fleet-availability
     rules:
       # The primary failover trigger. Confirm the machine is really down
-      # and fence it before any identity move (playbook 04).
+      # and fence it before any identity move (playbook 06).
       - alert: NodeDown
         expr: up{job="avalanche"} == 0
         for: 2m

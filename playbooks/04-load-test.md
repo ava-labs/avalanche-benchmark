@@ -1,4 +1,4 @@
-# Playbook 02: load test
+# Playbook 04: load test
 
 This playbook puts transaction load on the fleet and measures the result
 correctly.

@@ -24,11 +24,11 @@ This document is the operator manual. Every procedure has a playbook.
 | You want to | Read |
 |---|---|
 | Stand up a fleet from zero | [Runbooks](#runbooks) below, then [playbooks/01-provision.md](playbooks/01-provision.md) |
-| Put load on a chain | [playbooks/02-load-test.md](playbooks/02-load-test.md) |
-| Run a failover drill | [playbooks/03-failover-drill.md](playbooks/03-failover-drill.md) |
-| Swap a validator identity | [playbooks/04-validator-swap.md](playbooks/04-validator-swap.md) |
-| Install without root | [playbooks/05-rootless-install.md](playbooks/05-rootless-install.md) |
-| Monitor and alert | [playbooks/06-monitoring.md](playbooks/06-monitoring.md) |
+| Put load on a chain | [playbooks/04-load-test.md](playbooks/04-load-test.md) |
+| Run a failover drill | [playbooks/05-failover-drill.md](playbooks/05-failover-drill.md) |
+| Swap a validator identity | [playbooks/06-validator-swap.md](playbooks/06-validator-swap.md) |
+| Install without root | [playbooks/02-rootless-install.md](playbooks/02-rootless-install.md) |
+| Monitor and alert | [playbooks/03-monitoring.md](playbooks/03-monitoring.md) |
 | Run with a connected P-chain | [playbooks/07-connected-pchain.md](playbooks/07-connected-pchain.md) |
 | Install an app on a running chain | [playbooks/08-install-app.md](playbooks/08-install-app.md) |
 | Run more than one chain | [playbooks/09-multi-chain.md](playbooks/09-multi-chain.md) |
@@ -247,7 +247,7 @@ The install is user-level by default: everything under
 overrides the root, `REMOTE_DATA_DIR` puts the databases on a faster disk,
 and `SYSTEM_INSTALL=true` selects the legacy root install (systemd,
 restart-on-crash, start-on-boot; needs passwordless sudo). See
-[playbooks/05-rootless-install.md](playbooks/05-rootless-install.md).
+[playbooks/02-rootless-install.md](playbooks/02-rootless-install.md).
 
 ## Commands
 
@@ -275,7 +275,7 @@ restart-on-crash, start-on-boot; needs passwordless sudo). See
 | `fleet app install <name> [--chain <name>]` | read `apps/<name>/app.json`, run the app's renderer from the deployment root, then install the rendered fragment through the same path as `fleet upgrade`. The target chain is the `--chain` flag, else the manifest's `chain`, else `main`; exactly one chain per call, and an undeclared chain is refused. See playbooks/08-install-app.md. |
 | `fleet app list` | one line per `apps/*/app.json`: name, target chain, description. A directory without a manifest is skipped with a warning. |
 | `fleet place <letter> <node>` | reconcile, swap the placement, reconcile again. One move per call. Does not wait for readiness. The only placement verb. |
-| `fleet targets` | print the Prometheus scrape targets for the inventory, labeled with node, role, dc, chain name, and blockchain ID. Pipe to `monitoring/targets.json`; see playbooks/06-monitoring.md. |
+| `fleet targets` | print the Prometheus scrape targets for the inventory, labeled with node, role, dc, chain name, and blockchain ID. Pipe to `monitoring/targets.json`; see playbooks/03-monitoring.md. |
 | `bombard -rps N -duration D [-chain <name>]` | the load generator. Sends to the named chain's rpc nodes; the default is `main`. |
 | `oracle feed <node-url>` | the foreground mock price feeder. With an oracle L1, it submits to the aggregator there. Without one, it publishes rounds to the main chain's Chainlink-shaped aggregator with type-2 priority-fee transactions. |
 | `oracle relay <oracle-rpc-url> <rpc-url> <staking-ip:port,...>` | the foreground Warp price relayer. It collects signatures from the validators over ACP-118. Oracle L1 deployments only. |
