@@ -228,6 +228,9 @@ func validateEnvironmentFields(path string, values map[string]string) error {
 		"REMOTE_DIR":          {},
 		"REMOTE_DATA_DIR":     {},
 		"SYSTEM_INSTALL":      {},
+		// Retired field. Old deployment roots and shipped bundles still
+		// carry a blanked PCHAIN_API_TOKEN line; tolerate it, never read it.
+		"PCHAIN_API_TOKEN": {},
 	}
 	var unknown []string
 	for key := range values {

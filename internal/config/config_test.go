@@ -76,6 +76,20 @@ func TestLoadEnvironmentFailsLoudly(t *testing.T) {
 	}
 }
 
+func TestLoadEnvironmentToleratesRetiredTokenField(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	writeFile(t, path, strings.Join([]string{
+		"NETWORK=fuji",
+		"PCHAIN_API=https://api.avax-test.network",
+		"FUNDING_PRIVATE_KEY=" + strings.Repeat("1", 64),
+		"PCHAIN_API_TOKEN=",
+	}, "\n"))
+
+	if _, err := LoadEnvironment(path); err != nil {
+		t.Fatalf("retired PCHAIN_API_TOKEN line must load, got: %v", err)
+	}
+}
+
 func TestLoadNetworkEnvironmentDoesNotRequireFundingKey(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".env")
 	writeFile(t, path, strings.Join([]string{
