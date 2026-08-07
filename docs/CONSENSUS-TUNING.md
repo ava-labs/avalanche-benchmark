@@ -1,7 +1,7 @@
 # Consensus parameter tuning: manual checks and benchmark runbook
 
 The shipped configuration is **k=60, alphaPreference=31, alphaConfidence=38,
-beta=12** (`subnet-config.json`). Run everything below from the deployment
+beta=12** (`chains/default/subnet-config.json`). Run everything below from the deployment
 root on the control machine.
 
 ## 1. Check the live parameters
@@ -53,7 +53,7 @@ current `SUBNET_ID` from `deployment/network.env`.
 
 ### c) The source of truth that you edit
 
-Edit `subnet-config.json` in the deployment root on the control machine.
+Edit `chains/default/subnet-config.json` in the deployment root on the control machine.
 Avalanchego reads it once at startup. A change therefore needs a restart.
 It does not need a chain reset.
 
@@ -66,7 +66,7 @@ therefore safe. `proposerWindowMilliseconds` and
 every node.
 
 ```bash
-vim subnet-config.json                                  # edit snowParameters
+vim chains/default/subnet-config.json                                  # edit snowParameters
 ./bin/fleet deploy frozen 1 2 3 4 5 6 7 8 9 10 11 12    # rolling, one node at a time, ~20s each
 ./bin/fleet status                                      # expect all up, near-equal heights
 ```

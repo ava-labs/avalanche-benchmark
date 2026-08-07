@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/identity"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/utils/constants"
 	"github.com/ava-labs/avalanchego/utils/crypto/keychain"
@@ -229,6 +229,70 @@ func TestChainTemplatePathPrefersChainsOracleOverLegacyRoot(t *testing.T) {
 	}
 	if got := chainTemplatePath(dir, config.OracleChain); got != override {
 		t.Fatalf("chainTemplatePath = %s, want override %s", got, override)
+	}
+}
+
+// The shipped layout has three layers: the chain's own file, the shared
+// default at chains/default/, then the legacy root name. Each layer must
+// win over the ones after it.
+func TestChainTemplatePathResolvesThroughChainsDefault(t *testing.T) {
+	dir := t.TempDir()
+	write := func(path string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	legacy := filepath.Join(dir, "genesis-template.json")
+	if got := chainTemplatePath(dir, "trading"); got != legacy {
+		t.Fatalf("chainTemplatePath = %s, want legacy root %s on a bare root", got, legacy)
+	}
+
+	fallback := filepath.Join(dir, "chains", "default", "genesis-template.json")
+	write(fallback)
+	if got := chainTemplatePath(dir, "trading"); got != fallback {
+		t.Fatalf("chainTemplatePath = %s, want shared default %s over the legacy root", got, fallback)
+	}
+
+	override := filepath.Join(dir, "chains", "trading", "genesis-template.json")
+	write(override)
+	if got := chainTemplatePath(dir, "trading"); got != override {
+		t.Fatalf("chainTemplatePath = %s, want the chain's own file %s over the default", got, override)
+	}
+}
+
+func TestChainTemplatePathOracleLegacyOutranksSharedDefault(t *testing.T) {
+	dir := t.TempDir()
+	write := func(path string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fallback := filepath.Join(dir, "chains", "default", "genesis-template.json")
+	write(fallback)
+	legacy := filepath.Join(dir, "oracle-genesis-template.json")
+	write(legacy)
+
+	if got := chainTemplatePath(dir, config.OracleChain); got != legacy {
+		t.Fatalf("chainTemplatePath = %s, want the oracle legacy %s over the shared default", got, legacy)
+	}
+	if got := chainTemplatePath(dir, "trading"); got != fallback {
+		t.Fatalf("chainTemplatePath = %s, want the shared default for a non-oracle chain", got)
+	}
+
+	override := filepath.Join(dir, "chains", config.OracleChain, "genesis-template.json")
+	write(override)
+	if got := chainTemplatePath(dir, config.OracleChain); got != override {
+		t.Fatalf("chainTemplatePath = %s, want the oracle's own file %s over the legacy", got, override)
 	}
 }
 

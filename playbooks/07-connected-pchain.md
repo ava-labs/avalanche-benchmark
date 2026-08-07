@@ -37,7 +37,7 @@ P-chain MODE is `synced` and every node is `up`.
 - Weight changes apply directly: `./bin/l1 set-weight <letter> <weight>`,
   then confirm with `./bin/l1 weights`.
 - All drills work the same as in frozen mode: stop, destroy, start,
-  place. See [03-failover-drill.md](03-failover-drill.md).
+  place. See [05-failover-drill.md](05-failover-drill.md).
 - `fleet status` reads the validator sets from the public API in this
   mode, so it needs the same egress as the P-chain node.
 

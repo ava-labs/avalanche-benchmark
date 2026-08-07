@@ -6,10 +6,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/placement"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/creation"
+	"github.com/ava-labs/avalanche-benchmark/internal/identity"
+	"github.com/ava-labs/avalanche-benchmark/internal/placement"
 	"github.com/ava-labs/avalanchego/utils/crypto/secp256k1"
 )
 

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/weights"
+	"github.com/ava-labs/avalanche-benchmark/internal/weights"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/vms/platformvm/txs"
 	"github.com/ava-labs/avalanchego/wallet/chain/p/wallet"

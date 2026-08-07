@@ -1,4 +1,4 @@
-# Playbook 04: validator swap
+# Playbook 06: validator swap
 
 This playbook moves an active validator identity to a spare machine and
 back. The chain does not stop during the move. There are two mechanisms.
@@ -45,7 +45,7 @@ frozen fleet.
 ## Monitoring after a place
 
 The scrape targets label every node by its machine slot number, not by
-its identity letter (see playbooks/06-monitoring.md). A `place` moves an
+its identity letter (see playbooks/03-monitoring.md). A `place` moves an
 identity between machines; it changes no slot, host, or port. The scrape
 labels therefore stay correct. The identity movement itself shows in the
 weight exporter's `identity` label on the weight-per-machine panels.

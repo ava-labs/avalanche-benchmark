@@ -17,8 +17,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/creation"
 	"github.com/ava-labs/avalanchego/ids"
 )
 
@@ -954,6 +954,70 @@ func TestRenderNodeResolvesPerChainChainConfig(t *testing.T) {
 				t.Fatalf("chain.json = %s, want %s", chain, testCase.want)
 			}
 		})
+	}
+}
+
+// Every shipped configuration file resolves through three layers: the
+// chain's own file, the shared default at chains/default/, then the legacy
+// root name. Old deployment roots with only root files must keep working.
+func TestShippedPathResolvesThroughChainsDefault(t *testing.T) {
+	root := t.TempDir()
+
+	legacy := filepath.Join(root, "node-config.json")
+	if got := shippedPath(root, "trading", "node-config.json"); got != legacy {
+		t.Fatalf("shippedPath = %s, want legacy root %s on a bare root", got, legacy)
+	}
+
+	fallback := filepath.Join(root, "chains", "default", "node-config.json")
+	if err := os.MkdirAll(filepath.Dir(fallback), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, fallback, `{}`)
+	if got := shippedPath(root, "trading", "node-config.json"); got != fallback {
+		t.Fatalf("shippedPath = %s, want shared default %s over the legacy root", got, fallback)
+	}
+	if got := shippedPath(root, "", "node-config.json"); got != fallback {
+		t.Fatalf("shippedPath = %s, want the pchain node (no chain) to use the default too", got)
+	}
+
+	override := filepath.Join(root, "chains", "trading", "node-config.json")
+	if err := os.MkdirAll(filepath.Dir(override), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, override, `{}`)
+	if got := shippedPath(root, "trading", "node-config.json"); got != override {
+		t.Fatalf("shippedPath = %s, want the chain's own file %s over the default", got, override)
+	}
+	if got := shippedPath(root, "main", "node-config.json"); got != fallback {
+		t.Fatalf("shippedPath = %s, want main untouched by another chain's override", got)
+	}
+}
+
+func TestSubnetConfigPathOracleLegacyOutranksSharedDefault(t *testing.T) {
+	root := t.TempDir()
+
+	fallback := filepath.Join(root, "chains", "default", "subnet-config.json")
+	if err := os.MkdirAll(filepath.Dir(fallback), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, fallback, `{}`)
+	legacy := filepath.Join(root, "subnet-config-oracle.json")
+	writeTestFile(t, legacy, `{}`)
+
+	if got := subnetConfigPath(root, config.OracleChain); got != legacy {
+		t.Fatalf("subnetConfigPath = %s, want the oracle legacy %s over the shared default", got, legacy)
+	}
+	if got := subnetConfigPath(root, "trading"); got != fallback {
+		t.Fatalf("subnetConfigPath = %s, want the shared default for a non-oracle chain", got)
+	}
+
+	override := filepath.Join(root, "chains", config.OracleChain, "subnet-config.json")
+	if err := os.MkdirAll(filepath.Dir(override), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, override, `{}`)
+	if got := subnetConfigPath(root, config.OracleChain); got != override {
+		t.Fatalf("subnetConfigPath = %s, want the oracle's own file %s over the legacy", got, override)
 	}
 }
 

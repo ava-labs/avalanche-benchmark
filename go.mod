@@ -1,4 +1,4 @@
-module github.com/ava-labs/avalanche-benchmark/remote
+module github.com/ava-labs/avalanche-benchmark
 
 go 1.25.10
 

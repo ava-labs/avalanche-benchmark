@@ -1,4 +1,4 @@
-# Playbook 05: rootless install
+# Playbook 02: rootless install
 
 The fleet runs under a normal user account by default. No command uses
 sudo. This playbook describes the defaults, the overrides, and the legacy

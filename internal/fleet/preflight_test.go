@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
 )
 
 func TestPreflightCommandMatchesTheInstallMode(t *testing.T) {

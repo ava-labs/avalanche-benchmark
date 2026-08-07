@@ -13,7 +13,7 @@ Make sure that these conditions are true:
 - The file `.env` exists. Copy it from `.env.example`. Set the network, the
   P-chain API, the funded key, and the ssh values. Root is not necessary:
   the install runs under the ssh user by default. See
-  [05-rootless-install.md](05-rootless-install.md) for the install options.
+  [02-rootless-install.md](02-rootless-install.md) for the install options.
 - The file `nodes.ini` exists. Copy a shape from `examples/` and set your
   hosts. Do not change the node numbers or the roles.
 - The binaries exist in `bin/`. Run `make package-build` to build them.
@@ -43,6 +43,6 @@ host and run the command again.
 `fleet status` shows every node `up` and exits with code 0. The heights
 increase. The P-chain MODE is `frozen`. The L1 STATE is `complete`.
 
-The next playbooks are [02-load-test.md](02-load-test.md),
-[03-failover-drill.md](03-failover-drill.md), and
-[06-monitoring.md](06-monitoring.md).
+The next playbooks are [04-load-test.md](04-load-test.md),
+[05-failover-drill.md](05-failover-drill.md), and
+[03-monitoring.md](03-monitoring.md).

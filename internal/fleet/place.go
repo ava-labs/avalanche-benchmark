@@ -6,9 +6,9 @@ import (
 	"maps"
 	"strings"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/placement"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/identity"
+	"github.com/ava-labs/avalanche-benchmark/internal/placement"
 )
 
 // Place moves a validator identity onto a validator machine and makes the fleet

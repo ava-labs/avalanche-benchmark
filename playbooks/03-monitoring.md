@@ -1,4 +1,4 @@
-# Playbook 06: monitoring
+# Playbook 03: monitoring
 
 This playbook starts Prometheus and Grafana on the control machine. Three
 commands, no hand-written scrape configs. The dashboards answer three
@@ -42,7 +42,7 @@ The dashboards, in the order to open them:
 1. **Fleet Health**: the default view. Nodes up, P-chain beacon, height
    per node, throughput, poll success, stake weight per data center.
 2. **Failover**: up/down and weight per machine and per data center. Use
-   it during failover drills (playbook 03).
+   it during failover drills (playbook 05).
 3. **Avalanche**: consensus internals per node. Open it when Fleet Health
    shows a problem and you need the cause.
 4. **Machine**: CPU, memory, and disk per node process.
@@ -50,6 +50,31 @@ The dashboards, in the order to open them:
 App dashboards provision from each app's `dashboards/` directory. The
 compose file mounts `apps/settlement-feed/dashboards`; add one mount line
 per additional app.
+
+## Alerts
+
+Prometheus evaluates the rules in `monitoring/alerts.yml`. Apps ship their
+own rules next to their dashboards; the compose file mounts
+`apps/settlement-feed/alerts.yml` the same way. Firing alerts appear at
+`http://<control-host>:9090/alerts` and on `/api/v1/alerts`.
+
+The rules are the trigger source for your operations automation. The kit
+does not send notifications. To page or to automate a response, point an
+Alertmanager at Prometheus or poll the API.
+
+The severities:
+
+- `critical`: act now. `NodeDown` is the failover trigger; confirm the
+  machine is down and fence it before any identity move (playbook 06).
+  `ValidatorWeightBenched` and `DiskSpaceCritical` also carry it.
+- `warning`: investigate the same day. A node behind its peers, low poll
+  success, block verify errors, low disk, CPU throttling.
+- `info`: an audit signal. `RegisteredWeightChanged` fires on every stake
+  move; verify it matches a planned swap or failover.
+
+There is no height-stall rule on purpose. The EVM produces blocks only
+when transactions arrive, so a quiet chain looks identical to a stalled
+one. `NodeBehindPeers` catches the harmful case.
 
 ## The weight exporter
 

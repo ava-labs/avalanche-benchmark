@@ -6,9 +6,9 @@ import (
 	"io"
 	"math"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/funding"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/weights"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/funding"
+	"github.com/ava-labs/avalanche-benchmark/internal/weights"
 	"github.com/ava-labs/avalanchego/utils/units"
 	"github.com/ava-labs/avalanchego/vms/secp256k1fx"
 	"github.com/ava-labs/avalanchego/wallet/chain/p/wallet"

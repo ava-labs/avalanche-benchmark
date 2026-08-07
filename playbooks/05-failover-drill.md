@@ -1,8 +1,8 @@
-# Playbook 03: failover drills
+# Playbook 05: failover drills
 
 This playbook removes nodes on purpose and shows that the chain continues.
 
-Start load before each drill. See [02-load-test.md](02-load-test.md). A
+Start load before each drill. See [04-load-test.md](04-load-test.md). A
 drill without load does not show the behavior you care about.
 
 ## Drill: lose one node
@@ -38,7 +38,7 @@ numbers on `fleet start`.
 
 ## Drill: move a validator identity
 
-See [04-validator-swap.md](04-validator-swap.md). That playbook moves a
+See [06-validator-swap.md](06-validator-swap.md). That playbook moves a
 heavy identity to a spare machine and back.
 
 ## Drill: machine reboot

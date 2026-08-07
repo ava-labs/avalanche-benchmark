@@ -12,10 +12,10 @@ import (
 	"sort"
 	"time"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/apps/settlement-feed/oraclecontracts"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/funding"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
+	"github.com/ava-labs/avalanche-benchmark/apps/settlement-feed/oraclecontracts"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/funding"
+	"github.com/ava-labs/avalanche-benchmark/internal/identity"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/utils/constants"
 	"github.com/ava-labs/avalanchego/utils/crypto/keychain"
@@ -114,18 +114,28 @@ type walletFactory func(
 	primary.WalletConfig,
 ) (pwallet.Wallet, error)
 
-// chainTemplatePath resolves a chain's genesis template: an override at
-// chains/<name>/genesis-template.json wins, the root template is the
-// default. The repository ships the oracle template at
-// chains/oracle/genesis-template.json; the root oracle-genesis-template.json
-// stays as a legacy fallback for old deployment roots.
+// chainTemplatePath resolves a chain's genesis template from the most
+// specific layer to the least: the chain's own file at chains/<name>/,
+// then the chain-specific legacy root name (oracle-genesis-template.json,
+// from deployment roots that predate the chains/ layout), then the shared
+// default at chains/default/, then the shared legacy root name. The
+// chain-specific legacy file outranks the shared default on purpose: an
+// old oracle root must not silently pick up the generic template.
 func chainTemplatePath(root, chain string) string {
-	override := filepath.Join(root, "chains", chain, "genesis-template.json")
-	if info, err := os.Stat(override); err == nil && !info.IsDir() {
+	exists := func(path string) bool {
+		info, err := os.Stat(path)
+		return err == nil && !info.IsDir()
+	}
+	if override := filepath.Join(root, "chains", chain, "genesis-template.json"); exists(override) {
 		return override
 	}
 	if chain == config.OracleChain {
-		return filepath.Join(root, "oracle-genesis-template.json")
+		if legacy := filepath.Join(root, "oracle-genesis-template.json"); exists(legacy) {
+			return legacy
+		}
+	}
+	if fallback := filepath.Join(root, "chains", "default", "genesis-template.json"); exists(fallback) {
+		return fallback
 	}
 	return filepath.Join(root, "genesis-template.json")
 }

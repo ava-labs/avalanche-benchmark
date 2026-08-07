@@ -22,33 +22,32 @@ require .env
 require nodes.ini
 require deployment
 require pchain.tar.gz
+require chains/default
 
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/bundle-XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
 NAME="$(basename "$OUT" .zip)"
 mkdir -p "$STAGE/$NAME"
 
-# Base layer: binaries, runtime configs, docs, monitoring.
+# Base layer: binaries, per-chain configuration, docs, monitoring. All
+# runtime configs live under chains/ (chains/default/ holds the shared
+# defaults); legacy root names from old deployment roots ride along when
+# present so a re-cut of an old kit stays deployable.
 cp -R bin "$STAGE/$NAME/bin"
-cp README.md nodes.ini nodes.ini.example node-config.json \
-   genesis-template.json subnet-config.json \
-   chain-config.json chain-config-rpc.json chain-config-archive.json \
-   "$STAGE/$NAME/"
-# The root oracle file names are a legacy fallback: old deployment roots
-# still carry them. The repository ships the oracle files in chains/oracle/,
-# which the chains/ copy below stages.
-for optional in oracle-genesis-template.json subnet-config-oracle.json \
-                CONSENSUS-TUNING.md; do
-  test -f "$optional" && cp "$optional" "$STAGE/$NAME/"
+cp README.md nodes.ini "$STAGE/$NAME/"
+cp -R chains "$STAGE/$NAME/chains"
+for legacy in genesis-template.json subnet-config.json node-config.json \
+              chain-config.json chain-config-rpc.json chain-config-archive.json \
+              oracle-genesis-template.json subnet-config-oracle.json; do
+  test -f "$legacy" && cp "$legacy" "$STAGE/$NAME/"
 done
-# Per-chain configuration: a multi-chain deployment cannot redeploy or
-# re-create without its chains/<name>/ templates.
-test -d chains && cp -R chains "$STAGE/$NAME/chains"
 cp -R playbooks "$STAGE/$NAME/playbooks"
 cp -R examples "$STAGE/$NAME/examples"
+test -d docs && cp -R docs "$STAGE/$NAME/docs"
 mkdir -p "$STAGE/$NAME/monitoring"
 cp monitoring/grafana-datasources.yml monitoring/grafana-dashboards.yml \
    monitoring/prometheus.yml monitoring/docker-compose.yml \
+   monitoring/alerts.yml \
    monitoring/fleet-weight-exporter.py "$STAGE/$NAME/monitoring/"
 cp -R monitoring/dashboards "$STAGE/$NAME/monitoring/dashboards"
 
@@ -64,6 +63,8 @@ cp -R deployment "$STAGE/$NAME/deployment"
 cp pchain.tar.gz "$STAGE/$NAME/"
 
 # Shipped .env: the deployment's real settings with every secret blanked.
+# PCHAIN_API_TOKEN is a legacy field: the kit no longer reads it, but old
+# deployment roots still carry it, so the sanitizer keeps blanking it.
 sed -E 's/^(FUNDING_PRIVATE_KEY)=.*/\1=/; s/^(PCHAIN_API_TOKEN)=.*/\1=/' \
   .env > "$STAGE/$NAME/.env"
 grep -q '^REMOTE_DIR=' "$STAGE/$NAME/.env" || {

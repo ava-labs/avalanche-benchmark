@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/identity"
 	"github.com/ava-labs/avalanchego/ids"
 	platformsigner "github.com/ava-labs/avalanchego/vms/platformvm/signer"
 	ethcommon "github.com/ava-labs/libevm/common"

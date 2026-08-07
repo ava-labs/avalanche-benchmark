@@ -10,15 +10,15 @@ import (
 	"strconv"
 	"text/tabwriter"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/destroy"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/funding"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/keygen"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/setweight"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/topup"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/weights"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/creation"
+	"github.com/ava-labs/avalanche-benchmark/internal/destroy"
+	"github.com/ava-labs/avalanche-benchmark/internal/funding"
+	"github.com/ava-labs/avalanche-benchmark/internal/identity"
+	"github.com/ava-labs/avalanche-benchmark/internal/keygen"
+	"github.com/ava-labs/avalanche-benchmark/internal/setweight"
+	"github.com/ava-labs/avalanche-benchmark/internal/topup"
+	"github.com/ava-labs/avalanche-benchmark/internal/weights"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/utils/units"
 )
@@ -38,9 +38,6 @@ func run() error {
 	root, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get working directory: %w", err)
-	}
-	if err := config.InstallAPITokenFromRoot(root); err != nil {
-		return err
 	}
 	switch {
 	case (len(os.Args) == 2 || len(os.Args) == 3) && os.Args[1] == "keygen":

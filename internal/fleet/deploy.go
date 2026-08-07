@@ -19,10 +19,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/placement"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/creation"
+	"github.com/ava-labs/avalanche-benchmark/internal/identity"
+	"github.com/ava-labs/avalanche-benchmark/internal/placement"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/vms/platformvm"
 	"github.com/joho/godotenv"
@@ -111,18 +111,46 @@ func (p deployment) l1For(node config.Node) (ids.ID, ids.ID) {
 	return p.chainIDs[chain], p.subnetIDs[chain]
 }
 
-// subnetConfigPath resolves a chain's subnet configuration: an override at
-// chains/<name>/subnet-config.json wins; the root default is
-// subnet-config.json. The repository ships the oracle file at
-// chains/oracle/subnet-config.json; the root subnet-config-oracle.json stays
-// as a legacy fallback for old deployment roots.
+// fileExists reports whether path names a regular file.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+// shippedPath resolves a configuration file the repository ships in three
+// layers: the chain's own file at chains/<name>/ wins, then the shared
+// default at chains/default/, then the legacy root name for deployment
+// roots that predate the chains/ layout. An empty chain (the P-chain node)
+// skips the per-chain layer.
+func shippedPath(root, chain, name string) string {
+	if chain != "" {
+		if override := filepath.Join(root, "chains", chain, name); fileExists(override) {
+			return override
+		}
+	}
+	if fallback := filepath.Join(root, "chains", "default", name); fileExists(fallback) {
+		return fallback
+	}
+	return filepath.Join(root, name)
+}
+
+// subnetConfigPath resolves a chain's subnet configuration from the most
+// specific layer to the least. The oracle chain keeps one extra legacy
+// name: old deployment roots carry subnet-config-oracle.json at the root,
+// and it outranks the shared chains/default/ file on purpose. The oracle
+// consensus parameters differ materially from the shared ones, so an old
+// oracle root must never silently pick up the generic file.
 func subnetConfigPath(root, chain string) string {
-	override := filepath.Join(root, "chains", chain, "subnet-config.json")
-	if info, err := os.Stat(override); err == nil && !info.IsDir() {
+	if override := filepath.Join(root, "chains", chain, "subnet-config.json"); fileExists(override) {
 		return override
 	}
 	if chain == config.OracleChain {
-		return filepath.Join(root, "subnet-config-oracle.json")
+		if legacy := filepath.Join(root, "subnet-config-oracle.json"); fileExists(legacy) {
+			return legacy
+		}
+	}
+	if fallback := filepath.Join(root, "chains", "default", "subnet-config.json"); fileExists(fallback) {
+		return fallback
 	}
 	return filepath.Join(root, "subnet-config.json")
 }
@@ -141,15 +169,10 @@ func chainConfigVariant(role config.Role) string {
 	}
 }
 
-// chainConfigPath resolves one variant of the EVM chain configuration: an
-// override at chains/<name>/<variant> wins; the root <variant> is the
-// shared default.
+// chainConfigPath resolves one variant of the EVM chain configuration
+// through the shipped layers.
 func chainConfigPath(root, chain, variant string) string {
-	override := filepath.Join(root, "chains", chain, variant)
-	if info, err := os.Stat(override); err == nil && !info.IsDir() {
-		return override
-	}
-	return filepath.Join(root, variant)
+	return shippedPath(root, chain, variant)
 }
 
 type nodeDeployment struct {
@@ -619,7 +642,16 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 	}
 	requiredFiles := []string{
 		filepath.Join(d.root, "bin", "avalanchego"),
-		filepath.Join(d.root, "node-config.json"),
+	}
+	// Every node needs its node configuration, resolved through the shipped
+	// layers per chain; deduplicate because most nodes share one file.
+	seenNodeConfigs := make(map[string]bool)
+	for _, node := range nodes {
+		path := shippedPath(d.root, chainOf(node), "node-config.json")
+		if !seenNodeConfigs[path] {
+			seenNodeConfigs[path] = true
+			requiredFiles = append(requiredFiles, path)
+		}
 	}
 	if includeL1 {
 		requiredFiles = append(requiredFiles, filepath.Join(d.root, "bin", pluginID))
@@ -920,7 +952,7 @@ func renderNode(
 	if err := os.Mkdir(renderDir, 0o700); err != nil {
 		return fmt.Errorf("create node %d render directory: %w", node.Number, err)
 	}
-	baseConfig, err := os.ReadFile(filepath.Join(root, "node-config.json"))
+	baseConfig, err := os.ReadFile(shippedPath(root, chainOf(node), "node-config.json"))
 	if err != nil {
 		return err
 	}

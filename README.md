@@ -1,4 +1,12 @@
+<div align="center">
+
+<img src="docs/avalanche-logo.png" alt="Avalanche" width="360"/>
+
 # Avalanche for Isolated Networks
+
+**Create, load, break, and recover Avalanche L1s that run with no internet egress.**
+
+</div>
 
 This is a benchmark and failover toolset for Avalanche L1s in isolated
 networks. An isolated network has no internet egress, a fixed validator set,
@@ -9,8 +17,22 @@ load on a chain. It does data-center failover drills in two ways: it moves
 staking identities (key swap), or it moves stake weight. Both operate on one
 deployment. No step creates a chain again.
 
-This document is the operator manual. For the consensus parameters, see
-**[CONSENSUS-TUNING.md](CONSENSUS-TUNING.md)**.
+This document is the operator manual. Every procedure has a playbook.
+
+## Start here
+
+| You want to | Read |
+|---|---|
+| Stand up a fleet from zero | [Runbooks](#runbooks) below, then [playbooks/01-provision.md](playbooks/01-provision.md) |
+| Put load on a chain | [playbooks/04-load-test.md](playbooks/04-load-test.md) |
+| Run a failover drill | [playbooks/05-failover-drill.md](playbooks/05-failover-drill.md) |
+| Swap a validator identity | [playbooks/06-validator-swap.md](playbooks/06-validator-swap.md) |
+| Install without root | [playbooks/02-rootless-install.md](playbooks/02-rootless-install.md) |
+| Monitor and alert | [playbooks/03-monitoring.md](playbooks/03-monitoring.md) |
+| Run with a connected P-chain | [playbooks/07-connected-pchain.md](playbooks/07-connected-pchain.md) |
+| Install an app on a running chain | [playbooks/08-install-app.md](playbooks/08-install-app.md) |
+| Run more than one chain | [playbooks/09-multi-chain.md](playbooks/09-multi-chain.md) |
+| Understand the consensus parameters | [docs/CONSENSUS-TUNING.md](docs/CONSENSUS-TUNING.md) |
 
 ## What it needs
 
@@ -43,9 +65,9 @@ One deployment can run several L1s. One management committee, one P-chain
 node, and one control machine cover every chain. Per-chain configuration
 lives in `chains/<name>/` (`genesis-template.json`, `subnet-config.json`,
 and the optional node config variants `chain-config.json`,
-`chain-config-rpc.json`, `chain-config-archive.json`); a chain without a
-file uses the root default. The oracle chain's files ship in
-`chains/oracle/`.
+`chain-config-rpc.json`, `chain-config-archive.json`, `node-config.json`).
+The shared defaults live in `chains/default/`; a chain without a file uses
+the default. The oracle chain's files ship in `chains/oracle/`.
 
 Operational procedures are in `playbooks/`: provision, load test, failover
 drill, validator swap, rootless install, monitoring, the connected P-chain
@@ -67,11 +89,11 @@ The P-chain node has two modes, and every deployment picks one:
 ### Fresh chain on a fresh fleet
 
 ```bash
-cp nodes.ini.example nodes.ini    # edit host= lines, exactly one role=pchain
+cp examples/nodes.ini.example nodes.ini   # edit host= lines, exactly one role=pchain
 cp .env.example .env              # NETWORK, PCHAIN_API, FUNDING_PRIVATE_KEY, SSH_*
 go run ./cmd/l1 address           # fund the printed P-chain address
 go run ./cmd/l1 create            # generates deployment/ if absent, then every chain
-make pack                         # remote-benchmark.tar.gz: binaries + configs, no sources
+make pack                         # avalanche-benchmark.tar.gz: binaries + configs, no sources
 # ship the archive to control, extract, then from the control host:
 ./bin/fleet deploy follow         # P-chain tracks the public network
 ./bin/fleet status                # expect 12x up, MODE synced, L1 STATE complete
@@ -158,7 +180,8 @@ and RPC node bootstraps from the P-chain node.
 | `deployment/oracle-feeder.key` | `keygen` | EVM key funded on every chain, used by `oracle feed`/`relay` |
 | `deployment/upgrades.json` | `fleet upgrade` | the main chain's append-only upgrade history; every deploy installs it |
 | `deployment/upgrades-<name>.json` | `fleet upgrade --chain <name>` | the named chain's upgrade history, same rules |
-| `chains/<name>/` | operator | per-chain `genesis-template.json` (required beyond one chain: each chain needs its own chainId), optional `subnet-config.json`, and optional `chain-config.json`, `chain-config-rpc.json`, `chain-config-archive.json`; an absent file means the root default. The repository ships the oracle chain's files in `chains/oracle/`. |
+| `chains/default/` | repository | the shared defaults: `genesis-template.json`, `subnet-config.json`, `node-config.json`, and the `chain-config*.json` variants. Every chain without its own file uses these. |
+| `chains/<name>/` | operator | per-chain overrides of any default (a `genesis-template.json` with its own chainId is required beyond one chain). The repository ships the oracle chain's files in `chains/oracle/`. |
 | `pchain.tar.gz` | `pchain archive` | validated P-chain `db/` snapshot |
 
 `deployment/` contains private keys. It is never in the pack artifact. It is
@@ -196,8 +219,7 @@ never committed.
 
 ```dotenv
 NETWORK=fuji                              # fuji | mainnet, never "testnet"
-PCHAIN_API=https://api.avax-test.network  # no query string, see PCHAIN_API_TOKEN
-PCHAIN_API_TOKEN=                         # optional rate-limit bypass, secret, never commit
+PCHAIN_API=https://api.avax-test.network  # no query string
 FUNDING_PRIVATE_KEY=                      # 64 hex chars, no 0x, pays P-chain fees
 SSH_USER=ubuntu
 SSH_KEY_PATH=/home/ubuntu/.ssh/fleet
@@ -210,11 +232,6 @@ An unknown field, a missing field, or a malformed value stops the command
 before it does work. There are no aliases, no auto-discovery, and no silent
 repair.
 
-The toolset sends `PCHAIN_API_TOKEN` as the `token` query argument to the
-`PCHAIN_API` host, and to no other host. Do not append the token to
-`PCHAIN_API`. The AvalancheGo client overwrites the query string, so a token
-there is silently dropped.
-
 `go run ./cmd/l1 keygen-funding` writes a new funding key into an empty
 `FUNDING_PRIVATE_KEY`. It sets `.env` to mode 0600. It refuses to run when
 `deployment/network.env` exists.
@@ -224,7 +241,7 @@ The install is user-level by default: everything under
 overrides the root, `REMOTE_DATA_DIR` puts the databases on a faster disk,
 and `SYSTEM_INSTALL=true` selects the legacy root install (systemd,
 restart-on-crash, start-on-boot; needs passwordless sudo). See
-[playbooks/05-rootless-install.md](playbooks/05-rootless-install.md).
+[playbooks/02-rootless-install.md](playbooks/02-rootless-install.md).
 
 ## Commands
 
@@ -252,7 +269,7 @@ restart-on-crash, start-on-boot; needs passwordless sudo). See
 | `fleet app install <name> [--chain <name>]` | read `apps/<name>/app.json`, run the app's renderer from the deployment root, then install the rendered fragment through the same path as `fleet upgrade`. The target chain is the `--chain` flag, else the manifest's `chain`, else `main`; exactly one chain per call, and an undeclared chain is refused. See playbooks/08-install-app.md. |
 | `fleet app list` | one line per `apps/*/app.json`: name, target chain, description. A directory without a manifest is skipped with a warning. |
 | `fleet place <letter> <node>` | reconcile, swap the placement, reconcile again. One move per call. Does not wait for readiness. The only placement verb. |
-| `fleet targets` | print the Prometheus scrape targets for the inventory, labeled with node, role, dc, chain name, and blockchain ID. Pipe to `monitoring/targets.json`; see playbooks/06-monitoring.md. |
+| `fleet targets` | print the Prometheus scrape targets for the inventory, labeled with node, role, dc, chain name, and blockchain ID. Pipe to `monitoring/targets.json`; see playbooks/03-monitoring.md. |
 | `bombard -rps N -duration D [-chain <name>]` | the load generator. Sends to the named chain's rpc nodes; the default is `main`. |
 | `oracle feed <node-url>` | the foreground mock price feeder. With an oracle L1, it submits to the aggregator there. Without one, it publishes rounds to the main chain's Chainlink-shaped aggregator with type-2 priority-fee transactions. |
 | `oracle relay <oracle-rpc-url> <rpc-url> <staking-ip:port,...>` | the foreground Warp price relayer. It collects signatures from the validators over ACP-118. Oracle L1 deployments only. |
@@ -605,7 +622,7 @@ relayer is the demo equivalent for isolated networks.
 The consensus parameters are a fixed benchmark input. They are identical
 for every topology, including a single validator. Fleet commands never
 derive consensus settings from the inventory. The shipped values are in
-`subnet-config.json`:
+`chains/default/subnet-config.json`:
 
 ```
 k=60  alphaPreference=31  alphaConfidence=38  beta=12  proposerWindow=100ms
@@ -620,10 +637,10 @@ Preference can change cheaply. Confidence feeds finality and demands the
 stronger majority. The ratio `alphaConfidence/k = 0.633` also clears the
 connected-stake query gate with one heavy validator down. The full
 derivation and the measurements are in
-[CONSENSUS-TUNING.md](CONSENSUS-TUNING.md). Run `tools/forkcheck.sh` after
+[docs/CONSENSUS-TUNING.md](docs/CONSENSUS-TUNING.md). Run `tools/forkcheck.sh` after
 every load run.
 
-The block cadence is 25ms: `min-delay-target` in `chain-config.json`, and
+The block cadence is 25ms: `min-delay-target` in `chains/default/chain-config.json`, and
 `initialMinDelayMS` in the genesis. The genesis is stamped with the
 creation time. A genesis stamped `0` would sit before the network's Granite
 activation. Granite would then be inactive at block zero, the chain would

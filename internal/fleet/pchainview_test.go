@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
 )
 
 // One real startup line and one real progress line, as AvalancheGo writes them
