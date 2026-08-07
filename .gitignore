@@ -69,3 +69,8 @@ apps/*/contracts/out/
 .linux-build/
 /.questions/
 /.bundle-denylist
+
+# Local planning documents: never committed, they move to the private repo
+/MULTICHAIN-PLAN.md
+/PROPOSAL.md
+/PACKAGE-SPEC.md
