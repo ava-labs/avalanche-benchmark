@@ -27,6 +27,7 @@
 /*-linux-amd64
 
 # Deployment packages
+/avalanche-benchmark.tar.gz
 /remote-benchmark.tar.gz
 /pchain.tar.gz
 /avalanche-benchmark-*.tar.gz
