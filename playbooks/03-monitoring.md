@@ -41,11 +41,11 @@ The dashboards, in the order to open them:
 
 1. **Fleet Health**: the default view. Nodes up, P-chain beacon, height
    per node, throughput, poll success, stake weight per data center.
-2. **Failover**: up/down and weight per machine and per data center. Use
-   it during failover drills (playbook 05).
-3. **Avalanche**: consensus internals per node. Open it when Fleet Health
-   shows a problem and you need the cause.
-4. **Machine**: CPU, memory, and disk per node process.
+2. **Avalanche Failover**: up/down and weight per machine and per data
+   center. Use it during failover drills (playbook 05).
+3. **Avalanche Benchmark**: consensus internals per node. Open it when
+   Fleet Health shows a problem and you need the cause.
+4. **Avalanche Machine Metrics**: CPU, memory, and disk per node process.
 
 App dashboards provision from each app's `dashboards/` directory. The
 compose file mounts `apps/settlement-feed/dashboards`; add one mount line
@@ -81,7 +81,8 @@ one. `NodeBehindPeers` catches the harmful case.
 The compose stack runs `monitoring/fleet-weight-exporter.py` as a
 service. It reads `deployment/placement.json` and
 `deployment/public.json` on every scrape and serves `fleet_actual_weight`
-per machine, with `dc` and `l1` labels. It uses no chain API, so it also
+per machine, with `machine`, `identity`, `dc`, and `l1` labels. Playbook
+06 uses the `identity` label to follow an identity move. It uses no chain API, so it also
 operates on an isolated frozen fleet. A key swap from `fleet place` shows
 up on the next scrape.
 

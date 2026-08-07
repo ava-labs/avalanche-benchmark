@@ -55,7 +55,7 @@ block. Send one transaction after the activation time, then verify the
 contracts:
 
 ```bash
-FEED=0x00000000000000000000000000000000FeedF00d
+FEED=0x00000000000000000000000000000000FeedF00D
 cast call $FEED "decimals()(uint8)" --rpc-url http://<rpc>:9650/ext/bc/<chain-id>/rpc
 ```
 

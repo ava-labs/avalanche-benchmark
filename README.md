@@ -176,7 +176,7 @@ and RPC node bootstraps from the P-chain node.
 | `deployment/placement.json` | `keygen`, `place` | machine-to-identity bijection, control-side truth |
 | `deployment/genesis.json` | `create` | rendered main-chain genesis, stamped with the creation time |
 | `deployment/genesis-<name>.json` | `create` | rendered genesis of every other declared chain (the oracle chain's file is `genesis-oracle.json`) |
-| `deployment/network.env` | `create` | subnet, chain, and conversion transaction IDs. Main uses the bare keys; each other chain gets `SUBNET_<NAME>_ID`, `CHAIN_<NAME>_ID`, `CONVERT_<NAME>_TX_ID`. |
+| `deployment/network.env` | `create` | subnet, chain, and conversion transaction IDs. Main uses the bare keys. Each other chain gets `SUBNET_<NAME>_ID`, `CHAIN_<NAME>_ID`, `CONVERT_<NAME>_TX_ID`. The oracle chain keeps its legacy names `ORACLE_SUBNET_ID`, `ORACLE_CHAIN_ID`, `ORACLE_CONVERT_TX_ID`. |
 | `deployment/oracle-feeder.key` | `keygen` | EVM key funded on every chain, used by `oracle feed`/`relay` |
 | `deployment/upgrades.json` | `fleet upgrade` | the main chain's append-only upgrade history; every deploy installs it |
 | `deployment/upgrades-<name>.json` | `fleet upgrade --chain <name>` | the named chain's upgrade history, same rules |
@@ -543,9 +543,9 @@ USDC/USD. It installs onto the running chain through the upgrade history
 (`oracle upgrade`, then `fleet upgrade upgrade.json`; see
 playbooks/08-install-app.md). Genesis stays base layer only, so the
 install never recreates the chain. A `PriceAggregator` lands at
-`0x00000000000000000000000000000000FeedFacE`. The generated
+`0x00000000000000000000000000000000FEeDfAce`. The generated
 `deployment/oracle-feeder.key` publishes to it. A `PriceFeedProxy` lands
-at `0x00000000000000000000000000000000FeedF00d`. Consumers read from the
+at `0x00000000000000000000000000000000FeedF00D`. Consumers read from the
 proxy. The ABI is identical to a Chainlink feed: `latestRoundData`,
 `getRoundData`, `decimals`, `description`. The `IPriceFeed` interface
 matches Chainlink's `AggregatorV3Interface` signature for signature. On a
@@ -622,7 +622,9 @@ relayer is the demo equivalent for isolated networks.
 The consensus parameters are a fixed benchmark input. They are identical
 for every topology, including a single validator. Fleet commands never
 derive consensus settings from the inventory. The shipped values are in
-`chains/default/subnet-config.json`:
+`chains/default/subnet-config.json` (the legacy oracle chain shape is the
+one exception: `chains/oracle/subnet-config.json` ships single-validator
+parameters):
 
 ```
 k=60  alphaPreference=31  alphaConfidence=38  beta=12  proposerWindow=100ms

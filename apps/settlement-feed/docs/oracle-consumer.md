@@ -7,10 +7,10 @@ written against Chainlink feeds work without changes.
 
 | What | Value |
 |---|---|
-| Consumer address (proxy) | `PriceFeedProxy` at `0x00000000000000000000000000000000FeedF00d` |
+| Consumer address (proxy) | `PriceFeedProxy` at `0x00000000000000000000000000000000FeedF00D` |
 | Pair | USDC / USD (`description()` returns it) |
 | Decimals | 8 (`decimals()` returns it): `100000000` = $1.00000000 |
-| Writer | `PriceAggregator` at `0x00000000000000000000000000000000FeedFacE`, one authorized publisher |
+| Writer | `PriceAggregator` at `0x00000000000000000000000000000000FEeDfAce`, one authorized publisher |
 | Sources | `contracts/src/PriceFeedProxy.sol`, `contracts/src/PriceAggregator.sol`, `contracts/src/interfaces/IPriceFeed.sol` |
 
 Point consumers at the proxy, never at the aggregator. The proxy address
@@ -26,7 +26,7 @@ import {IPriceFeed} from "./interfaces/IPriceFeed.sol";
 
 contract Consumer {
     IPriceFeed constant FEED =
-        IPriceFeed(0x00000000000000000000000000000000FeedF00d);
+        IPriceFeed(0x00000000000000000000000000000000FeedF00D);
 
     function usdcPrice() external view returns (int256 answer) {
         uint256 updatedAt;
@@ -84,7 +84,7 @@ that checks only one of them is not safe against the other.
 ## From the command line
 
 ```bash
-FEED=0x00000000000000000000000000000000FeedF00d
+FEED=0x00000000000000000000000000000000FeedF00D
 RPC=http://<rpc>:9650/ext/bc/<chain-id>/rpc
 
 cast call $FEED "latestRoundData()(uint80,int256,uint256,uint256,uint80)" --rpc-url $RPC
