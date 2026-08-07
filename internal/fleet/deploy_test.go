@@ -993,6 +993,34 @@ func TestShippedPathResolvesThroughChainsDefault(t *testing.T) {
 	}
 }
 
+func TestSubnetConfigPathOracleLegacyOutranksSharedDefault(t *testing.T) {
+	root := t.TempDir()
+
+	fallback := filepath.Join(root, "chains", "default", "subnet-config.json")
+	if err := os.MkdirAll(filepath.Dir(fallback), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, fallback, `{}`)
+	legacy := filepath.Join(root, "subnet-config-oracle.json")
+	writeTestFile(t, legacy, `{}`)
+
+	if got := subnetConfigPath(root, config.OracleChain); got != legacy {
+		t.Fatalf("subnetConfigPath = %s, want the oracle legacy %s over the shared default", got, legacy)
+	}
+	if got := subnetConfigPath(root, "trading"); got != fallback {
+		t.Fatalf("subnetConfigPath = %s, want the shared default for a non-oracle chain", got)
+	}
+
+	override := filepath.Join(root, "chains", config.OracleChain, "subnet-config.json")
+	if err := os.MkdirAll(filepath.Dir(override), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, override, `{}`)
+	if got := subnetConfigPath(root, config.OracleChain); got != override {
+		t.Fatalf("subnetConfigPath = %s, want the oracle's own file %s over the legacy", got, override)
+	}
+}
+
 // The address book must name only machines meant to be up. It doubles as the
 // state-sync beacon set with alpha = count/2 + 1 over the LIST, so listing a
 // machine that is down raises the bar without adding anyone who can clear it:

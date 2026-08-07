@@ -265,6 +265,37 @@ func TestChainTemplatePathResolvesThroughChainsDefault(t *testing.T) {
 	}
 }
 
+func TestChainTemplatePathOracleLegacyOutranksSharedDefault(t *testing.T) {
+	dir := t.TempDir()
+	write := func(path string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fallback := filepath.Join(dir, "chains", "default", "genesis-template.json")
+	write(fallback)
+	legacy := filepath.Join(dir, "oracle-genesis-template.json")
+	write(legacy)
+
+	if got := chainTemplatePath(dir, config.OracleChain); got != legacy {
+		t.Fatalf("chainTemplatePath = %s, want the oracle legacy %s over the shared default", got, legacy)
+	}
+	if got := chainTemplatePath(dir, "trading"); got != fallback {
+		t.Fatalf("chainTemplatePath = %s, want the shared default for a non-oracle chain", got)
+	}
+
+	override := filepath.Join(dir, "chains", config.OracleChain, "genesis-template.json")
+	write(override)
+	if got := chainTemplatePath(dir, config.OracleChain); got != override {
+		t.Fatalf("chainTemplatePath = %s, want the oracle's own file %s over the legacy", got, override)
+	}
+}
+
 func TestCreateWithOracleRunsManagerOracleMain(t *testing.T) {
 	dir := t.TempDir()
 	template := `{

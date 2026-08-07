@@ -134,20 +134,23 @@ func shippedPath(root, chain, name string) string {
 	return filepath.Join(root, name)
 }
 
-// subnetConfigPath resolves a chain's subnet configuration through the
-// shipped layers. The oracle chain keeps one extra legacy name: old
-// deployment roots carry subnet-config-oracle.json at the root.
+// subnetConfigPath resolves a chain's subnet configuration from the most
+// specific layer to the least. The oracle chain keeps one extra legacy
+// name: old deployment roots carry subnet-config-oracle.json at the root,
+// and it outranks the shared chains/default/ file on purpose. The oracle
+// consensus parameters differ materially from the shared ones, so an old
+// oracle root must never silently pick up the generic file.
 func subnetConfigPath(root, chain string) string {
 	if override := filepath.Join(root, "chains", chain, "subnet-config.json"); fileExists(override) {
 		return override
-	}
-	if fallback := filepath.Join(root, "chains", "default", "subnet-config.json"); fileExists(fallback) {
-		return fallback
 	}
 	if chain == config.OracleChain {
 		if legacy := filepath.Join(root, "subnet-config-oracle.json"); fileExists(legacy) {
 			return legacy
 		}
+	}
+	if fallback := filepath.Join(root, "chains", "default", "subnet-config.json"); fileExists(fallback) {
+		return fallback
 	}
 	return filepath.Join(root, "subnet-config.json")
 }
