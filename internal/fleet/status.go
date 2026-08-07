@@ -304,7 +304,7 @@ func (d *Deployer) Status(ctx context.Context) error {
 			state:  probe.state,
 			height: probe.height,
 		}
-		if probe.node.Role == config.RoleValidator || probe.node.Role == config.RoleOracleValidator {
+		if probe.node.Role == config.RoleValidator {
 			row.weight = statusNA
 			if inv.created {
 				row.weight = statusUnknown
@@ -569,7 +569,7 @@ func recordedValidatorSets(inv inventory, probe *statusPChainProbe) {
 		probe.visibleByChain[chain] = true
 	}
 	for _, node := range inv.public.Nodes {
-		if node.Role == config.RoleValidator || node.Role == config.RoleOracleValidator {
+		if node.Role == config.RoleValidator {
 			probe.weights[node.NodeID] = node.Weight
 		}
 	}
@@ -606,7 +606,7 @@ func (d *Deployer) probePublicValidatorSets(
 	probe.setsOK = true
 	expectedByChain := make(map[string]map[ids.NodeID]struct{}, len(inv.chains))
 	for _, node := range inv.public.Nodes {
-		if node.Role != config.RoleValidator && node.Role != config.RoleOracleValidator {
+		if node.Role != config.RoleValidator {
 			continue
 		}
 		nodeID, err := ids.NodeIDFromString(node.NodeID)

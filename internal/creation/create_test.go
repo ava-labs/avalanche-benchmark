@@ -326,9 +326,9 @@ func TestCreateWithOracleRunsManagerOracleMain(t *testing.T) {
 			{Number: 4, Host: "v4", Role: config.RoleValidator},
 			{Number: 5, Host: "rpc", Role: config.RoleRPC},
 			{Number: 6, Host: "pchain", Role: config.RolePChain},
-			{Number: 7, Host: "o1", Role: config.RoleOracleValidator},
-			{Number: 8, Host: "o2", Role: config.RoleOracleValidator},
-			{Number: 9, Host: "rpc", Role: config.RoleOracleRPC},
+			{Number: 7, Host: "o1", Role: config.RoleValidator, Chain: config.OracleChain},
+			{Number: 8, Host: "o2", Role: config.RoleValidator, Chain: config.OracleChain},
+			{Number: 9, Host: "rpc", Role: config.RoleRPC, Chain: config.OracleChain},
 		},
 	}
 	wallet := &fakeWallet{}

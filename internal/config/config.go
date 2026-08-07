@@ -18,10 +18,14 @@ import (
 type Role string
 
 const (
-	RoleValidator       Role = "validator"
-	RoleRPC             Role = "rpc"
-	RolePChain          Role = "pchain"
-	RoleArchive         Role = "archive"
+	RoleValidator Role = "validator"
+	RoleRPC       Role = "rpc"
+	RolePChain    Role = "pchain"
+	RoleArchive   Role = "archive"
+	// RoleOracleValidator and RoleOracleRPC are legacy spellings from before
+	// the chain= field existed. The loaders accept them and normalize them to
+	// RoleValidator and RoleRPC pinned to the oracle chain, so no loaded Node
+	// ever carries them.
 	RoleOracleValidator Role = "oracle-validator"
 	RoleOracleRPC       Role = "oracle-rpc"
 )
@@ -30,9 +34,10 @@ const (
 // keeps the bare network.env keys (CHAIN_ID, SUBNET_ID, CONVERT_TX_ID).
 const MainChain = "main"
 
-// OracleChain is the chain the legacy oracle roles pin. The name is reserved:
-// the oracle L1's application behavior (Warp receiver, relay) keys on the
-// oracle roles, so a plain validator cannot join that chain.
+// OracleChain is the chain the legacy oracle role spellings pin. It is
+// otherwise a normal chain: declare it with role=validator|rpc chain=oracle.
+// Its shipped defaults live in chains/oracle/ and its validators carry the
+// flat oracle weight instead of the ladder.
 const OracleChain = "oracle"
 
 // chainNamePattern bounds chain names so they can name directories
@@ -50,8 +55,8 @@ type Node struct {
 	Chain string
 	// Weight is the explicit initial stake weight from weight=. Zero means
 	// the tag is absent and the default weight ladder applies. The tag is
-	// valid only on the validator and oracle-validator roles, and a chain
-	// sets it on all of its validators or on none.
+	// valid only on validator lines, and a chain sets it on all of its
+	// validators or on none.
 	Weight uint64
 }
 
@@ -92,8 +97,9 @@ func ValidChainName(name string) bool {
 }
 
 // EffectiveChain resolves the chain a role serves when the recorded chain
-// may be empty: oracle roles always serve the oracle chain, the P-chain
-// node serves none, and everything else defaults to main.
+// may be empty: the legacy oracle role spellings (still present in old
+// public.json records) always serve the oracle chain, the P-chain node
+// serves none, and everything else defaults to main.
 func EffectiveChain(role Role, chain string) string {
 	if chain != "" {
 		return chain
@@ -365,7 +371,7 @@ func LoadNodes(path string) ([]Node, error) {
 			continue
 		}
 		if len(fields) < 3 {
-			return nil, fmt.Errorf("%s:%d: expected <node-number> host=<address> role=validator|rpc|pchain|archive|oracle-validator|oracle-rpc [chain=<name>] [weight=<n>] [dc=<tag>]", path, lineNumber)
+			return nil, fmt.Errorf("%s:%d: expected <node-number> host=<address> role=validator|rpc|pchain|archive [chain=<name>] [weight=<n>] [dc=<tag>]", path, lineNumber)
 		}
 
 		number, err := strconv.Atoi(fields[0])
@@ -400,7 +406,7 @@ func LoadNodes(path string) ([]Node, error) {
 		switch role {
 		case RoleValidator, RoleRPC, RolePChain, RoleArchive, RoleOracleValidator, RoleOracleRPC:
 		default:
-			return nil, fmt.Errorf("%s:%d: role must be validator, rpc, pchain, archive, oracle-validator, or oracle-rpc, got %q", path, lineNumber, values["role"])
+			return nil, fmt.Errorf("%s:%d: role must be validator, rpc, pchain, or archive, got %q", path, lineNumber, values["role"])
 		}
 		chain := values["chain"]
 		if chain != "" && !chainNamePattern.MatchString(chain) {
@@ -414,16 +420,21 @@ func LoadNodes(path string) ([]Node, error) {
 				return nil, fmt.Errorf("%s:%d: the P-chain node serves every chain; chain= is not valid with role=pchain", path, lineNumber)
 			}
 		case RoleOracleValidator, RoleOracleRPC:
+			// Legacy spellings from before chain= existed. They normalize to
+			// the generic role pinned to the oracle chain, so the rest of the
+			// kit only ever sees the four real roles.
 			if chain != "" && chain != OracleChain {
 				return nil, fmt.Errorf("%s:%d: role %s always serves chain %q, got chain=%q", path, lineNumber, role, OracleChain, chain)
 			}
 			chain = OracleChain
+			if role == RoleOracleValidator {
+				role = RoleValidator
+			} else {
+				role = RoleRPC
+			}
 		default:
 			if chain == "" {
 				chain = MainChain
-			}
-			if chain == OracleChain {
-				return nil, fmt.Errorf("%s:%d: chain name %q is reserved for the oracle-validator and oracle-rpc roles", path, lineNumber, OracleChain)
 			}
 			if chain == "management" {
 				return nil, fmt.Errorf("%s:%d: chain name %q is reserved for the management chain", path, lineNumber, chain)
@@ -436,8 +447,8 @@ func LoadNodes(path string) ([]Node, error) {
 		if raw, present := values["weight"]; present {
 			// An explicit weight replaces the default ladder for this node.
 			// The role check keeps the tag on stake-carrying roles only.
-			if role != RoleValidator && role != RoleOracleValidator {
-				return nil, fmt.Errorf("%s:%d: weight= is valid only with role=validator or role=oracle-validator, got role=%s", path, lineNumber, role)
+			if role != RoleValidator {
+				return nil, fmt.Errorf("%s:%d: weight= is valid only with role=validator, got role=%s", path, lineNumber, values["role"])
 			}
 			parsed, err := strconv.ParseUint(raw, 10, 64)
 			if err != nil || parsed == 0 {
@@ -452,8 +463,6 @@ func LoadNodes(path string) ([]Node, error) {
 	}
 
 	pchainCount := 0
-	oracleValidatorCount := 0
-	oracleRPCCount := 0
 	type chainShape struct {
 		validators int
 		rpcs       int
@@ -478,10 +487,6 @@ func LoadNodes(path string) ([]Node, error) {
 			pchainCount++
 		case RoleArchive:
 			shapeOf(node.Chain).archives++
-		case RoleOracleValidator:
-			oracleValidatorCount++
-		case RoleOracleRPC:
-			oracleRPCCount++
 		}
 	}
 	// Structural rules stay hard errors: deploy cannot work without them.
@@ -492,14 +497,21 @@ func LoadNodes(path string) ([]Node, error) {
 		return nil, fmt.Errorf("%s: expected exactly 1 P-chain node, found %d", path, pchainCount)
 	}
 	for _, chain := range Chains(nodes) {
-		if chain == OracleChain {
-			continue
-		}
 		shape := shapeOf(chain)
 		// A chain with no validator cannot convert to an L1, so declaring one
 		// through rpc or archive lines alone is structurally impossible.
 		if shape.validators == 0 {
 			return nil, fmt.Errorf("%s: chain %q declares no validator; a chain needs at least 1 role=validator node", path, chain)
+		}
+		if chain == OracleChain {
+			// The oracle chain runs the single-validator shape shipped in
+			// chains/oracle/, so the generic shape opinions do not apply. Its
+			// feed ingress must stay off the validator, so an rpc node is
+			// structural rather than an opinion.
+			if shape.rpcs < 1 {
+				return nil, fmt.Errorf("%s: chain %q declares no rpc node; the oracle feed ingress needs at least 1", path, chain)
+			}
+			continue
 		}
 		if shape.validators < 4 {
 			fmt.Fprintf(os.Stderr, "warning: %s declares %d validator(s) on chain %q; the tested failover shape uses 4 or more (3 heavy + spares), and fewer validators tolerate less loss\n", path, shape.validators, chain)
@@ -512,14 +524,6 @@ func LoadNodes(path string) ([]Node, error) {
 		if shape.archives == 1 {
 			fmt.Fprintf(os.Stderr, "warning: %s declares a single archive node on chain %q; it cannot cross-check its answers and re-executes from genesis alone after a loss\n", path, chain)
 		}
-	}
-	// The oracle L1 is opt-in: no oracle nodes means no oracle chain. When it
-	// exists, its feed ingress must stay off its validators, same as main.
-	if oracleValidatorCount > 0 && oracleRPCCount < 1 {
-		return nil, fmt.Errorf("%s: oracle validators require at least 1 oracle-rpc node, found 0", path)
-	}
-	if oracleRPCCount > 0 && oracleValidatorCount == 0 {
-		return nil, fmt.Errorf("%s: oracle-rpc nodes require at least 1 oracle-validator, found 0", path)
 	}
 
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Number < nodes[j].Number })
@@ -537,7 +541,7 @@ func validateWeightConsistency(path string, nodes []Node) error {
 	withWeight := make(map[string][]int)
 	withoutWeight := make(map[string][]int)
 	for _, node := range nodes {
-		if node.Role != RoleValidator && node.Role != RoleOracleValidator {
+		if node.Role != RoleValidator {
 			continue
 		}
 		if node.Weight > 0 {

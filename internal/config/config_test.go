@@ -359,11 +359,11 @@ func TestLoadNodesWeightErrors(t *testing.T) {
 	}{
 		"weight on rpc role": {
 			lines: []string{"1 host=v1 role=validator weight=100", "2 host=r1 role=rpc weight=100", "3 host=p1 role=pchain"},
-			want:  "weight= is valid only with role=validator or role=oracle-validator",
+			want:  "weight= is valid only with role=validator",
 		},
 		"weight on pchain role": {
 			lines: []string{"1 host=v1 role=validator weight=100", "2 host=r1 role=rpc", "3 host=p1 role=pchain weight=100"},
-			want:  "weight= is valid only with role=validator or role=oracle-validator",
+			want:  "weight= is valid only with role=validator",
 		},
 		"weight zero": {
 			lines: []string{"1 host=v1 role=validator weight=0", "2 host=r1 role=rpc", "3 host=p1 role=pchain"},
@@ -438,8 +438,74 @@ func TestLoadNodesOracleAndArchiveRoles(t *testing.T) {
 	for _, node := range nodes {
 		roles[node.Role]++
 	}
-	if roles[RoleArchive] != 2 || roles[RoleOracleValidator] != 2 || roles[RoleOracleRPC] != 1 {
+	// The legacy oracle spellings normalize to the generic roles pinned to
+	// the oracle chain; no loaded node carries them.
+	if roles[RoleArchive] != 2 || roles[RoleValidator] != 6 || roles[RoleRPC] != 2 {
 		t.Fatalf("unexpected role counts: %v", roles)
+	}
+	if roles[RoleOracleValidator] != 0 || roles[RoleOracleRPC] != 0 {
+		t.Fatalf("legacy oracle roles must normalize away, got %v", roles)
+	}
+	oracleValidators, oracleRPCs := 0, 0
+	for _, node := range nodes {
+		if node.Chain != OracleChain {
+			continue
+		}
+		switch node.Role {
+		case RoleValidator:
+			oracleValidators++
+		case RoleRPC:
+			oracleRPCs++
+		}
+	}
+	if oracleValidators != 2 || oracleRPCs != 1 {
+		t.Fatalf("oracle chain shape: validators=%d rpcs=%d, want 2 and 1", oracleValidators, oracleRPCs)
+	}
+}
+
+// The legacy oracle spellings and the generic role plus chain=oracle are the
+// same declaration; the loader normalizes both to one form.
+func TestLoadNodesOracleLegacySpellingEqualsGenericForm(t *testing.T) {
+	base := []string{
+		"1 host=v1 role=validator",
+		"2 host=v2 role=validator",
+		"3 host=v3 role=validator",
+		"4 host=v4 role=validator",
+		"5 host=r1 role=rpc",
+		"6 host=p1 role=pchain",
+	}
+	legacyPath := filepath.Join(t.TempDir(), "nodes.ini")
+	writeFile(t, legacyPath, strings.Join(append(append([]string{}, base...),
+		"7 host=o1 role=oracle-validator",
+		"8 host=o2 role=oracle-rpc",
+	), "\n"))
+	genericPath := filepath.Join(t.TempDir(), "nodes.ini")
+	writeFile(t, genericPath, strings.Join(append(append([]string{}, base...),
+		"7 host=o1 role=validator chain=oracle",
+		"8 host=o2 role=rpc chain=oracle",
+	), "\n"))
+
+	legacy, err := LoadNodes(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generic, err := LoadNodes(genericPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(legacy) != len(generic) {
+		t.Fatalf("node counts differ: %d vs %d", len(legacy), len(generic))
+	}
+	for i := range legacy {
+		if legacy[i] != generic[i] {
+			t.Fatalf("node %d differs: legacy %+v, generic %+v", i, legacy[i], generic[i])
+		}
+	}
+	if legacy[6].Role != RoleValidator || legacy[6].Chain != OracleChain {
+		t.Fatalf("legacy oracle validator did not normalize: %+v", legacy[6])
+	}
+	if legacy[7].Role != RoleRPC || legacy[7].Chain != OracleChain {
+		t.Fatalf("legacy oracle rpc did not normalize: %+v", legacy[7])
 	}
 }
 

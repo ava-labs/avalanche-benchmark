@@ -236,7 +236,7 @@ func ValidateManagerCommittee(size int) error {
 func requiredFreshCreateBalance(public Public) uint64 {
 	validatorCount := 0
 	for _, node := range public.Nodes {
-		if node.Role == config.RoleValidator || node.Role == config.RoleOracleValidator {
+		if node.Role == config.RoleValidator {
 			validatorCount++
 		}
 	}
@@ -256,7 +256,7 @@ func printPublic(public Public, path, digest string) {
 	}
 	for _, node := range public.Nodes {
 		switch node.Role {
-		case config.RoleValidator, config.RoleOracleValidator:
+		case config.RoleValidator:
 			fmt.Printf("%s identity %s: %s weight %d\n", node.ChainName(), node.Identity, node.NodeID, node.Weight)
 		}
 	}
@@ -495,13 +495,13 @@ func create(
 
 		oracleValidatorIdentities := make([]identity.Identity, 0, len(identities.Nodes))
 		for _, generated := range identities.Nodes {
-			if generated.Role == config.RoleOracleValidator {
+			if generated.Role == config.RoleValidator && generated.Chain == config.OracleChain {
 				oracleValidatorIdentities = append(oracleValidatorIdentities, generated)
 			}
 		}
 		oracleWeights := make(map[string]uint64, len(oracleValidatorIdentities))
 		for _, node := range public.Nodes {
-			if node.Role == config.RoleOracleValidator {
+			if node.Role == config.RoleValidator && node.ChainName() == config.OracleChain {
 				oracleWeights[node.Identity] = node.Weight
 			}
 		}

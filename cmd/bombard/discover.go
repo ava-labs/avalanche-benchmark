@@ -62,15 +62,10 @@ func discoverRPCEndpoints(root, chain string) ([]string, error) {
 		return nil, fmt.Errorf("%s: required field %s is not provided; run l1 create first", networkEnvFile, chainIDKey)
 	}
 
-	// The oracle chain's ingress role keeps its legacy name.
-	rpcRole := config.RoleRPC
-	if chain == config.OracleChain {
-		rpcRole = config.RoleOracleRPC
-	}
 	ports := httpPortsByNode(nodes)
 	var urls []string
 	for _, node := range nodes {
-		if node.Role != rpcRole || config.EffectiveChain(node.Role, node.Chain) != chain {
+		if node.Role != config.RoleRPC || config.EffectiveChain(node.Role, node.Chain) != chain {
 			continue
 		}
 		urls = append(urls, fmt.Sprintf("http://%s:%d/ext/bc/%s/rpc", node.Host, ports[node.Number], chainID))
