@@ -120,6 +120,33 @@ func TestFatalProbeIgnoresDeliberateStates(t *testing.T) {
 	}
 }
 
+func TestPChainUnhealthyToleratesRotatedStartupEntry(t *testing.T) {
+	cases := []struct {
+		name  string
+		probe statusPChainProbe
+		want  bool
+	}{
+		// The follow-only P chain rotates P.log within hours, taking the
+		// startup height entry with it. A bootstrapped node with an
+		// unobservable height is healthy.
+		{"healthy, height rotated away", statusPChainProbe{
+			serviceState: statusUp, mode: frozenMode, bootstrapped: true, localOK: false}, false},
+		{"healthy, height observed", statusPChainProbe{
+			serviceState: statusUp, mode: frozenMode, bootstrapped: true, localOK: true}, false},
+		{"not bootstrapped and no height", statusPChainProbe{
+			serviceState: statusUp, mode: frozenMode, bootstrapped: false, localOK: false}, true},
+		{"mode unreadable", statusPChainProbe{
+			serviceState: statusUp, mode: "", bootstrapped: true, localOK: true}, true},
+		{"machine down", statusPChainProbe{
+			serviceState: statusDown, localOK: false}, false},
+	}
+	for _, test := range cases {
+		if got := pchainUnhealthy(test.probe); got != test.want {
+			t.Errorf("%s: pchainUnhealthy = %v, want %v", test.name, got, test.want)
+		}
+	}
+}
+
 func TestPChainStatusRow(t *testing.T) {
 	visible := statusPChainProbe{
 		number: 13, serviceState: statusUp, created: true, bootstrapped: true,

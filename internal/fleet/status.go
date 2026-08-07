@@ -160,6 +160,9 @@ type statusPChainProbe struct {
 	// unique across chains, so one map covers them all.
 	weights  map[string]uint64
 	failures []string
+	// heightNote explains an unobservable height on a healthy node. It is
+	// printed as state, never counted as a failure.
+	heightNote string
 }
 
 // pchainStatusRow turns the raw P-chain observations into printable cells.
@@ -337,6 +340,9 @@ func (d *Deployer) Status(ctx context.Context) error {
 	if pchain.setsSource != "" {
 		fmt.Fprintf(d.out, "validator sets and weights: %s\n", pchain.setsSource)
 	}
+	if pchain.heightNote != "" {
+		fmt.Fprintln(d.out, pchain.heightNote)
+	}
 	if pchain.watchHint != "" {
 		fmt.Fprintln(d.out, pchain.watchHint)
 	}
@@ -347,7 +353,7 @@ func (d *Deployer) Status(ctx context.Context) error {
 	if pchain.created && !pchain.setsOK {
 		fatal++
 	}
-	if pchain.serviceState == statusUp && (!pchain.localOK || pchain.mode == "") {
+	if pchainUnhealthy(pchain) {
 		fatal++
 	}
 
@@ -481,14 +487,39 @@ func (d *Deployer) probePChainStatus(ctx context.Context, inv inventory, remote 
 	probe.localOK = observation.heightOK
 	probe.localHeight = observation.height
 	if !observation.heightOK {
-		probe.failures = append(probe.failures, fmt.Sprintf(
-			"P-chain node %d (%s): no startup height in %s, local height not observable",
-			inv.pchain.Number, inv.pchain.Host, pchainLogPath(layoutFor(inv.environment), target)))
+		// The follow-only P chain logs a skipped-bootstrap line every few
+		// seconds, so P.log rotates within hours and takes the startup height
+		// entry with it. On a node whose bootstrapped health check passes,
+		// that is an observability gap, not a fault.
+		if observation.bootstrapped {
+			probe.heightNote = fmt.Sprintf(
+				"local P-chain height: the startup entry rotated out of %s; the height reports again after the next process restart",
+				pchainLogPath(layoutFor(inv.environment), target))
+		} else {
+			probe.failures = append(probe.failures, fmt.Sprintf(
+				"P-chain node %d (%s): no startup height in %s, local height not observable",
+				inv.pchain.Number, inv.pchain.Host, pchainLogPath(layoutFor(inv.environment), target)))
+		}
 	}
 	if !probe.bootstrapped {
 		probe.watchHint = pchainWatchHint(inv.environment, target)
 	}
 	return probe
+}
+
+// pchainUnhealthy decides whether the P-chain probe makes status exit
+// nonzero. A running node whose deployed mode cannot be read is unhealthy. An
+// unobservable height is unhealthy only when the bootstrapped health check
+// also fails: on a healthy node it means the startup entry rotated out of
+// P.log, which is reported as state.
+func pchainUnhealthy(probe statusPChainProbe) bool {
+	if probe.serviceState != statusUp {
+		return false
+	}
+	if probe.mode == "" {
+		return true
+	}
+	return !probe.localOK && !probe.bootstrapped
 }
 
 // probePublicPChain reads everything status wants from the public P-chain
