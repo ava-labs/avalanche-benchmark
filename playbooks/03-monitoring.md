@@ -15,6 +15,17 @@ installed.
 docker compose -f monitoring/docker-compose.yml up -d
 ```
 
+Keep this order. When compose starts first, Docker creates the missing
+bind-mount source `monitoring/targets.json` as a DIRECTORY, and the
+render then fails with "Is a directory". Recover with:
+
+```bash
+docker compose -f monitoring/docker-compose.yml down
+rmdir monitoring/targets.json
+./bin/fleet targets > monitoring/targets.json
+docker compose -f monitoring/docker-compose.yml up -d
+```
+
 Open Grafana at `http://<control-host>:3000`. The first login is
 admin/admin. Start with the Fleet Health dashboard.
 

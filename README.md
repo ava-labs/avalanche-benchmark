@@ -91,7 +91,7 @@ The P-chain node has two modes, and every deployment picks one:
 ```bash
 cp examples/nodes.ini.example nodes.ini   # edit host= lines, exactly one role=pchain
 cp .env.example .env              # NETWORK, PCHAIN_API, FUNDING_PRIVATE_KEY, SSH_*
-go run ./cmd/l1 address           # fund the printed P-chain address
+go run ./cmd/l1 address           # fund the printed P-chain address; see the minimum below
 go run ./cmd/l1 create            # generates deployment/ if absent, then every chain
 make pack                         # avalanche-benchmark.tar.gz: binaries + configs, no sources
 # ship the archive to control, extract, then from the control host:
@@ -99,6 +99,13 @@ make pack                         # avalanche-benchmark.tar.gz: binaries + confi
 ./bin/fleet status                # expect 12x up, MODE synced, L1 STATE complete
 ./bin/bombard -rps 4000 -duration 5m
 ```
+
+Fresh creation needs `(validators + managers + 1) x 0.1 AVAX` on the
+funding address: 0.1 locks into each registered validator for its
+continuous fees, plus one 0.1 reserve for the transaction fees. `l1 create`
+checks the balance before it issues anything and prints the exact minimum
+when it refuses. `l1 destroy` reclaims what the validators have not yet
+spent.
 
 ### Frozen (isolated) start
 
