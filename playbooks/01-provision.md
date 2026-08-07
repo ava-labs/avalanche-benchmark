@@ -17,6 +17,16 @@ Make sure that these conditions are true:
 - The file `nodes.ini` exists. Copy a shape from `examples/` and set your
   hosts. Do not change the node numbers or the roles.
 - The binaries exist in `bin/`. Run `make package-build` to build them.
+- When `.env` sets `REMOTE_DATA_DIR` to a mount the ssh user cannot write,
+  create the directory once on every machine before the first deploy:
+
+  ```bash
+  sudo mkdir -p <REMOTE_DATA_DIR> && sudo chown <ssh-user>: <REMOTE_DATA_DIR>
+  ```
+
+  This is the only step that can need root. The deploy preflight checks the
+  directory on every host and refuses with the failing machine's name when
+  it is not writable.
 
 ## Procedure
 
