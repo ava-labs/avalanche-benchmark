@@ -63,6 +63,8 @@ cp -R deployment "$STAGE/$NAME/deployment"
 cp pchain.tar.gz "$STAGE/$NAME/"
 
 # Shipped .env: the deployment's real settings with every secret blanked.
+# PCHAIN_API_TOKEN is a legacy field: the kit no longer reads it, but old
+# deployment roots still carry it, so the sanitizer keeps blanking it.
 sed -E 's/^(FUNDING_PRIVATE_KEY)=.*/\1=/; s/^(PCHAIN_API_TOKEN)=.*/\1=/' \
   .env > "$STAGE/$NAME/.env"
 grep -q '^REMOTE_DIR=' "$STAGE/$NAME/.env" || {

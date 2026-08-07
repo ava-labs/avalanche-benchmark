@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/ava-labs/avalanche-benchmark/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/internal/fleet"
 )
 
@@ -22,9 +21,6 @@ func run() error {
 	root, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get working directory: %w", err)
-	}
-	if err := config.InstallAPITokenFromRoot(root); err != nil {
-		return err
 	}
 	program := filepath.Base(os.Args[0])
 	deployer := fleet.NewDeployer(root, os.Stdout)

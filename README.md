@@ -219,8 +219,7 @@ never committed.
 
 ```dotenv
 NETWORK=fuji                              # fuji | mainnet, never "testnet"
-PCHAIN_API=https://api.avax-test.network  # no query string, see PCHAIN_API_TOKEN
-PCHAIN_API_TOKEN=                         # optional rate-limit bypass, secret, never commit
+PCHAIN_API=https://api.avax-test.network  # no query string
 FUNDING_PRIVATE_KEY=                      # 64 hex chars, no 0x, pays P-chain fees
 SSH_USER=ubuntu
 SSH_KEY_PATH=/home/ubuntu/.ssh/fleet
@@ -232,11 +231,6 @@ SYSTEM_INSTALL=false                      # true = legacy root install (systemd,
 An unknown field, a missing field, or a malformed value stops the command
 before it does work. There are no aliases, no auto-discovery, and no silent
 repair.
-
-The toolset sends `PCHAIN_API_TOKEN` as the `token` query argument to the
-`PCHAIN_API` host, and to no other host. Do not append the token to
-`PCHAIN_API`. The AvalancheGo client overwrites the query string, so a token
-there is silently dropped.
 
 `go run ./cmd/l1 keygen-funding` writes a new funding key into an empty
 `FUNDING_PRIVATE_KEY`. It sets `.env` to mode 0600. It refuses to run when

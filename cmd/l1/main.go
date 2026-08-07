@@ -39,9 +39,6 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("get working directory: %w", err)
 	}
-	if err := config.InstallAPITokenFromRoot(root); err != nil {
-		return err
-	}
 	switch {
 	case (len(os.Args) == 2 || len(os.Args) == 3) && os.Args[1] == "keygen":
 		managerCommittee := defaultManagerCommittee
