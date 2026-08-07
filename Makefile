@@ -78,7 +78,8 @@ PACK_FILES := \
 	monitoring/fleet-weight-exporter.py \
 	monitoring/dashboards/ \
 	apps/settlement-feed/dashboards/ \
-	apps/settlement-feed/alerts.yml
+	apps/settlement-feed/alerts.yml \
+	tools/forkcheck.sh
 
 pack:
 	rm -rf bin

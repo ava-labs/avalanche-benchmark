@@ -43,6 +43,15 @@ for legacy in genesis-template.json subnet-config.json node-config.json \
 done
 cp -R playbooks "$STAGE/$NAME/playbooks"
 cp -R examples "$STAGE/$NAME/examples"
+# The docs tell the operator to run tools/forkcheck.sh after every load
+# test, so the bundle must carry it. bundle.sh itself stays out: cutting
+# bundles is not a client operation.
+mkdir -p "$STAGE/$NAME/tools"
+if test -f tools/forkcheck.sh; then
+  cp tools/forkcheck.sh "$STAGE/$NAME/tools/"
+else
+  cp "$(dirname "$0")/forkcheck.sh" "$STAGE/$NAME/tools/"
+fi
 test -d docs && cp -R docs "$STAGE/$NAME/docs"
 mkdir -p "$STAGE/$NAME/monitoring"
 cp monitoring/grafana-datasources.yml monitoring/grafana-dashboards.yml \
