@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/fleet"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/fleet"
 )
 
 func main() {

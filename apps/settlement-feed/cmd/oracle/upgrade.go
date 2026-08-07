@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
+	"github.com/ava-labs/avalanche-benchmark/internal/creation"
 	ethcommon "github.com/ava-labs/libevm/common"
 )
 

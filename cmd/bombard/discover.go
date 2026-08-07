@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/creation"
 	"github.com/ava-labs/libevm/common"
 	"github.com/ava-labs/libevm/crypto"
 	"github.com/joho/godotenv"

@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/creation"
 )
 
 // Placement maps an inventory node number to an identity letter.

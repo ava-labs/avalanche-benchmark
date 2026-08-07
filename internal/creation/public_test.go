@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/identity"
 	ethcommon "github.com/ava-labs/libevm/common"
 )
 

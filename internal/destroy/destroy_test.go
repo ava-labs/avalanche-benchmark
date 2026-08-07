@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/weights"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/weights"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/vms/platformvm/txs"
 	"github.com/ava-labs/avalanchego/vms/secp256k1fx"

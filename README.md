@@ -71,7 +71,7 @@ cp examples/nodes.ini.example nodes.ini   # edit host= lines, exactly one role=p
 cp .env.example .env              # NETWORK, PCHAIN_API, FUNDING_PRIVATE_KEY, SSH_*
 go run ./cmd/l1 address           # fund the printed P-chain address
 go run ./cmd/l1 create            # generates deployment/ if absent, then every chain
-make pack                         # remote-benchmark.tar.gz: binaries + configs, no sources
+make pack                         # avalanche-benchmark.tar.gz: binaries + configs, no sources
 # ship the archive to control, extract, then from the control host:
 ./bin/fleet deploy follow         # P-chain tracks the public network
 ./bin/fleet status                # expect 12x up, MODE synced, L1 STATE complete

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
 )
 
 // upgradeFile is the subset of a subnet-evm upgrade.json the kit validates.

@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
 	"github.com/ava-labs/avalanchego/ids"
 )
 

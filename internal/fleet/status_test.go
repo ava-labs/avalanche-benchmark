@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/creation"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/creation"
 )
 
 // A frozen fleet is airgapped by design, so status must answer the

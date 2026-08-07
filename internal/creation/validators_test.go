@@ -3,8 +3,8 @@ package creation
 import (
 	"testing"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/identity"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/identity"
 	"github.com/ava-labs/avalanchego/ids"
 	plformsigner "github.com/ava-labs/avalanchego/vms/platformvm/signer"
 	warpmessage "github.com/ava-labs/avalanchego/vms/platformvm/warp/message"

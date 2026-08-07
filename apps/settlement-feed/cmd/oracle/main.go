@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/apps/settlement-feed/internal/oraclerelay"
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/apps/settlement-feed/internal/oraclerelay"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
 	ethcommon "github.com/ava-labs/libevm/common"
 )
 

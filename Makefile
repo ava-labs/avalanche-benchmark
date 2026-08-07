@@ -75,9 +75,9 @@ PACK_FILES := \
 pack:
 	rm -rf bin
 	$(MAKE) package-build
-	rm -f remote-benchmark.tar.gz
-	tar -czf remote-benchmark.tar.gz $(PACK_FILES)
-	tar -tzf remote-benchmark.tar.gz
+	rm -f avalanche-benchmark.tar.gz
+	tar -czf avalanche-benchmark.tar.gz $(PACK_FILES)
+	tar -tzf avalanche-benchmark.tar.gz
 
 # pack-fast keeps an already built avalanchego and plugin and rebuilds only the
 # kit binaries. Use it while iterating; use pack for anything shipped.
@@ -85,9 +85,9 @@ pack-fast:
 	test -x bin/avalanchego && test -x bin/$(SUBNET_EVM_ID)
 	rm -f bin/l1 bin/fleet bin/oracle bin/bombard bin/VERSIONS
 	$(MAKE) package-build
-	rm -f remote-benchmark.tar.gz
-	tar -czf remote-benchmark.tar.gz $(PACK_FILES)
-	tar -tzf remote-benchmark.tar.gz
+	rm -f avalanche-benchmark.tar.gz
+	tar -czf avalanche-benchmark.tar.gz $(PACK_FILES)
+	tar -tzf avalanche-benchmark.tar.gz
 
 # Client handover: base + one app + this deployment's identities and frozen
 # P-chain, secrets stripped, denylist enforced. Run from a deployment root.
@@ -97,4 +97,4 @@ bundle:
 	bash tools/bundle.sh $(APP) $(BUNDLE)
 
 clean:
-	rm -rf bin .build remote-benchmark.tar.gz
+	rm -rf bin .build avalanche-benchmark.tar.gz

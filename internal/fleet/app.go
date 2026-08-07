@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ava-labs/avalanche-benchmark/remote/internal/config"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
 )
 
 // appManifest is the contract between an app and the installer. Each app
