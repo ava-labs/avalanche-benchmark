@@ -578,10 +578,16 @@ The oracle L1 is an optional third L1. Inventory lines with
 when a validator set must attest the feed, instead of trust in one
 key-to-contract path. It ingests mock price feeds (BTC-USD, USDC-USD). It
 exports every update to the main L1 as a Warp message that the oracle
-validator set signs. All contracts are pre-deployed in genesis. There is
-nothing to deploy at run time.
+validator set signs. The oracle chain ships its aggregator in its own
+genesis. The main chain's receiver installs through the upgrade history
+like every app contract: `oracle upgrade` renders it automatically on an
+oracle deployment, because its trust anchor is the oracle chain ID, which
+exists only after `l1 create`. Install the app first
+(playbooks/08-install-app.md), then run the feed and the relay:
 
 ```bash
+./bin/oracle upgrade              # renders the app accounts + the Warp receiver
+./bin/fleet upgrade upgrade.json  # installs on every main-chain node
 ./bin/oracle feed http://<oracle-rpc>:9650                                        # terminal 1
 ./bin/oracle relay http://<oracle-rpc>:9650 http://<rpc>:9650 <staking-ip:port,...>  # terminal 2
 ```

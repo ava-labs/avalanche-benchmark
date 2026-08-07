@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ava-labs/avalanche-benchmark/apps/settlement-feed/internal/oraclerelay"
+	"github.com/ava-labs/avalanche-benchmark/internal/config"
 	"github.com/ava-labs/avalanche-benchmark/internal/creation"
 	ethcommon "github.com/ava-labs/libevm/common"
 )
@@ -42,8 +44,30 @@ func upgradeCommand(root, minutesArgument string) error {
 	}
 	feeder := ethcommon.HexToAddress(public.FeederAddress)
 
+	allocations := creation.DirectFeedAllocations(feeder)
+	withReceiver := false
+	// The oracle-L1 shape adds the main chain's Warp receiver. Its trust
+	// anchor is the oracle chain ID, which exists only after `l1 create`
+	// recorded it, so the receiver installs through this fragment and never
+	// through genesis.
+	if public.HasOracle() {
+		environment, err := config.LoadNetworkEnvironment(filepath.Join(root, ".env"))
+		if err != nil {
+			return err
+		}
+		deployment, err := oraclerelay.LoadDeployment(filepath.Join(root, "deployment", "network.env"), environment.Network)
+		if err != nil {
+			return err
+		}
+		if !deployment.HasOracle() {
+			return fmt.Errorf("the inventory declares an oracle chain but deployment/network.env has no oracle record; run l1 create first")
+		}
+		allocations = append(allocations, creation.OracleReceiverAllocation(deployment.OracleChainID))
+		withReceiver = true
+	}
+
 	accounts := make(map[string]map[string]any)
-	for _, allocation := range creation.DirectFeedAllocations(feeder) {
+	for _, allocation := range allocations {
 		if allocation.RuntimeCode == "" || allocation.RuntimeCode == "0x" {
 			return fmt.Errorf("contract %s has empty runtime code; refusing to render", allocation.Address.Hex())
 		}
@@ -86,8 +110,12 @@ func upgradeCommand(root, minutesArgument string) error {
 	if err := os.WriteFile(target, append(contents, '\n'), 0o600); err != nil {
 		return err
 	}
-	fmt.Printf("wrote ./upgrade.json: direct feed accounts, activation %s (in %d minutes)\n",
-		time.Unix(activation, 0).UTC().Format(time.RFC3339), minutes)
+	rendered := "direct feed accounts"
+	if withReceiver {
+		rendered = "direct feed accounts + the main-chain Warp receiver"
+	}
+	fmt.Printf("wrote ./upgrade.json: %s, activation %s (in %d minutes)\n",
+		rendered, time.Unix(activation, 0).UTC().Format(time.RFC3339), minutes)
 	fmt.Println("apply it with: fleet upgrade upgrade.json")
 	fmt.Println("every node must restart with the file BEFORE the activation time")
 	return nil

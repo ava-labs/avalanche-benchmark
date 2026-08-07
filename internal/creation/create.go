@@ -71,6 +71,23 @@ func phaseAggregatorsSlot(phase uint64) ethcommon.Hash {
 	return ethcrypto.Keccak256Hash(key[:])
 }
 
+// OracleReceiverAllocation is the main-chain Warp receiver of the oracle-L1
+// shape. Slot 0 is the only blockchain ID it trusts as a Warp source; slot 1
+// is the only origin sender it accepts, the oracle chain's aggregator. The
+// oracle chain ID exists only after creation, so this account installs
+// through the upgrade history (`oracle upgrade` renders it on oracle
+// deployments), never through genesis.
+func OracleReceiverAllocation(oracleChainID ids.ID) ContractAllocation {
+	return ContractAllocation{
+		Address:     ReceiverAddress,
+		RuntimeCode: oraclecontracts.ReceiverRuntime,
+		Storage: map[ethcommon.Hash]ethcommon.Hash{
+			{}:                                  ethcommon.Hash(oracleChainID),
+			ethcommon.BigToHash(ethcommon.Big1): ethcommon.BytesToHash(AggregatorAddress.Bytes()),
+		},
+	}
+}
+
 // DirectFeedAllocations is the single source of truth for the direct price
 // feed's on-chain state: the aggregator the feeder publishes to, behind the
 // proxy consumers read, seeded at phase 1. `oracle upgrade` renders these
@@ -286,8 +303,8 @@ func create(
 	}
 	genesisAddress := ethcommon.HexToAddress(public.GenesisAddress)
 	createdAt := time.Now()
-	// The management chain never runs, so its genesis stays contract-free even
-	// when the main chain's genesis later embeds the oracle receiver.
+	// The management chain never runs; its genesis is the same contract-free
+	// base render as every other chain's.
 	managementGenesis, err := RenderGenesis(mainTemplate, []ethcommon.Address{genesisAddress}, nil, nil, createdAt)
 	if err != nil {
 		return Result{}, err
@@ -299,10 +316,11 @@ func create(
 	// the running chain through the upgrade history
 	// (playbooks/08-install-app.md), so adding an app never forces a chain
 	// re-creation. The feeder address stays funded on every chain because a
-	// balance is an allocation, not app state. Known exception, flagged for
-	// the same treatment: the oracle-L1 shape below still bakes its Warp
-	// receiver, whose seed needs the oracle chain ID that only exists
-	// mid-creation.
+	// balance is an allocation, not app state. The oracle-L1 shape is no
+	// exception on the main chain: its Warp receiver needs the oracle chain
+	// ID, which exists only after creation, so `oracle upgrade` renders it
+	// into the upgrade fragment. Only the oracle chain's own genesis ships a
+	// contract (its aggregator below): that chain exists solely to run it.
 	var oracleGenesis []byte
 	if hasOracle {
 		oracleTemplatePath := chainTemplatePath(root, config.OracleChain)
@@ -334,8 +352,8 @@ func create(
 		return Result{}, fmt.Errorf("load public identities: %w", err)
 	}
 	// evmChains is every chain this creation converts against the management
-	// chain, main first. The oracle chain is excluded: its creation stays a
-	// dedicated block below because the main genesis needs its chain ID.
+	// chain, main first. The oracle chain is excluded: its genesis embeds the
+	// aggregator, so its creation stays a dedicated block below.
 	var evmChains []string
 	for _, chain := range public.Chains() {
 		if chain != config.OracleChain {
@@ -347,7 +365,6 @@ func create(
 	if err := validateDistinctChainIDs(root, public.Chains()); err != nil {
 		return Result{}, err
 	}
-	genesisPath := filepath.Join(outputDirectory, "genesis.json")
 	oracleGenesisPath := filepath.Join(outputDirectory, "genesis-oracle.json")
 	if err := requireMissing(oracleGenesisPath); err != nil {
 		return Result{}, err
@@ -357,11 +374,6 @@ func create(
 		path := filepath.Join(outputDirectory, genesisFileName(chain))
 		if err := requireMissing(path); err != nil {
 			return Result{}, err
-		}
-		if chain == config.MainChain && hasOracle {
-			// The main genesis embeds the oracle receiver, so it can only be
-			// rendered after the oracle CreateChainTx is accepted.
-			continue
 		}
 		template := mainTemplate
 		if chain != config.MainChain {
@@ -528,34 +540,6 @@ func create(
 		if err := state.Save(); err != nil {
 			return Result{}, err
 		}
-	}
-
-	if hasOracle {
-		// The receiver contract only trusts Warp messages whose source is the
-		// oracle chain, so the main genesis can be rendered only after the
-		// oracle CreateChainTx is accepted and its blockchain ID is known.
-		mainGenesis, err := RenderGenesis(
-			mainTemplate,
-			[]ethcommon.Address{genesisAddress, feederAddress},
-			[]ContractAllocation{{
-				Address:     ReceiverAddress,
-				RuntimeCode: oraclecontracts.ReceiverRuntime,
-				Storage: map[ethcommon.Hash]ethcommon.Hash{
-					{}:                                  ethcommon.Hash(state.OracleChainID),
-					ethcommon.BigToHash(ethcommon.Big1): ethcommon.BytesToHash(AggregatorAddress.Bytes()),
-				},
-			}},
-			nil,
-			createdAt,
-		)
-		if err != nil {
-			return Result{}, err
-		}
-		if err := os.WriteFile(genesisPath, mainGenesis, 0o644); err != nil {
-			return Result{}, fmt.Errorf("write generated genesis %s: %w", genesisPath, err)
-		}
-		fmt.Printf("generated %s\n", genesisPath)
-		genesisByChain[config.MainChain] = mainGenesis
 	}
 
 	// setRecord routes one chain's creation output into the state: main keeps
