@@ -119,5 +119,5 @@ groups:
         labels:
           severity: info
         annotations:
-          summary: "Registered weight changed for {{ $labels.node }} ({{ $labels.l1 }})"
+          summary: "Registered weight changed on {{ $labels.machine }} for identity {{ $labels.identity }} ({{ $labels.l1 }})"
           description: "Expected only during a planned swap or failover. Verify against the change log."
