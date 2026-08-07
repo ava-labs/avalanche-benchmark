@@ -160,7 +160,7 @@ func subnetConfigPath(root, chain string) string {
 // other role runs the lean validator configuration.
 func chainConfigVariant(role config.Role) string {
 	switch role {
-	case config.RoleRPC, config.RoleOracleRPC:
+	case config.RoleRPC:
 		return "chain-config-rpc.json"
 	case config.RoleArchive:
 		return "chain-config-archive.json"
@@ -712,7 +712,7 @@ func (d *Deployer) prepare(pchainMode string, includeL1 bool) (deployment, func(
 		pchainMode:      pchainMode,
 	}
 	for _, node := range public.Nodes {
-		if node.Role != config.RoleValidator && node.Role != config.RoleOracleValidator {
+		if node.Role != config.RoleValidator {
 			continue
 		}
 		nodeID, _ := ids.NodeIDFromString(node.NodeID)
@@ -1015,7 +1015,7 @@ func renderNode(
 		// fails TLS verification and the peer is silently unreachable.
 		cfg["state-sync-ips"] = stateSyncIPs
 		cfg["state-sync-ids"] = stateSyncIDs
-		if node.Role == config.RoleValidator || node.Role == config.RoleOracleValidator {
+		if node.Role == config.RoleValidator {
 			cfg["staking-signer-key-file"] = filepath.Join(stakingDir, "signer.key")
 		} else {
 			cfg["staking-ephemeral-signer-enabled"] = true
@@ -1092,7 +1092,7 @@ func writeJSON(path string, value any) error {
 func validateIdentityFiles(root string, generated creation.PublicNode) error {
 	dir := filepath.Join(root, "deployment", "identities", generated.Identity)
 	names := []string{"staker.crt", "staker.key"}
-	if generated.Role == config.RoleValidator || generated.Role == config.RoleOracleValidator {
+	if generated.Role == config.RoleValidator {
 		names = append(names, "signer.key")
 	}
 	for _, name := range names {
@@ -1378,7 +1378,7 @@ func (d *Deployer) installIdentity(ctx context.Context, deployment deployment, n
 		return err
 	}
 	files := "staker.crt staker.key"
-	if node.node.Role == config.RoleValidator || node.node.Role == config.RoleOracleValidator {
+	if node.node.Role == config.RoleValidator {
 		files += " signer.key"
 	}
 	command := layoutFor(deployment.environment).installIdentityCommand(

@@ -87,7 +87,8 @@ alphaPreference floor is 31.
 ./bin/bombard -rps 4000 -duration 60s
 ```
 
-Remove `-tui=false` to get the live screen. The tool discovers all
+The live screen is on by default; set `-tui=false` for plain log lines.
+The tool discovers all
 `role=rpc` nodes from `nodes.ini` and the chain ID from
 `deployment/network.env`. It sends every transaction across all of them.
 You do not select nodes.

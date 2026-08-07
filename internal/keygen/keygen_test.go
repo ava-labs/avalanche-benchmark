@@ -106,9 +106,9 @@ func TestGenerateOracleIdentitiesAndFeederKey(t *testing.T) {
 		{Number: 6, Role: config.RolePChain},
 		{Number: 7, Role: config.RoleArchive},
 		{Number: 8, Role: config.RoleArchive},
-		{Number: 9, Role: config.RoleOracleValidator},
-		{Number: 10, Role: config.RoleOracleValidator},
-		{Number: 11, Role: config.RoleOracleRPC},
+		{Number: 9, Role: config.RoleValidator, Chain: config.OracleChain},
+		{Number: 10, Role: config.RoleValidator, Chain: config.OracleChain},
+		{Number: 11, Role: config.RoleRPC, Chain: config.OracleChain},
 	}
 	output := filepath.Join(t.TempDir(), "deployment")
 	if _, err := Generate(output, nodes, 1); err != nil {
@@ -122,7 +122,7 @@ func TestGenerateOracleIdentitiesAndFeederKey(t *testing.T) {
 	// Identity letters follow inventory order: i and j are the oracle
 	// validators, f the P-chain node, g and h the archives, k the oracle rpc.
 	oracleValidator := loaded.Nodes[8]
-	if oracleValidator.Role != config.RoleOracleValidator || oracleValidator.Signer == nil || oracleValidator.Weight != creation.OracleWeight {
+	if oracleValidator.Role != config.RoleValidator || oracleValidator.ChainName() != config.OracleChain || oracleValidator.Signer == nil || oracleValidator.Weight != creation.OracleWeight {
 		t.Fatalf("unexpected oracle validator: %+v", oracleValidator)
 	}
 	for _, index := range []int{5, 6, 7, 10} {

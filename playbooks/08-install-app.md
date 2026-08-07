@@ -24,7 +24,9 @@ contracts reach the chain in two ways:
 from the deployment root, and installs the rendered fragment through the
 same code path as `fleet upgrade`. For settlement-feed the renderer is
 `./bin/oracle upgrade`, and it writes `./upgrade.json` with an activation
-time 15 minutes out.
+time 15 minutes out. On a deployment with an oracle chain, the same
+fragment also carries the main chain's Warp receiver: its trust anchor is
+the oracle chain ID, so it installs here and never through genesis.
 
 The install targets exactly one chain. The target resolves in this
 order: the `--chain` flag, then the manifest's `chain` field, then
@@ -55,7 +57,7 @@ block. Send one transaction after the activation time, then verify the
 contracts:
 
 ```bash
-FEED=0x00000000000000000000000000000000FeedF00d
+FEED=0x00000000000000000000000000000000FeedF00D
 cast call $FEED "decimals()(uint8)" --rpc-url http://<rpc>:9650/ext/bc/<chain-id>/rpc
 ```
 

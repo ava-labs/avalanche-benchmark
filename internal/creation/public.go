@@ -39,9 +39,10 @@ type PublicNode struct {
 	Identity string      `json:"identity"`
 	Node     int         `json:"node"`
 	Role     config.Role `json:"role"`
-	// Chain is the L1 the node serves. Empty means derived: main for the
-	// plain roles, oracle for the oracle roles. keygen writes it only for
-	// chains beyond those defaults, so old files load unchanged.
+	// Chain is the L1 the node serves. Empty means derived: main for every
+	// L1 role, none for the P-chain node. keygen writes it for every other
+	// chain, and the loader rewrites the legacy oracle role spellings to the
+	// generic role plus this field, so old files load unchanged.
 	Chain  string `json:"chain,omitempty"`
 	NodeID string `json:"nodeID"`
 	Weight uint64 `json:"weight,omitempty"`
@@ -98,15 +99,18 @@ func NewPublic(generated identity.Set, nodes []config.Node, genesisAddress ethco
 		if chainName != config.EffectiveChain(generated.Role, "") {
 			node.Chain = chainName
 		}
-		switch generated.Role {
-		case config.RoleValidator:
-			node.Weight = LowWeight
-			if validatorIndex[chainName] < HighValidatorCount {
-				node.Weight = HighWeight
+		if generated.Role == config.RoleValidator {
+			if chainName == config.OracleChain {
+				// The oracle chain keeps its flat weight; the ladder is a
+				// main-style failover shape it does not run.
+				node.Weight = OracleWeight
+			} else {
+				node.Weight = LowWeight
+				if validatorIndex[chainName] < HighValidatorCount {
+					node.Weight = HighWeight
+				}
+				validatorIndex[chainName]++
 			}
-			validatorIndex[chainName]++
-		case config.RoleOracleValidator:
-			node.Weight = OracleWeight
 		}
 		if weight, tagged := explicit[generated.NodeNumber]; tagged {
 			node.Weight = weight
@@ -157,6 +161,19 @@ func LoadPublic(path string) (Public, string, error) {
 		}
 		return Public{}, "", fmt.Errorf("decode public chain inputs %s: %w", path, err)
 	}
+	// Records written before the chain= field carry the legacy oracle role
+	// spellings. Normalize them here, exactly like the inventory loader, so
+	// the rest of the kit only ever sees the four real roles.
+	for i := range public.Nodes {
+		switch public.Nodes[i].Role {
+		case config.RoleOracleValidator:
+			public.Nodes[i].Role = config.RoleValidator
+			public.Nodes[i].Chain = config.OracleChain
+		case config.RoleOracleRPC:
+			public.Nodes[i].Role = config.RoleRPC
+			public.Nodes[i].Chain = config.OracleChain
+		}
+	}
 	if err := public.Validate(); err != nil {
 		return Public{}, "", fmt.Errorf("%s: %w", path, err)
 	}
@@ -178,10 +195,13 @@ func (p Public) Validate() error {
 	}
 
 	seenNodeIDs := make(map[ids.NodeID]struct{}, len(p.Nodes)+len(p.Managers))
-	validatorIndex := make(map[string]int, 2)
+	// ladderIndex positions each chain's validators on the default weight
+	// ladder; validatorsByChain and rpcsByChain carry the structural counts.
+	// The oracle chain uses flat weights, so it never consumes a ladder slot.
+	ladderIndex := make(map[string]int, 2)
+	validatorsByChain := make(map[string]int, 2)
+	rpcsByChain := make(map[string]int, 2)
 	pchainCount := 0
-	oracleValidatorCount := 0
-	oracleRPCCount := 0
 	previousNode := 0
 	for i, node := range p.Nodes {
 		expectedIdentity := identity.Name(i)
@@ -208,12 +228,8 @@ func (p Public) Validate() error {
 			switch node.Role {
 			case config.RolePChain:
 				return fmt.Errorf("node %s is the P-chain node and serves every chain; chain must be empty", node.Identity)
-			case config.RoleOracleValidator, config.RoleOracleRPC:
-				if node.Chain != config.OracleChain {
-					return fmt.Errorf("node %s role %s always serves chain %q, got %q", node.Identity, node.Role, config.OracleChain, node.Chain)
-				}
 			default:
-				if node.Chain == config.OracleChain || node.Chain == "management" {
+				if node.Chain == "management" {
 					return fmt.Errorf("node %s chain name %q is reserved", node.Identity, node.Chain)
 				}
 			}
@@ -221,20 +237,27 @@ func (p Public) Validate() error {
 
 		switch node.Role {
 		case config.RoleValidator:
+			chainName := node.ChainName()
 			// An explicit weight only needs to be positive; a default weight
-			// must recompute to the ladder value.
+			// must recompute to the chain's rule: the flat oracle weight on
+			// the oracle chain, the ladder everywhere else.
 			if node.ExplicitWeight {
 				if node.Weight == 0 {
 					return fmt.Errorf("validator %s explicit weight must be at least 1", node.Identity)
 				}
+			} else if chainName == config.OracleChain {
+				if node.Weight != OracleWeight {
+					return fmt.Errorf("oracle validator %s weight must be %d, got %d", node.Identity, OracleWeight, node.Weight)
+				}
 			} else {
 				expectedWeight := uint64(LowWeight)
-				if validatorIndex[node.ChainName()] < HighValidatorCount {
+				if ladderIndex[chainName] < HighValidatorCount {
 					expectedWeight = HighWeight
 				}
 				if node.Weight != expectedWeight {
 					return fmt.Errorf("validator %s weight must be %d, got %d", node.Identity, expectedWeight, node.Weight)
 				}
+				ladderIndex[chainName]++
 			}
 			if node.Signer == nil {
 				return fmt.Errorf("validator %s signer is required", node.Identity)
@@ -242,23 +265,8 @@ func (p Public) Validate() error {
 			if err := node.Signer.Verify(); err != nil {
 				return fmt.Errorf("validator %s signer: %w", node.Identity, err)
 			}
-			validatorIndex[node.ChainName()]++
-		case config.RoleOracleValidator:
-			if node.ExplicitWeight {
-				if node.Weight == 0 {
-					return fmt.Errorf("oracle validator %s explicit weight must be at least 1", node.Identity)
-				}
-			} else if node.Weight != OracleWeight {
-				return fmt.Errorf("oracle validator %s weight must be %d, got %d", node.Identity, OracleWeight, node.Weight)
-			}
-			if node.Signer == nil {
-				return fmt.Errorf("oracle validator %s signer is required", node.Identity)
-			}
-			if err := node.Signer.Verify(); err != nil {
-				return fmt.Errorf("oracle validator %s signer: %w", node.Identity, err)
-			}
-			oracleValidatorCount++
-		case config.RoleRPC, config.RoleArchive, config.RoleOracleRPC, config.RolePChain:
+			validatorsByChain[chainName]++
+		case config.RoleRPC, config.RoleArchive, config.RolePChain:
 			if node.Weight != 0 {
 				return fmt.Errorf("%s %s weight must be 0, got %d", node.Role, node.Identity, node.Weight)
 			}
@@ -269,13 +277,13 @@ func (p Public) Validate() error {
 				return fmt.Errorf("%s %s signer must not be provided", node.Role, node.Identity)
 			}
 			switch node.Role {
-			case config.RoleOracleRPC:
-				oracleRPCCount++
+			case config.RoleRPC:
+				rpcsByChain[node.ChainName()]++
 			case config.RolePChain:
 				pchainCount++
 			}
 		default:
-			return fmt.Errorf("node %s role must be validator, rpc, pchain, archive, oracle-validator, or oracle-rpc, got %q", node.Identity, node.Role)
+			return fmt.Errorf("node %s role must be validator, rpc, pchain, or archive, got %q", node.Identity, node.Role)
 		}
 	}
 	// Shape opinions (validator count, RPC count, archive redundancy) are
@@ -285,18 +293,14 @@ func (p Public) Validate() error {
 		return fmt.Errorf("exactly 1 P-chain node is required, got %d", pchainCount)
 	}
 	for _, chain := range p.Chains() {
-		if chain == config.OracleChain {
-			continue
-		}
-		if validatorIndex[chain] == 0 {
+		if validatorsByChain[chain] == 0 {
 			return fmt.Errorf("chain %q has no validator; a chain needs at least 1", chain)
 		}
 	}
-	if oracleValidatorCount > 0 && oracleRPCCount < 1 {
-		return fmt.Errorf("oracle validators require at least 1 oracle-rpc")
-	}
-	if oracleRPCCount > 0 && oracleValidatorCount == 0 {
-		return fmt.Errorf("oracle-rpc nodes require at least 1 oracle-validator")
+	// The oracle feed ingress must stay off the chain's validator, so an rpc
+	// node is structural there, mirroring config.LoadNodes.
+	if validatorsByChain[config.OracleChain] > 0 && rpcsByChain[config.OracleChain] < 1 {
+		return fmt.Errorf("chain %q declares no rpc node; the oracle feed ingress needs at least 1", config.OracleChain)
 	}
 	if len(p.Managers) != 1 && len(p.Managers) != 4 {
 		return fmt.Errorf("manager count must be 1 or 4, got %d", len(p.Managers))
@@ -334,7 +338,7 @@ func (p Public) validateWeightConsistency() error {
 	withWeight := make(map[string][]string)
 	withoutWeight := make(map[string][]string)
 	for _, node := range p.Nodes {
-		if node.Role != config.RoleValidator && node.Role != config.RoleOracleValidator {
+		if node.Role != config.RoleValidator {
 			continue
 		}
 		chain := node.ChainName()
@@ -361,7 +365,7 @@ func (p Public) validateWeightConsistency() error {
 // HasOracle reports whether the inventory declares an oracle L1.
 func (p Public) HasOracle() bool {
 	for _, node := range p.Nodes {
-		if node.Role == config.RoleOracleValidator {
+		if node.Role == config.RoleValidator && node.ChainName() == config.OracleChain {
 			return true
 		}
 	}

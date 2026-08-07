@@ -326,9 +326,9 @@ func TestCreateWithOracleRunsManagerOracleMain(t *testing.T) {
 			{Number: 4, Host: "v4", Role: config.RoleValidator},
 			{Number: 5, Host: "rpc", Role: config.RoleRPC},
 			{Number: 6, Host: "pchain", Role: config.RolePChain},
-			{Number: 7, Host: "o1", Role: config.RoleOracleValidator},
-			{Number: 8, Host: "o2", Role: config.RoleOracleValidator},
-			{Number: 9, Host: "rpc", Role: config.RoleOracleRPC},
+			{Number: 7, Host: "o1", Role: config.RoleValidator, Chain: config.OracleChain},
+			{Number: 8, Host: "o2", Role: config.RoleValidator, Chain: config.OracleChain},
+			{Number: 9, Host: "rpc", Role: config.RoleRPC, Chain: config.OracleChain},
 		},
 	}
 	wallet := &fakeWallet{}
@@ -414,22 +414,29 @@ func TestCreateWithOracleRunsManagerOracleMain(t *testing.T) {
 	if err := json.Unmarshal(mainGenesis, &mainDocument); err != nil {
 		t.Fatal(err)
 	}
-	receiver := mainDocument.Alloc[allocKey(ReceiverAddress)]
-	if receiver.Code == "" {
-		t.Fatalf("receiver not baked into main genesis: %+v", receiver)
-	}
-	if receiver.Storage[ethcommon.Hash{}.Hex()] != ethcommon.Hash(result.State.OracleChainID).Hex() {
-		t.Fatalf("receiver source chain must be the oracle chain: %+v", receiver.Storage)
-	}
-	if receiver.Storage[ethcommon.BigToHash(ethcommon.Big1).Hex()] != ethcommon.BytesToHash(AggregatorAddress.Bytes()).Hex() {
-		t.Fatalf("receiver origin sender must be the aggregator: %+v", receiver.Storage)
-	}
 	if mainDocument.Alloc[allocKey(feeder)].Balance != genesisBalance {
 		t.Fatal("feeder not funded on the main chain")
 	}
-	// App contracts install through the upgrade history in every shape; the
-	// receiver above is the flagged exception, not the rule.
+	// App contracts install through the upgrade history in every shape. The
+	// oracle shape is no exception: `oracle upgrade` renders the receiver
+	// with the recorded oracle chain ID.
 	assertGenesisIsBaseLayerOnly(t, mainDocument)
+	// The trust anchors the receiver fragment needs are recorded and usable.
+	receiver := OracleReceiverAllocation(result.State.OracleChainID)
+	if receiver.Storage[ethcommon.Hash{}] != ethcommon.Hash(result.State.OracleChainID) {
+		t.Fatalf("receiver fragment must trust the oracle chain: %+v", receiver.Storage)
+	}
+	if receiver.Storage[ethcommon.BigToHash(ethcommon.Big1)] != ethcommon.BytesToHash(AggregatorAddress.Bytes()) {
+		t.Fatalf("receiver fragment origin sender must be the aggregator: %+v", receiver.Storage)
+	}
+	if receiver.RuntimeCode == "" || receiver.RuntimeCode == "0x" {
+		t.Fatal("receiver fragment has no runtime code")
+	}
+	for slot, value := range receiver.Storage {
+		if value == (ethcommon.Hash{}) {
+			t.Fatalf("receiver fragment seeds slot %s with zero; explicit zeros brick upgrade.json", slot.Hex())
+		}
+	}
 }
 
 // assertGenesisIsBaseLayerOnly pins the policy: the main genesis carries
@@ -442,6 +449,7 @@ func assertGenesisIsBaseLayerOnly(t *testing.T, mainDocument genesisDocument) {
 	for name, address := range map[string]ethcommon.Address{
 		"price aggregator": PriceFeedAggregatorAddress,
 		"price feed proxy": PriceFeedAddress,
+		"oracle receiver":  ReceiverAddress,
 	} {
 		account := mainDocument.Alloc[allocKey(address)]
 		if account.Code != "" || len(account.Storage) != 0 {

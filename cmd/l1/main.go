@@ -168,19 +168,17 @@ func generateKeys(root string, managerCommittee int) error {
 	if err != nil {
 		return err
 	}
-	roleCounts := make(map[config.Role]int, 6)
+	roleCounts := make(map[config.Role]int, 4)
 	for _, node := range result.Public.Nodes {
 		roleCounts[node.Role]++
 	}
 	fmt.Printf("loaded %s\n", nodesPath)
 	fmt.Printf(
-		"generated keys: validators=%d rpc=%d pchain=%d archive=%d oracle-validators=%d oracle-rpc=%d managers=%d root=%s\n",
+		"generated keys: validators=%d rpc=%d pchain=%d archive=%d managers=%d root=%s\n",
 		roleCounts[config.RoleValidator],
 		roleCounts[config.RoleRPC],
 		roleCounts[config.RolePChain],
 		roleCounts[config.RoleArchive],
-		roleCounts[config.RoleOracleValidator],
-		roleCounts[config.RoleOracleRPC],
 		len(result.Public.Managers),
 		deploymentPath,
 	)
@@ -356,7 +354,7 @@ func loadIdentityNames(deploymentDirectory string) (map[identityKey]identityName
 	}
 	for _, node := range public.Nodes {
 		switch node.Role {
-		case config.RoleValidator, config.RoleOracleValidator:
+		case config.RoleValidator:
 			if err := load(node.ChainName(), node.Identity, node.NodeID); err != nil {
 				return nil, fmt.Errorf("load %s identity %s: %w", node.ChainName(), node.Identity, err)
 			}

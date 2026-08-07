@@ -104,6 +104,17 @@ func Relay(ctx context.Context, pChainAPI string, deployment Deployment, deploym
 	pChain := platformvm.NewClient(pChainAPI)
 	mainEpochs := proposervm.NewJSONRPCClient(mainNodeURL, deployment.MainChainID.String())
 
+	// A delivery to a codeless receiver succeeds and does nothing, so a main
+	// chain without the app installed must fail loudly here, not deliver
+	// into the void.
+	hasCode, err := main.HasCode(ctx, deployment.ReceiverAddress)
+	if err != nil {
+		return fmt.Errorf("check receiver code at %s: %w", deployment.ReceiverAddress.Hex(), err)
+	}
+	if !hasCode {
+		return fmt.Errorf("no contract at receiver %s: the settlement-feed app is not installed on the main chain. Install it with `oracle upgrade` and `fleet upgrade upgrade.json` (playbooks/08-install-app.md)", deployment.ReceiverAddress.Hex())
+	}
+
 	if err := gateOracleConversion(ctx, pChain, mainEpochs, deployment, networkID, output); err != nil {
 		return err
 	}

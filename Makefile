@@ -77,14 +77,26 @@ PACK_FILES := \
 	monitoring/grafana-dashboards.yml \
 	monitoring/fleet-weight-exporter.py \
 	monitoring/dashboards/ \
+	apps/settlement-feed/app.json \
+	apps/settlement-feed/README.md \
+	apps/settlement-feed/docs/ \
+	apps/settlement-feed/contracts/ \
 	apps/settlement-feed/dashboards/ \
-	apps/settlement-feed/alerts.yml
+	apps/settlement-feed/alerts.yml \
+	tools/forkcheck.sh
+
+# Forge build artifacts must never ride into the artifact from a working
+# tree. The contracts ship as reference sources only.
+PACK_EXCLUDES := \
+	--exclude apps/settlement-feed/contracts/lib \
+	--exclude apps/settlement-feed/contracts/cache \
+	--exclude apps/settlement-feed/contracts/out
 
 pack:
 	rm -rf bin
 	$(MAKE) package-build
 	rm -f avalanche-benchmark.tar.gz
-	tar -czf avalanche-benchmark.tar.gz $(PACK_FILES)
+	tar -czf avalanche-benchmark.tar.gz $(PACK_EXCLUDES) $(PACK_FILES)
 	tar -tzf avalanche-benchmark.tar.gz
 
 # pack-fast keeps an already built avalanchego and plugin and rebuilds only the
@@ -94,7 +106,7 @@ pack-fast:
 	rm -f bin/l1 bin/fleet bin/oracle bin/bombard bin/VERSIONS
 	$(MAKE) package-build
 	rm -f avalanche-benchmark.tar.gz
-	tar -czf avalanche-benchmark.tar.gz $(PACK_FILES)
+	tar -czf avalanche-benchmark.tar.gz $(PACK_EXCLUDES) $(PACK_FILES)
 	tar -tzf avalanche-benchmark.tar.gz
 
 # Client handover: base + one app + this deployment's identities and frozen

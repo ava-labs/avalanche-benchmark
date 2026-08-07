@@ -176,7 +176,7 @@ and RPC node bootstraps from the P-chain node.
 | `deployment/placement.json` | `keygen`, `place` | machine-to-identity bijection, control-side truth |
 | `deployment/genesis.json` | `create` | rendered main-chain genesis, stamped with the creation time |
 | `deployment/genesis-<name>.json` | `create` | rendered genesis of every other declared chain (the oracle chain's file is `genesis-oracle.json`) |
-| `deployment/network.env` | `create` | subnet, chain, and conversion transaction IDs. Main uses the bare keys; each other chain gets `SUBNET_<NAME>_ID`, `CHAIN_<NAME>_ID`, `CONVERT_<NAME>_TX_ID`. |
+| `deployment/network.env` | `create` | subnet, chain, and conversion transaction IDs. Main uses the bare keys. Each other chain gets `SUBNET_<NAME>_ID`, `CHAIN_<NAME>_ID`, `CONVERT_<NAME>_TX_ID`. The oracle chain keeps its legacy names `ORACLE_SUBNET_ID`, `ORACLE_CHAIN_ID`, `ORACLE_CONVERT_TX_ID`. |
 | `deployment/oracle-feeder.key` | `keygen` | EVM key funded on every chain, used by `oracle feed`/`relay` |
 | `deployment/upgrades.json` | `fleet upgrade` | the main chain's append-only upgrade history; every deploy installs it |
 | `deployment/upgrades-<name>.json` | `fleet upgrade --chain <name>` | the named chain's upgrade history, same rules |
@@ -190,14 +190,14 @@ never committed.
 ## nodes.ini
 
 ```ini
-# <node-number> host=<address> role=validator|rpc|pchain|archive|oracle-validator|oracle-rpc [chain=<name>] [weight=<n>] [dc=<tag>]
+# <node-number> host=<address> role=validator|rpc|pchain|archive [chain=<name>] [weight=<n>] [dc=<tag>]
 1  host=10.0.0.11 role=validator dc=A
 5  host=10.1.0.11 role=validator dc=B
 9  host=10.0.0.15 role=rpc       dc=A
 13 host=10.2.0.10 role=pchain
 14 host=10.0.0.17 role=archive   dc=A
-16 host=10.0.0.18 role=oracle-validator dc=A
-17 host=10.0.0.15 role=oracle-rpc       dc=A
+16 host=10.0.0.18 role=validator chain=oracle dc=A
+17 host=10.0.0.15 role=rpc       chain=oracle dc=A
 18 host=10.0.0.19 role=validator chain=trading dc=A
 ```
 
@@ -207,13 +207,13 @@ never committed.
 | Identities are letters | `a`, `b`, `c`. Keygen assigns them to nodes in ascending number order. |
 | Shapes | any validator, rpc, and archive count works, per chain. The tested failover shape is 4+ validators + 1+ RPC per chain; a smaller shape prints a warning and tolerates less loss. |
 | Exactly one `pchain` | not registered, stable TLS identity, no BLS signer, never key-swapped. It serves every chain and takes no `chain=`. |
-| `chain=` | the L1 a node serves; lowercase letters, digits, and hyphens, at most 20 characters. Omitted means `main`. Every named chain needs at least one validator. The names `oracle` and `management` are reserved. |
-| Initial weights | the default ladder: the first three validators of each chain by node number get 100000, the others get 1000. `weight=<n>` overrides the ladder with an explicit initial stake (an integer, at least 1). The tag is valid only on `validator` and `oracle-validator` lines. Set it on every validator of a chain or on none; a mix is a load error. |
+| `chain=` | the L1 a node serves; lowercase letters, digits, and hyphens, at most 20 characters. Omitted means `main`. Every named chain needs at least one validator. The name `management` is reserved. |
+| Initial weights | the default ladder: the first three validators of each chain by node number get 100000, the others get 1000. `weight=<n>` overrides the ladder with an explicit initial stake (an integer, at least 1). The tag is valid only on `validator` lines. Set it on every validator of a chain or on none; a mix is a load error. |
 | `dc=` | display only, in the `fleet status` table. Nothing functional reads it. It is not a selector. |
 | Co-location | several nodes can share one machine. Ports are positional by node order on that machine: 9650/9651, 9652/9653, 9654/9655. |
 | Weights are not inventory | `weight=` sets only the initial stake at creation. After creation, the on-chain weight is the only truth. |
 | `archive` | an RPC-shaped main-L1 node with pruning and state-sync off (`chain-config-archive.json`). It must exist from genesis, because an archive cannot state-sync. A single archive prints a warning. Deploy it like any other node. |
-| Oracle roles come together | `oracle-validator` and `oracle-rpc` declare the optional oracle L1 (`chains/oracle/subnet-config.json`, all weights 1000, no key swaps). Omit both for no oracle chain. Each role requires the other. These roles always serve `chain=oracle`. |
+| The oracle chain | `chain=oracle` on validator and rpc lines declares the optional oracle L1 (`chains/oracle/subnet-config.json`, flat weights 1000, no key swaps). It needs at least 1 validator and 1 rpc node. The legacy spellings `oracle-validator` and `oracle-rpc` still load and mean exactly `role=validator|rpc chain=oracle`. |
 
 ## .env
 
@@ -543,9 +543,9 @@ USDC/USD. It installs onto the running chain through the upgrade history
 (`oracle upgrade`, then `fleet upgrade upgrade.json`; see
 playbooks/08-install-app.md). Genesis stays base layer only, so the
 install never recreates the chain. A `PriceAggregator` lands at
-`0x00000000000000000000000000000000FeedFacE`. The generated
+`0x00000000000000000000000000000000FEeDfAce`. The generated
 `deployment/oracle-feeder.key` publishes to it. A `PriceFeedProxy` lands
-at `0x00000000000000000000000000000000FeedF00d`. Consumers read from the
+at `0x00000000000000000000000000000000FeedF00D`. Consumers read from the
 proxy. The ABI is identical to a Chainlink feed: `latestRoundData`,
 `getRoundData`, `decimals`, `description`. The `IPriceFeed` interface
 matches Chainlink's `AggregatorV3Interface` signature for signature. On a
@@ -573,15 +573,21 @@ address with Chainlink's propose/confirm flow. See
 
 ## The oracle L1
 
-The oracle L1 is an optional third L1. The inventory roles
-`oracle-validator` and `oracle-rpc` declare it; nothing else does. Use it
+The oracle L1 is an optional third L1. Inventory lines with
+`chain=oracle` declare it; nothing else does. Use it
 when a validator set must attest the feed, instead of trust in one
 key-to-contract path. It ingests mock price feeds (BTC-USD, USDC-USD). It
 exports every update to the main L1 as a Warp message that the oracle
-validator set signs. All contracts are pre-deployed in genesis. There is
-nothing to deploy at run time.
+validator set signs. The oracle chain ships its aggregator in its own
+genesis. The main chain's receiver installs through the upgrade history
+like every app contract: `oracle upgrade` renders it automatically on an
+oracle deployment, because its trust anchor is the oracle chain ID, which
+exists only after `l1 create`. Install the app first
+(playbooks/08-install-app.md), then run the feed and the relay:
 
 ```bash
+./bin/oracle upgrade              # renders the app accounts + the Warp receiver
+./bin/fleet upgrade upgrade.json  # installs on every main-chain node
 ./bin/oracle feed http://<oracle-rpc>:9650                                        # terminal 1
 ./bin/oracle relay http://<oracle-rpc>:9650 http://<rpc>:9650 <staking-ip:port,...>  # terminal 2
 ```
@@ -622,7 +628,9 @@ relayer is the demo equivalent for isolated networks.
 The consensus parameters are a fixed benchmark input. They are identical
 for every topology, including a single validator. Fleet commands never
 derive consensus settings from the inventory. The shipped values are in
-`chains/default/subnet-config.json`:
+`chains/default/subnet-config.json` (the legacy oracle chain shape is the
+one exception: `chains/oracle/subnet-config.json` ships single-validator
+parameters):
 
 ```
 k=60  alphaPreference=31  alphaConfidence=38  beta=12  proposerWindow=100ms

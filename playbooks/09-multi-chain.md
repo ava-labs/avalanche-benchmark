@@ -21,13 +21,14 @@ Rules:
   of the chain by node number start at 100000, the rest at 1000. A
   `weight=<n>` tag on a validator line overrides the ladder. Set the tag on
   every validator of a chain or on none.
-- The names `oracle` and `management` are reserved.
+- The name `management` is reserved. The oracle chain is a normal chain
+  named `oracle`; its shipped configuration lives in `chains/oracle/`.
 - Per-chain configuration goes in `chains/<name>/`:
   `genesis-template.json`, `subnet-config.json`, and the node config
   variants `chain-config.json`, `chain-config-rpc.json`, and
   `chain-config-archive.json`. A file that is absent falls back to the
-  shared default in `chains/default/`. Deploy picks the variant by node role: `rpc` and
-  `oracle-rpc` get the rpc variant, `archive` gets the archive variant,
+  shared default in `chains/default/`. Deploy picks the variant by node role: `rpc`
+  gets the rpc variant, `archive` gets the archive variant,
   every other role gets `chain-config.json`. The oracle chain follows the
   same rule under `chains/oracle/`.
 - Give each chain a `genesis-template.json` with its own `chainId`. The

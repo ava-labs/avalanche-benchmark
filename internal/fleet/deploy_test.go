@@ -624,13 +624,13 @@ func TestRenderOracleAndArchiveRoles(t *testing.T) {
 		subnetCfg   string
 	}{
 		"oracle validator": {
-			node:        config.Node{Number: 8, Role: config.RoleOracleValidator},
+			node:        config.Node{Number: 8, Role: config.RoleValidator, Chain: config.OracleChain},
 			signer:      true,
 			chainConfig: `{"main":true}`,
 			subnetCfg:   `{"l1":"oracle"}`,
 		},
 		"oracle rpc": {
-			node:        config.Node{Number: 9, Role: config.RoleOracleRPC},
+			node:        config.Node{Number: 9, Role: config.RoleRPC, Chain: config.OracleChain},
 			chainConfig: `{"rpc":true}`,
 			subnetCfg:   `{"l1":"oracle"}`,
 		},
@@ -826,8 +826,8 @@ func TestStateSyncPeersStayWithinTheirL1(t *testing.T) {
 		{Number: 1, Host: "v1", Role: config.RoleValidator},
 		{Number: 2, Host: "r1", Role: config.RoleRPC},
 		{Number: 3, Host: "p1", Role: config.RolePChain},
-		{Number: 4, Host: "o1", Role: config.RoleOracleValidator},
-		{Number: 5, Host: "o2", Role: config.RoleOracleRPC},
+		{Number: 4, Host: "o1", Role: config.RoleValidator, Chain: config.OracleChain},
+		{Number: 5, Host: "o2", Role: config.RoleRPC, Chain: config.OracleChain},
 	}
 	public := map[int]creation.PublicNode{
 		1: {NodeID: "NodeID-v1"}, 2: {NodeID: "NodeID-r1"},
