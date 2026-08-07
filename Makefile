@@ -68,9 +68,17 @@ PACK_FILES := \
 	.env.example \
 	examples/ \
 	chains/ \
+	docs/ \
+	playbooks/ \
+	monitoring/prometheus.yml \
+	monitoring/alerts.yml \
+	monitoring/docker-compose.yml \
 	monitoring/grafana-datasources.yml \
+	monitoring/grafana-dashboards.yml \
+	monitoring/fleet-weight-exporter.py \
 	monitoring/dashboards/ \
-	apps/settlement-feed/dashboards/
+	apps/settlement-feed/dashboards/ \
+	apps/settlement-feed/alerts.yml
 
 pack:
 	rm -rf bin
