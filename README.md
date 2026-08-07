@@ -1,4 +1,12 @@
+<div align="center">
+
+<img src="docs/avalanche-logo.png" alt="Avalanche" width="360"/>
+
 # Avalanche for Isolated Networks
+
+**Create, load, break, and recover Avalanche L1s that run with no internet egress.**
+
+</div>
 
 This is a benchmark and failover toolset for Avalanche L1s in isolated
 networks. An isolated network has no internet egress, a fixed validator set,
@@ -9,8 +17,22 @@ load on a chain. It does data-center failover drills in two ways: it moves
 staking identities (key swap), or it moves stake weight. Both operate on one
 deployment. No step creates a chain again.
 
-This document is the operator manual. For the consensus parameters, see
-**[docs/CONSENSUS-TUNING.md](docs/CONSENSUS-TUNING.md)**.
+This document is the operator manual. Every procedure has a playbook.
+
+## Start here
+
+| You want to | Read |
+|---|---|
+| Stand up a fleet from zero | [Runbooks](#runbooks) below, then [playbooks/01-provision.md](playbooks/01-provision.md) |
+| Put load on a chain | [playbooks/02-load-test.md](playbooks/02-load-test.md) |
+| Run a failover drill | [playbooks/03-failover-drill.md](playbooks/03-failover-drill.md) |
+| Swap a validator identity | [playbooks/04-validator-swap.md](playbooks/04-validator-swap.md) |
+| Install without root | [playbooks/05-rootless-install.md](playbooks/05-rootless-install.md) |
+| Monitor and alert | [playbooks/06-monitoring.md](playbooks/06-monitoring.md) |
+| Run with a connected P-chain | [playbooks/07-connected-pchain.md](playbooks/07-connected-pchain.md) |
+| Install an app on a running chain | [playbooks/08-install-app.md](playbooks/08-install-app.md) |
+| Run more than one chain | [playbooks/09-multi-chain.md](playbooks/09-multi-chain.md) |
+| Understand the consensus parameters | [docs/CONSENSUS-TUNING.md](docs/CONSENSUS-TUNING.md) |
 
 ## What it needs
 
