@@ -35,6 +35,11 @@ Rules:
   genesis funds the same addresses on every chain, so a shared chainId
   lets a transaction replay across chains. `l1 create` refuses duplicate
   chainIds. The `subnet-config.json` fallback is safe to share.
+- The template owns the chain's allocations. The `$genesis-funds` line
+  funds the account `bombard` spends; remove it and only bombard stops
+  working on that chain. Literal addresses in `alloc` pass through
+  verbatim, so a chain's template can prefund your own accounts and
+  prebake your own contracts (`balance`, `code`, `storage`, `nonce`).
 
 ## Create and deploy
 

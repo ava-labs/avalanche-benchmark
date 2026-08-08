@@ -17,7 +17,11 @@
       "blockGasCostStep": 0
     }
   },
-  "alloc": {},
+  "alloc": {
+    "$genesis-funds": {
+      "balance": "0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+    }
+  },
   "nonce": "0x0",
   "timestamp": "0x6a445880",
   "extraData": "0x00",

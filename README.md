@@ -187,6 +187,25 @@ and RPC node bootstraps from the P-chain node.
 `deployment/` contains private keys. It is never in the pack artifact. It is
 never committed.
 
+### Genesis allocations
+
+Each chain's `genesis-template.json` owns its allocations. The `alloc`
+object takes two key forms:
+
+- `$genesis-funds`: the one placeholder. It resolves at `l1 create` to the
+  address of `deployment/genesis-funds.key`, with the balance the template
+  states. `bombard` spends this account. Remove the line and the chain has
+  no load account; nothing else breaks, and `l1 create` prints a note.
+- A literal hex address: passes through verbatim (`balance`, `code`,
+  `storage`, `nonce`). Use this to prefund your own accounts or to prebake
+  your own contracts into a chain.
+
+Two addresses inject on top of the template, because they exist only after
+`keygen`: the feeder account on every chain, and the aggregator contract on
+the oracle chain. A template allocation on an injected address is an error.
+The shipped app contracts stay out of every genesis; they install through
+the upgrade history ([playbooks/08-install-app.md](playbooks/08-install-app.md)).
+
 ## nodes.ini
 
 ```ini

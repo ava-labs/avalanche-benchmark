@@ -77,6 +77,7 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 		"difficulty":"0x0","mixHash":"0x0","coinbase":"0x0",
 		"number":"0x0","gasUsed":"0x0","parentHash":"0x0"
 	}`
+	template = strings.Replace(template, `"alloc":{}`, `"alloc":{"$genesis-funds":{"balance":"`+genesisBalance+`"}}`, 1)
 	if err := os.WriteFile(templatePath, []byte(template), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -194,6 +195,9 @@ func TestCreateRunsManagerBeforeMainAndNeverRegistersRPC(t *testing.T) {
 	if mainDocument.Alloc[allocKey(feeder)].Balance != genesisBalance {
 		t.Fatal("feeder not funded on the main chain")
 	}
+	if mainDocument.Alloc[allocKey(ethcommon.HexToAddress(loaded.GenesisAddress))].Balance != genesisBalance {
+		t.Fatal("the $genesis-funds placeholder was not resolved on the main chain")
+	}
 	if _, err := os.Stat(filepath.Join(output, "identities")); !os.IsNotExist(err) {
 		t.Fatalf("creation output must not need private identities, got %v", err)
 	}
@@ -304,6 +308,7 @@ func TestCreateWithOracleRunsManagerOracleMain(t *testing.T) {
 		"difficulty":"0x0","mixHash":"0x0","coinbase":"0x0",
 		"number":"0x0","gasUsed":"0x0","parentHash":"0x0"
 	}`
+	template = strings.Replace(template, `"alloc":{}`, `"alloc":{"$genesis-funds":{"balance":"`+genesisBalance+`"}}`, 1)
 	templatePath := filepath.Join(dir, "genesis-template.json")
 	if err := os.WriteFile(templatePath, []byte(template), 0o600); err != nil {
 		t.Fatal(err)
@@ -405,6 +410,9 @@ func TestCreateWithOracleRunsManagerOracleMain(t *testing.T) {
 	if oracleDocument.Alloc[allocKey(feeder)].Balance != genesisBalance {
 		t.Fatal("feeder not funded on the oracle chain")
 	}
+	if oracleDocument.Alloc[allocKey(ethcommon.HexToAddress(loaded.GenesisAddress))].Balance != genesisBalance {
+		t.Fatal("the $genesis-funds placeholder was not resolved on the oracle chain")
+	}
 
 	mainGenesis, err := os.ReadFile(filepath.Join(output, "genesis.json"))
 	if err != nil {
@@ -468,7 +476,10 @@ func TestCreateTwoChainsLoopsAndRecordsPerChainState(t *testing.T) {
 		"difficulty":"0x0","mixHash":"0x0","coinbase":"0x0",
 		"number":"0x0","gasUsed":"0x0","parentHash":"0x0"
 	}`
-	if err := os.WriteFile(filepath.Join(dir, "genesis-template.json"), []byte(template), 0o600); err != nil {
+	// Main keeps the shipped $genesis-funds line. The trading operator
+	// removed it: an allowed choice that only disables bombard there.
+	fundedTemplate := strings.Replace(template, `"alloc":{}`, `"alloc":{"$genesis-funds":{"balance":"`+genesisBalance+`"}}`, 1)
+	if err := os.WriteFile(filepath.Join(dir, "genesis-template.json"), []byte(fundedTemplate), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	// The trading chain carries its own template under chains/<name>/.
@@ -601,6 +612,21 @@ func TestCreateTwoChainsLoopsAndRecordsPerChainState(t *testing.T) {
 		t.Fatal("feeder not funded on the trading chain")
 	}
 	assertGenesisIsBaseLayerOnly(t, tradingDocument)
+	genesisFunds := ethcommon.HexToAddress(loaded.GenesisAddress)
+	if _, funded := tradingDocument.Alloc[allocKey(genesisFunds)]; funded {
+		t.Fatal("the trading template removed $genesis-funds; the render must not fund it")
+	}
+	mainGenesis, err := os.ReadFile(filepath.Join(output, "genesis.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mainDocument genesisDocument
+	if err := json.Unmarshal(mainGenesis, &mainDocument); err != nil {
+		t.Fatal(err)
+	}
+	if mainDocument.Alloc[allocKey(genesisFunds)].Balance != genesisBalance {
+		t.Fatal("the $genesis-funds placeholder was not resolved on the main chain")
+	}
 
 	// The dynamic keys land in network.env; main keeps the bare keys.
 	state, err := os.ReadFile(filepath.Join(output, "network.env"))

@@ -9,7 +9,12 @@ correctly.
 ./bin/bombard -rps 1000 -duration 10m
 ```
 
-The load generator sends transactions to every `role=rpc` node.
+The load generator sends transactions to every `role=rpc` node. It spends
+from one account: the key in `deployment/genesis-funds.key`, which the
+`$genesis-funds` line in the chain's genesis template funds at creation. A
+template without that line gives bombard no funds on that chain; `l1
+create` prints a note when this is the case. Run one bombard per chain: two
+generators on one chain race for the account's nonces.
 
 Increase the rate in steps, for example 1000, then 2000, then 4000. Do not
 go to the target rate in one step. The important measurement is the rate
