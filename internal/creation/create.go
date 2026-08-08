@@ -305,22 +305,30 @@ func create(
 	createdAt := time.Now()
 	// The management chain never runs; its genesis is the same contract-free
 	// base render as every other chain's.
-	managementGenesis, err := RenderGenesis(mainTemplate, []ethcommon.Address{genesisAddress}, nil, nil, createdAt)
+	managementGenesis, err := RenderGenesis(mainTemplate, &genesisAddress, nil, nil, nil, createdAt)
 	if err != nil {
 		return Result{}, err
 	}
 	hasOracle := public.HasOracle()
 	feederAddress := ethcommon.HexToAddress(public.FeederAddress)
-	// Every chain's genesis is BASE LAYER ONLY: funded accounts, consensus,
-	// and network shape. App contracts never bake into it; they install onto
-	// the running chain through the upgrade history
+	// Each chain's TEMPLATE owns its allocations: the $genesis-funds
+	// placeholder resolves to the bombard account, and literal addresses pass
+	// through verbatim, prefunds and prebaked contracts alike. The shipped
+	// templates stay BASE LAYER ONLY for the shipped apps: those contracts
+	// install onto the running chain through the upgrade history
 	// (playbooks/08-install-app.md), so adding an app never forces a chain
-	// re-creation. The feeder address stays funded on every chain because a
-	// balance is an allocation, not app state. The oracle-L1 shape is no
-	// exception on the main chain: its Warp receiver needs the oracle chain
-	// ID, which exists only after creation, so `oracle upgrade` renders it
-	// into the upgrade fragment. Only the oracle chain's own genesis ships a
-	// contract (its aggregator below): that chain exists solely to run it.
+	// re-creation. The feeder address injects funded on every chain because a
+	// balance is an allocation, not app state, and its address exists only
+	// after keygen. The oracle-L1 shape is no exception on the main chain:
+	// its Warp receiver needs the oracle chain ID, which exists only after
+	// creation, so `oracle upgrade` renders it into the upgrade fragment.
+	// Only the oracle chain's own genesis ships a shipped contract (its
+	// aggregator below): that chain exists solely to run it.
+	warnNoGenesisFunds := func(chain string, template []byte) {
+		if !TemplateFundsGenesisAccount(template) {
+			fmt.Printf("note: the %s genesis template has no %s allocation; bombard has no funded account on that chain\n", chain, GenesisFundsPlaceholder)
+		}
+	}
 	var oracleGenesis []byte
 	if hasOracle {
 		oracleTemplatePath := chainTemplatePath(root, config.OracleChain)
@@ -328,11 +336,13 @@ func create(
 		if err != nil {
 			return Result{}, fmt.Errorf("read required oracle genesis template %s: %w", oracleTemplatePath, err)
 		}
+		warnNoGenesisFunds(config.OracleChain, oracleTemplate)
 		// The feeder also administers the oracle chain's FeeManager precompile,
 		// so fee/delay parameters are tunable live without a chain recreation.
 		oracleGenesis, err = RenderGenesis(
 			oracleTemplate,
-			[]ethcommon.Address{genesisAddress, feederAddress},
+			&genesisAddress,
+			[]ethcommon.Address{feederAddress},
 			[]ContractAllocation{{
 				Address:     AggregatorAddress,
 				RuntimeCode: oraclecontracts.AggregatorRuntime,
@@ -382,9 +392,10 @@ func create(
 				return Result{}, fmt.Errorf("read required genesis template %s: %w", templatePath, err)
 			}
 		}
+		warnNoGenesisFunds(chain, template)
 		// A genesis with no chain-dependent content is published before the
 		// first transaction, exactly as before.
-		genesis, err := RenderGenesis(template, []ethcommon.Address{genesisAddress, feederAddress}, nil, nil, createdAt)
+		genesis, err := RenderGenesis(template, &genesisAddress, []ethcommon.Address{feederAddress}, nil, nil, createdAt)
 		if err != nil {
 			return Result{}, fmt.Errorf("render %s genesis: %w", chain, err)
 		}
