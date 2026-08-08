@@ -112,7 +112,7 @@ pack-fast:
 # Client handover: base + one app + this deployment's identities and frozen
 # P-chain, secrets stripped, denylist enforced. Run from a deployment root.
 APP ?= settlement-feed
-BUNDLE ?= avalanche-l1-bundle.zip
+BUNDLE ?= avalanche-l1-bundle.tar.gz
 bundle:
 	bash tools/bundle.sh $(APP) $(BUNDLE)
 

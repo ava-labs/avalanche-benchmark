@@ -10,8 +10,8 @@
 # the cut if any pattern appears anywhere in the staged tree.
 set -euo pipefail
 
-APP="${1:?usage: bundle.sh <app> <output.zip>}"
-OUT="${2:?usage: bundle.sh <app> <output.zip>}"
+APP="${1:?usage: bundle.sh <app> <output.tar.gz>}"
+OUT="${2:?usage: bundle.sh <app> <output.tar.gz>}"
 ROOT="$(pwd)"
 
 require() { test -e "$1" || { echo "bundle: missing required $1" >&2; exit 1; }; }
@@ -26,7 +26,7 @@ require chains/default
 
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/bundle-XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
-NAME="$(basename "$OUT" .zip)"
+NAME="$(basename "$(basename "$OUT" .gz)" .tar)"
 mkdir -p "$STAGE/$NAME"
 
 # Base layer: binaries, per-chain configuration, docs, monitoring. All
@@ -94,7 +94,10 @@ if test -s "$ROOT/.bundle-denylist"; then
   fi
 fi
 
-(cd "$STAGE" && zip -qr "$ROOT/$OUT" "$NAME")
+# tar.gz, not zip: stock RHEL ships tar and gzip but not unzip, and the
+# pack artifact is already a tar.gz, so extraction works the same way on
+# every target host.
+(cd "$STAGE" && tar -czf "$ROOT/$OUT" "$NAME")
 echo "bundle: wrote $OUT ($(du -h "$ROOT/$OUT" | cut -f1))"
-echo "bundle: REMINDER: the zip contains live deployment keys; treat the"
+echo "bundle: REMINDER: the archive contains live deployment keys; treat the"
 echo "bundle: artifact and its download link as secrets."
