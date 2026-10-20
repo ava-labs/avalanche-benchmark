@@ -2,6 +2,8 @@ module github.com/ava-labs/avalanche-benchmark
 
 go 1.25.10
 
+toolchain go1.26.10
+
 require (
 	github.com/ava-labs/avalanchego v1.15.0-fuji.0.20260727085408-80c123c996d7
 	github.com/ava-labs/libevm v1.13.15-0.20260721184559-5557c68d296b
